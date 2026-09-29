@@ -365,6 +365,16 @@ impl Store for MemoryStore {
             .cloned())
     }
 
+    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("memory store poisoned")
+            .runs
+            .get(id)
+            .cloned())
+    }
+
     async fn list_messages(
         &self,
         id: &SessionId,

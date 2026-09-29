@@ -264,7 +264,13 @@ struct HeartbeatGuard {
 }
 
 impl HeartbeatGuard {
-    fn start(execution: Arc<dyn ExecutionStore>, clock: Arc<dyn Clock>, period: Duration) -> Self {
+    fn start(
+        execution: Arc<dyn ExecutionStore>,
+        store: Arc<dyn Store>,
+        fence: RunFence,
+        clock: Arc<dyn Clock>,
+        period: Duration,
+    ) -> Self {
         let lost = Arc::new(AtomicBool::new(false));
         let lost_in_task = Arc::clone(&lost);
         let (sender, signal) = watch::channel(false);
@@ -278,6 +284,17 @@ impl HeartbeatGuard {
                     .await
                     .is_err()
                 {
+                    let settled_by_this_owner = store
+                        .get_run(&fence.run_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|run| {
+                            run.status.is_terminal() && run.claim_token == fence.claim_token
+                        });
+                    if settled_by_this_owner {
+                        break;
+                    }
                     lost_in_task.store(true, Ordering::SeqCst);
                     let _ = sender.send(true);
                     break;
@@ -412,6 +429,8 @@ impl Orchestrator {
             .await?;
         let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
+            Arc::clone(&self.store),
+            fence.clone(),
             Arc::clone(&self.clock),
             self.heartbeat_interval,
         );

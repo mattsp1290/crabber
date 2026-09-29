@@ -11,7 +11,7 @@ use crabber_providers::{
 use crabber_session::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::{Notify, oneshot};
@@ -41,6 +41,44 @@ impl ToolExecutor for EchoTool {
 struct GatedTool {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Arc<Notify>,
+}
+
+struct CancellableTool {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<Notify>,
+    completed: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ToolExecutor for CancellableTool {
+    async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
+        if let Some(sender) = self.entered.lock().expect("tool gate poisoned").take() {
+            let _ = sender.send(());
+        }
+        self.release.notified().await;
+        self.completed.fetch_add(1, Ordering::SeqCst);
+        Ok(arguments)
+    }
+}
+
+struct BlockingSettledObserver {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    released: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Observer for BlockingSettledObserver {
+    fn emit(&self, event: &crabber_core::EventRecord) {
+        if event.kind == EventKind::RunSettled {
+            if let Some(sender) = self.entered.lock().expect("observer gate poisoned").take() {
+                let _ = sender.send(());
+            }
+            let (lock, ready) = &*self.released;
+            let mut released = lock.lock().expect("observer gate poisoned");
+            while !*released {
+                released = ready.wait(released).expect("observer gate poisoned");
+            }
+        }
+    }
 }
 
 struct GatedModelStream {
@@ -666,4 +704,113 @@ async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
     assert_eq!(unfinished.len(), 1);
     assert_eq!(unfinished[0].owner, "replacement owner");
     assert_eq!(unfinished[0].claim_token, new_fence.claim_token);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_settlement_wins_heartbeat_tick_during_observer_callback() {
+    let store = Arc::new(MemoryStore::new());
+    let fake = FakeProvider::scripted(vec![text_script("done")]);
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let released = Arc::new((Mutex::new(false), Condvar::new()));
+    let observer = Arc::new(BlockingSettledObserver {
+        entered: Mutex::new(Some(entered_tx)),
+        released: Arc::clone(&released),
+    });
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .observer(observer)
+        .heartbeat_interval(std::time::Duration::from_millis(5))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.get_run(&run_id).await.unwrap().unwrap().status,
+        crabber_core::RunStatus::Completed
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    {
+        let (lock, ready) = &*released;
+        *lock.lock().unwrap() = true;
+        ready.notify_all();
+    }
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        crabber_core::RunStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn reclaimed_lease_cancels_pending_tool_body() {
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+        text_script("must not run"),
+    ]);
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let release = Arc::new(Notify::new());
+    let completed = Arc::new(AtomicUsize::new(0));
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(CancellableTool {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Arc::clone(&release),
+                completed: Arc::clone(&completed),
+            }))],
+            Vec::new(),
+        )))
+        .clock(clock.clone())
+        .heartbeat_interval(std::time::Duration::from_millis(10))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let run_id = handle.run_id().clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.set(now + time::Duration::seconds(31));
+    let new_fence = store
+        .claim_expired_run(&run_id, "replacement owner")
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
+            .await
+            .unwrap(),
+        Err(RuntimeError::LeaseLost)
+    ));
+    release.notify_one();
+    tokio::task::yield_now().await;
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.requests().len(), 1);
+    let kinds = store
+        .list_events(&session, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert!(!kinds.contains(&EventKind::ToolCallSettled));
+    assert!(!kinds.contains(&EventKind::RunSettled));
+    assert_eq!(
+        store.get_run(&run_id).await.unwrap().unwrap().claim_token,
+        new_fence.claim_token
+    );
 }

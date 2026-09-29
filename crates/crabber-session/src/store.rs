@@ -42,6 +42,7 @@ pub trait Store: Send + Sync {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError>;
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError>;
+    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError>;
     async fn list_messages(
         &self,
         id: &SessionId,
