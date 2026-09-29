@@ -20,12 +20,12 @@ use sha2::{Digest, Sha256};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use time::OffsetDateTime;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -64,6 +64,8 @@ pub enum RuntimeError {
     Missing(&'static str),
     #[error("invalid orchestrator configuration: {0}")]
     InvalidConfiguration(&'static str),
+    #[error("run lease ownership was lost")]
+    LeaseLost,
 }
 
 #[derive(Debug, Clone)]
@@ -216,9 +218,9 @@ impl OrchestratorBuilder {
     /// Returns `Missing` if the store, resolver, or plan provider is absent.
     pub fn build(self) -> Result<Orchestrator, RuntimeError> {
         let heartbeat_interval = self.heartbeat_interval.unwrap_or(Duration::from_secs(5));
-        if heartbeat_interval.is_zero() {
+        if heartbeat_interval.is_zero() || heartbeat_interval >= Duration::from_secs(15) {
             return Err(RuntimeError::InvalidConfiguration(
-                "heartbeat interval must be positive",
+                "heartbeat interval must be positive and below 15 seconds",
             ));
         }
         Ok(Orchestrator {
@@ -255,10 +257,17 @@ pub struct RunHandle {
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
 }
 
-struct HeartbeatGuard(tokio::task::JoinHandle<()>);
+struct HeartbeatGuard {
+    task: tokio::task::JoinHandle<()>,
+    lost: Arc<AtomicBool>,
+    signal: watch::Receiver<bool>,
+}
 
 impl HeartbeatGuard {
     fn start(execution: Arc<dyn ExecutionStore>, clock: Arc<dyn Clock>, period: Duration) -> Self {
+        let lost = Arc::new(AtomicBool::new(false));
+        let lost_in_task = Arc::clone(&lost);
+        let (sender, signal) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -269,17 +278,19 @@ impl HeartbeatGuard {
                     .await
                     .is_err()
                 {
+                    lost_in_task.store(true, Ordering::SeqCst);
+                    let _ = sender.send(true);
                     break;
                 }
             }
         });
-        Self(task)
+        Self { task, lost, signal }
     }
 }
 
 impl Drop for HeartbeatGuard {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -405,9 +416,13 @@ impl Orchestrator {
             self.heartbeat_interval,
         );
         let run_id = fence.run_id.clone();
-        let outcome = self
-            .run_loop(execution.as_ref(), &run_id, &session_id, &request, &plan)
-            .await;
+        let mut signal = heartbeat.signal.clone();
+        let lost = Arc::clone(&heartbeat.lost);
+        let outcome = tokio::select! {
+            biased;
+            _ = signal.changed() => Err(RuntimeError::LeaseLost),
+            result = self.run_loop(execution.as_ref(), &run_id, &session_id, &request, &plan, lost.as_ref()) => result,
+        };
         drop(heartbeat);
         plan.release();
         match outcome {
@@ -438,6 +453,7 @@ impl Orchestrator {
         session_id: &SessionId,
         request: &Request,
         plan: &RunPlan,
+        lease_lost: &AtomicBool,
     ) -> Result<Usage, RuntimeError> {
         self.emit_durable(execution, session_id, run_id, EventKind::RunAdmitted)
             .await?;
@@ -456,13 +472,14 @@ impl Orchestrator {
                     session_id,
                     &snapshot,
                     Arc::clone(&streamer),
+                    lease_lost,
                 )
                 .await?;
             usage.input_tokens += turn_usage.input_tokens;
             usage.output_tokens += turn_usage.output_tokens;
             let had_tools = !calls.is_empty();
             for call in calls {
-                self.execute_tool(execution, session_id, run_id, plan, call)
+                self.execute_tool(execution, session_id, run_id, plan, call, lease_lost)
                     .await?;
             }
             let mut claimed = self.claim_input(execution, InboxKind::Steer).await?;
@@ -472,6 +489,7 @@ impl Orchestrator {
             self.emit_durable(execution, session_id, run_id, EventKind::TurnCompleted)
                 .await?;
             if !had_tools && claimed == 0 {
+                ensure_lease(lease_lost)?;
                 match execution
                     .settle_run(
                         RunStatus::Completed,
@@ -599,6 +617,7 @@ impl Orchestrator {
         session_id: &SessionId,
         snapshot: &TurnSnapshot,
         streamer: Arc<dyn Streamer>,
+        lease_lost: &AtomicBool,
     ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
         let request = ModelRequest {
             identity: snapshot.identity.clone(),
@@ -737,6 +756,7 @@ impl Orchestrator {
             parts,
             created_at: self.clock.now(),
         };
+        ensure_lease(lease_lost)?;
         execution.append_message(message).await?;
         self.emit_durable(execution, session_id, run_id, EventKind::MessageCommitted)
             .await?;
@@ -750,6 +770,7 @@ impl Orchestrator {
         run_id: &RunId,
         plan: &RunPlan,
         call: PendingCall,
+        lease_lost: &AtomicBool,
     ) -> Result<(), RuntimeError> {
         let definition = plan
             .tools
@@ -769,6 +790,7 @@ impl Orchestrator {
         } else {
             Err(format!("unknown tool: {}", call.name))
         };
+        ensure_lease(lease_lost)?;
         let pending = self.event(session_id, run_id, EventKind::ToolCallPending);
         execution
             .create_tool_call(
@@ -791,14 +813,16 @@ impl Orchestrator {
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;
-        let outcome = match (definition, prepared) {
+        ensure_lease(lease_lost)?;
+        let outcome: Result<Value, String> = match (definition, prepared) {
             (Some(tool), Ok(arguments)) => {
-                self.permit_and_execute(execution, session_id, run_id, &tool, arguments)
-                    .await
+                self.permit_and_execute(execution, session_id, run_id, &tool, arguments, lease_lost)
+                    .await?
             }
             (_, Err(error)) => Err(error),
             (None, Ok(_)) => Err("unknown tool".into()),
         };
+        ensure_lease(lease_lost)?;
         let (status, output, is_error) = match outcome {
             Ok(value) => (ToolResultStatus::Completed, value, false),
             Err(error) => (ToolResultStatus::Failed, Value::String(error), true),
@@ -844,7 +868,8 @@ impl Orchestrator {
         run_id: &RunId,
         tool: &ToolDefinition,
         arguments: Value,
-    ) -> Result<Value, String> {
+        lease_lost: &AtomicBool,
+    ) -> Result<Result<Value, String>, RuntimeError> {
         let allowed = match self.policy.decide(&tool.info, &arguments) {
             PermissionDecision::Allow => true,
             PermissionDecision::Deny => false,
@@ -855,26 +880,31 @@ impl Orchestrator {
                     run_id,
                     EventKind::PermissionRequested,
                 )
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
                 let approved = self.approver.approve(&tool.info, &arguments).await;
                 self.emit_durable(execution, session_id, run_id, EventKind::PermissionDecided)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    .await?;
                 approved
             }
         };
         if !allowed {
-            return Err("permission denied".into());
+            return Ok(Err("permission denied".into()));
         }
-        let output = tool
-            .executor
-            .execute(arguments)
+        ensure_lease(lease_lost)?;
+        execution
+            .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await
-            .map_err(|error| error.to_string())?;
-        self.tool_pipeline
+            .map_err(|_| RuntimeError::LeaseLost)?;
+        ensure_lease(lease_lost)?;
+        let output = match tool.executor.execute(arguments).await {
+            Ok(output) => output,
+            Err(error) => return Ok(Err(error.to_string())),
+        };
+        ensure_lease(lease_lost)?;
+        Ok(self
+            .tool_pipeline
             .transform_result(&tool.info, output)
-            .await
+            .await)
     }
 }
 
@@ -893,6 +923,14 @@ fn invalid_provider(message: &str) -> ProviderError {
         kind: crabber_providers::ProviderErrorKind::Invalid,
         message: message.into(),
         retryable: false,
+    }
+}
+
+fn ensure_lease(lost: &AtomicBool) -> Result<(), RuntimeError> {
+    if lost.load(Ordering::SeqCst) {
+        Err(RuntimeError::LeaseLost)
+    } else {
+        Ok(())
     }
 }
 

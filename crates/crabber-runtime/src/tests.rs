@@ -589,3 +589,81 @@ async fn wait_for_lease(store: &MemoryStore, threshold: time::OffsetDateTime) {
     .await
     .unwrap();
 }
+
+#[test]
+fn heartbeat_interval_requires_margin_inside_lease() {
+    for interval in [
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(30),
+    ] {
+        assert!(matches!(
+            Orchestrator::builder().heartbeat_interval(interval).build(),
+            Err(RuntimeError::InvalidConfiguration(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+        text_script("must not run"),
+    ]);
+    let executed = Arc::new(AtomicUsize::new(0));
+    let (approval_tx, approval_rx) = oneshot::channel();
+    let release = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::clone(&executed))))],
+            Vec::new(),
+        )))
+        .clock(clock.clone())
+        .heartbeat_interval(std::time::Duration::from_millis(10))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
+        .approver(Arc::new(GatedApprover {
+            entered: Mutex::new(Some(approval_tx)),
+            release: Arc::clone(&release),
+        }))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let run_id = handle.run_id().clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), approval_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.set(now + time::Duration::seconds(31));
+    let new_fence = store
+        .claim_expired_run(&run_id, "replacement owner")
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
+        .await
+        .unwrap();
+    assert!(matches!(result, Err(RuntimeError::LeaseLost)));
+    release.notify_one();
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.requests().len(), 1);
+    let kinds = store
+        .list_events(&session, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&EventKind::PermissionRequested));
+    assert!(!kinds.contains(&EventKind::PermissionDecided));
+    assert!(!kinds.contains(&EventKind::ToolCallSettled));
+    assert!(!kinds.contains(&EventKind::RunSettled));
+    let unfinished = store.list_unfinished_runs().await.unwrap();
+    assert_eq!(unfinished.len(), 1);
+    assert_eq!(unfinished[0].owner, "replacement owner");
+    assert_eq!(unfinished[0].claim_token, new_fence.claim_token);
+}
