@@ -215,6 +215,37 @@ fn project_messages(
         .collect())
 }
 
+fn initial_epoch(
+    id: EpochId,
+    session_id: SessionId,
+    run_id: RunId,
+    previous: Option<ContextEpoch>,
+) -> ContextEpoch {
+    ContextEpoch {
+        id,
+        session_id,
+        run_id,
+        parent: previous.as_ref().map(|epoch| epoch.id.clone()),
+        summarized_range: previous
+            .as_ref()
+            .and_then(|epoch| epoch.summarized_range.clone()),
+        summary_message_id: previous
+            .as_ref()
+            .and_then(|epoch| epoch.summary_message_id.clone()),
+        tail_start_message_id: previous
+            .as_ref()
+            .and_then(|epoch| epoch.tail_start_message_id.clone()),
+        provider_id: previous
+            .as_ref()
+            .map_or_else(String::new, |epoch| epoch.provider_id.clone()),
+        model_id: previous
+            .as_ref()
+            .map_or_else(String::new, |epoch| epoch.model_id.clone()),
+        reason: "initial".into(),
+        next_policy: previous.and_then(|epoch| epoch.next_policy),
+    }
+}
+
 #[async_trait]
 impl Store for MemoryStore {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
@@ -260,6 +291,19 @@ impl Store for MemoryStore {
             } else {
                 Vec::new()
             };
+            let previous_epoch = state
+                .run_order
+                .iter()
+                .rev()
+                .find_map(|id| {
+                    state
+                        .runs
+                        .get(id)
+                        .filter(|run| run.session_id == session_id)
+                })
+                .map(|run| state.epochs.get(&run.epoch_id).ok_or(StoreError::NotFound))
+                .transpose()?
+                .cloned();
             let run_id = RunId::new();
             let epoch_id = EpochId::new();
             let token = uuid::Uuid::new_v4().to_string();
@@ -287,19 +331,7 @@ impl Store for MemoryStore {
             state.run_order.push(run_id.clone());
             state.epochs.insert(
                 epoch_id.clone(),
-                ContextEpoch {
-                    id: epoch_id.clone(),
-                    session_id,
-                    run_id: run_id.clone(),
-                    parent: None,
-                    summarized_range: None,
-                    summary_message_id: None,
-                    tail_start_message_id: None,
-                    provider_id: String::new(),
-                    model_id: String::new(),
-                    reason: "initial".into(),
-                    next_policy: None,
-                },
+                initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch),
             );
             Ok(AdmitOutcome {
                 session,

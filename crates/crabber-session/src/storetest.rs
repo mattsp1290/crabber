@@ -170,7 +170,7 @@ where
             session_id: session_id.clone(),
             run_id: admitted.run.id.clone(),
             parent: Some(admitted.epoch),
-            summarized_range: Some((user.id, old.id)),
+            summarized_range: Some((user.id.clone(), old.id.clone())),
             summary_message_id: None,
             tail_start_message_id: Some(tail.id.clone()),
             provider_id: "fake".into(),
@@ -416,20 +416,21 @@ where
         .unwrap();
     assert!(store.list_unfinished_runs().await.unwrap().is_empty());
 
+    let new_user = message(
+        &session_id,
+        None,
+        Role::User,
+        PartKind::UserInputText,
+        "again",
+        now,
+    );
     let resumed = store
         .admit_run(AdmitRequest {
             session_id: Some(session_id.clone()),
             workspace_id: "workspace".into(),
             directory: "/tmp".into(),
             title: "contract".into(),
-            user_message: message(
-                &session_id,
-                None,
-                Role::User,
-                PartKind::UserInputText,
-                "again",
-                now,
-            ),
+            user_message: new_user.clone(),
             config_hash: "config".into(),
             plan_fingerprint: "plan".into(),
             owner: "worker-c".into(),
@@ -445,4 +446,16 @@ where
         resumed.prior_history.get(1).map(|entry| &entry.id),
         Some(&tail.id)
     );
+    for selected_epoch in [None, Some(resumed.epoch.clone())] {
+        let projected = store
+            .list_messages(&session_id, selected_epoch)
+            .await
+            .unwrap();
+        assert_eq!(projected.first().map(|entry| &entry.id), Some(&summary.id));
+        assert_eq!(projected.get(1).map(|entry| &entry.id), Some(&tail.id));
+        assert_eq!(projected.last().map(|entry| &entry.id), Some(&new_user.id));
+        assert!(projected.iter().all(|entry| {
+            entry.id != user.id && entry.id != old.id && entry.id != custom_message.id
+        }));
+    }
 }
