@@ -1,8 +1,13 @@
-use crate::{Observer, Orchestrator, PermissionDecision, Request, RuntimeError, StaticPolicy};
+use crate::{
+    ApprovalRequester, ModelStream, Observer, Orchestrator, PermissionDecision, Request,
+    RuntimeError, StaticPolicy,
+};
 use async_trait::async_trait;
-use crabber_core::{ContentBlock, EventKind, Message, Role, ToolCallId};
+use crabber_core::{ContentBlock, EventKind, ManualClock, Message, Role, ToolCallId};
 use crabber_extension::{ExtensionError, StaticPlanProvider, ToolDefinition, ToolExecutor};
-use crabber_providers::{FakeProvider, Selection, StreamDelta};
+use crabber_providers::{
+    DeltaStream, FakeProvider, ModelRequest, ProviderError, Selection, StreamDelta, Streamer,
+};
 use crabber_session::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::{
@@ -36,6 +41,43 @@ impl ToolExecutor for EchoTool {
 struct GatedTool {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Arc<Notify>,
+}
+
+struct GatedModelStream {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelStream for GatedModelStream {
+    async fn stream(
+        &self,
+        request: ModelRequest,
+        next: Arc<dyn Streamer>,
+    ) -> Result<DeltaStream, ProviderError> {
+        let entered = self.entered.lock().expect("model gate poisoned").take();
+        if let Some(sender) = entered {
+            let _ = sender.send(());
+            self.release.notified().await;
+        }
+        next.stream(request).await
+    }
+}
+
+struct GatedApprover {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl ApprovalRequester for GatedApprover {
+    async fn approve(&self, _tool: &crabber_core::ToolInfo, _arguments: &Value) -> bool {
+        if let Some(sender) = self.entered.lock().expect("approval gate poisoned").take() {
+            let _ = sender.send(());
+        }
+        self.release.notified().await;
+        true
+    }
 }
 
 #[async_trait]
@@ -174,11 +216,27 @@ async fn text_tool_text_has_exact_order_and_three_generated_messages() {
         ]
     );
     let durable = store.list_events(&session, None, 100).await.unwrap();
-    assert!(
+    assert_eq!(
         durable
             .iter()
-            .all(|event| !event.live_only && event.kind != EventKind::TextDelta)
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::RunAdmitted,
+            EventKind::RunStarted,
+            EventKind::TurnStarted,
+            EventKind::MessageCommitted,
+            EventKind::ToolCallPending,
+            EventKind::ToolCallRunning,
+            EventKind::ToolCallSettled,
+            EventKind::TurnCompleted,
+            EventKind::TurnStarted,
+            EventKind::MessageCommitted,
+            EventKind::TurnCompleted,
+            EventKind::RunSettled,
+        ]
     );
+    assert!(durable.iter().all(|event| !event.live_only));
 }
 
 #[tokio::test]
@@ -311,4 +369,223 @@ async fn steering_and_follow_up_reach_later_requests_and_busy_is_rejected() {
     assert!(contains_text(&requests[1].messages, "steer now"));
     assert!(!contains_text(&requests[1].messages, "follow later"));
     assert!(contains_text(&requests[2].messages, "follow later"));
+}
+
+#[tokio::test]
+async fn enum_and_nested_schema_failures_never_execute_tool() {
+    for arguments in [
+        r#"{"choice":"forbidden","nested":{"flag":true}}"#,
+        r#"{"choice":"allowed","nested":{}}"#,
+    ] {
+        let store = Arc::new(MemoryStore::new());
+        let fake = FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), arguments),
+            text_script("continued"),
+        ]);
+        let executed = Arc::new(AtomicUsize::new(0));
+        let mut definition = tool(Arc::new(EchoTool(Arc::clone(&executed))));
+        Arc::get_mut(&mut definition).unwrap().info.parameters = json!({
+            "type":"object", "required":["choice","nested"],
+            "properties":{
+                "choice":{"enum":["allowed"]},
+                "nested":{"type":"object","required":["flag"],"properties":{"flag":{"type":"boolean"}}}
+            }
+        });
+        let runtime = Orchestrator::builder()
+            .store(Arc::clone(&store) as Arc<dyn Store>)
+            .resolver(Arc::new(fake.clone()))
+            .plan_provider(Arc::new(StaticPlanProvider::new(
+                vec![definition],
+                Vec::new(),
+            )))
+            .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+            .build()
+            .unwrap();
+        let handle = runtime.start(request()).await.unwrap();
+        let session = handle.session_id().clone();
+        handle.done().await.unwrap();
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+        assert_eq!(fake.requests().len(), 2);
+        let messages = store.list_messages(&session, None).await.unwrap();
+        assert!(
+            messages
+                .iter()
+                .flat_map(|message| &message.parts)
+                .any(|part| matches!(
+                    &part.content,
+                    ContentBlock::ToolResult { is_error: true, .. }
+                ))
+        );
+    }
+}
+
+#[tokio::test]
+async fn stream_eof_without_completed_fails_without_assistant_commit() {
+    let store = Arc::new(MemoryStore::new());
+    let fake = FakeProvider::scripted(vec![vec![StreamDelta::TextDelta("partial".into())]]);
+    let runtime = orchestrator(
+        Arc::clone(&store),
+        fake,
+        Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(RecordingObserver::default()),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    assert!(matches!(
+        handle.done().await,
+        Err(RuntimeError::Provider(_))
+    ));
+    let messages = store.list_messages(&session, None).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, Role::User);
+    assert!(store.list_unfinished_runs().await.unwrap().is_empty());
+    assert_eq!(
+        store
+            .list_events(&session, None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .map(|event| event.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            EventKind::RunAdmitted,
+            EventKind::RunStarted,
+            EventKind::TurnStarted,
+            EventKind::RunSettled,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn heartbeat_keeps_gated_tool_run_owned_past_initial_lease() {
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+        text_script("finished"),
+        text_script("another run"),
+    ]);
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let release = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(GatedTool {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Arc::clone(&release),
+            }))],
+            Vec::new(),
+        )))
+        .clock(clock.clone())
+        .heartbeat_interval(std::time::Duration::from_millis(10))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.set(now + time::Duration::seconds(25));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if store.list_unfinished_runs().await.unwrap()[0].lease_until
+                > now + time::Duration::seconds(50)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    clock.set(now + time::Duration::seconds(35));
+    release.notify_one();
+    assert_eq!(
+        handle.done().await.unwrap().status,
+        crabber_core::RunStatus::Completed
+    );
+    let mut next = request();
+    next.session_id = Some(session);
+    assert_eq!(
+        runtime
+            .start(next)
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        crabber_core::RunStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn heartbeat_covers_model_stream_and_approval_waits() {
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+        text_script("done"),
+    ]);
+    let (model_tx, model_rx) = oneshot::channel();
+    let (approval_tx, approval_rx) = oneshot::channel();
+    let model_release = Arc::new(Notify::new());
+    let approval_release = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))))],
+            Vec::new(),
+        )))
+        .clock(clock.clone())
+        .heartbeat_interval(std::time::Duration::from_millis(10))
+        .model_stream(Arc::new(GatedModelStream {
+            entered: Mutex::new(Some(model_tx)),
+            release: Arc::clone(&model_release),
+        }))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
+        .approver(Arc::new(GatedApprover {
+            entered: Mutex::new(Some(approval_tx)),
+            release: Arc::clone(&approval_release),
+        }))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), model_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.set(now + time::Duration::seconds(25));
+    wait_for_lease(&store, now + time::Duration::seconds(50)).await;
+    model_release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), approval_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.set(now + time::Duration::seconds(50));
+    wait_for_lease(&store, now + time::Duration::seconds(75)).await;
+    approval_release.notify_one();
+    assert_eq!(
+        handle.done().await.unwrap().status,
+        crabber_core::RunStatus::Completed
+    );
+}
+
+async fn wait_for_lease(store: &MemoryStore, threshold: time::OffsetDateTime) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if store.list_unfinished_runs().await.unwrap()[0].lease_until > threshold {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
 }

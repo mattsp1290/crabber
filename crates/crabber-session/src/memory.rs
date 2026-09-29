@@ -737,4 +737,161 @@ impl ExecutionStore for MemoryExecution {
             Ok(claimed)
         })
     }
+
+    async fn claim_inbox_into_history(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
+        self.store.fenced(&self.fence, |state, run| {
+            let positions = state
+                .inbox
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    row.session_id == run.session_id
+                        && row.kind == kind
+                        && row.consumed_by_run.is_none()
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let mut claimed = Vec::with_capacity(positions.len());
+            for index in positions {
+                let mut message = state.inbox[index].message.clone();
+                message.run_id = Some(run.id.clone());
+                insert_message(state, run, message.clone())?;
+                state.inbox[index].consumed_by_run = Some(run.id.clone());
+                claimed.push(message);
+            }
+            Ok(claimed)
+        })
+    }
+}
+
+#[cfg(test)]
+mod atomic_claim_tests {
+    use super::*;
+    use crate::AdmitRequest;
+    use crabber_core::{ContentBlock, EventKind, ManualClock, MessageId, PartId, Role};
+    use std::time::Duration;
+
+    fn input(session_id: &SessionId, text: &str, now: OffsetDateTime) -> Message {
+        let id = MessageId::new();
+        Message {
+            id: id.clone(),
+            session_id: session_id.clone(),
+            run_id: None,
+            role: Role::User,
+            parent_id: None,
+            parts: vec![Part {
+                id: PartId::new(),
+                message_id: id,
+                ordinal: 0,
+                kind: PartKind::UserInputText,
+                content: ContentBlock::Text { text: text.into() },
+            }],
+            created_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_claim_append_rolls_back_and_reclaimed_owner_can_retry() {
+        let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let clock = Arc::new(ManualClock::new(now));
+        let store = MemoryStore::with_clock(clock.clone());
+        let session_id = SessionId::new();
+        let user = input(&session_id, "first", now);
+        let admitted = store
+            .admit_run(AdmitRequest {
+                session_id: None,
+                workspace_id: "test".into(),
+                directory: "/tmp".into(),
+                title: "test".into(),
+                user_message: user.clone(),
+                config_hash: "config".into(),
+                plan_fingerprint: "plan".into(),
+                owner: "first owner".into(),
+                lease: Duration::from_secs(30),
+            })
+            .await
+            .unwrap();
+        let first = input(&session_id, "one", now);
+        let mut second = input(&session_id, "two", now);
+        second.id = user.id.clone();
+        second.parts[0].message_id = second.id.clone();
+        store
+            .enqueue_inbox(&session_id, InboxKind::Steer, first.clone())
+            .await
+            .unwrap();
+        store
+            .enqueue_inbox(&session_id, InboxKind::Steer, second)
+            .await
+            .unwrap();
+        let execution = store.execution(admitted.fence.clone()).await.unwrap();
+        assert_eq!(
+            execution
+                .claim_inbox_into_history(InboxKind::Steer)
+                .await
+                .unwrap_err(),
+            StoreError::Conflict
+        );
+        assert_eq!(
+            store.list_messages(&session_id, None).await.unwrap().len(),
+            1
+        );
+        let settled = EventRecord {
+            cursor: None,
+            session_id: session_id.clone(),
+            run_id: admitted.run.id.clone(),
+            turn_id: None,
+            kind: EventKind::RunSettled,
+            payload: serde_json::Value::Null,
+            correlation: None,
+            live_only: false,
+            created_at: now,
+        };
+        assert_eq!(
+            execution
+                .settle_run(
+                    RunStatus::Completed,
+                    None,
+                    Usage::default(),
+                    settled.clone()
+                )
+                .await
+                .unwrap_err(),
+            StoreError::PendingInput
+        );
+
+        clock.set(now + time::Duration::seconds(31));
+        let reclaimed = store
+            .claim_expired_run(&admitted.run.id, "second owner")
+            .await
+            .unwrap();
+        assert_eq!(
+            execution
+                .claim_inbox_into_history(InboxKind::Steer)
+                .await
+                .unwrap_err(),
+            StoreError::Conflict
+        );
+        // Repair the injected duplicate ID, then prove both rows are still available.
+        {
+            let mut state = store.state.lock().unwrap();
+            let replacement = MessageId::new();
+            state.inbox[1].message.id = replacement.clone();
+            state.inbox[1].message.parts[0].message_id = replacement;
+        }
+        let recovered = store.execution(reclaimed).await.unwrap();
+        let claimed = recovered
+            .claim_inbox_into_history(InboxKind::Steer)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert_eq!(claimed[0].id, first.id);
+        assert_eq!(
+            store.list_messages(&session_id, None).await.unwrap().len(),
+            3
+        );
+        recovered
+            .settle_run(RunStatus::Completed, None, Usage::default(), settled)
+            .await
+            .unwrap();
+    }
 }

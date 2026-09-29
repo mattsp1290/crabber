@@ -115,4 +115,6 @@ pub trait ExecutionStore: Send + Sync {
         entries: Vec<(String, Option<String>)>,
     ) -> Result<(), StoreError>;
     async fn claim_inbox(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError>;
+    /// Claims inbox rows and appends them to run history in one transaction.
+    async fn claim_inbox_into_history(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError>;
 }

@@ -62,6 +62,8 @@ pub enum RuntimeError {
     TaskStopped,
     #[error("orchestrator is missing {0}")]
     Missing(&'static str),
+    #[error("invalid orchestrator configuration: {0}")]
+    InvalidConfiguration(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +134,7 @@ pub struct Orchestrator {
     approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
     max_turns: usize,
+    heartbeat_interval: Duration,
 }
 
 #[derive(Default)]
@@ -146,6 +149,7 @@ pub struct OrchestratorBuilder {
     approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
     max_turns: Option<usize>,
+    heartbeat_interval: Option<Duration>,
 }
 
 impl OrchestratorBuilder {
@@ -199,6 +203,11 @@ impl OrchestratorBuilder {
         self.max_turns = Some(value);
         self
     }
+    #[must_use]
+    pub fn heartbeat_interval(mut self, value: Duration) -> Self {
+        self.heartbeat_interval = Some(value);
+        self
+    }
 
     /// Builds an orchestrator from its required dependencies.
     ///
@@ -206,6 +215,12 @@ impl OrchestratorBuilder {
     ///
     /// Returns `Missing` if the store, resolver, or plan provider is absent.
     pub fn build(self) -> Result<Orchestrator, RuntimeError> {
+        let heartbeat_interval = self.heartbeat_interval.unwrap_or(Duration::from_secs(5));
+        if heartbeat_interval.is_zero() {
+            return Err(RuntimeError::InvalidConfiguration(
+                "heartbeat interval must be positive",
+            ));
+        }
         Ok(Orchestrator {
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
@@ -227,6 +242,7 @@ impl OrchestratorBuilder {
                 .tool_pipeline
                 .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
             max_turns: self.max_turns.unwrap_or(64),
+            heartbeat_interval,
         })
     }
 }
@@ -237,6 +253,34 @@ pub struct RunHandle {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
+}
+
+struct HeartbeatGuard(tokio::task::JoinHandle<()>);
+
+impl HeartbeatGuard {
+    fn start(execution: Arc<dyn ExecutionStore>, clock: Arc<dyn Clock>, period: Duration) -> Self {
+        let task = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                if execution
+                    .renew_lease(clock.now() + time::Duration::seconds(30))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self(task)
+    }
+}
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl RunHandle {
@@ -351,11 +395,20 @@ impl Orchestrator {
         request: Request,
         plan: RunPlan,
     ) -> Result<RunResult, RuntimeError> {
-        let execution = self.store.execution(fence.clone()).await?;
+        let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
+        execution
+            .renew_lease(self.clock.now() + time::Duration::seconds(30))
+            .await?;
+        let heartbeat = HeartbeatGuard::start(
+            Arc::clone(&execution),
+            Arc::clone(&self.clock),
+            self.heartbeat_interval,
+        );
         let run_id = fence.run_id.clone();
         let outcome = self
             .run_loop(execution.as_ref(), &run_id, &session_id, &request, &plan)
             .await;
+        drop(heartbeat);
         plan.release();
         match outcome {
             Ok(usage) => Ok(RunResult {
@@ -412,13 +465,9 @@ impl Orchestrator {
                 self.execute_tool(execution, session_id, run_id, plan, call)
                     .await?;
             }
-            let mut claimed = self
-                .claim_input(execution, run_id, InboxKind::Steer)
-                .await?;
+            let mut claimed = self.claim_input(execution, InboxKind::Steer).await?;
             if !had_tools && claimed == 0 {
-                claimed += self
-                    .claim_input(execution, run_id, InboxKind::FollowUp)
-                    .await?;
+                claimed += self.claim_input(execution, InboxKind::FollowUp).await?;
             }
             self.emit_durable(execution, session_id, run_id, EventKind::TurnCompleted)
                 .await?;
@@ -438,12 +487,8 @@ impl Orchestrator {
                         return Ok(usage);
                     }
                     Err(StoreError::PendingInput) => {
-                        if self
-                            .claim_input(execution, run_id, InboxKind::Steer)
-                            .await?
-                            + self
-                                .claim_input(execution, run_id, InboxKind::FollowUp)
-                                .await?
+                        if self.claim_input(execution, InboxKind::Steer).await?
+                            + self.claim_input(execution, InboxKind::FollowUp).await?
                             == 0
                         {
                             return Err(RuntimeError::Store(StoreError::PendingInput));
@@ -486,17 +531,9 @@ impl Orchestrator {
     async fn claim_input(
         &self,
         execution: &dyn ExecutionStore,
-        run_id: &RunId,
         kind: InboxKind,
     ) -> Result<usize, RuntimeError> {
-        let input = execution.claim_inbox(kind).await?;
-        let count = input.len();
-        for mut message in input {
-            // Claimed rows become durable model context for the next turn.
-            message.run_id = Some(run_id.clone());
-            execution.append_message(message).await?;
-        }
-        Ok(count)
+        Ok(execution.claim_inbox_into_history(kind).await?.len())
     }
 
     fn event(&self, session_id: &SessionId, run_id: &RunId, kind: EventKind) -> EventRecord {
@@ -587,6 +624,7 @@ impl Orchestrator {
         let mut provider_state = Vec::new();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
+        let mut completed = false;
         while let Some(delta) = stream.next().await {
             match delta {
                 StreamDelta::TextDelta(fragment) => {
@@ -632,9 +670,15 @@ impl Orchestrator {
                     usage.input_tokens += delta.input_tokens;
                     usage.output_tokens += delta.output_tokens;
                 }
-                StreamDelta::Completed => break,
+                StreamDelta::Completed => {
+                    completed = true;
+                    break;
+                }
                 StreamDelta::Error(error) => return Err(error.into()),
             }
+        }
+        if !completed {
+            return Err(invalid_provider("model stream ended without completion").into());
         }
         if text.is_empty() && reasoning.is_empty() && calls.is_empty() && provider_state.is_empty()
         {
@@ -853,46 +897,9 @@ fn invalid_provider(message: &str) -> ProviderError {
 }
 
 fn validate_arguments(tool: &ToolInfo, arguments: &Value) -> Result<(), String> {
-    let schema = &tool.parameters;
-    if schema
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| kind != "object")
-    {
-        return Err("tool schema must describe an object".into());
-    }
-    let object = arguments
-        .as_object()
-        .ok_or_else(|| "tool arguments must be an object".to_owned())?;
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        for name in required.iter().filter_map(Value::as_str) {
-            if !object.contains_key(name) {
-                return Err(format!("missing required argument: {name}"));
-            }
-        }
-    }
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        for (name, value) in object {
-            if let Some(expected) = properties
-                .get(name)
-                .and_then(|property| property.get("type"))
-                .and_then(Value::as_str)
-            {
-                let valid = match expected {
-                    "string" => value.is_string(),
-                    "number" => value.is_number(),
-                    "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-                    "boolean" => value.is_boolean(),
-                    "object" => value.is_object(),
-                    "array" => value.is_array(),
-                    "null" => value.is_null(),
-                    _ => false,
-                };
-                if !valid {
-                    return Err(format!("invalid type for argument: {name}"));
-                }
-            }
-        }
-    }
-    Ok(())
+    let validator = jsonschema::validator_for(&tool.parameters)
+        .map_err(|error| format!("invalid tool schema: {error}"))?;
+    validator
+        .validate(arguments)
+        .map_err(|error| format!("invalid tool arguments: {error}"))
 }
