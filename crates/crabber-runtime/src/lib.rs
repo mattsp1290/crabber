@@ -1,12 +1,19 @@
-//! Turn orchestration for Crabber.
+//! Fresh-run agent orchestration.
 
-/// Placeholder until the agent loop is introduced.
+mod orchestrator;
+mod policy;
+
+pub use orchestrator::{
+    DirectModelStream, ModelStream, NoopObserver, Observer, Orchestrator, OrchestratorBuilder,
+    Request, RunHandle, RunResult, RuntimeError, TurnSnapshot,
+};
+pub use policy::{
+    ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, PermissionDecision,
+    PermissionPolicy, StaticPolicy, ToolPipeline,
+};
+
+/// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-runtime";
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_name_is_stable() {
-        assert_eq!(crate::CRATE_NAME, "crabber-runtime");
-    }
-}
+mod tests;

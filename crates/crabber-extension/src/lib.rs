@@ -1,12 +1,11 @@
-//! Extension points for Crabber.
+//! Frozen extension plan and tool execution boundary.
 
-/// Placeholder until extension interfaces are introduced.
+mod plan;
+
+pub use plan::{
+    ComponentIdentity, ExtensionError, PlanFingerprint, PromptSection, RunPlan, RunPlanProvider,
+    StaticPlanProvider, ToolDefinition, ToolExecutor, compute_fingerprint,
+};
+
+/// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-extension";
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_name_is_stable() {
-        assert_eq!(crate::CRATE_NAME, "crabber-extension");
-    }
-}

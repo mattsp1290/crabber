@@ -9,6 +9,16 @@ crabber-core = { path = "../crabber-core" }
 crabber-extension = { path = "../crabber-extension" }
 crabber-providers = { path = "../crabber-providers" }
 crabber-session = { path = "../crabber-session" }
+async-trait = "0.1"
+futures = "0.3"
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 
 [lints]
 workspace = true
