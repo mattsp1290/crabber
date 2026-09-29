@@ -120,6 +120,8 @@ dependencies = [
  "crabber-providers",
  "crabber-runtime",
  "crabber-session",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -510,6 +512,16 @@ name = "micromap"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
+
+[[package]]
+name = "minimal-embed"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "num"

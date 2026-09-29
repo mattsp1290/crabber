@@ -1,4 +1,12 @@
-//! Public embedding surface for the Crabber agent runtime.
+#![doc = include_str!("../../../README.md")]
+
+mod agent;
+
+pub use agent::{Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
+pub use crabber_core::{EventKind, EventRecord, SessionId};
+pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
+pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
+pub use crabber_runtime::{PermissionDecision, RunResult, RuntimeError, StaticPolicy};
 
 pub use crabber_core as core;
 pub use crabber_extension as extension;
