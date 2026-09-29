@@ -255,6 +255,7 @@ pub struct RunHandle {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
+    completion: watch::Receiver<bool>,
 }
 
 struct HeartbeatGuard {
@@ -319,6 +320,11 @@ impl Drop for HeartbeatGuard {
 }
 
 impl RunHandle {
+    /// Signals when the run task has returned, whether it succeeded or failed.
+    #[must_use]
+    pub fn completion_signal(&self) -> watch::Receiver<bool> {
+        self.completion.clone()
+    }
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
@@ -406,12 +412,14 @@ impl Orchestrator {
                 }
             })?;
         let (sender, done) = oneshot::channel();
+        let (completion_sender, completion) = watch::channel(false);
         let handle = RunHandle {
             session_id: admitted.session.id.clone(),
             run_id: admitted.run.id.clone(),
             store: Arc::clone(&self.store),
             clock: Arc::clone(&self.clock),
             done,
+            completion,
         };
         let runtime = self.clone();
         tokio::spawn(async move {
@@ -419,6 +427,7 @@ impl Orchestrator {
                 .run(admitted.fence, admitted.session.id, request, plan)
                 .await;
             let _ = sender.send(result);
+            let _ = completion_sender.send(true);
         });
         Ok(handle)
     }

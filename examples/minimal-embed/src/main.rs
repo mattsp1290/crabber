@@ -72,20 +72,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut run = agent.prompt(None, "Use the echo tool").await?;
     let mut events = run.events();
     loop {
-        let event = events.recv().await?;
+        let Some(event) = events.recv().await? else {
+            break;
+        };
         match event.kind {
             EventKind::TextDelta => {
                 print!("{}", event.payload["text"].as_str().unwrap_or_default());
                 io::stdout().flush()?;
             }
             EventKind::ToolCallSettled => println!("\ntool call settled"),
-            EventKind::RunSettled => {
-                println!();
-                break;
-            }
             _ => {}
         }
     }
+    println!();
     run.done().await?;
     // crabber:glue-end
     Ok(())

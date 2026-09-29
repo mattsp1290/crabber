@@ -174,6 +174,7 @@ impl Agent {
             .await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
+            completion: inner.completion_signal(),
             inner,
             events: Some(receiver),
         })
@@ -184,19 +185,39 @@ impl Agent {
 pub struct RunEvents {
     run_id: RunId,
     receiver: broadcast::Receiver<Arc<EventRecord>>,
+    completion: tokio::sync::watch::Receiver<bool>,
 }
 
 impl RunEvents {
-    /// Receives the next event for this run.
+    /// Receives the next event for this run, or `None` once the run task ends.
     ///
     /// # Errors
     ///
     /// Returns a broadcast lag or closure error if events cannot be read.
-    pub async fn recv(&mut self) -> Result<Arc<EventRecord>, broadcast::error::RecvError> {
+    pub async fn recv(&mut self) -> Result<Option<Arc<EventRecord>>, broadcast::error::RecvError> {
         loop {
-            let event = self.receiver.recv().await?;
-            if event.run_id == self.run_id {
-                return Ok(event);
+            if *self.completion.borrow() {
+                match self.receiver.try_recv() {
+                    Ok(event) if event.run_id == self.run_id => return Ok(Some(event)),
+                    Ok(_) => continue,
+                    Err(
+                        broadcast::error::TryRecvError::Empty
+                        | broadcast::error::TryRecvError::Closed,
+                    ) => return Ok(None),
+                    Err(broadcast::error::TryRecvError::Lagged(count)) => {
+                        return Err(broadcast::error::RecvError::Lagged(count));
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                event = self.receiver.recv() => {
+                    let event = event?;
+                    if event.run_id == self.run_id { return Ok(Some(event)); }
+                }
+                changed = self.completion.changed() => {
+                    if changed.is_err() { return Ok(None); }
+                }
             }
         }
     }
@@ -207,6 +228,7 @@ pub struct RunHandle {
     run_id: RunId,
     inner: crabber_runtime::RunHandle,
     events: Option<broadcast::Receiver<Arc<EventRecord>>>,
+    completion: tokio::sync::watch::Receiver<bool>,
 }
 
 impl RunHandle {
@@ -230,6 +252,7 @@ impl RunHandle {
         RunEvents {
             run_id: self.run_id.clone(),
             receiver: self.events.take().expect("events receiver already taken"),
+            completion: self.completion.clone(),
         }
     }
 
@@ -258,5 +281,47 @@ impl RunHandle {
     /// Returns a store error if the inbox write fails.
     pub async fn follow_up(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
         self.inner.follow_up(text).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, StreamDelta};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn provider_failure_ends_events_and_done_returns_error() {
+        let provider = FakeProvider::scripted(vec![vec![
+            StreamDelta::TextDelta("partial".into()),
+            StreamDelta::Error(ProviderError {
+                kind: ProviderErrorKind::Server,
+                message: "scripted failure".into(),
+                retryable: false,
+            }),
+        ]]);
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(provider))
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .build()
+            .unwrap();
+        let mut run = agent.prompt(None, "fail").await.unwrap();
+        let mut events = run.events();
+        let observed = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut kinds = Vec::new();
+            while let Some(event) = events.recv().await.unwrap() {
+                kinds.push(event.kind.clone());
+            }
+            kinds
+        })
+        .await
+        .expect("event stream must end after provider failure");
+        assert!(observed.contains(&crabber_core::EventKind::TextDelta));
+        assert!(!observed.contains(&crabber_core::EventKind::RunSettled));
+        assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
     }
 }

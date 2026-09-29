@@ -28,11 +28,10 @@ let agent = Agent::builder()
 let mut run = agent.prompt(None, "Say hello").await?;
 let mut events = run.events();
 loop {
-    let event = events.recv().await?;
+    let Some(event) = events.recv().await? else { break };
     if event.kind == EventKind::TextDelta {
         print!("{}", event.payload["text"].as_str().unwrap_or_default());
     }
-    if event.kind == EventKind::RunSettled { break; }
 }
 run.done().await?;
 # Ok(())

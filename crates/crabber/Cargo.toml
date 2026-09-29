@@ -13,5 +13,8 @@ crabber-session = { path = "../crabber-session" }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+
 [lints]
 workspace = true
