@@ -3,13 +3,20 @@ use crate::{
     RuntimeError, StaticPolicy,
 };
 use async_trait::async_trait;
-use crabber_core::{ContentBlock, EventKind, ManualClock, Message, Role, ToolCallId};
+use crabber_core::{
+    ContentBlock, ContextEpoch, EpochId, EventCursor, EventKind, EventRecord, ManualClock, Message,
+    Part, Role, Run, RunFence, RunId, RunStatus, Session, SessionId, ToolCallId, ToolCallRecord,
+    ToolResult, Usage,
+};
 use crabber_extension::{ExtensionError, StaticPlanProvider, ToolDefinition, ToolExecutor};
 use crabber_providers::{
     DeltaStream, FakeProvider, ModelRequest, ProviderError, Selection, StreamDelta, Streamer,
 };
-use crabber_session::{MemoryStore, Store};
+use crabber_session::{
+    AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, MemoryStore, Store, StoreError,
+};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -812,5 +819,223 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
     assert_eq!(
         store.get_run(&run_id).await.unwrap().unwrap().claim_token,
         new_fence.claim_token
+    );
+}
+
+struct SettlementGate {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    release: Notify,
+    terminal_reads: AtomicUsize,
+}
+
+struct DelayedTerminalStore {
+    inner: Arc<MemoryStore>,
+    gate: Arc<SettlementGate>,
+}
+
+struct DelayedTerminalExecution {
+    inner: Box<dyn ExecutionStore>,
+    gate: Arc<SettlementGate>,
+}
+
+#[async_trait]
+impl Store for DelayedTerminalStore {
+    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_run(request).await
+    }
+    async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
+        Ok(Box::new(DelayedTerminalExecution {
+            inner: self.inner.execution(fence).await?,
+            gate: Arc::clone(&self.gate),
+        }))
+    }
+    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
+        self.inner.get_session(id).await
+    }
+    async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
+        let run = self.inner.get_run(id).await?;
+        if run
+            .as_ref()
+            .is_some_and(|run| run.status == RunStatus::Completed)
+        {
+            self.gate.terminal_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(run)
+    }
+    async fn list_messages(
+        &self,
+        id: &SessionId,
+        epoch: Option<EpochId>,
+    ) -> Result<Vec<Message>, StoreError> {
+        self.inner.list_messages(id, epoch).await
+    }
+    async fn list_events(
+        &self,
+        id: &SessionId,
+        after: Option<EventCursor>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, StoreError> {
+        self.inner.list_events(id, after, limit).await
+    }
+    async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
+        self.inner.list_unfinished_runs().await
+    }
+    async fn list_unfinished_tool_calls(
+        &self,
+        run: &RunId,
+    ) -> Result<Vec<ToolCallRecord>, StoreError> {
+        self.inner.list_unfinished_tool_calls(run).await
+    }
+    async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
+        self.inner.claim_expired_run(run, owner).await
+    }
+    async fn get_extension_state(
+        &self,
+        extension_id: &str,
+        session: &SessionId,
+    ) -> Result<BTreeMap<String, String>, StoreError> {
+        self.inner.get_extension_state(extension_id, session).await
+    }
+    async fn enqueue_inbox(
+        &self,
+        session: &SessionId,
+        kind: InboxKind,
+        message: Message,
+    ) -> Result<(), StoreError> {
+        self.inner.enqueue_inbox(session, kind, message).await
+    }
+}
+
+#[async_trait]
+impl ExecutionStore for DelayedTerminalExecution {
+    async fn renew_lease(&self, until: time::OffsetDateTime) -> Result<(), StoreError> {
+        self.inner.renew_lease(until).await
+    }
+    async fn append_message(&self, message: Message) -> Result<(), StoreError> {
+        self.inner.append_message(message).await
+    }
+    async fn append_part(&self, part: Part) -> Result<(), StoreError> {
+        self.inner.append_part(part).await
+    }
+    async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
+        self.inner.append_event(event).await
+    }
+    async fn create_tool_call(
+        &self,
+        call: ToolCallRecord,
+        pending_event: EventRecord,
+    ) -> Result<(), StoreError> {
+        self.inner.create_tool_call(call, pending_event).await
+    }
+    async fn claim_tool_call(
+        &self,
+        id: &ToolCallId,
+        running_event: EventRecord,
+    ) -> Result<(), StoreError> {
+        self.inner.claim_tool_call(id, running_event).await
+    }
+    async fn settle_tool_call(
+        &self,
+        id: &ToolCallId,
+        result: ToolResult,
+        result_message: Message,
+        terminal_event: EventRecord,
+    ) -> Result<(), StoreError> {
+        self.inner
+            .settle_tool_call(id, result, result_message, terminal_event)
+            .await
+    }
+    async fn start_epoch(&self, epoch: ContextEpoch) -> Result<(), StoreError> {
+        self.inner.start_epoch(epoch).await
+    }
+    async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError> {
+        self.inner.finish_epoch(id, summary).await
+    }
+    async fn pause_run(&self, checkpoint: Value, event: EventRecord) -> Result<(), StoreError> {
+        self.inner.pause_run(checkpoint, event).await
+    }
+    async fn settle_run(
+        &self,
+        status: RunStatus,
+        error: Option<String>,
+        usage: Usage,
+        event: EventRecord,
+    ) -> Result<(), StoreError> {
+        let result = self.inner.settle_run(status, error, usage, event).await;
+        if status == RunStatus::Completed && result.is_ok() {
+            if let Some(sender) = self
+                .gate
+                .entered
+                .lock()
+                .expect("settlement gate poisoned")
+                .take()
+            {
+                let _ = sender.send(());
+            }
+            self.gate.release.notified().await;
+        }
+        result
+    }
+    async fn put_extension_state(
+        &self,
+        extension_id: &str,
+        entries: Vec<(String, Option<String>)>,
+    ) -> Result<(), StoreError> {
+        self.inner.put_extension_state(extension_id, entries).await
+    }
+    async fn claim_inbox(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
+        self.inner.claim_inbox(kind).await
+    }
+    async fn claim_inbox_into_history(&self, kind: InboxKind) -> Result<Vec<Message>, StoreError> {
+        self.inner.claim_inbox_into_history(kind).await
+    }
+}
+
+#[tokio::test]
+async fn completed_commit_survives_heartbeat_channel_closing_before_settle_returns() {
+    let inner = Arc::new(MemoryStore::new());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let gate = Arc::new(SettlementGate {
+        entered: Mutex::new(Some(entered_tx)),
+        release: Notify::new(),
+        terminal_reads: AtomicUsize::new(0),
+    });
+    let store = Arc::new(DelayedTerminalStore {
+        inner: Arc::clone(&inner),
+        gate: Arc::clone(&gate),
+    });
+    let fake = FakeProvider::scripted(vec![text_script("done")]);
+    let runtime = Orchestrator::builder()
+        .store(store)
+        .resolver(Arc::new(fake))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .heartbeat_interval(std::time::Duration::from_millis(5))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        inner.get_run(&run_id).await.unwrap().unwrap().status,
+        RunStatus::Completed
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while gate.terminal_reads.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    gate.release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Completed
     );
 }

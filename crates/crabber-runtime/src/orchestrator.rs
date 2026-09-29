@@ -261,6 +261,7 @@ struct HeartbeatGuard {
     task: tokio::task::JoinHandle<()>,
     lost: Arc<AtomicBool>,
     signal: watch::Receiver<bool>,
+    _signal_sender: watch::Sender<bool>,
 }
 
 impl HeartbeatGuard {
@@ -274,6 +275,7 @@ impl HeartbeatGuard {
         let lost = Arc::new(AtomicBool::new(false));
         let lost_in_task = Arc::clone(&lost);
         let (sender, signal) = watch::channel(false);
+        let task_sender = sender.clone();
         let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -296,12 +298,17 @@ impl HeartbeatGuard {
                         break;
                     }
                     lost_in_task.store(true, Ordering::SeqCst);
-                    let _ = sender.send(true);
+                    let _ = task_sender.send(true);
                     break;
                 }
             }
         });
-        Self { task, lost, signal }
+        Self {
+            task,
+            lost,
+            signal,
+            _signal_sender: sender,
+        }
     }
 }
 
@@ -437,10 +444,27 @@ impl Orchestrator {
         let run_id = fence.run_id.clone();
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
-        let outcome = tokio::select! {
-            biased;
-            _ = signal.changed() => Err(RuntimeError::LeaseLost),
-            result = self.run_loop(execution.as_ref(), &run_id, &session_id, &request, &plan, lost.as_ref()) => result,
+        let outcome = {
+            let run_future = self.run_loop(
+                execution.as_ref(),
+                &run_id,
+                &session_id,
+                &request,
+                &plan,
+                lost.as_ref(),
+            );
+            tokio::pin!(run_future);
+            loop {
+                tokio::select! {
+                    biased;
+                    update = signal.changed() => match update {
+                        Ok(()) if *signal.borrow_and_update() => break Err(RuntimeError::LeaseLost),
+                        Ok(()) => (),
+                        Err(_) => break run_future.as_mut().await,
+                    },
+                    result = &mut run_future => break result,
+                }
+            }
         };
         drop(heartbeat);
         plan.release();
