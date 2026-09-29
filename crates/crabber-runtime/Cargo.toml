@@ -1,0 +1,14 @@
+[package]
+name = "crabber-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber-core = { path = "../crabber-core" }
+crabber-extension = { path = "../crabber-extension" }
+crabber-providers = { path = "../crabber-providers" }
+crabber-session = { path = "../crabber-session" }
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "crabber-extension"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber-core = { path = "../crabber-core" }
+
+[lints]
+workspace = true
