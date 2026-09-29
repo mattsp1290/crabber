@@ -1,12 +1,16 @@
-//! Session storage for Crabber.
+//! Session persistence boundary and in-memory implementation.
 
-/// Placeholder until session storage is introduced.
-pub const CRATE_NAME: &str = "crabber-session";
+mod memory;
+mod store;
+pub mod storetest;
+
+pub use memory::MemoryStore;
+pub use store::{AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, Store, StoreError};
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn crate_name_is_stable() {
-        assert_eq!(crate::CRATE_NAME, "crabber-session");
+    #[tokio::test]
+    async fn memory_contract() {
+        crate::storetest::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
     }
 }
