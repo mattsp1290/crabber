@@ -3,6 +3,7 @@ use crabber_core::{EventKind, EventRecord};
 use crabber_runtime::Observer;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fmt,
     io::Write,
@@ -131,6 +132,12 @@ pub enum ExportError {
     Gzip(#[from] std::io::Error),
     #[error("intake rejected export: HTTP {0}")]
     Status(reqwest::StatusCode),
+    #[error("{signal} intake rejected export: HTTP {status} ({diagnostic})")]
+    Rejected {
+        signal: &'static str,
+        status: reqwest::StatusCode,
+        diagnostic: String,
+    },
     #[error("one observation exceeds the configured payload limit")]
     PayloadTooLarge,
 }
@@ -357,25 +364,30 @@ fn tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
     }));
     t
 }
+fn datadog_id(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    let bytes: [u8; 8] = digest[..8].try_into().expect("sha256 has eight bytes");
+    u64::from_be_bytes(bytes).max(1).to_string()
+}
 fn span(e: &SafeEvent) -> Option<Value> {
-    let (name, kind, id, parent) = match &e.kind {
+    let (name, kind, id_seed, parent_seed) = match &e.kind {
         EventKind::RunAdmitted => (
             "crabber.session",
             "agent",
             format!("{}-session", e.session),
-            "undefined".to_string(),
+            None,
         ),
         EventKind::RunSettled => (
             "crabber.run",
             "workflow",
             format!("{}-run", e.run),
-            format!("{}-session", e.session),
+            Some(format!("{}-session", e.session)),
         ),
         EventKind::Custom { name } if name == "model_call" => (
             "crabber.model_call",
             "llm",
             format!("{}-model-{}", e.run, e.time_ns),
-            format!("{}-run", e.run),
+            Some(format!("{}-run", e.run)),
         ),
         EventKind::ToolCallSettled => (
             "crabber.tool_call",
@@ -385,34 +397,38 @@ fn span(e: &SafeEvent) -> Option<Value> {
                 e.run,
                 e.tool_id.as_deref().unwrap_or("unknown")
             ),
-            format!("{}-run", e.run),
+            Some(format!("{}-run", e.run)),
         ),
         EventKind::ContextEpochFinished => (
             "crabber.compaction",
             "task",
             format!("{}-epoch-{}", e.run, e.time_ns),
-            format!("{}-run", e.run),
+            Some(format!("{}-run", e.run)),
         ),
         _ => return None,
     };
-    let mut meta = json!({"kind": kind});
+    let mut meta = json!({"kind":kind});
     if let Some(model) = &e.model {
         meta["model_name"] = json!(model);
     }
     if let Some(provider) = &e.provider {
         meta["model_provider"] = json!(provider);
     }
+    let mut metadata = json!({});
     if let Some(tool) = &e.tool {
-        meta["tool"] = json!({"name":tool});
-    }
-    if let Some(summary) = &e.input_summary {
-        meta["input"] = json!(summary);
-    }
-    if let Some(summary) = &e.output_summary {
-        meta["output"] = json!(summary);
+        metadata["tool_name"] = json!(tool);
     }
     if !e.redactions.is_empty() {
-        meta["redactions"] = json!(e.redactions);
+        metadata["redacted_fields"] = json!(e.redactions.join(","));
+    }
+    if metadata.as_object().is_some_and(|m| !m.is_empty()) {
+        meta["metadata"] = metadata;
+    }
+    if let Some(summary) = &e.input_summary {
+        meta["input"] = json!({"value":summary});
+    }
+    if let Some(summary) = &e.output_summary {
+        meta["output"] = json!({"value":summary});
     }
     let duration = if kind == "llm" {
         e.latency_ns.max(1)
@@ -420,7 +436,8 @@ fn span(e: &SafeEvent) -> Option<Value> {
         e.duration_ns.max(1)
     };
     Some(
-        json!({"name":name,"span_id":id,"trace_id":e.run,"parent_id":parent,
+        json!({"name":name,"span_id":datadog_id(&id_seed),"trace_id":datadog_id(&format!("{}-trace",e.run)),
+        "parent_id":parent_seed.map_or_else(|| "undefined".to_string(), |p| datadog_id(&p)),
         "start_ns":e.time_ns-duration,"duration":duration,"meta":meta,
         "status":e.status.as_deref().unwrap_or("ok"),
         "metrics":{"input_tokens":e.input_tokens,"output_tokens":e.output_tokens,"total_tokens":e.input_tokens+e.output_tokens},
@@ -492,6 +509,50 @@ fn split_payload(body: &Value) -> Option<(Value, Value)> {
     *second.pointer_mut(pointer)? = json!(items[middle..]);
     Some((first, second))
 }
+fn intake_signal(url: &str) -> &'static str {
+    if url.contains("llm-obs") {
+        "llmobs"
+    } else if url.contains("/series") {
+        "metrics"
+    } else {
+        "logs"
+    }
+}
+async fn rejected(response: reqwest::Response, url: &str) -> ExportError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let diagnostic = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|json| json.get("errors")?.as_array()?.first().cloned())
+        .map_or_else(
+            || "no structured field detail".to_string(),
+            |error| {
+                if let Some(message) = error.as_str() {
+                    return safe_diagnostic(message);
+                }
+                let title = error
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("rejected");
+                let pointer = error
+                    .pointer("/source/pointer")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown field");
+                format!("{} at {}", safe_diagnostic(title), safe_diagnostic(pointer))
+            },
+        );
+    ExportError::Rejected {
+        signal: intake_signal(url),
+        status,
+        diagnostic,
+    }
+}
+fn safe_diagnostic(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphabetic() || "/._- ".contains(*c))
+        .take(80)
+        .collect()
+}
 async fn post(
     client: &reqwest::Client,
     config: &DatadogConfig,
@@ -522,7 +583,7 @@ async fn post(
             match result {
                 Ok(response) if response.status().is_success() => {
                     if url.contains("llm-obs") && response.status().as_u16() != 202 {
-                        return Err(ExportError::Status(response.status()));
+                        return Err(rejected(response, &url).await);
                     }
                     continue 'part;
                 }
@@ -540,7 +601,7 @@ async fn post(
                         return Err(ExportError::Status(response.status()));
                     }
                 }
-                Ok(response) => return Err(ExportError::Status(response.status())),
+                Ok(response) => return Err(rejected(response, &url).await),
                 Err(error) if attempt == 2 => return Err(ExportError::Http(error)),
                 Err(_) => (),
             }
@@ -797,6 +858,22 @@ mod tests {
         assert_eq!(spans[2]["meta"]["kind"], "tool");
         assert_eq!(spans[3]["meta"]["kind"], "workflow");
         assert_eq!(spans[2]["parent_id"], spans[3]["span_id"]);
+        for item in spans.as_array().unwrap() {
+            assert!(
+                item["span_id"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            );
+            assert!(
+                item["trace_id"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            );
+        }
         let metrics = &requests[1].1["series"];
         assert!(
             metrics
