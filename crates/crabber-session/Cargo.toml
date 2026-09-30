@@ -9,6 +9,7 @@ crabber-core = { path = "../crabber-core" }
 async-trait = "0.1"
 serde_json = "1"
 sha2 = "0.10"
+hmac = { version = "0.12", optional = true }
 time = "0.3"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
@@ -16,7 +17,7 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres", "run
 
 [features]
 default = []
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:hmac"]
 
 [dev-dependencies]
 allocation-counter = "0.8.1"

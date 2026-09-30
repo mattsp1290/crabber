@@ -444,6 +444,7 @@ dependencies = [
  "allocation-counter",
  "async-trait",
  "crabber-core",
+ "hmac",
  "serde",
  "serde_json",
  "sha2",
