@@ -15,6 +15,8 @@ pub use crabber_extension as extension;
 pub use crabber_providers as providers;
 pub use crabber_runtime as runtime;
 pub use crabber_session as session;
+#[cfg(feature = "wasm")]
+pub use crabber_wasm as wasm;
 
 #[cfg(test)]
 mod tests {

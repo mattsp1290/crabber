@@ -16,5 +16,9 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
+      - name: Install WASM tooling
+        run: |
+          rustup target add wasm32-wasip2
+          cargo install wasm-tools --locked
       - name: Check workspace
         run: cargo xtask check

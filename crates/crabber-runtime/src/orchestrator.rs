@@ -11,9 +11,9 @@ use crabber_core::{
 use crabber_extension::{
     ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardDecision, HostServices,
     ModelCompleted, ModelRequestError, ModelRequested, ModelStream as ExtensionModelStream,
-    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, ToolContext,
-    ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted, TurnPrepare,
-    TurnStarted,
+    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, StateSink,
+    ToolContext, ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted,
+    TurnPrepare, TurnStarted,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -24,6 +24,7 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -274,6 +275,44 @@ pub struct RunHandle {
     completion: watch::Receiver<bool>,
 }
 
+struct RunStateSink {
+    store: Arc<dyn Store>,
+    execution: Arc<dyn ExecutionStore>,
+    session_id: SessionId,
+    lost: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl StateSink for RunStateSink {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    async fn snapshot(&self, extension_id: &str) -> Result<BTreeMap<String, String>, String> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err("run lease lost".into());
+        }
+        self.store
+            .get_extension_state(extension_id, &self.session_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn apply(
+        &self,
+        extension_id: &str,
+        changes: Vec<(String, Option<String>)>,
+    ) -> Result<(), String> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err("run lease lost".into());
+        }
+        self.execution
+            .put_extension_state(extension_id, changes)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 struct HeartbeatGuard {
     task: tokio::task::JoinHandle<()>,
     lost: Arc<AtomicBool>,
@@ -470,14 +509,23 @@ impl Orchestrator {
         let run_started_at = self.clock.now();
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
+        let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
+            store: Arc::clone(&self.store),
+            execution: Arc::clone(&execution),
+            session_id: session_id.clone(),
+            lost: Arc::clone(&lost),
+        });
         let outcome = {
-            let run_future = self.run_loop(
-                execution.as_ref(),
-                &run_id,
-                &session_id,
-                &request,
-                &plan,
-                lost.as_ref(),
+            let run_future = crabber_extension::with_state_sink(
+                state_sink,
+                self.run_loop(
+                    execution.as_ref(),
+                    &run_id,
+                    &session_id,
+                    &request,
+                    &plan,
+                    lost.as_ref(),
+                ),
             );
             tokio::pin!(run_future);
             loop {
