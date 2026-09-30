@@ -9,6 +9,8 @@ use crabber_runtime::{
     CompactionPolicy, ExecutionMode, Observer, Orchestrator, PermissionPolicy, Request, RunResult,
     RuntimeError,
 };
+#[cfg(feature = "postgres")]
+use crabber_session::PostgresStore;
 use crabber_session::{MemoryStore, Store};
 use std::sync::Arc;
 use tokio::sync::{OnceCell, broadcast};
@@ -91,6 +93,15 @@ impl AgentBuilder {
     pub fn memory(mut self) -> Self {
         self.store = Some(Arc::new(MemoryStore::new()));
         self
+    }
+
+    /// Opens an explicitly migrated PostgreSQL store.
+    /// # Errors
+    /// Returns a sanitized connection or schema error.
+    #[cfg(feature = "postgres")]
+    pub async fn postgres(mut self, url: &str) -> Result<Self, crabber_session::StoreError> {
+        self.store = Some(Arc::new(PostgresStore::connect(url).await?));
+        Ok(self)
     }
 
     #[must_use]

@@ -18,3 +18,27 @@ jobs:
           rustup default stable
       - name: Check workspace
         run: cargo xtask check
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CRABBER_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
+      CRABBER_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: PostgreSQL contract and concurrency tests
+        run: cargo test -p crabber-session --features postgres postgres::tests

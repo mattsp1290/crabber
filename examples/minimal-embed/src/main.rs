@@ -3,7 +3,7 @@ use crabber::{
     Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, PermissionDecision, Selection,
     StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
     core::{RunId, RunStatus, ToolCallId, ToolInfo},
-    session::{MemoryStore, Store},
+    session::{MemoryStore, PostgresStore, Store},
 };
 use serde_json::{Value, json};
 use std::{
@@ -39,6 +39,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         protocol,
         interrupt_after_first_delta,
         resume_id,
+        store_kind,
     } = cli_options()?;
     let selection = Selection {
         provider_id: provider.clone(),
@@ -55,7 +56,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(providers)
     };
 
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = match store_kind.as_str() {
+        "memory" => Arc::new(MemoryStore::new()),
+        "postgres" => {
+            let url = std::env::var("CRABBER_POSTGRES_URL")?;
+            PostgresStore::migrate(&url).await?;
+            Arc::new(PostgresStore::connect(&url).await?)
+        }
+        _ => return Err("--store must be memory or postgres".into()),
+    };
 
     // crabber:glue-start
     let tool = ToolDefinition {
@@ -106,7 +115,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let result = run.done().await?;
     if interrupted {
         println!("interrupted run {}: {:?}", run_id, result.status);
-        resume_run(&agent, &store, &run_id).await?;
+        if store_kind == "memory" {
+            resume_run(&agent, &store, &run_id).await?;
+        }
     }
     // crabber:glue-end
     Ok(())
@@ -169,6 +180,7 @@ struct CliOptions {
     protocol: crabber::providers::Protocol,
     interrupt_after_first_delta: bool,
     resume_id: Option<RunId>,
+    store_kind: String,
 }
 
 fn cli_options() -> Result<CliOptions, Box<dyn Error>> {
@@ -177,15 +189,17 @@ fn cli_options() -> Result<CliOptions, Box<dyn Error>> {
     let mut protocol = crabber::providers::Protocol::Responses;
     let mut interrupt_after_first_delta = false;
     let mut resume_id = None;
+    let mut store_kind = "memory".to_owned();
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
-        if flag == "--interrupt-after-first-delta" {
+        if flag == "--interrupt-after-first-delta" || flag == "--interrupt" {
             interrupt_after_first_delta = true;
             continue;
         }
         let value = args.next().ok_or("option needs a value")?;
         match flag.as_str() {
             "--provider" => provider = value,
+            "--store" => store_kind = value,
             "--model" => model = Some(value),
             "--resume" => resume_id = Some(RunId::from(value)),
             "--protocol" => {
@@ -215,5 +229,6 @@ fn cli_options() -> Result<CliOptions, Box<dyn Error>> {
         protocol,
         interrupt_after_first_delta,
         resume_id,
+        store_kind,
     })
 }

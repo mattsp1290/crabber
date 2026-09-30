@@ -10,6 +10,12 @@ async-trait = "0.1"
 serde_json = "1"
 time = "0.3"
 uuid = { version = "1", features = ["v4"] }
+serde = "1"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"], optional = true }
+
+[features]
+default = []
+postgres = ["dep:sqlx"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
