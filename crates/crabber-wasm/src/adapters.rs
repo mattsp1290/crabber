@@ -448,6 +448,7 @@ impl WasmGuard {
         let run_id = run_id.to_owned();
         let permission = permission.to_owned();
         let pattern = pattern.to_owned();
+        let sink = crabber_extension::current_state_sink();
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -456,38 +457,45 @@ impl WasmGuard {
                 return GuardDecision::Deny;
             };
             runtime.block_on(async move {
-                let request = Val::Record(vec![
-                    string("tool-name", name),
-                    string("tool-call-id", call_id),
-                    string("permission", permission),
-                    string("pattern", pattern),
-                    string("arguments-summary", summary),
-                    string("session-id", session_id),
-                    string("run-id", run_id),
-                ]);
-                match module
-                    .call("permissions-policy-api", "decide", &[request])
-                    .await
-                {
-                    Ok(Val::Result(Ok(Some(decision)))) => match *decision {
-                        Val::Record(fields) => match fields.iter().find_map(|(key, value)| {
-                            if key == "action" {
-                                if let Val::Enum(action) = value {
-                                    Some(action.as_str())
+                let invoke = async move {
+                    let request = Val::Record(vec![
+                        string("tool-name", name),
+                        string("tool-call-id", call_id),
+                        string("permission", permission),
+                        string("pattern", pattern),
+                        string("arguments-summary", summary),
+                        string("session-id", session_id),
+                        string("run-id", run_id),
+                    ]);
+                    match module
+                        .call("permissions-policy-api", "decide", &[request])
+                        .await
+                    {
+                        Ok(Val::Result(Ok(Some(decision)))) => match *decision {
+                            Val::Record(fields) => match fields.iter().find_map(|(key, value)| {
+                                if key == "action" {
+                                    if let Val::Enum(action) = value {
+                                        Some(action.as_str())
+                                    } else {
+                                        None
+                                    }
                                 } else {
                                     None
                                 }
-                            } else {
-                                None
-                            }
-                        }) {
-                            Some("allow") => GuardDecision::Allow,
-                            Some("ask") => GuardDecision::Ask,
+                            }) {
+                                Some("allow") => GuardDecision::Allow,
+                                Some("ask") => GuardDecision::Ask,
+                                _ => GuardDecision::Deny,
+                            },
                             _ => GuardDecision::Deny,
                         },
                         _ => GuardDecision::Deny,
-                    },
-                    _ => GuardDecision::Deny,
+                    }
+                };
+                if let Some(sink) = sink {
+                    crabber_extension::with_state_sink(sink, invoke).await
+                } else {
+                    invoke.await
                 }
             })
         })

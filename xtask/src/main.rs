@@ -127,6 +127,14 @@ fn build_fixtures() {
                 .is_dir()
         });
         if path.extension().is_some_and(|ext| ext == "wasm") && is_positive {
+            let alias = fixtures.join(format!(
+                "{}.wasm",
+                path.file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('_', "-")
+            ));
+            fs::copy(&path, alias).expect("copy ignored fixture alias");
             let digest = sha2::Sha256::digest(fs::read(&path).expect("fixture bytes"));
             writeln!(
                 &mut manifest,

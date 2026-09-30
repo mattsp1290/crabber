@@ -15,7 +15,10 @@ impl manifest_api::Guest for Echo {
         }
     }
 
-    fn configure(_config_json: String) -> Result<(), types::StructuredError> {
+    fn configure(config_json: String) -> Result<(), types::StructuredError> {
+        if config_json == "hang-validation" {
+            loop { std::hint::black_box(42_u64); }
+        }
         Ok(())
     }
 }

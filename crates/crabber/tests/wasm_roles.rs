@@ -205,6 +205,53 @@ async fn policy_guest_receives_permission_and_run_context() {
 }
 
 #[tokio::test]
+async fn policy_guest_state_persists_across_runs() {
+    let fake = FakeProvider::scripted(vec![
+        call("stateful", &json!({})),
+        vec![StreamDelta::TextDelta("one".into()), StreamDelta::Completed],
+        call("stateful", &json!({})),
+        vec![StreamDelta::TextDelta("two".into()), StreamDelta::Completed],
+    ]);
+    let store = Arc::new(MemoryStore::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let agent = Agent::builder()
+        .store(store.clone())
+        .provider(Arc::new(fake))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
+        .tool(native_tool("stateful", &calls))
+        .wasm_extension(fixture("all-in-one"))
+        .build()
+        .unwrap();
+    let first = agent
+        .prompt(None, "first")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let state = store
+        .get_extension_state("all-in-one", &first.session_id)
+        .await
+        .unwrap();
+    assert_eq!(state.get("policy-count").map(String::as_str), Some("1"));
+    agent
+        .prompt(Some(first.session_id.clone()), "second")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let state = store
+        .get_extension_state("all-in-one", &first.session_id)
+        .await
+        .unwrap();
+    assert_eq!(state.get("policy-count").map(String::as_str), Some("2"));
+}
+
+#[tokio::test]
 async fn prompt_section_renders_for_each_run_with_its_run_id() {
     let fake = FakeProvider::scripted(vec![
         vec![StreamDelta::TextDelta("one".into()), StreamDelta::Completed],

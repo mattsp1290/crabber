@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -61,20 +61,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(providers)
     };
 
-    let store: Arc<dyn Store> = match store_kind.as_str() {
-        "memory" => Arc::new(MemoryStore::new()),
-        "postgres" => {
-            let url = std::env::var("CRABBER_POSTGRES_URL")?;
-            PostgresStore::migrate(&url).await?;
-            Arc::new(PostgresStore::connect(&url).await?)
-        }
-        _ => return Err("--store must be memory or postgres".into()),
+    let store = create_store(&store_kind).await?;
+    let tool_name = if wasm.is_some() {
+        "native-echo"
+    } else {
+        "echo"
     };
-
     // crabber:glue-start
     let tool = ToolDefinition {
         info: ToolInfo {
-            name: "echo".into(),
+            name: tool_name.into(),
             description: "Returns its arguments".into(),
             parameters: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
             retry_safe: true,
@@ -93,8 +89,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if extension != "native" {
         return Err("--extension must be native".into());
     }
-    if wasm {
-        builder = builder.wasm_extension(wasm_fixture()?);
+    if let Some(path) = wasm {
+        builder = builder.wasm_extension(wasm_module(&path)?);
     }
     let agent = builder.build()?;
     if let Some(run_id) = resume_id {
@@ -132,6 +128,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     // crabber:glue-end
     Ok(())
+}
+
+async fn create_store(store_kind: &str) -> Result<Arc<dyn Store>, Box<dyn Error>> {
+    match store_kind {
+        "memory" => Ok(Arc::new(MemoryStore::new())),
+        "postgres" => {
+            let url = std::env::var("CRABBER_POSTGRES_URL")?;
+            PostgresStore::migrate(&url).await?;
+            Ok(Arc::new(PostgresStore::connect(&url).await?))
+        }
+        _ => Err("--store must be memory or postgres".into()),
+    }
 }
 
 async fn resume_run(
@@ -193,16 +201,22 @@ struct CliOptions {
     resume_id: Option<RunId>,
     store_kind: String,
     extension: String,
-    wasm: bool,
+    wasm: Option<PathBuf>,
 }
 
-fn wasm_fixture() -> Result<ModuleConfig, Box<dyn Error>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/wasm/target/wasm32-wasip2/release")
-        .canonicalize()?;
-    let path = root.join("deny_policy.wasm");
+fn wasm_module(path: &Path) -> Result<ModuleConfig, Box<dyn Error>> {
+    let path = path.canonicalize()?;
+    let root = path
+        .parent()
+        .ok_or("WASM path needs a parent directory")?
+        .to_path_buf();
+    let name = path
+        .file_stem()
+        .ok_or("WASM path needs a file name")?
+        .to_string_lossy()
+        .replace('_', "-");
     Ok(ModuleConfig {
-        name: "deny-policy".into(),
+        name,
         expected_sha256: Sha256::digest(std::fs::read(&path)?).into(),
         path,
         allowed_root: root,
@@ -220,15 +234,11 @@ fn cli_options() -> Result<CliOptions, Box<dyn Error>> {
     let mut resume_id = None;
     let mut store_kind = "memory".to_owned();
     let mut extension = "native".to_owned();
-    let mut wasm = false;
+    let mut wasm = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--interrupt-after-first-delta" || flag == "--interrupt" {
             interrupt_after_first_delta = true;
-            continue;
-        }
-        if flag == "--wasm" {
-            wasm = true;
             continue;
         }
         let value = args.next().ok_or("option needs a value")?;
@@ -236,6 +246,7 @@ fn cli_options() -> Result<CliOptions, Box<dyn Error>> {
             "--provider" => provider = value,
             "--store" => store_kind = value,
             "--extension" => extension = value,
+            "--wasm" => wasm = Some(PathBuf::from(value)),
             "--model" => model = Some(value),
             "--resume" => resume_id = Some(RunId::from(value)),
             "--protocol" => {

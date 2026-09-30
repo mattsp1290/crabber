@@ -47,8 +47,19 @@ fn resume_flag_looks_up_run_in_configured_store() {
 
 #[test]
 fn native_extension_and_wasm_flags_run_together() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = Command::new(env!("CARGO_BIN_EXE_minimal-embed"))
-        .args(["--extension", "native", "--wasm"])
+        .current_dir(workspace)
+        .args([
+            "--store",
+            "memory",
+            "--provider",
+            "fake",
+            "--extension",
+            "native",
+            "--wasm",
+            "fixtures/wasm/echo-tool.wasm",
+        ])
         .output()
         .expect("run native and WASM demo");
     assert!(
@@ -57,4 +68,18 @@ fn native_extension_and_wasm_flags_run_together() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("tool call settled"));
+}
+
+#[test]
+fn wasm_flag_uses_the_supplied_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_minimal-embed"))
+        .args(["--wasm", "fixtures/wasm/missing-component.wasm"])
+        .output()
+        .expect("run with missing WASM path");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No such file") || stderr.contains("not found"),
+        "{stderr}"
+    );
 }

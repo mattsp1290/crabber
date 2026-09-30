@@ -64,6 +64,12 @@ impl permissions_policy_api::Guest for Fixture {
         let action = match request.tool_name.as_str() {
             "dangerous" => types::PermissionAction::Deny,
             "ask_me" => types::PermissionAction::Ask,
+            "stateful" => {
+                let count = crabber::host::state::get("policy-count")
+                    .and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+                crabber::host::state::set("policy-count", &(count + 1).to_string()).unwrap();
+                if count == 0 { types::PermissionAction::Allow } else { types::PermissionAction::Deny }
+            }
             _ => types::PermissionAction::Allow,
         };
         Ok(types::PermissionDecision {

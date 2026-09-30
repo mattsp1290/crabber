@@ -492,6 +492,14 @@ impl Loader {
             serial: Mutex::new(()),
             log_observer: Arc::clone(&self.log_observer),
         });
+        self.active.fetch_add(1, Ordering::AcqRel);
+        let _active = ActiveCall {
+            active: Arc::clone(&self.active),
+            drained: Arc::clone(&self.drained),
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return Err(WasmError::Closed);
+        }
         module.validate().await?;
         Ok(module)
     }
@@ -664,9 +672,7 @@ impl LoadedModule {
     }
 
     fn store(&self) -> Store<HostState> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(self.config.limits.max_memory_bytes)
-            .build();
+        let limits = guest_store_limits(&self.config.limits);
         let stdout = MemoryOutputPipe::new(self.config.limits.max_output_bytes);
         let stderr = MemoryOutputPipe::new(self.config.limits.max_output_bytes);
         let mut wasi = WasiCtxBuilder::new();
@@ -828,6 +834,16 @@ impl LoadedModule {
             .map_err(classify_trap)?;
         Ok(result.into_iter().next().unwrap())
     }
+}
+
+fn guest_store_limits(limits: &Limits) -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(limits.max_memory_bytes)
+        .memories(1)
+        .tables(4)
+        .table_elements(limits.max_memory_bytes / 64)
+        .instances(64)
+        .build()
 }
 
 fn val_bytes(value: &Val) -> usize {
@@ -1126,6 +1142,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_interrupts_manifest_validation() {
+        let loader = Arc::new(Loader::new().unwrap());
+        let mut config = fixture("slow-tool");
+        config.config_json = "hang-validation".into();
+        config.limits.call_timeout = Duration::from_secs(5);
+        config.limits.close_drain = Duration::from_millis(300);
+        let loading = tokio::spawn({
+            let loader = Arc::clone(&loader);
+            async move { loader.load(config).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let started = Instant::now();
+        loader.close().await;
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert!(matches!(loading.await.unwrap(), Err(WasmError::Closed)));
+    }
+
+    #[tokio::test]
     async fn hungry_guest_is_bounded() {
         let loader = Loader::new().unwrap();
         let mut config = fixture("hungry-tool");
@@ -1147,6 +1181,30 @@ mod tests {
             matches!(result, Err(WasmError::Trap(_) | WasmError::Size)),
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn multiple_memories_and_tables_cannot_bypass_store_budget() {
+        let engine = Engine::default();
+        let fixture_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/wasm-negative");
+        for fixture_name in ["multi-memory.wat", "many-tables.wat"] {
+            let wasm = wat::parse_file(fixture_root.join(fixture_name)).unwrap();
+            let module = wasmtime::Module::new(&engine, wasm).unwrap();
+            let limits = Limits {
+                max_memory_bytes: 64 << 10,
+                ..Limits::default()
+            };
+            let mut store = Store::new(&engine, guest_store_limits(&limits));
+            store.limiter(|limits| limits);
+            assert!(
+                wasmtime::Instance::new(&mut store, &module, &[]).is_err(),
+                "{fixture_name} exceeded budget"
+            );
+            let empty =
+                wasmtime::Module::new(&engine, wat::parse_str("(module)").unwrap()).unwrap();
+            wasmtime::Instance::new(&mut store, &empty, &[]).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1225,6 +1283,49 @@ mod tests {
             .await
             .unwrap();
         assert!(result.to_string().contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn policy_guard_does_not_commit_state_after_fence_loss() {
+        use crabber_extension::{Registry, Scope};
+        use std::sync::atomic::AtomicUsize;
+        struct LostSink {
+            session: crabber_core::SessionId,
+            writes: AtomicUsize,
+        }
+        #[async_trait]
+        impl StateSink for LostSink {
+            fn session_id(&self) -> &crabber_core::SessionId {
+                &self.session
+            }
+            async fn snapshot(&self, _: &str) -> Result<BTreeMap<String, String>, String> {
+                Ok(BTreeMap::new())
+            }
+            async fn apply(&self, _: &str, _: Vec<(String, Option<String>)>) -> Result<(), String> {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                Err("lease lost".into())
+            }
+        }
+        let registry = Registry::new();
+        let _mount = registry
+            .mount(
+                Arc::new(WasmExtension::new(fixture("all-in-one"))),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let session = crabber_core::SessionId::new();
+        let plan = registry.acquire(&session);
+        let sink = Arc::new(LostSink {
+            session,
+            writes: AtomicUsize::new(0),
+        });
+        let decision = crabber_extension::with_state_sink(sink.clone(), async {
+            plan.guards[0].check("stateful", &Value::Null)
+        })
+        .await;
+        assert_eq!(decision, crabber_extension::GuardDecision::Deny);
+        assert_eq!(sink.writes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
