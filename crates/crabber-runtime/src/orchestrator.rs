@@ -86,6 +86,7 @@ pub struct TurnSnapshot {
 
 pub trait Observer: Send + Sync {
     fn emit(&self, event: &EventRecord);
+    fn model_completed(&self, _event: &EventRecord) {}
 }
 
 pub struct NoopObserver;
@@ -466,6 +467,7 @@ impl Orchestrator {
             self.heartbeat_interval,
         );
         let run_id = fence.run_id.clone();
+        let run_started_at = self.clock.now();
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
         let outcome = {
@@ -504,6 +506,7 @@ impl Orchestrator {
                     &run_id,
                     RunStatus::Failed,
                     &Usage::default(),
+                    run_started_at,
                 );
                 if execution
                     .settle_run(
@@ -538,6 +541,7 @@ impl Orchestrator {
         plan: &RunPlan,
         lease_lost: &AtomicBool,
     ) -> Result<Usage, RuntimeError> {
+        let run_started_at = self.clock.now();
         plan.dispatcher
             .gate::<RunBeforeExecute>(json!({"run_id": run_id.to_string()}))
             .await
@@ -596,8 +600,13 @@ impl Orchestrator {
             .await?;
             if !had_tools && claimed == 0 {
                 ensure_lease(lease_lost)?;
-                let settled =
-                    self.run_settled_event(session_id, run_id, RunStatus::Completed, &usage);
+                let settled = self.run_settled_event(
+                    session_id,
+                    run_id,
+                    RunStatus::Completed,
+                    &usage,
+                    run_started_at,
+                );
                 match execution
                     .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
                     .await
@@ -715,9 +724,14 @@ impl Orchestrator {
         run_id: &RunId,
         status: RunStatus,
         usage: &Usage,
+        started_at: OffsetDateTime,
     ) -> EventRecord {
         let mut event = self.event(session_id, run_id, EventKind::RunSettled);
-        event.payload = json!({"status": status, "usage": usage});
+        let duration = event.created_at - started_at;
+        event.payload = json!({"status": status, "usage": usage,
+            "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+            "duration_ms": duration.whole_milliseconds(),
+            "duration_ns": duration.whole_nanoseconds()});
         event.correlation = Some(run_id.to_string());
         event
     }
@@ -902,6 +916,21 @@ impl Orchestrator {
         let mut provider_state = Vec::new();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
+        let model_started = self.clock.now();
+        let observe_model = |status: &str, usage: &Usage| {
+            let mut event = self.event(
+                session_id,
+                run_id,
+                EventKind::Custom {
+                    name: "model_call".into(),
+                },
+            );
+            event.payload = json!({"provider": snapshot.selection.provider_id,
+                "model": snapshot.selection.model_id, "status": status,
+                "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                "latency_ms": (self.clock.now() - model_started).whole_milliseconds()});
+            self.observer.model_completed(&event);
+        };
         let mut completed = false;
         while let Some(delta) = stream.next().await {
             match delta {
@@ -925,17 +954,17 @@ impl Orchestrator {
                     arguments: None,
                 }),
                 StreamDelta::ToolCallArgsDelta { call_id, text } => {
-                    let call = calls
-                        .iter_mut()
-                        .find(|call| call.id == call_id)
-                        .ok_or_else(|| invalid_provider("tool arguments without call start"))?;
+                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
+                        observe_model("error", &usage);
+                        return Err(invalid_provider("tool arguments without call start").into());
+                    };
                     call.raw.push_str(&text);
                 }
                 StreamDelta::ToolCallDone { call_id } => {
-                    let call = calls
-                        .iter_mut()
-                        .find(|call| call.id == call_id)
-                        .ok_or_else(|| invalid_provider("tool completion without call start"))?;
+                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
+                        observe_model("error", &usage);
+                        return Err(invalid_provider("tool completion without call start").into());
+                    };
                     call.arguments = Some(
                         serde_json::from_str(&call.raw)
                             .unwrap_or_else(|_| Value::String(call.raw.clone())),
@@ -952,16 +981,22 @@ impl Orchestrator {
                     completed = true;
                     break;
                 }
-                StreamDelta::Error(error) => return Err(request_error(plan, error).await),
+                StreamDelta::Error(error) => {
+                    observe_model("error", &usage);
+                    return Err(request_error(plan, error).await);
+                }
             }
         }
         if !completed {
+            observe_model("error", &usage);
             return Err(invalid_provider("model stream ended without completion").into());
         }
         if text.is_empty() && reasoning.is_empty() && calls.is_empty() && provider_state.is_empty()
         {
+            observe_model("error", &usage);
             return Err(invalid_provider("empty model response").into());
         }
+        observe_model("ok", &usage);
         let id = MessageId::new();
         let mut parts = Vec::new();
         if !text.is_empty() {
@@ -1065,6 +1100,7 @@ impl Orchestrator {
             Err(format!("unknown tool: {}", call.name))
         };
         ensure_lease(lease_lost)?;
+        let tool_started_at = self.clock.now();
         let tool_name = call.name.clone();
         let mut pending = self.event(session_id, run_id, EventKind::ToolCallPending);
         pending.payload = json!({"call_id": call.id, "name": tool_name, "status": "pending"});
@@ -1170,8 +1206,10 @@ impl Orchestrator {
             created_at: self.clock.now(),
         };
         let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        settled.payload =
-            json!({"call_id": call.id, "name": tool_name, "status": status, "is_error": is_error});
+        settled.payload = json!({"call_id": call.id, "name": tool_name,
+            "status": status, "is_error": is_error,
+            "tool": tool_name, "tool_id": call.id.to_string(),
+            "duration_ms": (self.clock.now()-tool_started_at).whole_milliseconds()});
         settled.correlation = Some(call.id.to_string());
         execution
             .settle_tool_call(&call.id, result, message, settled.clone())
