@@ -504,6 +504,14 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
         }
         legacy_calls.push(call);
     }
+    let legacy_inbox = tests::input(&session, "legacy pending message");
+    sqlx::query("INSERT INTO inbox(session_id,kind,data) VALUES($1,$2,$3)")
+        .bind(&session.0)
+        .bind(inbox_kind(InboxKind::FollowUp))
+        .bind(json(&legacy_inbox).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
     PostgresStore::migrate(&isolated_url).await.unwrap();
     PostgresStore::migrate(&isolated_url).await.unwrap();
@@ -550,6 +558,16 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
     assert_eq!(snapshot.messages, messages);
     assert_eq!(snapshot.tool_calls, legacy_calls);
     assert!(snapshot.continuation.is_none());
+    assert_eq!(
+        migrated
+            .execution(admitted.fence.clone())
+            .await
+            .unwrap()
+            .claim_inbox(InboxKind::FollowUp)
+            .await
+            .unwrap(),
+        vec![legacy_inbox]
+    );
     finish(&migrated, &admitted).await;
     migrated
         .admit_keyed_run(keyed(&session, "new"))

@@ -56,6 +56,10 @@ fn decode<T: DeserializeOwned>(value: Json<serde_json::Value>) -> Result<T, Stor
     serde_json::from_value(value.0)
         .map_err(|_| StoreError::Validation("stored record is invalid".into()))
 }
+fn decode_record<T: DeserializeOwned>(value: &str) -> Result<T, StoreError> {
+    serde_json::from_str(value)
+        .map_err(|_| StoreError::Validation("stored record is invalid".into()))
+}
 fn micros(time: OffsetDateTime) -> i64 {
     i64::try_from(time.unix_timestamp_nanos() / 1_000).unwrap_or(i64::MAX)
 }
@@ -193,13 +197,13 @@ async fn messages(
     connection: &mut PgConnection,
     id: &SessionId,
 ) -> Result<Vec<Message>, StoreError> {
-    let rows = sqlx::query("SELECT data FROM messages WHERE session_id=$1 ORDER BY seq")
+    let rows = sqlx::query("SELECT snapshot_record FROM messages WHERE session_id=$1 ORDER BY seq")
         .bind(&id.0)
         .fetch_all(&mut *connection)
         .await
         .map_err(db)?;
     rows.into_iter()
-        .map(|row| decode(row.get("data")))
+        .map(|row| decode_record(&row.get::<String, _>("snapshot_record")))
         .collect()
 }
 async fn project(
@@ -700,8 +704,8 @@ impl Store for PostgresStore {
         &self,
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        sqlx::query("SELECT data FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id")
-            .bind(&run.0).fetch_all(&self.pool).await.map_err(db)?.into_iter().map(|row| decode(row.get("data"))).collect()
+        sqlx::query("SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id")
+            .bind(&run.0).fetch_all(&self.pool).await.map_err(db)?.into_iter().map(|row| decode_record(&row.get::<String, _>("snapshot_record"))).collect()
     }
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
@@ -757,10 +761,13 @@ impl Store for PostgresStore {
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
-        sqlx::query("INSERT INTO inbox(session_id,kind,data) VALUES($1,$2,$3)")
+        let record = serde_json::to_string(&message)
+            .map_err(|_| StoreError::Validation("record encoding failed".into()))?;
+        sqlx::query("INSERT INTO inbox(session_id,kind,data,snapshot_record) VALUES($1,$2,$3,$4)")
             .bind(&session.0)
             .bind(inbox_kind(kind))
             .bind(json(&message)?)
+            .bind(record)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -790,13 +797,13 @@ impl ExecutionStore for PostgresExecution {
     }
     async fn append_part(&self, part: Part) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT data FROM messages WHERE id=$1 FOR UPDATE")
+        let row = sqlx::query("SELECT snapshot_record FROM messages WHERE id=$1 FOR UPDATE")
             .bind(&part.message_id.0)
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
-        let mut message: Message = decode(row.get("data"))?;
+        let mut message: Message = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if message.session_id != run.session_id || message.run_id.as_ref() != Some(&run.id) {
             return Err(StoreError::Validation("part belongs to another run".into()));
         }
@@ -853,13 +860,13 @@ impl ExecutionStore for PostgresExecution {
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1 FOR UPDATE")
+        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
             .bind(&id.0)
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
-        let mut call: ToolCallRecord = decode(row.get("data"))?;
+        let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Conflict);
         }
@@ -884,13 +891,13 @@ impl ExecutionStore for PostgresExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1 FOR UPDATE")
+        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
             .bind(&id.0)
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
-        let mut call: ToolCallRecord = decode(row.get("data"))?;
+        let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if call.run_id != run.id || call.status != ToolCallStatus::Running {
             return Err(StoreError::Conflict);
         }
@@ -1063,11 +1070,11 @@ impl ExecutionStore for PostgresExecution {
 impl PostgresExecution {
     async fn claim(&self, kind: InboxKind, into_history: bool) -> Result<Vec<Message>, StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let rows = sqlx::query("SELECT seq,data FROM inbox WHERE session_id=$1 AND kind=$2 AND consumed_by_run IS NULL ORDER BY seq FOR UPDATE")
+        let rows = sqlx::query("SELECT seq,snapshot_record FROM inbox WHERE session_id=$1 AND kind=$2 AND consumed_by_run IS NULL ORDER BY seq FOR UPDATE")
             .bind(&run.session_id.0).bind(inbox_kind(kind)).fetch_all(&mut *tx).await.map_err(db)?;
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut message: Message = decode(row.get("data"))?;
+            let mut message: Message = decode_record(&row.get::<String, _>("snapshot_record"))?;
             if into_history {
                 message.run_id = Some(run.id.clone());
                 insert_message(&mut tx, &run, &message).await?;

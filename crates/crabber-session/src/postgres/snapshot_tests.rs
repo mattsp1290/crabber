@@ -572,3 +572,287 @@ fn large_postgres_history_keeps_client_allocation_bounded() {
         "oversized record decoded: {measured:?}"
     );
 }
+
+fn normalize_page(mut page: SnapshotPage) -> SnapshotPage {
+    for message in &mut page.messages {
+        if message.run_id.is_some() {
+            message.run_id = Some(RunId::from("canonical-fixture-run"));
+        }
+    }
+    for call in &mut page.tool_calls {
+        call.run_id = RunId::from("canonical-fixture-run");
+    }
+    page
+}
+async fn assert_canonical_parity(
+    memory: &crate::MemoryStore,
+    postgres: &PostgresStore,
+    session: &SessionId,
+) {
+    let mut full = query(session);
+    full.limits.messages = 100;
+    full.limits.tool_calls = 100;
+    let expected = page(memory.snapshot(full.clone()).await.unwrap());
+    let actual = page(postgres.snapshot(full.clone()).await.unwrap());
+    assert_eq!(
+        actual.usage, expected.usage,
+        "accounting must survive opaque numeric mutations"
+    );
+    let expected = normalize_page(expected);
+    let actual = normalize_page(actual);
+    assert_eq!(
+        serde_json::to_vec(&actual.messages).unwrap(),
+        serde_json::to_vec(&expected.messages).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&actual.tool_calls).unwrap(),
+        serde_json::to_vec(&expected.tool_calls).unwrap()
+    );
+    full.limits.encoded_bytes = expected.usage.encoded_bytes;
+    assert!(
+        page(memory.snapshot(full.clone()).await.unwrap())
+            .continuation
+            .is_none()
+    );
+    assert!(
+        page(postgres.snapshot(full).await.unwrap())
+            .continuation
+            .is_none()
+    );
+    if let Some(call) = expected.tool_calls.first() {
+        // Position both backends immediately before their first tool record,
+        // then require the exact complete record size to admit that record.
+        let mut before = query(session);
+        before.limits.messages = 100;
+        before.limits.tool_calls = 0;
+        let memory_token = page(memory.snapshot(before.clone()).await.unwrap())
+            .continuation
+            .unwrap();
+        let postgres_token = page(postgres.snapshot(before).await.unwrap())
+            .continuation
+            .unwrap();
+        let mut call = call.clone();
+        // Actual run IDs have UUID length; use the real Memory record for budget.
+        let memory_full = page(
+            memory
+                .snapshot(SnapshotRequest {
+                    limits: SnapshotLimits {
+                        messages: 100,
+                        tool_calls: 100,
+                        ..query(session).limits
+                    },
+                    ..query(session)
+                })
+                .await
+                .unwrap(),
+        );
+        call.run_id = memory_full.tool_calls[0].run_id.clone();
+        let bytes = serde_json::to_vec(&call).unwrap().len();
+        let mut next = query(session);
+        next.limits.encoded_bytes = bytes - 1;
+        next.continuation = Some(memory_token.clone());
+        assert!(matches!(
+            memory.snapshot(next.clone()).await.unwrap(),
+            SnapshotOutcome::Limited {
+                limit: SnapshotLimit::EncodedBytes,
+                ..
+            }
+        ));
+        next.continuation = Some(postgres_token.clone());
+        assert!(matches!(
+            postgres.snapshot(next.clone()).await.unwrap(),
+            SnapshotOutcome::Limited {
+                limit: SnapshotLimit::EncodedBytes,
+                ..
+            }
+        ));
+        next.limits.encoded_bytes = bytes;
+        next.continuation = Some(memory_token);
+        assert_eq!(
+            page(memory.snapshot(next.clone()).await.unwrap())
+                .usage
+                .encoded_bytes,
+            bytes
+        );
+        next.continuation = Some(postgres_token);
+        assert_eq!(
+            page(postgres.snapshot(next).await.unwrap())
+                .usage
+                .encoded_bytes,
+            bytes
+        );
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One cross-backend opaque-record mutation lifecycle.
+async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::now_utc()));
+    let postgres = PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    let memory = crate::MemoryStore::with_clock(clock);
+    let session = SessionId::new();
+    let mut admission = request(&session);
+    admission.user_message.parts[0].content = ContentBlock::Reasoning {
+        text: "opaque input".into(),
+        provider_state: Some(serde_json::json!({"negative_zero":-0.0,"nested":[-0.0,1e30]})),
+    };
+    let message_id = admission.user_message.id.clone();
+    let memory_admission = memory.admit_run(admission.clone()).await.unwrap();
+    let postgres_admission = postgres.admit_run(admission).await.unwrap();
+    let memory_execution = memory
+        .execution(memory_admission.fence.clone())
+        .await
+        .unwrap();
+    let postgres_execution = postgres
+        .execution(postgres_admission.fence.clone())
+        .await
+        .unwrap();
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    let part = Part {
+        id: PartId::new(),
+        message_id,
+        ordinal: 1,
+        kind: PartKind::AssistantText,
+        content: ContentBlock::Text {
+            text: "appended".into(),
+        },
+    };
+    memory_execution.append_part(part.clone()).await.unwrap();
+    postgres_execution.append_part(part).await.unwrap();
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    let mut tool_call = call(&postgres_admission, &uuid::Uuid::new_v4().to_string());
+    tool_call.arguments =
+        serde_json::json!({"negative_zero":-0.0,"nested":{"zero":-0.0},"escaped":"\n\"é"});
+    let mut memory_call = tool_call.clone();
+    memory_call.run_id = memory_admission.run.id.clone();
+    memory_execution
+        .create_tool_call(
+            memory_call,
+            event(&memory_admission, EventKind::ToolCallPending),
+        )
+        .await
+        .unwrap();
+    postgres_execution
+        .create_tool_call(
+            tool_call.clone(),
+            event(&postgres_admission, EventKind::ToolCallPending),
+        )
+        .await
+        .unwrap();
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    memory_execution
+        .claim_tool_call(
+            &tool_call.id,
+            event(&memory_admission, EventKind::ToolCallRunning),
+        )
+        .await
+        .unwrap();
+    postgres_execution
+        .claim_tool_call(
+            &tool_call.id,
+            event(&postgres_admission, EventKind::ToolCallRunning),
+        )
+        .await
+        .unwrap();
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    let result = ToolResult {
+        status: ToolResultStatus::Completed,
+        content: vec![ContentBlock::Reasoning {
+            text: "result".into(),
+            provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+        }],
+    };
+    let mut result_message = assistant(&postgres_admission, "");
+    result_message.role = Role::Tool;
+    result_message.parts[0].content = ContentBlock::ToolResult {
+        call_id: tool_call.id.clone(),
+        content: result.content.clone(),
+        is_error: false,
+    };
+    let mut memory_result = result_message.clone();
+    memory_result.run_id = Some(memory_admission.run.id.clone());
+    memory_execution
+        .settle_tool_call(
+            &tool_call.id,
+            result.clone(),
+            memory_result,
+            event(&memory_admission, EventKind::ToolCallSettled),
+        )
+        .await
+        .unwrap();
+    postgres_execution
+        .settle_tool_call(
+            &tool_call.id,
+            result,
+            result_message,
+            event(&postgres_admission, EventKind::ToolCallSettled),
+        )
+        .await
+        .unwrap();
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    let mut inbox = input(&session, "");
+    inbox.parts[0].content = ContentBlock::Reasoning {
+        text: "pending".into(),
+        provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+    };
+    memory
+        .enqueue_inbox(&session, InboxKind::FollowUp, inbox.clone())
+        .await
+        .unwrap();
+    postgres
+        .enqueue_inbox(&session, InboxKind::FollowUp, inbox)
+        .await
+        .unwrap();
+    let memory_claimed = memory_execution
+        .claim_inbox_into_history(InboxKind::FollowUp)
+        .await
+        .unwrap();
+    let postgres_claimed = postgres_execution
+        .claim_inbox_into_history(InboxKind::FollowUp)
+        .await
+        .unwrap();
+    let mut memory_claimed = memory_claimed;
+    let mut postgres_claimed = postgres_claimed;
+    memory_claimed[0].run_id = None;
+    postgres_claimed[0].run_id = None;
+    assert_eq!(
+        serde_json::to_vec(&postgres_claimed).unwrap(),
+        serde_json::to_vec(&memory_claimed).unwrap()
+    );
+    assert_canonical_parity(&memory, &postgres, &session).await;
+    let mut inbox = input(&session, "");
+    inbox.parts[0].content = ContentBlock::Reasoning {
+        text: "claimed without history".into(),
+        provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+    };
+    memory
+        .enqueue_inbox(&session, InboxKind::Steer, inbox.clone())
+        .await
+        .unwrap();
+    postgres
+        .enqueue_inbox(&session, InboxKind::Steer, inbox)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(
+            &postgres_execution
+                .claim_inbox(InboxKind::Steer)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_vec(
+            &memory_execution
+                .claim_inbox(InboxKind::Steer)
+                .await
+                .unwrap()
+        )
+        .unwrap()
+    );
+}

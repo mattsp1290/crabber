@@ -59,10 +59,12 @@ pub(super) async fn migrate(tx: &mut Transaction<'_, Postgres>) -> Result<(), St
         return Ok(());
     }
     // No concurrent legacy writer can change a record between decode and backfill.
-    sqlx::raw_sql("LOCK TABLE sessions,runs,messages,tool_calls,events IN ACCESS EXCLUSIVE MODE")
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
+    sqlx::raw_sql(
+        "LOCK TABLE sessions,runs,messages,tool_calls,events,inbox IN ACCESS EXCLUSIVE MODE",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
     sqlx::raw_sql(include_str!("../../migrations/0003_snapshots.sql"))
         .execute(&mut **tx)
         .await
@@ -74,11 +76,10 @@ pub(super) async fn migrate(tx: &mut Transaction<'_, Postgres>) -> Result<(), St
         .map_err(db)?;
     // Legacy migration deliberately decodes ONE record at a time, not a history
     // vector. Subsequent bounded reads never decode an over-budget record.
-    for table in ["messages", "tool_calls"] {
+    for table in ["messages", "tool_calls", "inbox"] {
         let mut after = 0i64;
         loop {
-            let query =
-                format!("SELECT seq,id,data FROM {table} WHERE seq>$1 ORDER BY seq LIMIT 1");
+            let query = format!("SELECT seq,data FROM {table} WHERE seq>$1 ORDER BY seq LIMIT 1");
             let Some(row) = sqlx::query(&query)
                 .bind(after)
                 .fetch_optional(&mut **tx)
@@ -88,23 +89,32 @@ pub(super) async fn migrate(tx: &mut Transaction<'_, Postgres>) -> Result<(), St
                 break;
             };
             after = row.get("seq");
-            let a = if table == "messages" {
-                message_record(&decode::<Message>(row.get("data"))?)?
-            } else {
+            let a = if table == "tool_calls" {
                 call_record(&decode::<ToolCallRecord>(row.get("data"))?)?
+            } else {
+                message_record(&decode::<Message>(row.get("data"))?)?
             };
-            let query = format!(
-                "UPDATE {table} SET snapshot_record=$2,snapshot_parts=$3,snapshot_text=$4,snapshot_bytes=$5 WHERE id=$1"
-            );
-            sqlx::query(&query)
-                .bind(row.get::<String, _>("id"))
-                .bind(a.record)
-                .bind(a.parts)
-                .bind(a.text)
-                .bind(a.bytes)
-                .execute(&mut **tx)
-                .await
-                .map_err(db)?;
+            if table == "inbox" {
+                sqlx::query("UPDATE inbox SET snapshot_record=$2 WHERE seq=$1")
+                    .bind(after)
+                    .bind(a.record)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(db)?;
+            } else {
+                let query = format!(
+                    "UPDATE {table} SET snapshot_record=$2,snapshot_parts=$3,snapshot_text=$4,snapshot_bytes=$5 WHERE seq=$1"
+                );
+                sqlx::query(&query)
+                    .bind(after)
+                    .bind(a.record)
+                    .bind(a.parts)
+                    .bind(a.text)
+                    .bind(a.bytes)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(db)?;
+            }
         }
     }
     sqlx::raw_sql(include_str!("../../migrations/0003_snapshot_guards.sql"))

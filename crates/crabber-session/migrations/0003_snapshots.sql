@@ -23,3 +23,6 @@ ALTER TABLE tool_calls ADD COLUMN snapshot_record text;
 ALTER TABLE tool_calls ADD COLUMN snapshot_parts bigint;
 ALTER TABLE tool_calls ADD COLUMN snapshot_text bigint;
 ALTER TABLE tool_calls ADD COLUMN snapshot_bytes bigint;
+
+-- Pending inbox messages must preserve canonical opaque values when claimed.
+ALTER TABLE inbox ADD COLUMN snapshot_record text;

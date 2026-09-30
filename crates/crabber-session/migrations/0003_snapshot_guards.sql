@@ -1,3 +1,5 @@
+ALTER TABLE inbox ALTER COLUMN snapshot_record SET NOT NULL;
+ALTER TABLE inbox ADD CONSTRAINT inbox_snapshot_record_matches CHECK (snapshot_record::jsonb=data);
 ALTER TABLE messages ALTER COLUMN snapshot_record SET NOT NULL;
 ALTER TABLE messages ALTER COLUMN snapshot_parts SET NOT NULL;
 ALTER TABLE messages ALTER COLUMN snapshot_text SET NOT NULL;
