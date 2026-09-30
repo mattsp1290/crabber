@@ -31,7 +31,17 @@ pub fn body(request: &ModelRequest) -> Value {
         }
     }
     let tools: Vec<_> = request.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect();
-    json!({"model":request.selection.model_id,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true}})
+    let mut body = json!({"model":request.selection.model_id,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true}});
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = json!(temperature);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    if let Some(tool_choice) = &request.tool_choice {
+        body["tool_choice"] = json!(tool_choice);
+    }
+    body
 }
 #[derive(Default)]
 pub struct Codec {

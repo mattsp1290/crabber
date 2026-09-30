@@ -66,6 +66,19 @@ pub fn body(request: &ModelRequest) -> Value {
         .map(|t| json!({"name":t.name,"description":t.description,"input_schema":t.parameters}))
         .collect();
     let mut body = json!({"model":request.selection.model_id,"messages":messages,"tools":tools,"max_tokens":4096,"stream":true});
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = json!(temperature);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    if let Some(tool_choice) = &request.tool_choice {
+        body["tool_choice"] = if tool_choice == "auto" || tool_choice == "any" {
+            json!({"type":tool_choice})
+        } else {
+            json!({"type":"tool","name":tool_choice})
+        };
+    }
     if let Some(system) = &request.system {
         body["system"] = json!(system);
     }

@@ -116,6 +116,9 @@ fn codex_fixture_and_echo_golden() {
         system: None,
         messages: vec![assistant, result],
         tools: vec![],
+        temperature: None,
+        max_tokens: None,
+        tool_choice: None,
     };
     let body = responses::body(&request, true);
     assert_eq!(body["input"][0]["type"], "reasoning");

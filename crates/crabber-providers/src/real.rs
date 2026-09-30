@@ -476,6 +476,9 @@ mod tests {
             system: None,
             messages: vec![],
             tools: vec![],
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
         }
     }
     #[cfg(feature = "opencode-go")]

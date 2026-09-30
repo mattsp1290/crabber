@@ -207,7 +207,11 @@ impl SafeEvent {
             model: safe("model"),
             tool: safe("tool"),
             tool_id: safe("tool_id"),
-            status: safe("status"),
+            status: safe("status").map(|status| match status.as_str() {
+                "completed" => "ok".to_string(),
+                "failed" | "interrupted" => "error".to_string(),
+                _ => status,
+            }),
             input_tokens: e
                 .payload
                 .get("input_tokens")

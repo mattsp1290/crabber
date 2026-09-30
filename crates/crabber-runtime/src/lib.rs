@@ -9,11 +9,13 @@ pub use orchestrator::{
 };
 pub use policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, PermissionDecision,
-    PermissionPolicy, StaticPolicy, ToolPipeline,
+    PermissionPolicy, PermissionRule, StaticPolicy, ToolPipeline,
 };
 
 /// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-runtime";
 
+#[cfg(test)]
+mod extension_tests;
 #[cfg(test)]
 mod tests;

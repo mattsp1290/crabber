@@ -14,6 +14,7 @@ crabber-obs = { path = "../crabber-obs", optional = true }
 crabber-session = { path = "../crabber-session" }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }
