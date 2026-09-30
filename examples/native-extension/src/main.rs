@@ -66,8 +66,11 @@ impl Extension for NativeExtension {
         r.guard(Arc::new(DenyDelete));
         let redact: Callback = Arc::new(|mut value| {
             Box::pin(async move {
-                if let Some(result) = value.get_mut("result") {
-                    result["secret"] = Value::String("[REDACTED]".into());
+                if let Some(secret) = value
+                    .get_mut("result")
+                    .and_then(|result| result.get_mut("secret"))
+                {
+                    *secret = Value::String("[REDACTED]".into());
                 }
                 println!("redacted tool result");
                 Ok(value)

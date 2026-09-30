@@ -10,8 +10,8 @@ use crabber_core::{
 };
 use crabber_extension::{
     ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardDecision, HostServices,
-    ModelCompleted, ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted,
-    RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, ToolContext,
+    ModelCompleted, ModelRequestError, ModelRequested, ModelStream as ExtensionModelStream,
+    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, ToolContext,
     ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted, TurnPrepare,
     TurnStarted,
 };
@@ -491,8 +491,7 @@ impl Orchestrator {
             }
         };
         drop(heartbeat);
-        plan.release();
-        match outcome {
+        let result = match outcome {
             Ok(usage) => Ok(RunResult {
                 session_id,
                 run_id,
@@ -500,17 +499,29 @@ impl Orchestrator {
                 usage,
             }),
             Err(error) => {
-                let _ = execution
+                let settled = self.event(&session_id, &run_id, EventKind::RunSettled);
+                if execution
                     .settle_run(
                         RunStatus::Failed,
                         Some(error.to_string()),
                         Usage::default(),
-                        self.event(&session_id, &run_id, EventKind::RunSettled),
+                        settled.clone(),
                     )
-                    .await;
+                    .await
+                    .is_ok()
+                {
+                    self.observer.emit(&settled);
+                    let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
+                    plan.dispatcher
+                        .notify::<EventPublished>(projection.clone())
+                        .await;
+                    plan.dispatcher.notify::<RunSettled>(projection).await;
+                }
                 Err(error)
             }
-        }
+        };
+        plan.release();
+        result
     }
 
     async fn run_loop(
@@ -590,8 +601,13 @@ impl Orchestrator {
                     .await
                 {
                     Ok(()) => {
-                        self.observer
-                            .emit(&self.event(session_id, run_id, EventKind::RunSettled));
+                        let settled = self.event(session_id, run_id, EventKind::RunSettled);
+                        self.observer.emit(&settled);
+                        let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
+                        plan.dispatcher
+                            .notify::<EventPublished>(projection.clone())
+                            .await;
+                        plan.dispatcher.notify::<RunSettled>(projection).await;
                         return Ok(usage);
                     }
                     Err(StoreError::PendingInput) => {
@@ -636,6 +652,27 @@ impl Orchestrator {
                 system = format!("{line}\n{system}");
             }
         }
+        let mut messages = self.store.list_messages(session_id, None).await?;
+        if let Some(suffixes) = contributions.get("user_suffix").and_then(Value::as_array)
+            && let Some(message) = messages
+                .iter_mut()
+                .rev()
+                .find(|message| message.role == Role::User)
+            && let Some(text) =
+                message
+                    .parts
+                    .iter_mut()
+                    .rev()
+                    .find_map(|part| match &mut part.content {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    })
+        {
+            for suffix in suffixes.iter().filter_map(Value::as_str) {
+                text.push('\n');
+                text.push_str(suffix);
+            }
+        }
         Ok(TurnSnapshot {
             identity: RequestIdentity {
                 session_id: session_id.clone(),
@@ -643,7 +680,7 @@ impl Orchestrator {
                 turn_id: TurnId::new(),
             },
             selection: request.selection.clone(),
-            messages: self.store.list_messages(session_id, None).await?,
+            messages,
             system: (!system.is_empty()).then_some(system),
             tools: plan.tools.iter().map(|tool| tool.info.clone()).collect(),
         })
@@ -743,6 +780,9 @@ impl Orchestrator {
             system: snapshot.system.clone(),
             messages: snapshot.messages.clone(),
             tools: snapshot.tools.clone(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
         };
         let calls_to_next = Arc::new(AtomicUsize::new(0));
         let next: Arc<dyn Streamer> = Arc::new(SingleUseStreamer {
@@ -756,13 +796,63 @@ impl Orchestrator {
             let model_stream = Arc::clone(&self.model_stream);
             let stream_slot = Arc::clone(&stream_slot);
             let error_slot = Arc::clone(&error_slot);
-            Arc::new(move |_| {
+            Arc::new(move |input| {
                 let model_stream = Arc::clone(&model_stream);
                 let next = Arc::clone(&next);
                 let request = request.clone();
                 let stream_slot = Arc::clone(&stream_slot);
                 let error_slot = Arc::clone(&error_slot);
                 Box::pin(async move {
+                    let mut request = request;
+                    if let Some(value) = input.get("temperature") {
+                        request.temperature = if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                value
+                                    .as_f64()
+                                    .filter(|v| v.is_finite() && (0.0..=2.0).contains(v))
+                                    .ok_or_else(|| {
+                                        crabber_extension::ExtensionError::Plan(
+                                            "invalid model temperature".into(),
+                                        )
+                                    })?,
+                            )
+                        };
+                    }
+                    if let Some(value) = input.get("max_tokens") {
+                        request.max_tokens = if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                value
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok())
+                                    .filter(|v| *v > 0)
+                                    .ok_or_else(|| {
+                                        crabber_extension::ExtensionError::Plan(
+                                            "invalid model max_tokens".into(),
+                                        )
+                                    })?,
+                            )
+                        };
+                    }
+                    if let Some(value) = input.get("tool_choice") {
+                        request.tool_choice = if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                value
+                                    .as_str()
+                                    .ok_or_else(|| {
+                                        crabber_extension::ExtensionError::Plan(
+                                            "invalid model tool_choice".into(),
+                                        )
+                                    })?
+                                    .to_owned(),
+                            )
+                        };
+                    }
                     match model_stream.stream(request, next).await {
                         Ok(stream) => {
                             *stream_slot.lock().unwrap() = Some(stream);
@@ -778,9 +868,10 @@ impl Orchestrator {
                 })
             })
         };
-        let dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id}),terminal).await;
-        if let Some(error) = error_slot.lock().unwrap().take() {
-            return Err(error.into());
+        let dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":null,"tool_choice":null}),terminal).await;
+        let provider_error = error_slot.lock().unwrap().take();
+        if let Some(error) = provider_error {
+            return Err(request_error(plan, error).await);
         }
         dispatched.map_err(|e| RuntimeError::Extension(e.to_string()))?;
         let mut stream = stream_slot.lock().unwrap().take().ok_or_else(|| {
@@ -847,7 +938,7 @@ impl Orchestrator {
                     completed = true;
                     break;
                 }
-                StreamDelta::Error(error) => return Err(error.into()),
+                StreamDelta::Error(error) => return Err(request_error(plan, error).await),
             }
         }
         if !completed {
@@ -982,8 +1073,12 @@ impl Orchestrator {
         let running = self.event(session_id, run_id, EventKind::ToolCallRunning);
         execution.claim_tool_call(&call.id, running.clone()).await?;
         self.observer.emit(&running);
+        let running_projection = serde_json::to_value(&running).unwrap_or(Value::Null);
         plan.dispatcher
-            .notify::<EventPublished>(serde_json::to_value(&running).unwrap_or(Value::Null))
+            .notify::<EventPublished>(running_projection.clone())
+            .await;
+        plan.dispatcher
+            .notify::<crabber_extension::ToolStarted>(running_projection)
             .await;
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
@@ -1000,22 +1095,30 @@ impl Orchestrator {
             (None, Ok(_)) => Err("unknown tool".into()),
         };
         ensure_lease(lease_lost)?;
-        let outcome = match outcome {
-            Ok(value) => match plan
-                .dispatcher
-                .transform::<ToolResultTransform>(json!({"result":value,"is_error":false}))
-                .await
-            {
-                Ok(output) => {
-                    if output.get("is_error").and_then(Value::as_bool) == Some(true) {
-                        Err(output.get("result").cloned().unwrap_or(output).to_string())
-                    } else {
-                        Ok(output.get("result").cloned().unwrap_or(output))
-                    }
+        let original_error = outcome.is_err();
+        let seed = match outcome {
+            Ok(value) => value,
+            Err(error) => Value::String(error),
+        };
+        let outcome = match plan
+            .dispatcher
+            .transform::<ToolResultTransform>(json!({"result":seed,"is_error":original_error}))
+            .await
+        {
+            Ok(output) => {
+                let result = output
+                    .get("result")
+                    .cloned()
+                    .unwrap_or_else(|| output.clone());
+                if original_error || output.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    Err(result
+                        .as_str()
+                        .map_or_else(|| result.to_string(), str::to_owned))
+                } else {
+                    Ok(result)
                 }
-                Err(error) => Err(error.to_string()),
-            },
-            error => error,
+            }
+            Err(error) => Err(error.to_string()),
         };
         let (status, output, is_error) = match outcome {
             Ok(value) => (ToolResultStatus::Completed, value, false),
@@ -1052,13 +1155,17 @@ impl Orchestrator {
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;
         self.observer.emit(&settled);
+        let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
         plan.dispatcher
-            .notify::<EventPublished>(serde_json::to_value(&settled).unwrap_or(Value::Null))
+            .notify::<EventPublished>(settled_projection.clone())
+            .await;
+        plan.dispatcher
+            .notify::<crabber_extension::ToolSettled>(settled_projection)
             .await;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn permit_and_execute(
         &self,
         execution: &dyn ExecutionStore,
@@ -1149,10 +1256,21 @@ impl Orchestrator {
             })),
         );
         let executor = Arc::clone(&tool.executor);
+        let authorized_arguments = arguments.clone();
         let terminal: Callback = Arc::new(move |input| {
             let executor = Arc::clone(&executor);
             let context = context.clone();
-            Box::pin(async move { executor.execute_with_context(context, input).await })
+            let authorized_arguments = authorized_arguments.clone();
+            Box::pin(async move {
+                if input != authorized_arguments {
+                    return Err(crabber_extension::ExtensionError::Tool(
+                        "around handler changed immutable tool input".into(),
+                    ));
+                }
+                executor
+                    .execute_with_context(context, authorized_arguments)
+                    .await
+            })
         });
         let output = match plan
             .dispatcher
@@ -1213,5 +1331,36 @@ struct HostApproval {
 impl ApprovalFacade for HostApproval {
     async fn request(&self, _reason: &str) -> bool {
         self.approver.approve(&self.tool, &self.arguments).await
+    }
+}
+
+async fn request_error(plan: &RunPlan, error: ProviderError) -> RuntimeError {
+    let class = format!("{:?}", error.kind);
+    let seed =
+        json!({"class":class,"attempt":1,"retry":false,"delay_ms":0,"compaction_requested":false});
+    match plan.dispatcher.transform::<ModelRequestError>(seed).await {
+        Ok(decision)
+            if decision.get("class").and_then(Value::as_str) != Some(class.as_str())
+                || decision.get("attempt").and_then(Value::as_u64) != Some(1) =>
+        {
+            RuntimeError::Extension("request-error handler changed immutable metadata".into())
+        }
+        Ok(decision) if decision.get("retry").and_then(Value::as_bool) != Some(false) => {
+            RuntimeError::Extension("request-error handler cannot enable retry".into())
+        }
+        Ok(decision) if decision.get("delay_ms").and_then(Value::as_u64) != Some(0) => {
+            RuntimeError::Extension("request-error handler cannot lengthen delay".into())
+        }
+        Ok(decision)
+            if decision
+                .get("compaction_requested")
+                .and_then(Value::as_bool)
+                == Some(true)
+                && error.kind != crabber_providers::ProviderErrorKind::ContextOverflow =>
+        {
+            RuntimeError::Extension("compaction is only valid for context overflow".into())
+        }
+        Ok(_) => RuntimeError::Provider(error),
+        Err(handler) => RuntimeError::Extension(handler.to_string()),
     }
 }

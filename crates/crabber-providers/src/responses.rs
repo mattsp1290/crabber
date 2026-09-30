@@ -26,6 +26,15 @@ pub fn body(request: &ModelRequest, codex: bool) -> Value {
     }
     let tools: Vec<Value> = request.tools.iter().map(|tool| json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters,"strict":false})).collect();
     let mut body = json!({"model":request.selection.model_id,"input":input,"tools":tools,"tool_choice":"auto","parallel_tool_calls":false,"store":false,"stream":true});
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = json!(temperature);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_output_tokens"] = json!(max_tokens);
+    }
+    if let Some(tool_choice) = &request.tool_choice {
+        body["tool_choice"] = json!(tool_choice);
+    }
     if let Some(system) = &request.system {
         body["instructions"] = json!(system);
     }

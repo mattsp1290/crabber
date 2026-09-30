@@ -214,6 +214,7 @@ impl Registry {
             .then(|| tool.info.name.clone())
         });
         if let Some(name) = collision {
+            drop(inner);
             registrar.rollback();
             return Err(ExtensionError::ToolCollision(name));
         }
@@ -396,32 +397,33 @@ impl MountHandle {
             leader
         };
         self.deactivate();
-        if !leader {
-            while !*self.mount.closed.lock().unwrap() {
-                let notified = self.mount.closed_notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if *self.mount.closed.lock().unwrap() {
-                    break;
+        if leader {
+            let mount = Arc::clone(&self.mount);
+            tokio::spawn(async move {
+                while mount.leases.load(Ordering::SeqCst) > 0 {
+                    let notified = mount.released.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if mount.leases.load(Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                    notified.await;
                 }
-                notified.await;
-            }
-            return Ok(());
+                mount.registrar.lock().unwrap().rollback();
+                mount.extension.shutdown().await;
+                *mount.closed.lock().unwrap() = true;
+                mount.closed_notify.notify_waiters();
+            });
         }
-        while self.mount.leases.load(Ordering::SeqCst) > 0 {
-            let notified = self.mount.released.notified();
+        loop {
+            let notified = self.mount.closed_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.mount.leases.load(Ordering::SeqCst) == 0 {
-                break;
+            if *self.mount.closed.lock().unwrap() {
+                return Ok(());
             }
             notified.await;
         }
-        self.mount.registrar.lock().unwrap().rollback();
-        self.mount.extension.shutdown().await;
-        *self.mount.closed.lock().unwrap() = true;
-        self.mount.closed_notify.notify_waiters();
-        Ok(())
     }
 }
 
@@ -446,7 +448,7 @@ mod tests {
     }
     #[async_trait]
     impl Extension for TestExtension {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             self.id
         }
         fn version(&self) -> &'static str {
@@ -622,5 +624,257 @@ mod tests {
             .unwrap();
         plan.release();
         handle.close().await.unwrap();
+    }
+    struct ShutdownExtension(Arc<AtomicUsize>);
+    #[async_trait]
+    impl Extension for ShutdownExtension {
+        fn id(&self) -> &'static str {
+            "shutdown"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, _: &mut Registrar) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+        async fn shutdown(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[tokio::test]
+    async fn canceled_first_close_still_finishes_once() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let registry = Registry::new();
+        let handle = registry
+            .mount(
+                Arc::new(ShutdownExtension(Arc::clone(&count))),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&SessionId::new());
+        let first = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.close().await }
+        });
+        tokio::task::yield_now().await;
+        first.abort();
+        let _ = first.await;
+        plan.release();
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle.close())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    struct ReentrantCollision(Registry);
+    #[async_trait]
+    impl Extension for ReentrantCollision {
+        fn id(&self) -> &'static str {
+            "reentrant"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let registry = self.0.clone();
+            r.defer(move || {
+                let _ = registry.acquire(&SessionId::new());
+            });
+            r.tool(Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: "echo".into(),
+                    description: String::new(),
+                    parameters: json!({"type":"object"}),
+                    retry_safe: true,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(Echo),
+            }));
+            Ok(())
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn collision_cleanup_can_reenter_registry() {
+        let registry = Registry::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let _first = registry
+            .mount(ext("first", true, false, count), Scope::Global)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            registry.mount(
+                Arc::new(ReentrantCollision(registry.clone())),
+                Scope::Global,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(ExtensionError::ToolCollision(_))));
+    }
+    struct Outer;
+    #[async_trait]
+    impl Extension for Outer {
+        fn id(&self) -> &'static str {
+            "outer"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            r.on_around(
+                crate::ToolExecute::ID,
+                0,
+                "outer",
+                Arc::new(|value, next| Box::pin(async move { next.call(value).await })),
+            );
+            Ok(())
+        }
+    }
+    struct Inner(Arc<std::sync::OnceLock<MountHandle>>);
+    #[async_trait]
+    impl Extension for Inner {
+        fn id(&self) -> &'static str {
+            "inner"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let slot = Arc::clone(&self.0);
+            r.on_around(
+                crate::ToolExecute::ID,
+                1,
+                "inner",
+                Arc::new(move |value, next| {
+                    let handle = slot.get().unwrap().clone();
+                    Box::pin(async move {
+                        assert_eq!(handle.close().await, Err(ExtensionError::SelfClose));
+                        next.call(value).await
+                    })
+                }),
+            );
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn nested_mount_stack_rejects_outer_close() {
+        let registry = Registry::new();
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let outer = registry
+            .mount(Arc::new(Outer), Scope::Global)
+            .await
+            .unwrap();
+        slot.set(outer.clone()).ok();
+        let inner = registry
+            .mount(Arc::new(Inner(slot)), Scope::Global)
+            .await
+            .unwrap();
+        let plan = registry.acquire(&SessionId::new());
+        let terminal: crate::Callback = Arc::new(|value| Box::pin(async move { Ok(value) }));
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            plan.dispatcher
+                .around::<crate::ToolExecute>(Value::Null, terminal),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(output, Value::Null);
+        plan.release();
+        outer.close().await.unwrap();
+        inner.close().await.unwrap();
+    }
+    type DeferredNextResult =
+        Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<Value, ExtensionError>>>>>;
+    struct DetachedExtension {
+        gate: Arc<tokio::sync::Notify>,
+        result: DeferredNextResult,
+    }
+    #[async_trait]
+    impl Extension for DetachedExtension {
+        fn id(&self) -> &'static str {
+            "detached"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let gate = Arc::clone(&self.gate);
+            let result = Arc::clone(&self.result);
+            r.on_around(
+                crate::ToolExecute::ID,
+                0,
+                "detach",
+                Arc::new(move |_, next| {
+                    let gate = Arc::clone(&gate);
+                    let result = Arc::clone(&result);
+                    Box::pin(async move {
+                        tokio::spawn(async move {
+                            gate.notified().await;
+                            let output = next.call(Value::Null).await;
+                            let _ = result.lock().unwrap().take().unwrap().send(output);
+                        });
+                        Ok(Value::Null)
+                    })
+                }),
+            );
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn delayed_next_cannot_run_after_release_and_close() {
+        let registry = Registry::new();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let handle = registry
+            .mount(
+                Arc::new(DetachedExtension {
+                    gate: Arc::clone(&gate),
+                    result: Arc::new(Mutex::new(Some(send))),
+                }),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&SessionId::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let terminal: crate::Callback = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |value| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(value)
+                })
+            })
+        };
+        assert_eq!(
+            plan.dispatcher
+                .around::<crate::ToolExecute>(Value::Null, terminal)
+                .await,
+            Err(ExtensionError::NextNotCalled)
+        );
+        plan.release();
+        handle.close().await.unwrap();
+        gate.notify_one();
+        assert_eq!(receive.await.unwrap(), Err(ExtensionError::NextExpired));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -1,16 +1,14 @@
 //! Ordered, bounded extension callback dispatch.
-#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 use crate::ExtensionError;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
+use tokio_util::sync::CancellationToken;
 
 pub type Callback =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExtensionError>> + Send + Sync>;
@@ -155,17 +153,62 @@ impl Dispatcher {
     }
 }
 
+#[derive(Default)]
+struct NextState {
+    active: bool,
+    calls: usize,
+    inflight: usize,
+}
+struct NextShared {
+    state: Mutex<NextState>,
+    cancel: CancellationToken,
+    done: tokio::sync::Notify,
+}
+impl NextShared {
+    fn revoke(&self) {
+        self.state.lock().unwrap().active = false;
+        self.cancel.cancel();
+        self.done.notify_waiters();
+    }
+}
+struct RevokeOnDrop(Arc<NextShared>);
+impl Drop for RevokeOnDrop {
+    fn drop(&mut self) {
+        self.0.revoke();
+    }
+}
+struct Inflight(Arc<NextShared>);
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().inflight -= 1;
+        self.0.done.notify_waiters();
+    }
+}
 #[derive(Clone)]
 pub struct Next {
-    calls: Arc<AtomicUsize>,
+    shared: Arc<NextShared>,
     invoke: Callback,
 }
 impl Next {
     pub async fn call(&self, value: Value) -> Result<Value, ExtensionError> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) != 0 {
-            return Err(ExtensionError::NextCalledTwice);
+        {
+            let mut state = self.shared.state.lock().unwrap();
+            if !state.active {
+                return Err(ExtensionError::NextExpired);
+            }
+            if state.calls > 0 {
+                state.calls += 1;
+                return Err(ExtensionError::NextCalledTwice);
+            }
+            state.calls = 1;
+            state.inflight += 1;
         }
-        (self.invoke)(value).await
+        let _inflight = Inflight(Arc::clone(&self.shared));
+        tokio::select! {
+            biased;
+            () = self.shared.cancel.cancelled() => Err(ExtensionError::NextExpired),
+            output = (self.invoke)(value) => output,
+        }
     }
 }
 fn around_at(
@@ -183,11 +226,20 @@ fn around_at(
         };
         let callback = Arc::clone(callback);
         let mount_id = handler.mount_id;
-        let calls = Arc::new(AtomicUsize::new(0));
+        let shared = Arc::new(NextShared {
+            state: Mutex::new(NextState {
+                active: true,
+                calls: 0,
+                inflight: 0,
+            }),
+            cancel: CancellationToken::new(),
+            done: tokio::sync::Notify::new(),
+        });
+        let _revoke = RevokeOnDrop(Arc::clone(&shared));
         let next_handlers = Arc::clone(&handlers);
         let next_terminal = Arc::clone(&terminal);
         let next = Next {
-            calls: Arc::clone(&calls),
+            shared: Arc::clone(&shared),
             invoke: Arc::new(move |v| {
                 around_at(
                     Arc::clone(&next_handlers),
@@ -198,7 +250,17 @@ fn around_at(
             }),
         };
         let result = with_mount(mount_id, callback(value, next)).await;
-        match calls.load(Ordering::SeqCst) {
+        shared.revoke();
+        loop {
+            let notified = shared.done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if shared.state.lock().unwrap().inflight == 0 {
+                break;
+            }
+            notified.await;
+        }
+        match shared.state.lock().unwrap().calls {
             0 => Err(ExtensionError::NextNotCalled),
             1 => result,
             _ => Err(ExtensionError::NextCalledTwice),
@@ -206,19 +268,22 @@ fn around_at(
     })
 }
 
-tokio::task_local! { static ACTIVE_MOUNT: u64; }
+tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
 pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {
-    ACTIVE_MOUNT.scope(id, future).await
+    let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
+    stack.push(id);
+    ACTIVE_MOUNTS.scope(stack, future).await
 }
 pub(crate) fn is_active_mount(id: u64) -> bool {
-    ACTIVE_MOUNT
-        .try_with(|current| *current == id)
+    ACTIVE_MOUNTS
+        .try_with(|stack| stack.contains(&id))
         .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     fn callback(
         f: impl Fn(Value) -> Result<Value, ExtensionError> + Send + Sync + 'static,
     ) -> Callback {
@@ -328,5 +393,54 @@ mod tests {
             twice.around::<ToolExecute>(Value::Null, terminal).await,
             Err(ExtensionError::NextCalledTwice)
         );
+    }
+    #[tokio::test]
+    async fn detached_next_expires_before_terminal() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
+        let callback = {
+            let gate = Arc::clone(&gate);
+            let sender = Arc::clone(&sender);
+            Arc::new(move |_value, next: Next| {
+                let gate = Arc::clone(&gate);
+                let sender = Arc::clone(&sender);
+                Box::pin(async move {
+                    tokio::spawn(async move {
+                        gate.notified().await;
+                        let result = next.call(Value::Null).await;
+                        let _ = sender.lock().unwrap().take().unwrap().send(result);
+                    });
+                    Ok(Value::Null)
+                }) as BoxFuture<'static, Result<Value, ExtensionError>>
+            })
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let terminal = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |v| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(v)
+                }) as BoxFuture<'static, Result<Value, ExtensionError>>
+            })
+        };
+        let dispatcher = Dispatcher::new(vec![handler(
+            ToolExecute::ID,
+            Mode::Around,
+            0,
+            "detach",
+            HandlerFn::Around(callback),
+        )]);
+        assert_eq!(
+            dispatcher
+                .around::<ToolExecute>(Value::Null, terminal)
+                .await,
+            Err(ExtensionError::NextNotCalled)
+        );
+        gate.notify_one();
+        assert_eq!(receiver.await.unwrap(), Err(ExtensionError::NextExpired));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

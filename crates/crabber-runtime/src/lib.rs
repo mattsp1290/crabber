@@ -16,4 +16,6 @@ pub use policy::{
 pub const CRATE_NAME: &str = "crabber-runtime";
 
 #[cfg(test)]
+mod extension_tests;
+#[cfg(test)]
 mod tests;

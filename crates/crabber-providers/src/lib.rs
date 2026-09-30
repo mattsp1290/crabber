@@ -85,6 +85,9 @@ pub struct ModelRequest {
     pub system: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolInfo>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>,
+    pub tool_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
