@@ -1,4 +1,4 @@
-use super::*;
+use super::{EventCursor, MemoryStore, State, StoreError};
 use crate::{
     SnapshotContinuation, SnapshotLimit, SnapshotOutcome, SnapshotPage, SnapshotRequest,
     SnapshotUsage,
@@ -15,6 +15,24 @@ struct Boundary {
     high_water: EventCursor,
     message_offset: usize,
     call_offset: usize,
+}
+
+impl Boundary {
+    fn skip_unrelated(&mut self, state: &State, session: &crabber_core::SessionId) {
+        // Skip unrelated sessions without allocating an index or history vector.
+        while self.message_offset < self.messages
+            && state.messages[self.message_offset].session_id != *session
+        {
+            self.message_offset += 1;
+        }
+        while self.call_offset < self.calls {
+            let call = &state.calls[&state.call_order[self.call_offset]];
+            if state.runs[&call.run_id].session_id == *session {
+                break;
+            }
+            self.call_offset += 1;
+        }
+    }
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -34,21 +52,18 @@ impl MemoryStore {
         Ok(SnapshotContinuation(format!("{signature}:{json}")))
     }
 
-    pub(super) fn read_snapshot(
+    fn snapshot_boundary(
         &self,
         state: &State,
-        request: SnapshotRequest,
-    ) -> Result<SnapshotOutcome, StoreError> {
-        if !state.sessions.contains_key(&request.session_id) {
-            return Err(StoreError::NotFound);
-        }
+        request: &SnapshotRequest,
+    ) -> Result<Boundary, StoreError> {
         let session_hash = digest(&[&request.session_id.0]);
         let revision = state
             .snapshot_revisions
             .get(&request.session_id)
             .copied()
             .unwrap_or(0);
-        let mut boundary = if let Some(token) = request.continuation {
+        let boundary = if let Some(token) = &request.continuation {
             if token.0.len() > 2048 {
                 return Err(StoreError::Validation(
                     "invalid snapshot continuation".into(),
@@ -70,11 +85,6 @@ impl MemoryStore {
                     "snapshot belongs to another session".into(),
                 ));
             }
-            if boundary.revision != revision {
-                return Ok(SnapshotOutcome::Invalidated {
-                    high_water: boundary.high_water,
-                });
-            }
             boundary
         } else {
             Boundary {
@@ -93,6 +103,29 @@ impl MemoryStore {
                 call_offset: 0,
             }
         };
+        Ok(boundary)
+    }
+
+    pub(super) fn read_snapshot(
+        &self,
+        state: &State,
+        request: &SnapshotRequest,
+    ) -> Result<SnapshotOutcome, StoreError> {
+        if !state.sessions.contains_key(&request.session_id) {
+            return Err(StoreError::NotFound);
+        }
+        let mut boundary = self.snapshot_boundary(state, request)?;
+        if boundary.revision
+            != state
+                .snapshot_revisions
+                .get(&request.session_id)
+                .copied()
+                .unwrap_or(0)
+        {
+            return Ok(SnapshotOutcome::Invalidated {
+                high_water: boundary.high_water,
+            });
+        }
         let mut page = SnapshotPage {
             high_water: boundary.high_water,
             messages: Vec::new(),
@@ -101,29 +134,16 @@ impl MemoryStore {
             continuation: None,
         };
         loop {
-            // Skip unrelated sessions without allocating an index or history vector.
-            while boundary.message_offset < boundary.messages
-                && state.messages[boundary.message_offset].session_id != request.session_id
-            {
-                boundary.message_offset += 1;
-            }
-            while boundary.call_offset < boundary.calls {
-                let call = &state.calls[&state.call_order[boundary.call_offset]];
-                if state.runs[&call.run_id].session_id == request.session_id {
-                    break;
-                }
-                boundary.call_offset += 1;
-            }
+            boundary.skip_unrelated(state, &request.session_id);
             let mut usage = page.usage;
-            let encoded;
-            if boundary.message_offset < boundary.messages {
+            let encoded = if boundary.message_offset < boundary.messages {
                 let message = &state.messages[boundary.message_offset];
                 usage.messages = usage.messages.saturating_add(1);
                 usage.parts = usage.parts.saturating_add(message.parts.len());
                 usage.text_bytes = message.parts.iter().fold(usage.text_bytes, |n, p| {
                     n.saturating_add(crate::snapshot::text_bytes(&p.content))
                 });
-                encoded = if usage.exceeded(request.limits).is_none() {
+                if usage.exceeded(request.limits).is_none() {
                     crate::snapshot::encoded_bytes(
                         message,
                         request
@@ -133,7 +153,7 @@ impl MemoryStore {
                     )
                 } else {
                     None
-                };
+                }
             } else if boundary.call_offset < boundary.calls {
                 let call = &state.calls[&state.call_order[boundary.call_offset]];
                 usage.tool_calls = usage.tool_calls.saturating_add(1);
@@ -142,7 +162,7 @@ impl MemoryStore {
                         n.saturating_add(crate::snapshot::text_bytes(b))
                     });
                 }
-                encoded = if usage.exceeded(request.limits).is_none() {
+                if usage.exceeded(request.limits).is_none() {
                     crate::snapshot::encoded_bytes(
                         call,
                         request
@@ -152,10 +172,10 @@ impl MemoryStore {
                     )
                 } else {
                     None
-                };
+                }
             } else {
                 return Ok(SnapshotOutcome::Page(page));
-            }
+            };
             let limit = usage.exceeded(request.limits).or_else(|| {
                 if let Some(bytes) = encoded {
                     usage.encoded_bytes = usage.encoded_bytes.saturating_add(bytes);
@@ -195,7 +215,10 @@ impl MemoryStore {
 mod snapshot_tests {
     use super::*;
     use crate::{SnapshotLimits, SnapshotOutcome};
-    use crabber_core::{ContentBlock, PartId, Role};
+    use crabber_core::{
+        ContentBlock, Message, MessageId, Part, PartId, PartKind, Role, Session, SessionId,
+    };
+    use time::OffsetDateTime;
 
     fn message(session: &SessionId, id: &str, text: &str) -> Message {
         let id = MessageId::from(id);
@@ -261,7 +284,7 @@ mod snapshot_tests {
         let mut continuation = None;
         let allocation = allocation_counter::measure(|| {
             let SnapshotOutcome::Page(page) =
-                store.read_snapshot(&state, request(&session)).unwrap()
+                store.read_snapshot(&state, &request(&session)).unwrap()
             else {
                 panic!("page")
             };
@@ -274,7 +297,7 @@ mod snapshot_tests {
         next.limits.text_bytes = usize::MAX;
         let allocation = allocation_counter::measure(|| {
             assert!(matches!(
-                store.read_snapshot(&state, next).unwrap(),
+                store.read_snapshot(&state, &next).unwrap(),
                 SnapshotOutcome::Limited {
                     limit: SnapshotLimit::EncodedBytes,
                     ..
@@ -330,7 +353,7 @@ mod snapshot_tests {
                 limit,
                 continuation,
                 ..
-            } = store.read_snapshot(&state, request).unwrap()
+            } = store.read_snapshot(&state, &request).unwrap()
             else {
                 panic!("limit")
             };
@@ -339,7 +362,7 @@ mod snapshot_tests {
             retry.limits.text_bytes = 2;
             retry.limits.encoded_bytes = bytes;
             retry.continuation = Some(continuation);
-            let SnapshotOutcome::Page(page) = store.read_snapshot(&state, retry).unwrap() else {
+            let SnapshotOutcome::Page(page) = store.read_snapshot(&state, &retry).unwrap() else {
                 panic!("retry page")
             };
             assert_eq!(page.messages, vec![first.clone()]);
@@ -354,7 +377,7 @@ mod snapshot_tests {
         let mut state = store.state.lock().unwrap();
         state.messages.push(message(&session, "one", "one"));
         state.messages.push(message(&session, "two", "two"));
-        let SnapshotOutcome::Page(page) = store.read_snapshot(&state, request(&session)).unwrap()
+        let SnapshotOutcome::Page(page) = store.read_snapshot(&state, &request(&session)).unwrap()
         else {
             panic!("page")
         };
@@ -363,7 +386,7 @@ mod snapshot_tests {
         let mut tampered = next.clone();
         tampered.continuation.as_mut().unwrap().0.push(' ');
         assert!(matches!(
-            store.read_snapshot(&state, tampered),
+            store.read_snapshot(&state, &tampered),
             Err(StoreError::Validation(_))
         ));
         state.snapshot_revisions.insert(session.clone(), 1);
@@ -371,10 +394,10 @@ mod snapshot_tests {
             text: "changed".into(),
         };
         assert!(
-            matches!(store.read_snapshot(&state, next).unwrap(), SnapshotOutcome::Invalidated { high_water } if high_water == page.high_water)
+            matches!(store.read_snapshot(&state, &next).unwrap(), SnapshotOutcome::Invalidated { high_water } if high_water == page.high_water)
         );
         let SnapshotOutcome::Page(restarted) =
-            store.read_snapshot(&state, request(&session)).unwrap()
+            store.read_snapshot(&state, &request(&session)).unwrap()
         else {
             panic!("restart")
         };

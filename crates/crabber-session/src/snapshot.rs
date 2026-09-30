@@ -69,7 +69,8 @@ pub enum SnapshotOutcome {
         limit: SnapshotLimit,
         continuation: SnapshotContinuation,
     },
-    /// A record captured at the boundary changed. Discard all accumulated pages
+    /// Captured data changed, or the backend conservatively invalidated after
+    /// a session mutation. Discard all accumulated pages
     /// and restart without a continuation. Never combine old pages with a new
     /// boundary or begin event consumption from an incomplete snapshot.
     Invalidated {

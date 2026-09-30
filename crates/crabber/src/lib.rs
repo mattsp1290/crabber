@@ -21,6 +21,11 @@ pub use crabber_session as session;
 #[cfg(feature = "wasm")]
 pub use crabber_wasm as wasm;
 
+pub use crabber_session::{
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -28,8 +33,3 @@ mod tests {
         assert_eq!(crate::core::CRATE_NAME, "crabber-core");
     }
 }
-
-pub use crabber_session::{
-    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
-    SnapshotRequest, SnapshotUsage,
-};

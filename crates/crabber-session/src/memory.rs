@@ -15,6 +15,9 @@ use std::{
 };
 use time::OffsetDateTime;
 
+/// Volatile persistence. Snapshot continuations work across clones of this Store.
+/// Appends preserve their frozen cutoffs; any message-part or tool mutation in
+/// the session conservatively invalidates continuations, even for newer records.
 #[derive(Clone)]
 pub struct MemoryStore {
     state: Arc<Mutex<State>>,
@@ -463,7 +466,7 @@ impl Store for MemoryStore {
         request: crate::SnapshotRequest,
     ) -> Result<crate::SnapshotOutcome, StoreError> {
         let state = self.state.lock().expect("memory store poisoned");
-        self.read_snapshot(&state, request)
+        self.read_snapshot(&state, &request)
     }
 
     async fn list_messages(
