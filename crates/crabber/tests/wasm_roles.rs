@@ -1,10 +1,18 @@
 #![cfg(feature = "wasm")]
 use async_trait::async_trait;
+#[cfg(feature = "postgres")]
+use crabber::session::PostgresStore;
 use crabber::{
     Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
     StreamDelta, ToolDefinition, ToolExecutor,
-    core::{ToolCallId, ToolInfo},
-    session::{MemoryStore, Store},
+    core::{
+        Clock, ContentBlock, EventKind, EventRecord, ManualClock, Message, MessageId, Part, PartId,
+        PartKind, Role, RunId, RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord,
+        ToolCallStatus, ToolInfo,
+    },
+    extension::{Extension, Registrar, Scope},
+    runtime::{InterruptPolicy, PermissionPolicy},
+    session::{AdmitRequest, MemoryStore, Store},
     wasm::{InstanceMode, Limits, ModuleConfig},
 };
 use serde_json::{Value, json};
@@ -15,6 +23,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 fn fixture(name: &str) -> ModuleConfig {
@@ -89,6 +98,269 @@ fn native_tool(name: &str, calls: &Arc<AtomicUsize>) -> Arc<ToolDefinition> {
         },
         executor: Arc::new(CountTool(Arc::clone(calls))),
     })
+}
+
+struct NativeResumeExtension(Arc<AtomicUsize>);
+
+#[async_trait]
+impl Extension for NativeResumeExtension {
+    fn id(&self) -> &'static str {
+        "test/native-resume"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        String::new()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        registrar.tool(native_tool("native-resume", &self.0));
+        Ok(())
+    }
+}
+
+struct PausePolicy;
+
+impl PermissionPolicy for PausePolicy {
+    fn decide(&self, _tool: &ToolInfo, _arguments: &Value) -> PermissionDecision {
+        PermissionDecision::Allow
+    }
+    fn interrupt_policy(&self, _tool: &ToolInfo, _arguments: &Value) -> InterruptPolicy {
+        InterruptPolicy::Pause
+    }
+}
+
+async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc<dyn Store>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first = Agent::builder()
+        .store(Arc::clone(&store))
+        .provider(Arc::new(provider(call("native-resume", &json!({})))))
+        .config(config())
+        .policy(Arc::new(PausePolicy))
+        .extension(
+            Arc::new(NativeResumeExtension(Arc::clone(&calls))),
+            Scope::Global,
+        )
+        .wasm_extension(fixture("echo-tool"))
+        .build()
+        .unwrap();
+    let paused = first
+        .prompt(None, "pause")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let fingerprint = store
+        .get_run(&paused.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_fingerprint;
+    drop(first);
+
+    let second = Agent::builder()
+        .store(Arc::clone(&resume_store))
+        .provider(Arc::new(FakeProvider::scripted(vec![vec![
+            StreamDelta::TextDelta("resumed".into()),
+            StreamDelta::Completed,
+        ]])))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .extension(
+            Arc::new(NativeResumeExtension(Arc::clone(&calls))),
+            Scope::Global,
+        )
+        .wasm_extension(fixture("echo-tool"))
+        .build()
+        .unwrap();
+    let result = second.resume(&paused.run_id).await.unwrap();
+    assert_eq!(result.run_id, paused.run_id);
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        resume_store
+            .get_run(&paused.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_fingerprint,
+        fingerprint
+    );
+}
+
+#[tokio::test]
+async fn fresh_agent_resumes_native_and_wasm_plan() {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    fresh_agent_resumes_paused_run(Arc::clone(&store), store).await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn freshly_connected_postgres_agent_resumes_native_and_wasm_plan() {
+    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent)
+            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
+        {
+            panic!("CRABBER_TEST_POSTGRES_URL is required")
+        }
+        Err(std::env::VarError::NotPresent) => return,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("CRABBER_TEST_POSTGRES_URL must be valid Unicode")
+        }
+    };
+    PostgresStore::migrate(&url).await.unwrap();
+    let first_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
+    // Reconnect between admission and resume to exercise the durable host path.
+    let second_store: Arc<dyn Store> = Arc::new(PostgresStore::connect(&url).await.unwrap());
+    fresh_agent_resumes_paused_run(first_store, second_store).await;
+}
+
+async fn admit_expired_retry_safe_run(
+    store: &Arc<dyn Store>,
+    clock: &ManualClock,
+    fingerprint: String,
+) -> RunId {
+    let session_id = SessionId::new();
+    let message_id = MessageId::new();
+    let now = clock.now();
+    let admitted = store
+        .admit_run(AdmitRequest {
+            session_id: None,
+            workspace_id: "test".into(),
+            directory: ".".into(),
+            title: "recovery".into(),
+            user_message: Message {
+                id: message_id.clone(),
+                session_id,
+                run_id: None,
+                role: Role::User,
+                parent_id: None,
+                parts: vec![Part {
+                    id: PartId::new(),
+                    message_id,
+                    ordinal: 0,
+                    kind: PartKind::UserInputText,
+                    content: ContentBlock::Text {
+                        text: "recover".into(),
+                    },
+                }],
+                created_at: now,
+            },
+            config_hash: "test".into(),
+            plan_fingerprint: fingerprint,
+            owner: "expired".into(),
+            lease: Duration::from_secs(30),
+        })
+        .await
+        .unwrap();
+    let event = EventRecord {
+        cursor: None,
+        session_id: admitted.session.id.clone(),
+        run_id: admitted.run.id.clone(),
+        turn_id: None,
+        kind: EventKind::ToolCallPending,
+        payload: Value::Null,
+        correlation: None,
+        live_only: false,
+        created_at: now,
+    };
+    store
+        .execution(admitted.fence)
+        .await
+        .unwrap()
+        .create_tool_call(
+            ToolCallRecord {
+                id: ToolCallId::new(),
+                run_id: admitted.run.id.clone(),
+                name: "native-resume".into(),
+                arguments: json!({}),
+                status: ToolCallStatus::Pending,
+                retry_safe: true,
+                result: None,
+            },
+            event,
+        )
+        .await
+        .unwrap();
+    clock.set(now + Duration::from_secs(31));
+    admitted.run.id
+}
+
+async fn fresh_agent_recovers_expired_running_run(
+    store: Arc<dyn Store>,
+    resume_store: Arc<dyn Store>,
+    clock: Arc<ManualClock>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first = Agent::builder()
+        .store(Arc::clone(&store))
+        .provider(Arc::new(FakeProvider::scripted(vec![vec![
+            StreamDelta::TextDelta("seed".into()),
+            StreamDelta::Completed,
+        ]])))
+        .config(config())
+        .extension(
+            Arc::new(NativeResumeExtension(Arc::clone(&calls))),
+            Scope::Global,
+        )
+        .wasm_extension(fixture("echo-tool"))
+        .build()
+        .unwrap();
+    let seed = first
+        .prompt(None, "seed")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    let fingerprint = store
+        .get_run(&seed.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_fingerprint;
+    drop(first);
+    let run_id = admit_expired_retry_safe_run(&store, &clock, fingerprint.clone()).await;
+
+    let second = Agent::builder()
+        .store(Arc::clone(&resume_store))
+        .provider(Arc::new(FakeProvider::scripted(Vec::new())))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .extension(
+            Arc::new(NativeResumeExtension(Arc::clone(&calls))),
+            Scope::Global,
+        )
+        .wasm_extension(fixture("echo-tool"))
+        .build()
+        .unwrap();
+    let recovered = second.recover().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].run_id, run_id);
+    assert_eq!(recovered[0].status, RunStatus::Interrupted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        resume_store
+            .get_run(&run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_fingerprint,
+        fingerprint
+    );
+}
+
+#[tokio::test]
+async fn fresh_agent_recovers_native_and_wasm_plan() {
+    let clock = Arc::new(ManualClock::new(
+        SystemClock.now() - Duration::from_hours(24),
+    ));
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::with_clock(clock.clone()));
+    fresh_agent_recovers_expired_running_run(Arc::clone(&store), store, clock).await;
 }
 
 #[tokio::test]
