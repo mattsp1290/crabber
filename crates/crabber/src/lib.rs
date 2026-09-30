@@ -1,0 +1,23 @@
+#![doc = include_str!("../../../README.md")]
+
+mod agent;
+
+pub use agent::{Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
+pub use crabber_core::{EventKind, EventRecord, SessionId};
+pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
+pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
+pub use crabber_runtime::{PermissionDecision, RunResult, RuntimeError, StaticPolicy};
+
+pub use crabber_core as core;
+pub use crabber_extension as extension;
+pub use crabber_providers as providers;
+pub use crabber_runtime as runtime;
+pub use crabber_session as session;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn core_is_available() {
+        assert_eq!(crate::core::CRATE_NAME, "crabber-core");
+    }
+}

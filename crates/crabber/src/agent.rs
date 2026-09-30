@@ -1,0 +1,327 @@
+use crabber_core::{EventRecord, RunId, SessionId};
+use crabber_extension::{PromptSection, StaticPlanProvider, ToolDefinition};
+use crabber_providers::{Resolver, Selection};
+use crabber_runtime::{Observer, Orchestrator, PermissionPolicy, Request, RunResult, RuntimeError};
+use crabber_session::{MemoryStore, Store};
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+/// Host-owned settings frozen into each prompt request.
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub selection: Selection,
+    pub workspace_id: String,
+    pub directory: String,
+    pub title: String,
+    pub system_prompt: Option<String>,
+}
+
+impl AgentConfig {
+    #[must_use]
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            selection,
+            workspace_id: "default".into(),
+            directory: ".".into(),
+            title: "Crabber session".into(),
+            system_prompt: None,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error("an agent needs a provider resolver")]
+    NoProvider,
+    #[error("an agent needs a configuration")]
+    NoConfig,
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
+}
+
+pub struct AgentBuilder {
+    store: Option<Arc<dyn Store>>,
+    resolver: Option<Arc<dyn Resolver>>,
+    config: Option<AgentConfig>,
+    tools: Vec<Arc<ToolDefinition>>,
+    prompts: Vec<Arc<PromptSection>>,
+    policy: Option<Arc<dyn PermissionPolicy>>,
+}
+
+impl AgentBuilder {
+    #[must_use]
+    pub fn memory(mut self) -> Self {
+        self.store = Some(Arc::new(MemoryStore::new()));
+        self
+    }
+
+    #[must_use]
+    pub fn store(mut self, store: Arc<dyn Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub fn provider(mut self, provider: Arc<dyn Resolver>) -> Self {
+        self.resolver = Some(provider);
+        self
+    }
+
+    #[must_use]
+    pub fn config(mut self, config: AgentConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn tool(mut self, tool: Arc<ToolDefinition>) -> Self {
+        self.tools.push(tool);
+        self
+    }
+
+    #[must_use]
+    pub fn prompt_section(mut self, section: Arc<PromptSection>) -> Self {
+        self.prompts.push(section);
+        self
+    }
+
+    #[must_use]
+    pub fn policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Builds the embeddable agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider, config, or runtime dependencies are invalid.
+    pub fn build(self) -> Result<Agent, BuildError> {
+        let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
+        let config = self.config.ok_or(BuildError::NoConfig)?;
+        let (events, _) = broadcast::channel(256);
+        let observer = Arc::new(EventBroadcaster {
+            events: events.clone(),
+        });
+        let mut runtime = Orchestrator::builder()
+            .store(self.store.unwrap_or_else(|| Arc::new(MemoryStore::new())))
+            .resolver(resolver)
+            .plan_provider(Arc::new(StaticPlanProvider::new(self.tools, self.prompts)))
+            .observer(observer);
+        if let Some(policy) = self.policy {
+            runtime = runtime.policy(policy);
+        }
+        Ok(Agent {
+            runtime: runtime.build()?,
+            config,
+            events,
+        })
+    }
+}
+
+struct EventBroadcaster {
+    events: broadcast::Sender<Arc<EventRecord>>,
+}
+
+impl Observer for EventBroadcaster {
+    fn emit(&self, event: &EventRecord) {
+        let _ = self.events.send(Arc::new(event.clone()));
+    }
+}
+
+/// A configured agent ready to prompt a new or existing session.
+pub struct Agent {
+    runtime: Orchestrator,
+    config: AgentConfig,
+    events: broadcast::Sender<Arc<EventRecord>>,
+}
+
+impl Agent {
+    #[must_use]
+    pub fn builder() -> AgentBuilder {
+        AgentBuilder {
+            store: None,
+            resolver: None,
+            config: None,
+            tools: Vec::new(),
+            prompts: Vec::new(),
+            policy: None,
+        }
+    }
+
+    /// Starts a prompt and returns a handle for events and completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns admission, provider, or plan failures from the runtime.
+    pub async fn prompt(
+        &self,
+        session_id: Option<SessionId>,
+        text: impl Into<String>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let receiver = self.events.subscribe();
+        let inner = self
+            .runtime
+            .start(Request {
+                session_id,
+                workspace_id: self.config.workspace_id.clone(),
+                directory: self.config.directory.clone(),
+                title: self.config.title.clone(),
+                text: text.into(),
+                selection: self.config.selection.clone(),
+                system_prompt: self.config.system_prompt.clone(),
+            })
+            .await?;
+        Ok(RunHandle {
+            run_id: inner.run_id().clone(),
+            completion: inner.completion_signal(),
+            inner,
+            events: Some(receiver),
+        })
+    }
+}
+
+/// Filters one agent's event broadcast to a single run.
+pub struct RunEvents {
+    run_id: RunId,
+    receiver: broadcast::Receiver<Arc<EventRecord>>,
+    completion: tokio::sync::watch::Receiver<bool>,
+}
+
+impl RunEvents {
+    /// Receives the next event for this run, or `None` once the run task ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns a broadcast lag or closure error if events cannot be read.
+    pub async fn recv(&mut self) -> Result<Option<Arc<EventRecord>>, broadcast::error::RecvError> {
+        loop {
+            if *self.completion.borrow() {
+                match self.receiver.try_recv() {
+                    Ok(event) if event.run_id == self.run_id => return Ok(Some(event)),
+                    Ok(_) => continue,
+                    Err(
+                        broadcast::error::TryRecvError::Empty
+                        | broadcast::error::TryRecvError::Closed,
+                    ) => return Ok(None),
+                    Err(broadcast::error::TryRecvError::Lagged(count)) => {
+                        return Err(broadcast::error::RecvError::Lagged(count));
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                event = self.receiver.recv() => {
+                    let event = event?;
+                    if event.run_id == self.run_id { return Ok(Some(event)); }
+                }
+                changed = self.completion.changed() => {
+                    if changed.is_err() { return Ok(None); }
+                }
+            }
+        }
+    }
+}
+
+/// A running prompt with a live event receiver and terminal result.
+pub struct RunHandle {
+    run_id: RunId,
+    inner: crabber_runtime::RunHandle,
+    events: Option<broadcast::Receiver<Arc<EventRecord>>>,
+    completion: tokio::sync::watch::Receiver<bool>,
+}
+
+impl RunHandle {
+    #[must_use]
+    pub fn session_id(&self) -> &SessionId {
+        self.inner.session_id()
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+
+    /// Takes the live event receiver. Call this before waiting for completion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the receiver was already taken from this handle.
+    #[must_use]
+    pub fn events(&mut self) -> RunEvents {
+        RunEvents {
+            run_id: self.run_id.clone(),
+            receiver: self.events.take().expect("events receiver already taken"),
+            completion: self.completion.clone(),
+        }
+    }
+
+    /// Waits for the run's terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Returns a runtime error if the run fails.
+    pub async fn done(self) -> Result<RunResult, RuntimeError> {
+        self.inner.done().await
+    }
+
+    /// Queues a steering message for the next model request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the inbox write fails.
+    pub async fn steer(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
+        self.inner.steer(text).await
+    }
+
+    /// Queues a follow-up message for the next idle turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the inbox write fails.
+    pub async fn follow_up(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
+        self.inner.follow_up(text).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, StreamDelta};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn provider_failure_ends_events_and_done_returns_error() {
+        let provider = FakeProvider::scripted(vec![vec![
+            StreamDelta::TextDelta("partial".into()),
+            StreamDelta::Error(ProviderError {
+                kind: ProviderErrorKind::Server,
+                message: "scripted failure".into(),
+                retryable: false,
+            }),
+        ]]);
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(provider))
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .build()
+            .unwrap();
+        let mut run = agent.prompt(None, "fail").await.unwrap();
+        let mut events = run.events();
+        let observed = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut kinds = Vec::new();
+            while let Some(event) = events.recv().await.unwrap() {
+                kinds.push(event.kind.clone());
+            }
+            kinds
+        })
+        .await
+        .expect("event stream must end after provider failure");
+        assert!(observed.contains(&crabber_core::EventKind::TextDelta));
+        assert!(!observed.contains(&crabber_core::EventKind::RunSettled));
+        assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
+    }
+}

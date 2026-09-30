@@ -13,6 +13,14 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Local agent artifacts
+.agents/plans/
+.agents/reviews/
+reviews/
+
+# Generated WASM fixtures
+fixtures/wasm/*.wasm
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
