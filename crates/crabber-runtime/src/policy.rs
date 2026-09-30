@@ -9,8 +9,17 @@ pub enum PermissionDecision {
     Ask,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptPolicy {
+    Continue,
+    Pause,
+}
+
 pub trait PermissionPolicy: Send + Sync {
     fn decide(&self, tool: &ToolInfo, arguments: &Value) -> PermissionDecision;
+    fn interrupt_policy(&self, _tool: &ToolInfo, _arguments: &Value) -> InterruptPolicy {
+        InterruptPolicy::Continue
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -5,7 +5,10 @@ use crabber_extension::{
     StaticPlanProvider, ToolDefinition,
 };
 use crabber_providers::{Resolver, Selection};
-use crabber_runtime::{Observer, Orchestrator, PermissionPolicy, Request, RunResult, RuntimeError};
+use crabber_runtime::{
+    CompactionPolicy, ExecutionMode, Observer, Orchestrator, PermissionPolicy, Request, RunResult,
+    RuntimeError,
+};
 use crabber_session::{MemoryStore, Store};
 use std::sync::Arc;
 use tokio::sync::{OnceCell, broadcast};
@@ -53,6 +56,8 @@ pub struct AgentBuilder {
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogConfig>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    execution_mode: ExecutionMode,
+    compaction: CompactionPolicy,
 }
 
 impl AgentBuilder {
@@ -125,6 +130,18 @@ impl AgentBuilder {
     }
 
     #[must_use]
+    pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
+    }
+
+    #[must_use]
+    pub fn compaction(mut self, policy: CompactionPolicy) -> Self {
+        self.compaction = policy;
+        self
+    }
+
+    #[must_use]
     pub fn extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
         self.extensions.push((extension, scope));
         self
@@ -172,6 +189,8 @@ impl AgentBuilder {
             .store(self.store.unwrap_or_else(|| Arc::new(MemoryStore::new())))
             .resolver(resolver)
             .plan_provider(plan_provider)
+            .execution_mode(self.execution_mode)
+            .compaction(self.compaction)
             .observer(observer);
         if let Some(policy) = self.policy {
             runtime = runtime.policy(policy);
@@ -261,6 +280,8 @@ impl Agent {
             #[cfg(feature = "datadog")]
             datadog: None,
             extensions: Vec::new(),
+            execution_mode: ExecutionMode::Sequential,
+            compaction: CompactionPolicy::default(),
         }
     }
 
@@ -312,6 +333,28 @@ impl Agent {
             inner,
             events: Some(receiver),
         })
+    }
+
+    pub fn interrupt(&self, run: &RunHandle) {
+        run.interrupt();
+    }
+
+    /// Resumes a paused or expired run from its durable tool calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease cannot be claimed or the plan changed.
+    pub async fn resume(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
+        self.runtime.resume(run_id).await
+    }
+
+    /// Reclaims all expired unfinished runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store or execution error for a claimed run.
+    pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+        self.runtime.recover().await
     }
 }
 
@@ -366,6 +409,9 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
+    pub fn interrupt(&self) {
+        self.inner.interrupt();
+    }
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
         self.inner.session_id()
