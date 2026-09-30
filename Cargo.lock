@@ -183,6 +183,7 @@ dependencies = [
 name = "crabber"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "crabber-auth",
  "crabber-core",
  "crabber-extension",
@@ -229,10 +230,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "crabber-core",
+ "crabber-providers",
+ "futures",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -266,6 +271,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -940,6 +946,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "native-extension"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1755,6 +1771,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

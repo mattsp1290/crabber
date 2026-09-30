@@ -8,7 +8,13 @@ use crabber_core::{
     RunFence, RunId, RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus,
     ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
-use crabber_extension::{RunPlan, RunPlanProvider, ToolDefinition};
+use crabber_extension::{
+    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardDecision, HostServices,
+    ModelCompleted, ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted,
+    RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, ToolContext,
+    ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted, TurnPrepare,
+    TurnStarted,
+};
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
     Streamer,
@@ -26,6 +32,7 @@ use std::{
 };
 use time::OffsetDateTime;
 use tokio::sync::{oneshot, watch};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -135,6 +142,7 @@ pub struct Orchestrator {
     policy: Arc<dyn PermissionPolicy>,
     approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
+    host_services: HostServices,
     max_turns: usize,
     heartbeat_interval: Duration,
 }
@@ -150,6 +158,7 @@ pub struct OrchestratorBuilder {
     policy: Option<Arc<dyn PermissionPolicy>>,
     approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
+    host_services: Option<HostServices>,
     max_turns: Option<usize>,
     heartbeat_interval: Option<Duration>,
 }
@@ -201,6 +210,11 @@ impl OrchestratorBuilder {
         self
     }
     #[must_use]
+    pub fn host_services(mut self, value: HostServices) -> Self {
+        self.host_services = Some(value);
+        self
+    }
+    #[must_use]
     pub fn max_turns(mut self, value: usize) -> Self {
         self.max_turns = Some(value);
         self
@@ -243,6 +257,7 @@ impl OrchestratorBuilder {
             tool_pipeline: self
                 .tool_pipeline
                 .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
+            host_services: self.host_services.unwrap_or_default(),
             max_turns: self.max_turns.unwrap_or(64),
             heartbeat_interval,
         })
@@ -507,22 +522,39 @@ impl Orchestrator {
         plan: &RunPlan,
         lease_lost: &AtomicBool,
     ) -> Result<Usage, RuntimeError> {
-        self.emit_durable(execution, session_id, run_id, EventKind::RunAdmitted)
+        plan.dispatcher
+            .gate::<RunBeforeExecute>(json!({"run_id": run_id.to_string()}))
+            .await
+            .map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        self.emit_durable(execution, session_id, run_id, plan, EventKind::RunAdmitted)
             .await?;
-        self.emit_durable(execution, session_id, run_id, EventKind::RunStarted)
+        self.emit_durable(execution, session_id, run_id, plan, EventKind::RunStarted)
             .await?;
-        let streamer = self.resolver.resolve(&request.selection).await?;
+        let streamer = if let Some(provider) = plan
+            .providers
+            .iter()
+            .find(|p| p.info().id == request.selection.provider_id)
+        {
+            provider.build(&request.selection).await?
+        } else {
+            self.resolver.resolve(&request.selection).await?
+        };
         let mut usage = Usage::default();
         for _ in 0..self.max_turns {
-            self.emit_durable(execution, session_id, run_id, EventKind::TurnStarted)
+            self.emit_durable(execution, session_id, run_id, plan, EventKind::TurnStarted)
                 .await?;
             let snapshot = self.snapshot(run_id, session_id, request, plan).await?;
+            plan.dispatcher
+                .hook::<TurnPrepare>(json!({"run_id":run_id.to_string()}))
+                .await
+                .map_err(|e| RuntimeError::Extension(e.to_string()))?;
             let (calls, turn_usage) = self
                 .model_turn(
                     execution,
                     run_id,
                     session_id,
                     &snapshot,
+                    plan,
                     Arc::clone(&streamer),
                     lease_lost,
                 )
@@ -538,8 +570,14 @@ impl Orchestrator {
             if !had_tools && claimed == 0 {
                 claimed += self.claim_input(execution, InboxKind::FollowUp).await?;
             }
-            self.emit_durable(execution, session_id, run_id, EventKind::TurnCompleted)
-                .await?;
+            self.emit_durable(
+                execution,
+                session_id,
+                run_id,
+                plan,
+                EventKind::TurnCompleted,
+            )
+            .await?;
             if !had_tools && claimed == 0 {
                 ensure_lease(lease_lost)?;
                 match execution
@@ -585,6 +623,19 @@ impl Orchestrator {
             }
             system.push_str(&prompt.text);
         }
+        let contributions = plan
+            .dispatcher
+            .transform::<ContextAssemble>(json!({"system_prelude":[],"user_suffix":[]}))
+            .await
+            .map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        if let Some(prelude) = contributions
+            .get("system_prelude")
+            .and_then(Value::as_array)
+        {
+            for line in prelude.iter().filter_map(Value::as_str) {
+                system = format!("{line}\n{system}");
+            }
+        }
         Ok(TurnSnapshot {
             identity: RequestIdentity {
                 session_id: session_id.clone(),
@@ -625,11 +676,24 @@ impl Orchestrator {
         execution: &dyn ExecutionStore,
         session_id: &SessionId,
         run_id: &RunId,
+        plan: &RunPlan,
         kind: EventKind,
     ) -> Result<(), RuntimeError> {
         let event = self.event(session_id, run_id, kind);
         execution.append_event(event.clone()).await?;
         self.observer.emit(&event);
+        let projection = serde_json::to_value(&event).unwrap_or(Value::Null);
+        plan.dispatcher
+            .notify::<EventPublished>(projection.clone())
+            .await;
+        match event.kind {
+            EventKind::RunAdmitted => plan.dispatcher.notify::<RunAdmitted>(projection).await,
+            EventKind::RunStarted => plan.dispatcher.notify::<RunStarted>(projection).await,
+            EventKind::TurnStarted => plan.dispatcher.notify::<TurnStarted>(projection).await,
+            EventKind::TurnCompleted => plan.dispatcher.notify::<TurnCompleted>(projection).await,
+            EventKind::RunSettled => plan.dispatcher.notify::<RunSettled>(projection).await,
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -662,12 +726,14 @@ struct PendingCall {
 
 impl Orchestrator {
     #[allow(clippy::too_many_lines)] // Streaming assembly and durable assistant commit form one turn boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn model_turn(
         &self,
         execution: &dyn ExecutionStore,
         run_id: &RunId,
         session_id: &SessionId,
         snapshot: &TurnSnapshot,
+        plan: &RunPlan,
         streamer: Arc<dyn Streamer>,
         lease_lost: &AtomicBool,
     ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
@@ -683,7 +749,43 @@ impl Orchestrator {
             inner: streamer,
             calls: Arc::clone(&calls_to_next),
         });
-        let mut stream = self.model_stream.stream(request, next).await?;
+        plan.dispatcher.notify::<ModelRequested>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"message_count":snapshot.messages.len()})).await;
+        let stream_slot = Arc::new(std::sync::Mutex::new(None));
+        let error_slot = Arc::new(std::sync::Mutex::new(None));
+        let terminal: Callback = {
+            let model_stream = Arc::clone(&self.model_stream);
+            let stream_slot = Arc::clone(&stream_slot);
+            let error_slot = Arc::clone(&error_slot);
+            Arc::new(move |_| {
+                let model_stream = Arc::clone(&model_stream);
+                let next = Arc::clone(&next);
+                let request = request.clone();
+                let stream_slot = Arc::clone(&stream_slot);
+                let error_slot = Arc::clone(&error_slot);
+                Box::pin(async move {
+                    match model_stream.stream(request, next).await {
+                        Ok(stream) => {
+                            *stream_slot.lock().unwrap() = Some(stream);
+                            Ok(Value::Null)
+                        }
+                        Err(error) => {
+                            *error_slot.lock().unwrap() = Some(error);
+                            Err(crabber_extension::ExtensionError::Plan(
+                                "model stream failed".into(),
+                            ))
+                        }
+                    }
+                })
+            })
+        };
+        let dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id}),terminal).await;
+        if let Some(error) = error_slot.lock().unwrap().take() {
+            return Err(error.into());
+        }
+        dispatched.map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        let mut stream = stream_slot.lock().unwrap().take().ok_or_else(|| {
+            RuntimeError::Extension("model stream did not produce a stream".into())
+        })?;
         if calls_to_next.load(Ordering::SeqCst) != 1 {
             return Err(invalid_provider(
                 "model stream wrapper did not call provider exactly once",
@@ -810,11 +912,21 @@ impl Orchestrator {
         };
         ensure_lease(lease_lost)?;
         execution.append_message(message).await?;
-        self.emit_durable(execution, session_id, run_id, EventKind::MessageCommitted)
-            .await?;
+        self.emit_durable(
+            execution,
+            session_id,
+            run_id,
+            plan,
+            EventKind::MessageCommitted,
+        )
+        .await?;
+        plan.dispatcher
+            .notify::<ModelCompleted>(json!({"usage":usage}))
+            .await;
         Ok((calls, usage))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn execute_tool(
         &self,
         execution: &dyn ExecutionStore,
@@ -832,11 +944,16 @@ impl Orchestrator {
         let raw = call.arguments.unwrap_or(Value::String(call.raw));
         let prepared = if let Some(tool) = &definition {
             match validate_arguments(&tool.info, &raw) {
-                Ok(()) => self
-                    .tool_pipeline
-                    .prepare(&tool.info, raw.clone())
-                    .await
-                    .and_then(|value| validate_arguments(&tool.info, &value).map(|()| value)),
+                Ok(()) => {
+                    let piped = self.tool_pipeline.prepare(&tool.info, raw.clone()).await;
+                    match piped {
+                        Ok(value) => match plan.dispatcher.transform::<ToolPrepare>(json!({"name":tool.info.name,"call_id":call.id.to_string(),"input":value})).await {
+                            Ok(output) => { let input=output.get("input").cloned().unwrap_or(output); validate_arguments(&tool.info,&input).map(|()| input) },
+                            Err(error) => Err(error.to_string()),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
                 Err(error) => Err(error),
             }
         } else {
@@ -859,22 +976,47 @@ impl Orchestrator {
             )
             .await?;
         self.observer.emit(&pending);
+        plan.dispatcher
+            .notify::<EventPublished>(serde_json::to_value(&pending).unwrap_or(Value::Null))
+            .await;
         let running = self.event(session_id, run_id, EventKind::ToolCallRunning);
         execution.claim_tool_call(&call.id, running.clone()).await?;
         self.observer.emit(&running);
+        plan.dispatcher
+            .notify::<EventPublished>(serde_json::to_value(&running).unwrap_or(Value::Null))
+            .await;
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;
         ensure_lease(lease_lost)?;
         let outcome: Result<Value, String> = match (definition, prepared) {
             (Some(tool), Ok(arguments)) => {
-                self.permit_and_execute(execution, session_id, run_id, &tool, arguments, lease_lost)
-                    .await?
+                self.permit_and_execute(
+                    execution, session_id, run_id, &call.id, plan, &tool, arguments, lease_lost,
+                )
+                .await?
             }
             (_, Err(error)) => Err(error),
             (None, Ok(_)) => Err("unknown tool".into()),
         };
         ensure_lease(lease_lost)?;
+        let outcome = match outcome {
+            Ok(value) => match plan
+                .dispatcher
+                .transform::<ToolResultTransform>(json!({"result":value,"is_error":false}))
+                .await
+            {
+                Ok(output) => {
+                    if output.get("is_error").and_then(Value::as_bool) == Some(true) {
+                        Err(output.get("result").cloned().unwrap_or(output).to_string())
+                    } else {
+                        Ok(output.get("result").cloned().unwrap_or(output))
+                    }
+                }
+                Err(error) => Err(error.to_string()),
+            },
+            error => error,
+        };
         let (status, output, is_error) = match outcome {
             Ok(value) => (ToolResultStatus::Completed, value, false),
             Err(error) => (ToolResultStatus::Failed, Value::String(error), true),
@@ -910,33 +1052,58 @@ impl Orchestrator {
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;
         self.observer.emit(&settled);
+        plan.dispatcher
+            .notify::<EventPublished>(serde_json::to_value(&settled).unwrap_or(Value::Null))
+            .await;
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn permit_and_execute(
         &self,
         execution: &dyn ExecutionStore,
         session_id: &SessionId,
         run_id: &RunId,
+        call_id: &ToolCallId,
+        plan: &RunPlan,
         tool: &ToolDefinition,
         arguments: Value,
         lease_lost: &AtomicBool,
     ) -> Result<Result<Value, String>, RuntimeError> {
-        let allowed = match self.policy.decide(&tool.info, &arguments) {
-            PermissionDecision::Allow => true,
-            PermissionDecision::Deny => false,
-            PermissionDecision::Ask => {
-                self.emit_durable(
-                    execution,
-                    session_id,
-                    run_id,
-                    EventKind::PermissionRequested,
-                )
-                .await?;
-                let approved = self.approver.approve(&tool.info, &arguments).await;
-                self.emit_durable(execution, session_id, run_id, EventKind::PermissionDecided)
+        let guard_denied = plan
+            .guards
+            .iter()
+            .any(|guard| guard.check(&tool.info.name, &arguments) == GuardDecision::Deny);
+        let restricted = plan
+            .restrictions
+            .iter()
+            .any(|set| !set.iter().any(|name| name == &tool.info.name));
+        let allowed = if guard_denied || restricted {
+            false
+        } else {
+            match self.policy.decide(&tool.info, &arguments) {
+                PermissionDecision::Allow => true,
+                PermissionDecision::Deny => false,
+                PermissionDecision::Ask => {
+                    self.emit_durable(
+                        execution,
+                        session_id,
+                        run_id,
+                        plan,
+                        EventKind::PermissionRequested,
+                    )
                     .await?;
-                approved
+                    let approved = self.approver.approve(&tool.info, &arguments).await;
+                    self.emit_durable(
+                        execution,
+                        session_id,
+                        run_id,
+                        plan,
+                        EventKind::PermissionDecided,
+                    )
+                    .await?;
+                    approved
+                }
             }
         };
         if !allowed {
@@ -948,7 +1115,50 @@ impl Orchestrator {
             .await
             .map_err(|_| RuntimeError::LeaseLost)?;
         ensure_lease(lease_lost)?;
-        let output = match tool.executor.execute(arguments).await {
+        let observer = Arc::clone(&self.observer);
+        let session_for_progress = session_id.clone();
+        let run_for_progress = run_id.clone();
+        let clock = Arc::clone(&self.clock);
+        let progress = Arc::new(move |content: ContentBlock| {
+            let event = EventRecord {
+                cursor: None,
+                session_id: session_for_progress.clone(),
+                run_id: run_for_progress.clone(),
+                turn_id: None,
+                kind: EventKind::Custom {
+                    name: "tool_progress".into(),
+                },
+                payload: json!({"content":content}),
+                correlation: None,
+                live_only: true,
+                created_at: clock.now(),
+            };
+            observer.emit(&event);
+        });
+        let context = ToolContext::new(
+            session_id.clone(),
+            run_id.clone(),
+            call_id.clone(),
+            CancellationToken::new(),
+            self.host_services.clone(),
+            progress,
+            Some(Arc::new(HostApproval {
+                approver: Arc::clone(&self.approver),
+                tool: tool.info.clone(),
+                arguments: arguments.clone(),
+            })),
+        );
+        let executor = Arc::clone(&tool.executor);
+        let terminal: Callback = Arc::new(move |input| {
+            let executor = Arc::clone(&executor);
+            let context = context.clone();
+            Box::pin(async move { executor.execute_with_context(context, input).await })
+        });
+        let output = match plan
+            .dispatcher
+            .around::<ToolExecute>(arguments, terminal)
+            .await
+        {
             Ok(output) => output,
             Err(error) => return Ok(Err(error.to_string())),
         };
@@ -992,4 +1202,16 @@ fn validate_arguments(tool: &ToolInfo, arguments: &Value) -> Result<(), String> 
     validator
         .validate(arguments)
         .map_err(|error| format!("invalid tool arguments: {error}"))
+}
+
+struct HostApproval {
+    approver: Arc<dyn ApprovalRequester>,
+    tool: ToolInfo,
+    arguments: Value,
+}
+#[async_trait]
+impl ApprovalFacade for HostApproval {
+    async fn request(&self, _reason: &str) -> bool {
+        self.approver.approve(&self.tool, &self.arguments).await
+    }
 }

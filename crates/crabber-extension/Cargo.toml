@@ -6,11 +6,15 @@ license.workspace = true
 
 [dependencies]
 crabber-core = { path = "../crabber-core" }
+crabber-providers = { path = "../crabber-providers" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+futures = "0.3"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [lints]
 workspace = true

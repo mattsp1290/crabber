@@ -1,10 +1,14 @@
+use async_trait::async_trait;
 use crabber_core::{EventRecord, RunId, SessionId};
-use crabber_extension::{PromptSection, StaticPlanProvider, ToolDefinition};
+use crabber_extension::{
+    Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
+    StaticPlanProvider, ToolDefinition,
+};
 use crabber_providers::{Resolver, Selection};
 use crabber_runtime::{Observer, Orchestrator, PermissionPolicy, Request, RunResult, RuntimeError};
 use crabber_session::{MemoryStore, Store};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{OnceCell, broadcast};
 
 /// Host-owned settings frozen into each prompt request.
 #[derive(Debug, Clone)]
@@ -46,6 +50,7 @@ pub struct AgentBuilder {
     tools: Vec<Arc<ToolDefinition>>,
     prompts: Vec<Arc<PromptSection>>,
     policy: Option<Arc<dyn PermissionPolicy>>,
+    extensions: Vec<(Arc<dyn Extension>, Scope)>,
 }
 
 impl AgentBuilder {
@@ -103,6 +108,12 @@ impl AgentBuilder {
         self
     }
 
+    #[must_use]
+    pub fn extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
+        self.extensions.push((extension, scope));
+        self
+    }
+
     /// Builds the embeddable agent.
     ///
     /// # Errors
@@ -115,10 +126,32 @@ impl AgentBuilder {
         let observer = Arc::new(EventBroadcaster {
             events: events.clone(),
         });
+        let extensions = self.extensions;
+        let has_extensions = !extensions.is_empty();
+        let registry = has_extensions.then(Registry::new);
+        let mut mounts = extensions;
+        if has_extensions && (!self.tools.is_empty() || !self.prompts.is_empty()) {
+            mounts.insert(
+                0,
+                (
+                    Arc::new(BuiltinExtension {
+                        tools: self.tools.clone(),
+                        prompts: self.prompts.clone(),
+                    }),
+                    Scope::Global,
+                ),
+            );
+        }
+        let plan_provider: Arc<dyn crabber_extension::RunPlanProvider> =
+            if let Some(registry) = &registry {
+                Arc::new(registry.clone())
+            } else {
+                Arc::new(StaticPlanProvider::new(self.tools, self.prompts))
+            };
         let mut runtime = Orchestrator::builder()
             .store(self.store.unwrap_or_else(|| Arc::new(MemoryStore::new())))
             .resolver(resolver)
-            .plan_provider(Arc::new(StaticPlanProvider::new(self.tools, self.prompts)))
+            .plan_provider(plan_provider)
             .observer(observer);
         if let Some(policy) = self.policy {
             runtime = runtime.policy(policy);
@@ -127,6 +160,9 @@ impl AgentBuilder {
             runtime: runtime.build()?,
             config,
             events,
+            registry,
+            extensions: mounts,
+            mounted: OnceCell::new(),
         })
     }
 }
@@ -146,6 +182,9 @@ pub struct Agent {
     runtime: Orchestrator,
     config: AgentConfig,
     events: broadcast::Sender<Arc<EventRecord>>,
+    registry: Option<Registry>,
+    extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    mounted: OnceCell<Vec<MountHandle>>,
 }
 
 impl Agent {
@@ -158,6 +197,7 @@ impl Agent {
             tools: Vec::new(),
             prompts: Vec::new(),
             policy: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -171,6 +211,25 @@ impl Agent {
         session_id: Option<SessionId>,
         text: impl Into<String>,
     ) -> Result<RunHandle, RuntimeError> {
+        if let Some(registry) = &self.registry {
+            self.mounted
+                .get_or_try_init(|| async {
+                    let mut handles = Vec::new();
+                    for (extension, scope) in &self.extensions {
+                        match registry.mount(Arc::clone(extension), scope.clone()).await {
+                            Ok(handle) => handles.push(handle),
+                            Err(error) => {
+                                for handle in handles.iter().rev() {
+                                    let _ = handle.close().await;
+                                }
+                                return Err(RuntimeError::Extension(error.to_string()));
+                            }
+                        }
+                    }
+                    Ok(handles)
+                })
+                .await?;
+        }
         let receiver = self.events.subscribe();
         let inner = self
             .runtime
@@ -293,6 +352,32 @@ impl RunHandle {
     /// Returns a store error if the inbox write fails.
     pub async fn follow_up(&self, text: impl Into<String>) -> Result<(), RuntimeError> {
         self.inner.follow_up(text).await
+    }
+}
+
+struct BuiltinExtension {
+    tools: Vec<Arc<ToolDefinition>>,
+    prompts: Vec<Arc<PromptSection>>,
+}
+#[async_trait]
+impl Extension for BuiltinExtension {
+    fn id(&self) -> &'static str {
+        "crabber/builtin"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        String::new()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        for tool in &self.tools {
+            registrar.tool(Arc::clone(tool));
+        }
+        for prompt in &self.prompts {
+            registrar.prompt(Arc::clone(prompt));
+        }
+        Ok(())
     }
 }
 

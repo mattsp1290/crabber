@@ -13,6 +13,7 @@ crabber-runtime = { path = "../crabber-runtime" }
 crabber-session = { path = "../crabber-session" }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }
