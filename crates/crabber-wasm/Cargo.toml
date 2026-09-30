@@ -1,0 +1,25 @@
+[package]
+name = "crabber-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+crabber-core = { path = "../crabber-core" }
+crabber-extension = { path = "../crabber-extension" }
+crabber-session = { path = "../crabber-session" }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+wasmtime = { version = "=49.0.1", default-features = false, features = ["async", "component-model", "cranelift", "runtime", "std", "threads"] }
+wasmtime-wasi = { version = "=49.0.1", default-features = false, features = ["p2"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+wat = "1"

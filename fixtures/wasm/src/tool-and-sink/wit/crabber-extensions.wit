@@ -1,0 +1,177 @@
+package crabber:extensions@0.1.0;
+
+interface types {
+  record structured-error { code: string, message: string, retryable: bool }
+
+  record role-counts { system: u32, user: u32, assistant: u32, tool: u32 }
+
+  record turn-metadata {
+    run-id: string,
+    session-id: string,
+    epoch-id: string,
+    turn-index: u32,
+    agent-name: string,
+    agent-mode: string,
+    provider-id: string,
+    model-id: string,
+    tool-names: list<string>,
+    message-count: u32,
+    role-counts: role-counts,
+    has-system-prompt: bool,
+    workspace-id: string,
+  }
+
+  record tool-metadata {
+    name: string,
+    description: string,
+    parameters-json-schema: string,
+    retry-safe: bool,
+    required-permissions: list<string>,
+    prompt-snippet: option<string>,
+    prompt-guidelines: list<string>,
+  }
+
+  enum permission-action { allow, deny, ask }
+
+  record permission-request {
+    tool-name: string,
+    tool-call-id: string,
+    permission: string,
+    pattern: string,
+    arguments-summary: string,
+    session-id: string,
+    run-id: string,
+  }
+
+  record permission-decision { action: permission-action, reason: string }
+
+  enum text-role { system, user }
+
+  record media-reference { uri: string, mime-type: string }
+
+  variant content-block {
+    text(string),
+    media-reference(media-reference),
+  }
+
+  record message { role: text-role, blocks: list<content-block> }
+
+  record bounded-event {
+    kind: string,
+    session-id: string,
+    run-id: string,
+    turn-id: string,
+    message-id: string,
+    tool-call-id: string,
+    epoch-id: string,
+    timestamp-unix-millis: s64,
+    payload-summary: string,
+  }
+
+  variant replacement { unchanged, json(string), error(structured-error) }
+
+  record section-metadata { name: string, order: s32 }
+
+  enum role {
+    tool,
+    permissions-policy,
+    context-source,
+    prompt-section,
+    event-sink,
+    hook,
+    tool-middleware,
+    model-controls,
+  }
+
+  record extension-manifest {
+    id: string,
+    version: string,
+    roles: list<role>,
+    config-json-schema: option<string>,
+  }
+}
+
+interface manifest-api {
+  use types.{extension-manifest, structured-error};
+  describe: func() -> extension-manifest;
+  configure: func(config-json: string) -> result<_, structured-error>;
+}
+
+interface tool-api {
+  use types.{structured-error, tool-metadata, turn-metadata};
+  tools: func() -> list<tool-metadata>;
+  permission-pattern: func(tool-name: string, input-json: string) -> result<string, structured-error>;
+  execute: func(tool-name: string, tool-call-id: string, input-json: string, turn: turn-metadata) -> result<string, structured-error>;
+}
+
+interface permissions-policy-api {
+  use types.{permission-decision, permission-request, structured-error};
+  decide: func(request: permission-request) -> result<permission-decision, structured-error>;
+}
+
+interface context-source-api {
+  use types.{structured-error, message, turn-metadata};
+  load-context: func(turn: turn-metadata) -> result<list<message>, structured-error>;
+}
+
+interface prompt-section-api {
+  use types.{section-metadata, structured-error, turn-metadata};
+  sections: func() -> list<section-metadata>;
+  render: func(name: string, turn: turn-metadata) -> result<string, structured-error>;
+}
+
+interface event-sink-api {
+  use types.{bounded-event, structured-error};
+  emit: func(event: bounded-event) -> result<_, structured-error>;
+}
+
+interface hook-api {
+  use types.{structured-error, turn-metadata};
+  before-run: func(turn: turn-metadata) -> result<_, structured-error>;
+  after-run: func(turn: turn-metadata, status: string) -> result<_, structured-error>;
+  before-turn: func(turn: turn-metadata) -> result<_, structured-error>;
+  after-turn: func(turn: turn-metadata) -> result<_, structured-error>;
+}
+
+interface tool-middleware-api {
+  use types.{replacement, turn-metadata};
+  before-tool-call: func(tool-name: string, tool-call-id: string, input-json: string, turn: turn-metadata) -> replacement;
+  after-tool-call: func(tool-name: string, tool-call-id: string, executed-input-json: string, output-json: string, is-error: bool, turn: turn-metadata) -> replacement;
+}
+
+interface model-controls-api {
+  use types.{replacement, turn-metadata};
+  /// controls-json carries only {temperature, top-p, max-tokens, tool-choice, stop}; never messages or credentials.
+  before-model-request: func(turn: turn-metadata, controls-json: string) -> replacement;
+}
+
+world tool               { import crabber:host/log@0.1.0; import crabber:host/state@0.1.0; export manifest-api; export tool-api; }
+world permissions-policy { import crabber:host/log@0.1.0; export manifest-api; export permissions-policy-api; }
+world context-source     { import crabber:host/log@0.1.0; import crabber:host/state@0.1.0; export manifest-api; export context-source-api; }
+world prompt-section     { import crabber:host/log@0.1.0; export manifest-api; export prompt-section-api; }
+world event-sink         { import crabber:host/log@0.1.0; import crabber:host/state@0.1.0; export manifest-api; export event-sink-api; }
+world hook               { import crabber:host/log@0.1.0; import crabber:host/state@0.1.0; export manifest-api; export hook-api; }
+world tool-middleware    { import crabber:host/log@0.1.0; export manifest-api; export tool-middleware-api; }
+world model-controls     { import crabber:host/log@0.1.0; export manifest-api; export model-controls-api; }
+
+world bundle {
+  import crabber:host/log@0.1.0;
+  import crabber:host/state@0.1.0;
+  export manifest-api;
+  export tool-api;
+  export permissions-policy-api;
+  export context-source-api;
+  export prompt-section-api;
+  export event-sink-api;
+  export hook-api;
+  export tool-middleware-api;
+  export model-controls-api;
+}
+
+world tool-and-sink {
+ import crabber:host/log@0.1.0;
+ import crabber:host/state@0.1.0;
+ export manifest-api;
+ export tool-api;
+ export event-sink-api;
+}

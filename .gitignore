@@ -20,6 +20,7 @@ reviews/
 
 # Generated WASM fixtures
 fixtures/wasm/*.wasm
+fixtures/wasm/manifest.sha256
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

@@ -9,11 +9,11 @@ use crabber_core::{
     ToolCallRecord, ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardDecision, HostServices,
-    ModelCompleted, ModelRequestError, ModelRequested, ModelStream as ExtensionModelStream,
-    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, ToolContext,
-    ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted, TurnPrepare,
-    TurnStarted,
+    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
+    HostServices, ModelCompleted, ModelRequestError, ModelRequested,
+    ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
+    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolPrepare,
+    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -24,7 +24,7 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -365,6 +365,44 @@ pub struct RunHandle {
     cancellation: CancellationToken,
 }
 
+struct RunStateSink {
+    store: Arc<dyn Store>,
+    execution: Arc<dyn ExecutionStore>,
+    session_id: SessionId,
+    lost: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl StateSink for RunStateSink {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    async fn snapshot(&self, extension_id: &str) -> Result<BTreeMap<String, String>, String> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err("run lease lost".into());
+        }
+        self.store
+            .get_extension_state(extension_id, &self.session_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn apply(
+        &self,
+        extension_id: &str,
+        changes: Vec<(String, Option<String>)>,
+    ) -> Result<(), String> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err("run lease lost".into());
+        }
+        self.execution
+            .put_extension_state(extension_id, changes)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 struct HeartbeatGuard {
     task: tokio::task::JoinHandle<()>,
     lost: Arc<AtomicBool>,
@@ -610,6 +648,12 @@ impl Orchestrator {
         let lost = Arc::clone(&heartbeat.lost);
         let cancellation = CancellationToken::new();
         let work_cancellation = cancellation.clone();
+        let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
+            store: Arc::clone(&self.store),
+            execution: Arc::clone(&execution),
+            session_id: run.session_id.clone(),
+            lost: Arc::clone(&lost),
+        });
         let resumed_work = async move {
             let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
             execution.append_event(resumed.clone()).await?;
@@ -780,6 +824,7 @@ impl Orchestrator {
                 usage: run.usage,
             })
         };
+        let resumed_work = crabber_extension::with_state_sink(state_sink, resumed_work);
         tokio::pin!(resumed_work);
         let result = tokio::select! {
             biased;
@@ -988,17 +1033,26 @@ impl Orchestrator {
         let run_started_at = self.clock.now();
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
+        let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
+            store: Arc::clone(&self.store),
+            execution: Arc::clone(&execution),
+            session_id: session_id.clone(),
+            lost: Arc::clone(&lost),
+        });
         let outcome = {
-            let run_future = self.run_loop(
-                execution.as_ref(),
-                &run_id,
-                &session_id,
-                &request,
-                &plan,
-                &cancellation,
-                true,
-                Usage::default(),
-                lost.as_ref(),
+            let run_future = crabber_extension::with_state_sink(
+                state_sink,
+                self.run_loop(
+                    execution.as_ref(),
+                    &run_id,
+                    &session_id,
+                    &request,
+                    &plan,
+                    &cancellation,
+                    true,
+                    Usage::default(),
+                    lost.as_ref(),
+                ),
             );
             tokio::pin!(run_future);
             loop {
@@ -1316,11 +1370,33 @@ impl Orchestrator {
             }
             system.push_str(&prompt.text);
         }
+        let mut messages = self.store.list_messages(session_id, None).await?;
+        let turn_index = messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .count();
         let contributions = plan
             .dispatcher
-            .transform::<ContextAssemble>(json!({"system_prelude":[],"user_suffix":[]}))
+            .transform::<ContextAssemble>(json!({
+                "system_prelude":[], "user_suffix":[], "prompt_sections":[],
+                "run_id":run_id.to_string(), "session_id":session_id.to_string(),
+                "provider_id":request.selection.provider_id, "model_id":request.selection.model_id,
+                "turn_index":turn_index, "message_count":messages.len(),
+                "has_system_prompt":request.system_prompt.is_some()
+            }))
             .await
             .map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        if let Some(sections) = contributions
+            .get("prompt_sections")
+            .and_then(Value::as_array)
+        {
+            for section in sections.iter().filter_map(Value::as_str) {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(section);
+            }
+        }
         if let Some(prelude) = contributions
             .get("system_prelude")
             .and_then(Value::as_array)
@@ -1329,7 +1405,6 @@ impl Orchestrator {
                 system = format!("{line}\n{system}");
             }
         }
-        let mut messages = self.store.list_messages(session_id, None).await?;
         if let Some(suffixes) = contributions.get("user_suffix").and_then(Value::as_array)
             && let Some(message) = messages
                 .iter_mut()
@@ -2284,10 +2359,20 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<Result<Value, String>, RuntimeError> {
-        let guard_denied = plan
+        let guard_decisions: Vec<_> = plan
             .guards
             .iter()
-            .any(|guard| guard.check(&tool.info.name, &arguments) == GuardDecision::Deny);
+            .map(|guard| {
+                guard.check_with_context(GuardContext {
+                    tool: &tool.info,
+                    arguments: &arguments,
+                    call_id,
+                    session_id,
+                    run_id,
+                })
+            })
+            .collect();
+        let guard_denied = guard_decisions.contains(&GuardDecision::Deny);
         let restricted = plan
             .restrictions
             .iter()
@@ -2295,7 +2380,14 @@ impl Orchestrator {
         let allowed = if guard_denied || restricted {
             false
         } else {
-            match self.policy.decide(&tool.info, &arguments) {
+            let decision = if guard_decisions.contains(&GuardDecision::Ask) {
+                PermissionDecision::Ask
+            } else if guard_decisions.contains(&GuardDecision::Allow) {
+                PermissionDecision::Allow
+            } else {
+                self.policy.decide(&tool.info, &arguments)
+            };
+            match decision {
                 PermissionDecision::Allow => true,
                 PermissionDecision::Deny => false,
                 PermissionDecision::Ask => {

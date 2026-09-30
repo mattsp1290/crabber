@@ -1,0 +1,10 @@
+[package]
+name = "all-in-one"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+crabber-guest = { path = "../../../../crates/crabber-guest" }

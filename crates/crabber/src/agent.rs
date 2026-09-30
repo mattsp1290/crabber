@@ -63,6 +63,15 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Mounts a SHA-256 verified Component Model extension.
+    #[cfg(feature = "wasm")]
+    #[must_use]
+    pub fn wasm_extension(self, config: crabber_wasm::ModuleConfig) -> Self {
+        self.extension(
+            Arc::new(crabber_wasm::WasmExtension::new(config)),
+            Scope::Global,
+        )
+    }
     /// Enables agentless Datadog export when `DD_API_KEY` is set.
     #[cfg(feature = "datadog")]
     #[must_use]
