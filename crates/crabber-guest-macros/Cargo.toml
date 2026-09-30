@@ -1,0 +1,12 @@
+[package]
+name = "crabber-guest-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+include = ["Cargo.toml", "src/**", "wit/**"]
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true

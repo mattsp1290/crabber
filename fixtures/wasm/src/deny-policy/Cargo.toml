@@ -1,0 +1,10 @@
+[package]
+name = "deny-policy"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+crabber-guest = { path = "../../../../crates/crabber-guest" }

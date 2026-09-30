@@ -1,6 +1,6 @@
 use crate::{
-    ApprovalRequester, ModelStream, Observer, Orchestrator, PermissionDecision, Request,
-    RuntimeError, StaticPolicy,
+    ApprovalRequester, ExecutionMode, InterruptPolicy, ModelStream, Observer, Orchestrator,
+    PermissionDecision, PermissionPolicy, Request, RuntimeError, StaticPolicy, ToolPipeline,
 };
 use async_trait::async_trait;
 use crabber_core::{
@@ -8,20 +8,24 @@ use crabber_core::{
     Part, Role, Run, RunFence, RunId, RunStatus, Session, SessionId, ToolCallId, ToolCallRecord,
     ToolResult, Usage,
 };
-use crabber_extension::{ExtensionError, StaticPlanProvider, ToolDefinition, ToolExecutor};
+use crabber_extension::{
+    ExtensionError, RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor,
+};
 use crabber_providers::{
-    DeltaStream, FakeProvider, ModelRequest, ProviderError, Selection, StreamDelta, Streamer,
+    DeltaStream, FakeProvider, ModelRequest, ProviderError, Resolver, Selection, StreamDelta,
+    Streamer,
 };
 use crabber_session::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, MemoryStore, Store, StoreError,
 };
+use futures::StreamExt;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Barrier, Notify, oneshot};
 
 #[derive(Default)]
 struct RecordingObserver(Mutex<Vec<EventKind>>);
@@ -33,6 +37,970 @@ impl Observer for RecordingObserver {
             .expect("observer poisoned")
             .push(event.kind.clone());
     }
+}
+
+struct PausePolicy;
+impl PermissionPolicy for PausePolicy {
+    fn decide(&self, _tool: &crabber_core::ToolInfo, _arguments: &Value) -> PermissionDecision {
+        PermissionDecision::Allow
+    }
+    fn interrupt_policy(
+        &self,
+        _tool: &crabber_core::ToolInfo,
+        _arguments: &Value,
+    ) -> InterruptPolicy {
+        InterruptPolicy::Pause
+    }
+}
+
+struct CountingPipeline(Arc<AtomicUsize>);
+#[async_trait]
+impl ToolPipeline for CountingPipeline {
+    async fn prepare(
+        &self,
+        _tool: &crabber_core::ToolInfo,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        _tool: &crabber_core::ToolInfo,
+        result: Value,
+    ) -> Result<Value, String> {
+        Ok(result)
+    }
+}
+
+struct PartialModelStream(Arc<Notify>);
+#[async_trait]
+impl ModelStream for PartialModelStream {
+    async fn stream(
+        &self,
+        request: ModelRequest,
+        next: Arc<dyn Streamer>,
+    ) -> Result<DeltaStream, ProviderError> {
+        let _ = next.stream(request).await?;
+        let release = Arc::clone(&self.0);
+        Ok(Box::pin(
+            futures::stream::once(async { StreamDelta::TextDelta("partial".into()) }).chain(
+                futures::stream::once(async move {
+                    release.notified().await;
+                    StreamDelta::Completed
+                }),
+            ),
+        ))
+    }
+}
+
+struct DeltaObserver(Mutex<Option<oneshot::Sender<()>>>);
+impl Observer for DeltaObserver {
+    fn emit(&self, event: &EventRecord) {
+        if event.kind == EventKind::TextDelta
+            && let Some(sender) = self.0.lock().unwrap().take()
+        {
+            let _ = sender.send(());
+        }
+    }
+}
+
+#[tokio::test]
+async fn interrupt_closes_partial_text_message() {
+    let store = Arc::new(MemoryStore::new());
+    let (sender, receiver) = oneshot::channel();
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(FakeProvider::scripted(vec![text_script(
+            "unused",
+        )])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .model_stream(Arc::new(PartialModelStream(Arc::new(Notify::new()))))
+        .observer(Arc::new(DeltaObserver(Mutex::new(Some(sender)))))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    receiver.await.unwrap();
+    handle.interrupt();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Interrupted);
+    assert!(contains_text(
+        &store.list_messages(&session, None).await.unwrap(),
+        "partial"
+    ));
+}
+
+#[tokio::test]
+async fn interrupt_settles_running_tool_and_run() {
+    let store = Arc::new(MemoryStore::new());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let completed = Arc::new(AtomicUsize::new(0));
+    let runtime = orchestrator(
+        Arc::clone(&store),
+        FakeProvider::scripted(vec![call_script(ToolCallId::new(), r#"{"text":"ok"}"#)]),
+        Arc::new(CancellableTool {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Arc::new(Notify::new()),
+            completed: Arc::clone(&completed),
+        }),
+        Arc::new(RecordingObserver::default()),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    entered_rx.await.unwrap();
+    handle.interrupt();
+    let result = handle.done().await.unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.get_run(&run_id).await.unwrap().unwrap().status,
+        RunStatus::Interrupted
+    );
+}
+
+#[tokio::test]
+async fn paused_call_resumes_from_persisted_input() {
+    let store = Arc::new(MemoryStore::new());
+    let executed = Arc::new(AtomicUsize::new(0));
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+            text_script("resumed"),
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::clone(&executed))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(PausePolicy))
+        .tool_pipeline(Arc::new(CountingPipeline(Arc::clone(&prepared))))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        runtime.resume(&run_id).await.unwrap().status,
+        RunStatus::Completed
+    );
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
+    assert_eq!(prepared.load(Ordering::SeqCst), 1);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn resumed_tool_stops_when_lease_is_reclaimed() {
+    let now = time::OffsetDateTime::now_utc();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let completed = Arc::new(AtomicUsize::new(0));
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .clock(clock.clone())
+        .heartbeat_interval(std::time::Duration::from_millis(10))
+        .resolver(Arc::new(FakeProvider::scripted(vec![call_script(
+            ToolCallId::new(),
+            r#"{"text":"ok"}"#,
+        )])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(CancellableTool {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Arc::new(Notify::new()),
+                completed: Arc::clone(&completed),
+            }))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(PausePolicy))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    let resumed = tokio::spawn({
+        let runtime = runtime.clone();
+        let run_id = run_id.clone();
+        async move { runtime.resume(&run_id).await }
+    });
+    entered_rx.await.unwrap();
+    clock.set(now + time::Duration::seconds(31));
+    store.claim_expired_run(&run_id, "new owner").await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), resumed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(RuntimeError::LeaseLost)));
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+}
+
+#[allow(clippy::too_many_lines)]
+async fn paused_with_unstaged_assistant(
+    has_tool: bool,
+    compacted: bool,
+) -> (
+    Orchestrator,
+    Arc<MemoryStore>,
+    FakeProvider,
+    Arc<AtomicUsize>,
+    RunId,
+) {
+    let now = time::OffsetDateTime::now_utc();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"first"}"#),
+        text_script("final"),
+    ]);
+    let executed = Arc::new(AtomicUsize::new(0));
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .clock(clock.clone())
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::clone(&executed))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(PausePolicy))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run_id = handle.run_id().clone();
+    let session_id = handle.session_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    let fence = store
+        .claim_expired_run(&run_id, "crashed resumed owner")
+        .await
+        .unwrap();
+    let execution = store.execution(fence).await.unwrap();
+    let original_call = store
+        .list_unfinished_tool_calls(&run_id)
+        .await
+        .unwrap()
+        .remove(0);
+    let event = |kind| EventRecord {
+        cursor: None,
+        session_id: session_id.clone(),
+        run_id: run_id.clone(),
+        turn_id: None,
+        kind,
+        payload: Value::Null,
+        correlation: None,
+        live_only: false,
+        created_at: now,
+    };
+    execution
+        .claim_tool_call(&original_call.id, event(EventKind::ToolCallRunning))
+        .await
+        .unwrap();
+    let result_message_id = crabber_core::MessageId::new();
+    execution
+        .settle_tool_call(
+            &original_call.id,
+            ToolResult {
+                status: crabber_core::ToolResultStatus::Completed,
+                content: vec![ContentBlock::Text {
+                    text: "done".into(),
+                }],
+            },
+            Message {
+                id: result_message_id.clone(),
+                session_id: session_id.clone(),
+                run_id: Some(run_id.clone()),
+                role: Role::Tool,
+                parent_id: None,
+                created_at: now,
+                parts: vec![Part {
+                    id: crabber_core::PartId::new(),
+                    message_id: result_message_id.clone(),
+                    ordinal: 0,
+                    kind: crabber_core::PartKind::FunctionToolResult,
+                    content: ContentBlock::ToolResult {
+                        call_id: original_call.id.clone(),
+                        content: vec![ContentBlock::Text {
+                            text: "done".into(),
+                        }],
+                        is_error: false,
+                    },
+                }],
+            },
+            event(EventKind::ToolCallSettled),
+        )
+        .await
+        .unwrap();
+    if compacted {
+        let history = store.list_all_messages(&session_id).await.unwrap();
+        let epoch = ContextEpoch {
+            id: EpochId::new(),
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            parent: Some(store.get_run(&run_id).await.unwrap().unwrap().epoch_id),
+            summarized_range: Some((history[0].id.clone(), history[history.len() - 2].id.clone())),
+            summary_message_id: None,
+            tail_start_message_id: Some(result_message_id.clone()),
+            provider_id: "fake".into(),
+            model_id: "fake".into(),
+            reason: "test crash window".into(),
+            next_policy: None,
+        };
+        execution.start_epoch(epoch.clone()).await.unwrap();
+        let summary_id = crabber_core::MessageId::new();
+        execution
+            .finish_epoch(
+                &epoch.id,
+                Message {
+                    id: summary_id.clone(),
+                    session_id: session_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    role: Role::Assistant,
+                    parent_id: None,
+                    created_at: now,
+                    parts: vec![Part {
+                        id: crabber_core::PartId::new(),
+                        message_id: summary_id,
+                        ordinal: 0,
+                        kind: crabber_core::PartKind::CompactionSummary,
+                        content: ContentBlock::Text {
+                            text: "prior context".into(),
+                        },
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.list_messages(&session_id, None).await.unwrap().iter().all(|message|
+            !message.parts.iter().any(|part| matches!(&part.content, ContentBlock::ToolCall { call_id, .. } if call_id == &original_call.id))));
+    }
+    let message_id = crabber_core::MessageId::new();
+    let (kind, content) = if has_tool {
+        (
+            crabber_core::PartKind::FunctionToolCall,
+            ContentBlock::ToolCall {
+                call_id: ToolCallId::new(),
+                name: "echo".into(),
+                arguments: json!({"text":"recovered"}),
+            },
+        )
+    } else {
+        (
+            crabber_core::PartKind::AssistantText,
+            ContentBlock::Text {
+                text: "already completed".into(),
+            },
+        )
+    };
+    execution
+        .append_message(Message {
+            id: message_id.clone(),
+            session_id,
+            run_id: Some(run_id.clone()),
+            role: Role::Assistant,
+            parent_id: None,
+            created_at: now,
+            parts: vec![Part {
+                id: crabber_core::PartId::new(),
+                message_id,
+                ordinal: 0,
+                kind,
+                content,
+            }],
+        })
+        .await
+        .unwrap();
+    clock.set(now + time::Duration::seconds(31));
+    (runtime, store, fake, executed, run_id)
+}
+
+#[tokio::test]
+async fn recovery_does_not_request_model_after_committed_text_response() {
+    let (runtime, store, fake, executed, run_id) =
+        paused_with_unstaged_assistant(false, false).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recovery_stages_committed_assistant_call_before_next_model_turn() {
+    let (runtime, store, fake, executed, run_id) =
+        paused_with_unstaged_assistant(true, false).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.requests().len(), 2);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recovery_reconciles_text_after_compaction_hides_paused_anchor() {
+    let (runtime, _, fake, executed, run_id) = paused_with_unstaged_assistant(false, true).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn recovery_stages_tool_after_compaction_hides_paused_anchor() {
+    let (runtime, store, fake, executed, run_id) = paused_with_unstaged_assistant(true, true).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 2);
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn overflow_compacts_once_and_retries_open_turn() {
+    let store = Arc::new(MemoryStore::new());
+    let fake = FakeProvider::scripted(vec![
+        vec![StreamDelta::Error(ProviderError {
+            kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+            message: "full".into(),
+            retryable: false,
+        })],
+        text_script("summary"),
+        text_script("after"),
+    ]);
+    let runtime = orchestrator(
+        Arc::clone(&store),
+        fake.clone(),
+        Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(RecordingObserver::default()),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 3);
+    assert!(
+        store
+            .list_messages(&session, None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|message| message
+                .parts
+                .iter()
+                .any(|part| part.kind == crabber_core::PartKind::CompactionSummary))
+    );
+}
+
+#[tokio::test]
+async fn overflow_keeps_recent_tail_in_projected_retry() {
+    let store = Arc::new(MemoryStore::new());
+    let fake = FakeProvider::scripted(vec![
+        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+        vec![StreamDelta::Error(ProviderError {
+            kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+            message: "full".into(),
+            retryable: false,
+        })],
+        text_script("summary"),
+        text_script("after"),
+    ]);
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .compaction(crate::CompactionPolicy {
+            trigger_ratio: 0.85,
+            keep_tail_messages: 2,
+        })
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 4);
+    let original = &requests[1].messages;
+    let retry = &requests[3].messages;
+    assert_eq!(retry.len(), 3);
+    assert_eq!(retry[1].id, original[original.len() - 2].id);
+    assert_eq!(retry[2].id, original[original.len() - 1].id);
+    assert_eq!(
+        retry[0].parts[0].kind,
+        crabber_core::PartKind::CompactionSummary
+    );
+}
+
+#[derive(Clone)]
+struct LimitedProvider {
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+    limit: usize,
+    summary_entered: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    block_summary: bool,
+    block_acquisition: bool,
+}
+
+#[async_trait]
+impl Resolver for LimitedProvider {
+    async fn resolve(&self, _selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
+        Ok(Arc::new(self.clone()))
+    }
+}
+
+#[async_trait]
+impl Streamer for LimitedProvider {
+    async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        let summary = request
+            .system
+            .as_deref()
+            .is_some_and(|system| system.starts_with("Summarize"));
+        let bytes = serde_json::to_vec(&request.messages).unwrap().len();
+        self.requests.lock().unwrap().push(request);
+        if summary {
+            if let Some(sender) = self.summary_entered.lock().unwrap().take() {
+                let _ = sender.send(());
+            }
+            if self.block_acquisition {
+                return futures::future::pending().await;
+            }
+            if self.block_summary {
+                return Ok(Box::pin(futures::stream::pending()));
+            }
+            if bytes > self.limit {
+                return Ok(Box::pin(futures::stream::iter(vec![StreamDelta::Error(
+                    ProviderError {
+                        kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+                        message: "summary exceeded actual limit".into(),
+                        retryable: false,
+                    },
+                )])));
+            }
+            let carries_sentinel = self.requests.lock().unwrap().last().is_some_and(|request| {
+                serde_json::to_string(&request.messages)
+                    .unwrap()
+                    .contains("EARLY_STANDING_INSTRUCTION")
+            });
+            return Ok(Box::pin(futures::stream::iter(text_script(
+                if carries_sentinel {
+                    "EARLY_STANDING_INSTRUCTION small summary"
+                } else {
+                    "small summary"
+                },
+            ))));
+        }
+        if bytes > self.limit {
+            return Ok(Box::pin(futures::stream::iter(vec![StreamDelta::Error(
+                ProviderError {
+                    kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+                    message: "actual limit".into(),
+                    retryable: false,
+                },
+            )])));
+        }
+        Ok(Box::pin(futures::stream::iter(text_script("done"))))
+    }
+}
+
+#[tokio::test]
+async fn real_size_limit_overflow_summarizes_bounded_input() {
+    let provider = LimitedProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        limit: 3000,
+        summary_entered: Arc::new(Mutex::new(None)),
+        block_summary: false,
+        block_acquisition: false,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let runtime = Orchestrator::builder()
+        .store(store.clone())
+        .resolver(Arc::new(provider.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .build()
+        .unwrap();
+    let mut request = request();
+    request.text = format!("EARLY_STANDING_INSTRUCTION {}", "large input ".repeat(1000));
+    let handle = runtime.start(request).await.unwrap();
+    let session_id = handle.session_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert!(requests.len() > 3);
+        assert!(serde_json::to_vec(&requests[0].messages).unwrap().len() > provider.limit);
+        assert!(
+            requests[1..]
+                .iter()
+                .all(
+                    |request| serde_json::to_vec(&request.messages).unwrap().len() < provider.limit
+                )
+        );
+    }
+    let projected = store.list_messages(&session_id, None).await.unwrap();
+    assert!(
+        serde_json::to_string(&projected)
+            .unwrap()
+            .contains("EARLY_STANDING_INSTRUCTION")
+    );
+}
+
+#[tokio::test]
+async fn interrupt_cancels_blocked_compaction_summary() {
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let provider = LimitedProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        limit: 3000,
+        summary_entered: Arc::new(Mutex::new(Some(entered_tx))),
+        block_summary: true,
+        block_acquisition: false,
+    };
+    let runtime = Orchestrator::builder()
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(provider))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .build()
+        .unwrap();
+    let mut request = request();
+    request.text = "large input ".repeat(1000);
+    let handle = runtime.start(request).await.unwrap();
+    entered_rx.await.unwrap();
+    handle.interrupt();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle.done())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
+}
+
+#[tokio::test]
+async fn interrupt_cancels_summary_stream_acquisition() {
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let provider = LimitedProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        limit: 3000,
+        summary_entered: Arc::new(Mutex::new(Some(entered_tx))),
+        block_summary: false,
+        block_acquisition: true,
+    };
+    let runtime = Orchestrator::builder()
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(provider))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .build()
+        .unwrap();
+    let mut request = request();
+    request.text = "large input ".repeat(1000);
+    let handle = runtime.start(request).await.unwrap();
+    entered_rx.await.unwrap();
+    handle.interrupt();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle.done())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
+}
+
+#[tokio::test]
+async fn retryable_provider_error_retries_same_turn() {
+    let fake = FakeProvider::scripted(vec![
+        vec![StreamDelta::Error(ProviderError {
+            kind: crabber_providers::ProviderErrorKind::Server,
+            message: "temporary".into(),
+            retryable: true,
+        })],
+        text_script("done"),
+    ]);
+    let runtime = orchestrator(
+        Arc::new(MemoryStore::new()),
+        fake.clone(),
+        Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(RecordingObserver::default()),
+    );
+    assert_eq!(
+        runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    assert_eq!(fake.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn second_overflow_fails_after_one_epoch() {
+    let store = Arc::new(MemoryStore::new());
+    let overflow = || {
+        StreamDelta::Error(ProviderError {
+            kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+            message: "full".into(),
+            retryable: false,
+        })
+    };
+    let fake = FakeProvider::scripted(vec![
+        vec![overflow()],
+        text_script("summary"),
+        vec![overflow()],
+    ]);
+    let runtime = orchestrator(
+        Arc::clone(&store),
+        fake.clone(),
+        Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(RecordingObserver::default()),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    assert!(matches!(
+        handle.done().await,
+        Err(RuntimeError::Provider(_))
+    ));
+    assert_eq!(fake.requests().len(), 3);
+    assert_eq!(
+        store
+            .list_events(&session, None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == EventKind::ContextEpochStarted)
+            .count(),
+        1
+    );
+}
+
+struct BarrierTool(Arc<Barrier>);
+#[async_trait]
+impl ToolExecutor for BarrierTool {
+    async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
+        self.0.wait().await;
+        Ok(arguments)
+    }
+}
+
+#[tokio::test]
+async fn parallel_tools_execute_together_and_settle_in_assistant_order() {
+    let store = Arc::new(MemoryStore::new());
+    let ids: Vec<_> = (0..3).map(|_| ToolCallId::new()).collect();
+    let mut script = Vec::new();
+    for (index, id) in ids.iter().enumerate() {
+        script.push(StreamDelta::ToolCallStart {
+            call_id: id.clone(),
+            name: "echo".into(),
+        });
+        script.push(StreamDelta::ToolCallArgsDelta {
+            call_id: id.clone(),
+            text: format!(r#"{{"text":"{index}"}}"#),
+        });
+        script.push(StreamDelta::ToolCallDone {
+            call_id: id.clone(),
+        });
+    }
+    script.push(StreamDelta::Completed);
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            script,
+            text_script("done"),
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(BarrierTool(Arc::new(Barrier::new(3)))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .execution_mode(ExecutionMode::Parallel { max: 3 })
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    let settled: Vec<_> = store
+        .list_events(&session, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::ToolCallSettled)
+        .map(|event| event.correlation.unwrap())
+        .collect();
+    assert_eq!(
+        settled,
+        ids.iter().map(ToString::to_string).collect::<Vec<_>>()
+    );
+}
+
+async fn crashed_run_with_calls(
+    running: bool,
+) -> (Orchestrator, Arc<MemoryStore>, Arc<AtomicUsize>, RunId) {
+    let now = time::OffsetDateTime::now_utc();
+    let clock = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(clock.clone()));
+    let executed = Arc::new(AtomicUsize::new(0));
+    let plan_provider = Arc::new(StaticPlanProvider::new(
+        vec![tool(Arc::new(EchoTool(Arc::clone(&executed))))],
+        Vec::new(),
+    ));
+    let session = SessionId::new();
+    let plan = plan_provider.acquire_plan(&session).await.unwrap();
+    let fingerprint = plan.fingerprint().to_string();
+    plan.release();
+    let message_id = crabber_core::MessageId::new();
+    let admitted = store
+        .admit_run(AdmitRequest {
+            session_id: None,
+            workspace_id: "test".into(),
+            directory: "/tmp".into(),
+            title: "test".into(),
+            user_message: Message {
+                id: message_id.clone(),
+                session_id: session,
+                run_id: None,
+                role: Role::User,
+                parent_id: None,
+                created_at: now,
+                parts: vec![Part {
+                    id: crabber_core::PartId::new(),
+                    message_id,
+                    ordinal: 0,
+                    kind: crabber_core::PartKind::UserInputText,
+                    content: ContentBlock::Text {
+                        text: "hello".into(),
+                    },
+                }],
+            },
+            config_hash: "test".into(),
+            plan_fingerprint: fingerprint,
+            owner: "crashed".into(),
+            lease: std::time::Duration::from_secs(30),
+        })
+        .await
+        .unwrap();
+    let execution = store.execution(admitted.fence).await.unwrap();
+    for safe in [true, false] {
+        let id = ToolCallId::new();
+        let event = EventRecord {
+            cursor: None,
+            session_id: admitted.session.id.clone(),
+            run_id: admitted.run.id.clone(),
+            turn_id: None,
+            kind: EventKind::ToolCallPending,
+            payload: Value::Null,
+            correlation: None,
+            live_only: false,
+            created_at: now,
+        };
+        execution
+            .create_tool_call(
+                ToolCallRecord {
+                    id: id.clone(),
+                    run_id: admitted.run.id.clone(),
+                    name: "echo".into(),
+                    arguments: json!({"text":"ok"}),
+                    status: crabber_core::ToolCallStatus::Pending,
+                    retry_safe: safe,
+                    result: None,
+                },
+                event,
+            )
+            .await
+            .unwrap();
+        if running && safe {
+            let event = EventRecord {
+                cursor: None,
+                session_id: admitted.session.id.clone(),
+                run_id: admitted.run.id.clone(),
+                turn_id: None,
+                kind: EventKind::ToolCallRunning,
+                payload: Value::Null,
+                correlation: None,
+                live_only: false,
+                created_at: now,
+            };
+            execution.claim_tool_call(&id, event).await.unwrap();
+        }
+    }
+    clock.set(now + time::Duration::seconds(31));
+    let runtime = Orchestrator::builder()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(FakeProvider::scripted(Vec::new())))
+        .plan_provider(plan_provider)
+        .clock(clock)
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .build()
+        .unwrap();
+    (runtime, store, executed, admitted.run.id)
+}
+
+#[tokio::test]
+async fn resume_reexecutes_only_retry_safe_pending_call() {
+    let (runtime, store, executed, run_id) = crashed_run_with_calls(false).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recover_interrupts_expired_running_call() {
+    let (runtime, store, executed, run_id) = crashed_run_with_calls(true).await;
+    let result = runtime.recover().await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].status, RunStatus::Interrupted);
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 struct EchoTool(Arc<AtomicUsize>);
@@ -868,6 +1836,9 @@ impl Store for DelayedTerminalStore {
         epoch: Option<EpochId>,
     ) -> Result<Vec<Message>, StoreError> {
         self.inner.list_messages(id, epoch).await
+    }
+    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
+        self.inner.list_all_messages(id).await
     }
     async fn list_events(
         &self,

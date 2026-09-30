@@ -1,0 +1,7 @@
+package crabber:host@0.1.0;
+/// Bounded key-value state scoped to (extension id, session id). Persisted by the runtime in the store's extension-state table (latest value per key).
+interface state {
+  get: func(key: string) -> option<string>;
+  set: func(key: string, value: string) -> result<_, string>;
+  delete: func(key: string);
+}

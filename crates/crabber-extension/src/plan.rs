@@ -1,5 +1,9 @@
+use crate::ToolContext;
+use crate::dispatch::Dispatcher;
+use crate::registry::ToolGuard;
 use async_trait::async_trait;
 use crabber_core::{SessionId, ToolInfo};
+use crabber_providers::ProviderAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -49,11 +53,34 @@ pub enum ExtensionError {
     Plan(String),
     #[error("tool execution failed: {0}")]
     Tool(String),
+    #[error("extension rejected point {0}")]
+    Rejected(&'static str),
+    #[error("tool name collision: {0}")]
+    ToolCollision(String),
+    #[error("around handler did not call next")]
+    NextNotCalled,
+    #[error("around handler called next twice")]
+    NextCalledTwice,
+    #[error("around handler next expired")]
+    NextExpired,
+    #[error("around handler next called outside its callback")]
+    NextOutsideCallback,
+    #[error("mount cannot close itself from its callback")]
+    SelfClose,
+    #[error("missing host capability: {0}")]
+    MissingCapability(&'static str),
 }
 
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError>;
+    async fn execute_with_context(
+        &self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> Result<Value, ExtensionError> {
+        self.execute(arguments).await
+    }
 }
 
 pub struct ToolDefinition {
@@ -66,15 +93,54 @@ pub struct RunPlan {
     pub fingerprint: PlanFingerprint,
     pub tools: Vec<Arc<ToolDefinition>>,
     pub prompts: Vec<Arc<PromptSection>>,
+    pub guards: Vec<Arc<dyn ToolGuard>>,
+    pub restrictions: Vec<Vec<String>>,
+    pub dispatcher: Dispatcher,
+    pub components: Vec<ComponentIdentity>,
+    pub providers: Vec<Arc<dyn ProviderAdapter>>,
+    _lease: Option<Arc<PlanLease>>,
+}
+
+struct PlanLease(Box<dyn Fn() + Send + Sync>);
+impl Drop for PlanLease {
+    fn drop(&mut self) {
+        (self.0)();
+    }
 }
 
 impl RunPlan {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_registry(
+        fingerprint: PlanFingerprint,
+        tools: Vec<Arc<ToolDefinition>>,
+        prompts: Vec<Arc<PromptSection>>,
+        guards: Vec<Arc<dyn ToolGuard>>,
+        restrictions: Vec<Vec<String>>,
+        dispatcher: Dispatcher,
+        providers: Vec<Arc<dyn ProviderAdapter>>,
+        components: Vec<ComponentIdentity>,
+        release: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            fingerprint,
+            tools,
+            prompts,
+            guards,
+            restrictions,
+            dispatcher,
+            providers,
+            components,
+            _lease: Some(Arc::new(PlanLease(Box::new(release)))),
+        }
+    }
     #[must_use]
     pub fn fingerprint(&self) -> &PlanFingerprint {
         &self.fingerprint
     }
 
-    pub fn release(self) {}
+    pub fn release(self) {
+        drop(self);
+    }
 }
 
 #[async_trait]
@@ -112,6 +178,12 @@ impl StaticPlanProvider {
                 fingerprint: compute_fingerprint(&identities),
                 tools,
                 prompts,
+                guards: Vec::new(),
+                restrictions: Vec::new(),
+                dispatcher: Dispatcher::new(Vec::new()),
+                components: identities,
+                providers: Vec::new(),
+                _lease: None,
             },
         }
     }

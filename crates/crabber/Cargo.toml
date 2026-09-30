@@ -6,15 +6,33 @@ license.workspace = true
 
 [dependencies]
 crabber-core = { path = "../crabber-core" }
+crabber-auth = { path = "../crabber-auth", optional = true }
 crabber-extension = { path = "../crabber-extension" }
 crabber-providers = { path = "../crabber-providers" }
 crabber-runtime = { path = "../crabber-runtime" }
+crabber-obs = { path = "../crabber-obs", optional = true }
 crabber-session = { path = "../crabber-session" }
+crabber-wasm = { path = "../crabber-wasm", optional = true }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }
+sha2 = "0.10"
+serde_json = "1"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+postgres = ["crabber-session/postgres"]
+anthropic = ["crabber-providers/anthropic"]
+openai = ["crabber-providers/openai"]
+codex = ["crabber-providers/codex", "dep:crabber-auth"]
+opencode-go = ["crabber-providers/opencode-go"]
+all-providers = ["crabber-providers/all-providers"]
+
+datadog = ["dep:crabber-obs"]
+wasm = ["dep:crabber-wasm"]

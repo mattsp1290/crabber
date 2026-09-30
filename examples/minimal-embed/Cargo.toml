@@ -7,8 +7,9 @@ build = "build.rs"
 
 [dependencies]
 async-trait = "0.1"
-crabber = { path = "../../crates/crabber" }
+crabber = { path = "../../crates/crabber", features = ["all-providers", "postgres", "wasm"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]

@@ -1,0 +1,15 @@
+event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":8}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_empty","name":"echo","input":{}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
