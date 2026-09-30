@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use crabber::{
     Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, PermissionDecision, Selection,
     StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
-    core::{RunId, RunStatus, ToolCallId, ToolInfo},
+    core::{EventRecord, RunId, RunStatus, SessionId, ToolCallId, ToolInfo},
+    extension::{Extension, GuardDecision, Registrar, Scope, ToolGuard},
     session::{MemoryStore, PostgresStore, Store},
     wasm::{InstanceMode, Limits, ModuleConfig},
 };
@@ -17,6 +18,52 @@ use std::{
 
 struct EchoTool {
     delay: bool,
+}
+
+struct NativeGuard {
+    name: &'static str,
+}
+impl ToolGuard for NativeGuard {
+    fn id(&self) -> &'static str {
+        "minimal-native-guard"
+    }
+    fn check(&self, name: &str, arguments: &Value) -> GuardDecision {
+        if name == self.name && arguments["text"] == "forbidden" {
+            println!("native guard denied {name}");
+            GuardDecision::Deny
+        } else {
+            GuardDecision::Abstain
+        }
+    }
+}
+
+struct NativeExtension {
+    name: &'static str,
+    delay: bool,
+}
+#[async_trait]
+impl Extension for NativeExtension {
+    fn id(&self) -> &'static str {
+        "minimal-native"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        format!("{}:{}", self.name, self.delay)
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        registrar.tool(Arc::new(ToolDefinition {
+            info: ToolInfo {
+                name: self.name.into(), description: "Returns its arguments".into(),
+                parameters: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
+                retry_safe: true, required_permissions: vec![],
+            },
+            executor: Arc::new(EchoTool { delay: self.delay }),
+        }));
+        registrar.guard(Arc::new(NativeGuard { name: self.name }));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -50,8 +97,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         provider_id: provider.clone(),
         model_id: model,
     };
+    let wasm_enabled = wasm.is_some();
     let resolver: Arc<dyn crabber::providers::Resolver> = if provider == "fake" {
-        Arc::new(fake_provider())
+        Arc::new(fake_provider(wasm_enabled))
     } else {
         let mut providers = crabber::providers::HttpResolver::from_env();
         if provider == "opencode-go" {
@@ -62,29 +110,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let store = create_store(&store_kind).await?;
-    let tool_name = if wasm.is_some() {
-        "native-echo"
-    } else {
-        "echo"
-    };
+    println!("store={store_kind} provider={provider}");
     // crabber:glue-start
-    let tool = ToolDefinition {
-        info: ToolInfo {
-            name: tool_name.into(),
-            description: "Returns its arguments".into(),
-            parameters: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-            retry_safe: true,
-            required_permissions: vec![],
-        },
-        executor: Arc::new(EchoTool {
-            delay: interrupt_after_first_delta,
-        }),
-    };
     let mut builder = Agent::builder()
         .store(Arc::clone(&store))
         .provider(resolver)
         .config(AgentConfig::new(selection))
-        .tool(Arc::new(tool))
+        .extension(
+            Arc::new(NativeExtension {
+                name: if wasm_enabled { "native-echo" } else { "echo" },
+                delay: interrupt_after_first_delta,
+            }),
+            Scope::Global,
+        )
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)));
     if extension != "native" {
         return Err("--extension must be native".into());
@@ -114,12 +152,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     interrupted = true;
                 }
             }
-            EventKind::ToolCallSettled => println!("\ntool call settled"),
+            EventKind::ToolCallSettled => show_tool_settlement(&event, wasm_enabled),
             _ => {}
         }
     }
     println!();
     let result = run.done().await?;
+    println!(
+        "run={} session={} status={:?}",
+        result.run_id, result.session_id, result.status
+    );
+    show_stored_session(&store, &result.session_id).await?;
     if interrupted {
         println!("interrupted run {}: {:?}", run_id, result.status);
         if store_kind == "memory" {
@@ -140,6 +183,27 @@ async fn create_store(store_kind: &str) -> Result<Arc<dyn Store>, Box<dyn Error>
         }
         _ => Err("--store must be memory or postgres".into()),
     }
+}
+
+fn show_tool_settlement(event: &EventRecord, wasm_enabled: bool) {
+    let name = event.payload["name"].as_str().unwrap_or_default();
+    let status = event.payload["status"].as_str().unwrap_or_default();
+    if wasm_enabled && name == "echo" {
+        println!("\nWASM tool {name} settled: {status}");
+    } else {
+        println!("\nnative tool {name} settled: {status}");
+    }
+    println!("tool call settled");
+}
+
+async fn show_stored_session(store: &Arc<dyn Store>, id: &SessionId) -> Result<(), Box<dyn Error>> {
+    let stored = store
+        .get_session(id)
+        .await?
+        .ok_or("session missing from store")?;
+    let messages = store.list_messages(&stored.id, None).await?;
+    println!("listed session={} messages={}", stored.id, messages.len());
+    Ok(())
 }
 
 async fn resume_run(
@@ -170,27 +234,35 @@ async fn resume_run(
     Ok(())
 }
 
-fn fake_provider() -> FakeProvider {
-    let call_id = ToolCallId::new();
+fn fake_provider(wasm_enabled: bool) -> FakeProvider {
+    let mut first = vec![StreamDelta::TextDelta("Checking tool...".into())];
+    append_call(
+        &mut first,
+        if wasm_enabled { "native-echo" } else { "echo" },
+        "forbidden",
+    );
+    append_call(&mut first, "echo", "hello");
+    first.push(StreamDelta::Completed);
     FakeProvider::scripted(vec![
-        vec![
-            StreamDelta::TextDelta("Checking tool...".into()),
-            StreamDelta::ToolCallStart {
-                call_id: call_id.clone(),
-                name: "echo".into(),
-            },
-            StreamDelta::ToolCallArgsDelta {
-                call_id: call_id.clone(),
-                text: r#"{"text":"hello"}"#.into(),
-            },
-            StreamDelta::ToolCallDone { call_id },
-            StreamDelta::Completed,
-        ],
+        first,
         vec![
             StreamDelta::TextDelta("Done.".into()),
             StreamDelta::Completed,
         ],
     ])
+}
+
+fn append_call(script: &mut Vec<StreamDelta>, name: &str, text: &str) {
+    let call_id = ToolCallId::new();
+    script.push(StreamDelta::ToolCallStart {
+        call_id: call_id.clone(),
+        name: name.into(),
+    });
+    script.push(StreamDelta::ToolCallArgsDelta {
+        call_id: call_id.clone(),
+        text: json!({"text":text}).to_string(),
+    });
+    script.push(StreamDelta::ToolCallDone { call_id });
 }
 
 struct CliOptions {

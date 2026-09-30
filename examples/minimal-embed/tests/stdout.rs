@@ -67,7 +67,34 @@ fn native_extension_and_wasm_flags_run_together() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("tool call settled"));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("store=memory provider=fake"), "{stdout}");
+    assert!(
+        stdout.contains("native guard denied native-echo"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("native tool native-echo settled: failed"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("WASM tool echo settled: completed"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("status=Completed"), "{stdout}");
+    let session = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("run=").and_then(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("session="))
+            })
+        })
+        .expect("run session id");
+    assert!(
+        stdout.contains(&format!("listed session={session} messages=")),
+        "{stdout}"
+    );
 }
 
 #[test]
