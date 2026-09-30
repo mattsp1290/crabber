@@ -2,7 +2,7 @@
 use crate::{ModelRequest, ProviderError, ProviderErrorKind, StreamDelta, sse::Event};
 use crabber_core::{ContentBlock, Role, ToolCallId, Usage};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub fn body(request: &ModelRequest) -> Value {
     let mut messages = Vec::new();
@@ -74,6 +74,8 @@ pub fn body(request: &ModelRequest) -> Value {
 #[derive(Default)]
 pub struct Codec {
     calls: HashMap<u64, ToolCallId>,
+    initial_input: HashMap<u64, Value>,
+    streamed_input: HashSet<u64>,
     usage: Usage,
 }
 impl Codec {
@@ -95,6 +97,7 @@ impl Codec {
                         .ok_or_else(|| invalid("missing tool id"))?;
                     let index = value["index"].as_u64().unwrap_or(0);
                     self.calls.insert(index, ToolCallId(id.into()));
+                    self.initial_input.insert(index, block["input"].clone());
                     out.push(StreamDelta::ToolCallStart {
                         call_id: ToolCallId(id.into()),
                         name: block["name"].as_str().unwrap_or_default().into(),
@@ -116,6 +119,7 @@ impl Codec {
                             .calls
                             .get(&index)
                             .ok_or_else(|| invalid("tool args without start"))?;
+                        self.streamed_input.insert(index);
                         out.push(StreamDelta::ToolCallArgsDelta {
                             call_id: id.clone(),
                             text: delta["partial_json"].as_str().unwrap_or_default().into(),
@@ -129,7 +133,22 @@ impl Codec {
                 }
             }
             "content_block_stop" => {
-                if let Some(id) = self.calls.remove(&value["index"].as_u64().unwrap_or(0)) {
+                let index = value["index"].as_u64().unwrap_or(0);
+                if let Some(id) = self.calls.remove(&index) {
+                    let initial = self
+                        .initial_input
+                        .remove(&index)
+                        .unwrap_or_else(|| json!({}));
+                    if !self.streamed_input.remove(&index) {
+                        out.push(StreamDelta::ToolCallArgsDelta {
+                            call_id: id.clone(),
+                            text: if initial.is_null() {
+                                "{}".into()
+                            } else {
+                                initial.to_string()
+                            },
+                        });
+                    }
                     out.push(StreamDelta::ToolCallDone { call_id: id });
                 }
             }

@@ -2,7 +2,9 @@
 //! Current protocol: https://developers.openai.com/siwc/token-sharing-open-source/sign-in
 #![allow(clippy::too_many_lines)]
 use crate::{AuthError, CredentialStore, OAuthCredentials, now_ms, pkce_challenge, random_urlsafe};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, Validation, decode, decode_header, errors::ErrorKind, jwk::JwkSet,
+};
 use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -41,7 +43,7 @@ pub fn logout(store: &dyn CredentialStore) -> Result<(), AuthError> {
 struct Claims {
     iss: String,
     sub: String,
-    aud: String,
+    aud: serde_json::Value,
     exp: u64,
     nonce: String,
 }
@@ -73,16 +75,67 @@ async fn validated_subject(
     validation.set_audience(&[client_id]);
     validation.set_issuer(&[ISSUER]);
     let claims = decode::<Claims>(id_token, &decoding, &validation)
-        .map_err(|_| AuthError::Authentication("ID token validation failed"))?
+        .map_err(|error| AuthError::Authentication(jwt_error_class(error.kind())))?
         .claims;
     if claims.iss != ISSUER
-        || claims.aud != client_id
-        || claims.exp * 1000 <= now_ms()
+        || !audience_matches(&claims.aud, client_id)
+        || claims.exp.saturating_mul(1000) <= now_ms()
         || claims.nonce != nonce
     {
         return Err(AuthError::Authentication("ID token claims mismatch"));
     }
     Ok(claims.sub)
+}
+fn audience_matches(aud: &serde_json::Value, client_id: &str) -> bool {
+    aud.as_str() == Some(client_id)
+        || aud.as_array().is_some_and(|audiences| {
+            audiences
+                .iter()
+                .any(|audience| audience.as_str() == Some(client_id))
+        })
+}
+fn jwt_error_class(error: &ErrorKind) -> &'static str {
+    match error {
+        ErrorKind::InvalidAudience => "ID token audience invalid",
+        ErrorKind::InvalidIssuer => "ID token issuer invalid",
+        ErrorKind::InvalidSignature => "ID token signature invalid",
+        ErrorKind::ExpiredSignature => "ID token expired",
+        ErrorKind::MissingRequiredClaim(_) => "ID token required claim missing",
+        ErrorKind::Json(_) => "ID token claim shape invalid",
+        ErrorKind::InvalidAlgorithm => "ID token algorithm invalid",
+        _ => "ID token validation failed",
+    }
+}
+
+fn authorization_url(
+    client_id: &str,
+    host_id: &str,
+    verifier: &str,
+    state: &str,
+    nonce: &str,
+    redirect: &str,
+    id_token_hint: Option<&str>,
+) -> Result<Url, AuthError> {
+    let mut url = Url::parse(AUTHORIZE_URL).map_err(|_| AuthError::Transport)?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect)
+        .append_pair("scope", SCOPE)
+        .append_pair("resource", RESOURCE)
+        .append_pair("code_challenge", &pkce_challenge(verifier))
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", state)
+        .append_pair("nonce", nonce)
+        .append_pair("ext_agent_host_id", host_id);
+    if client_id == "dynamic_agent_client" {
+        url.query_pairs_mut()
+            .append_pair("agent_name_hint", "Crabber");
+    }
+    if let Some(hint) = id_token_hint {
+        url.query_pairs_mut().append_pair("id_token_hint", hint);
+    }
+    Ok(url)
 }
 
 /// Listen for the loopback callback and hand the authorization URL to the host.
@@ -106,23 +159,17 @@ pub async fn login_browser(
     let verifier = random_urlsafe(32);
     let state = random_urlsafe(32);
     let nonce = random_urlsafe(32);
-    let mut url = Url::parse(AUTHORIZE_URL).map_err(|_| AuthError::Transport)?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", client_id)
-        .append_pair("redirect_uri", redirect)
-        .append_pair("scope", SCOPE)
-        .append_pair("resource", RESOURCE)
-        .append_pair("code_challenge", &pkce_challenge(&verifier))
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", &state)
-        .append_pair("nonce", &nonce)
-        .append_pair("ext_agent_host_id", &host_id)
-        .append_pair("agent_name_hint", "Crabber");
-    if let Some(c) = &existing {
-        url.query_pairs_mut()
-            .append_pair("id_token_hint", &c.id_token);
-    }
+    let url = authorization_url(
+        client_id,
+        &host_id,
+        &verifier,
+        &state,
+        &nonce,
+        redirect,
+        existing
+            .as_ref()
+            .map(|credential| credential.id_token.as_str()),
+    )?;
     on_auth_url(url.as_str());
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
         .await
@@ -229,4 +276,58 @@ pub async fn login_browser(
     );
     let _ = socket.write_all(reply.as_bytes()).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn authorization_url_matches_registration_mode() {
+        let new = authorization_url(
+            "dynamic_agent_client",
+            "urn:uuid:test",
+            "verifier",
+            "state",
+            "nonce",
+            "http://127.0.0.1:1455/auth/callback",
+            None,
+        )
+        .unwrap();
+        let new_query: std::collections::HashMap<_, _> = new.query_pairs().into_owned().collect();
+        assert_eq!(
+            new_query.get("agent_name_hint").map(String::as_str),
+            Some("Crabber")
+        );
+        assert!(!new_query.contains_key("id_token_hint"));
+        let returning = authorization_url(
+            "issued-client",
+            "urn:uuid:test",
+            "verifier",
+            "state",
+            "nonce",
+            "http://127.0.0.1:1455/auth/callback",
+            Some("prior-id-token"),
+        )
+        .unwrap();
+        let returning_query: std::collections::HashMap<_, _> =
+            returning.query_pairs().into_owned().collect();
+        assert!(!returning_query.contains_key("agent_name_hint"));
+        assert_eq!(
+            returning_query.get("id_token_hint").map(String::as_str),
+            Some("prior-id-token")
+        );
+        assert_eq!(
+            returning_query.get("client_id").map(String::as_str),
+            Some("issued-client")
+        );
+    }
+    #[test]
+    fn audience_accepts_string_or_array() {
+        assert!(audience_matches(&serde_json::json!("client"), "client"));
+        assert!(audience_matches(
+            &serde_json::json!(["other", "client"]),
+            "client"
+        ));
+        assert!(!audience_matches(&serde_json::json!(["other"]), "client"));
+    }
 }

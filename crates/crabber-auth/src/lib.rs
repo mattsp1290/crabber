@@ -58,6 +58,67 @@ pub trait CredentialStore: Send + Sync {
     fn host_id(&self) -> Result<String, AuthError> {
         Ok(format!("urn:uuid:{}", uuid::Uuid::new_v4()))
     }
+    /// An advisory lock shared by processes refreshing this store, if needed.
+    fn refresh_lock(&self) -> Option<RefreshLock> {
+        None
+    }
+    /// Replace or clear only the credential version used for the refresh grant.
+    fn compare_exchange(
+        &self,
+        expected: &OAuthCredentials,
+        next: Option<&OAuthCredentials>,
+    ) -> Result<bool, AuthError> {
+        let Some(current) = self.load()? else {
+            return Ok(false);
+        };
+        if !same_rotation(&current, expected) {
+            return Ok(false);
+        }
+        match next {
+            Some(value) => self.save(value)?,
+            None => self.clear()?,
+        }
+        Ok(true)
+    }
+}
+
+#[derive(Clone)]
+pub struct RefreshLock {
+    path: PathBuf,
+    timeout: Duration,
+}
+async fn acquire_refresh_lock(
+    config: Option<RefreshLock>,
+) -> Result<Option<std::fs::File>, AuthError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    fs::create_dir_all(config.path.parent().ok_or(AuthError::Store)?)
+        .map_err(|_| AuthError::Store)?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(config.path).map_err(|_| AuthError::Store)?;
+    let start = std::time::Instant::now();
+    loop {
+        if file.try_lock_exclusive().map_err(|_| AuthError::Store)? {
+            return Ok(Some(file));
+        }
+        if start.elapsed() >= config.timeout {
+            return Err(AuthError::Store);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+fn same_rotation(left: &OAuthCredentials, right: &OAuthCredentials) -> bool {
+    left.client_id == right.client_id
+        && left.account_id == right.account_id
+        && left.access_token == right.access_token
+        && left.refresh_token == right.refresh_token
 }
 
 #[derive(Clone)]
@@ -107,52 +168,57 @@ impl FileCredentialStore {
         let _ = lock.unlock();
         result
     }
-}
-impl CredentialStore for FileCredentialStore {
-    fn load(&self) -> Result<Option<OAuthCredentials>, AuthError> {
-        self.locked(|path| {
-            let mut file = match OpenOptions::new().read(true).open(path) {
-                Ok(v) => v,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(_) => return Err(AuthError::Store),
-            };
-            let mut data = String::new();
-            file.read_to_string(&mut data)
+    fn read_path(path: &PathBuf) -> Result<Option<OAuthCredentials>, AuthError> {
+        let mut file = match OpenOptions::new().read(true).open(path) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(AuthError::Store),
+        };
+        let mut data = String::new();
+        file.read_to_string(&mut data)
+            .map_err(|_| AuthError::Store)?;
+        serde_json::from_str(&data)
+            .map(Some)
+            .map_err(|_| AuthError::Store)
+    }
+    fn save_path(path: &PathBuf, value: &OAuthCredentials) -> Result<(), AuthError> {
+        let temp = path.with_extension("json.tmp");
+        let mut opts = OpenOptions::new();
+        opts.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&temp).map_err(|_| AuthError::Store)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
                 .map_err(|_| AuthError::Store)?;
-            serde_json::from_str(&data)
-                .map(Some)
-                .map_err(|_| AuthError::Store)
-        })
+        }
+        serde_json::to_writer(&mut file, value).map_err(|_| AuthError::Store)?;
+        file.flush().map_err(|_| AuthError::Store)?;
+        file.sync_all().map_err(|_| AuthError::Store)?;
+        fs::rename(temp, path).map_err(|_| AuthError::Store)
     }
-    fn save(&self, value: &OAuthCredentials) -> Result<(), AuthError> {
-        self.locked(|path| {
-            let temp = path.with_extension("json.tmp");
-            let mut opts = OpenOptions::new();
-            opts.create(true).truncate(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut file = opts.open(&temp).map_err(|_| AuthError::Store)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(fs::Permissions::from_mode(0o600))
-                    .map_err(|_| AuthError::Store)?;
-            }
-            serde_json::to_writer(&mut file, value).map_err(|_| AuthError::Store)?;
-            file.flush().map_err(|_| AuthError::Store)?;
-            file.sync_all().map_err(|_| AuthError::Store)?;
-            fs::rename(temp, path).map_err(|_| AuthError::Store)
-        })
-    }
-    fn clear(&self) -> Result<(), AuthError> {
-        self.locked(|path| match fs::remove_file(path) {
+    fn clear_path(path: &PathBuf) -> Result<(), AuthError> {
+        match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(AuthError::Store),
-        })
+        }
+    }
+}
+impl CredentialStore for FileCredentialStore {
+    fn load(&self) -> Result<Option<OAuthCredentials>, AuthError> {
+        self.locked(Self::read_path)
+    }
+    fn save(&self, value: &OAuthCredentials) -> Result<(), AuthError> {
+        self.locked(|path| Self::save_path(path, value))
+    }
+    fn clear(&self) -> Result<(), AuthError> {
+        self.locked(Self::clear_path)
     }
     fn host_id(&self) -> Result<String, AuthError> {
         self.locked(|path| {
@@ -173,6 +239,31 @@ impl CredentialStore for FileCredentialStore {
                 .map_err(|_| AuthError::Store)?;
             file.sync_all().map_err(|_| AuthError::Store)?;
             Ok(value)
+        })
+    }
+    fn refresh_lock(&self) -> Option<RefreshLock> {
+        Some(RefreshLock {
+            path: self.dir.join("auth.refresh.lock"),
+            timeout: self.lock_timeout,
+        })
+    }
+    fn compare_exchange(
+        &self,
+        expected: &OAuthCredentials,
+        next: Option<&OAuthCredentials>,
+    ) -> Result<bool, AuthError> {
+        self.locked(|path| {
+            let Some(current) = Self::read_path(path)? else {
+                return Ok(false);
+            };
+            if !same_rotation(&current, expected) {
+                return Ok(false);
+            }
+            match next {
+                Some(value) => Self::save_path(path, value)?,
+                None => Self::clear_path(path)?,
+            }
+            Ok(true)
         })
     }
 }
@@ -249,6 +340,9 @@ impl TokenManager {
             return Ok(existing);
         }
         let _guard = self.refresh.lock().await;
+        // Keep this OS advisory lock across reload, network exchange and CAS.
+        // Rotating refresh tokens must never be used concurrently by processes.
+        let _process_guard = acquire_refresh_lock(self.store.refresh_lock()).await?;
         let current = self.store.load()?.ok_or(AuthError::NoCredentials)?;
         if (!force && current.expires_unix_ms > now_ms() + 60_000)
             || (force && previous_access.is_some_and(|previous| current.access_token != previous))
@@ -269,13 +363,13 @@ impl TokenManager {
             .map_err(|_| AuthError::Transport)?;
         if !response.status().is_success() {
             let body: serde_json::Value = response.json().await.unwrap_or_default();
-            if body["error"] == "invalid_grant" {
-                self.store.clear()?;
+            if body["error"] == "invalid_grant" && !self.store.compare_exchange(&current, None)? {
+                return self.store.load()?.ok_or(AuthError::NoCredentials);
             }
             return Err(AuthError::Authentication("refresh rejected"));
         }
         let body: serde_json::Value = response.json().await.map_err(|_| AuthError::Transport)?;
-        let mut updated = current;
+        let mut updated = current.clone();
         updated.access_token = body["access_token"]
             .as_str()
             .ok_or(AuthError::Transport)?
@@ -285,8 +379,11 @@ impl TokenManager {
             .unwrap_or(&updated.refresh_token)
             .into();
         updated.expires_unix_ms = now_ms() + body["expires_in"].as_u64().unwrap_or(3600) * 1000;
-        self.store.save(&updated)?;
-        Ok(updated)
+        if self.store.compare_exchange(&current, Some(&updated))? {
+            Ok(updated)
+        } else {
+            self.store.load()?.ok_or(AuthError::NoCredentials)
+        }
     }
 }
 
@@ -361,12 +458,16 @@ mod refresh_tests {
         }
     }
     async fn server(body: &'static str, status: &'static str) -> String {
+        server_delayed(body, status, Duration::ZERO).await
+    }
+    async fn server_delayed(body: &'static str, status: &'static str, delay: Duration) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut input = [0; 4096];
             let _ = socket.read(&mut input).await;
+            tokio::time::sleep(delay).await;
             let reply = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -392,6 +493,35 @@ mod refresh_tests {
         .unwrap();
         assert_eq!(a.unwrap().access_token, "new");
         assert_eq!(b.unwrap().refresh_token, "rotated");
+    }
+    #[tokio::test]
+    async fn independent_managers_share_file_refresh_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth");
+        let first_store: Arc<dyn CredentialStore> =
+            Arc::new(FileCredentialStore::new(path.clone()));
+        let second_store: Arc<dyn CredentialStore> = Arc::new(FileCredentialStore::new(path));
+        first_store.save(&expired()).unwrap();
+        // This server handles exactly one refresh. A second request cannot finish.
+        let url = server_delayed(
+            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
+            "200 OK",
+            Duration::from_millis(100),
+        )
+        .await;
+        let first = TokenManager::new(Arc::clone(&first_store)).with_token_url(url.clone());
+        let second = TokenManager::new(Arc::clone(&second_store)).with_token_url(url);
+        let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(first.credentials(), second.credentials())
+        })
+        .await
+        .unwrap();
+        assert_eq!(a.unwrap().access_token, "new");
+        assert_eq!(b.unwrap().refresh_token, "rotated");
+        assert_eq!(
+            first_store.load().unwrap().unwrap().refresh_token,
+            "rotated"
+        );
     }
     #[tokio::test]
     async fn invalid_grant_wipes_file() {

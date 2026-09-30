@@ -139,6 +139,19 @@ fn anthropic_fixture() {
     ));
 }
 #[test]
+fn anthropic_empty_tool_input_is_valid_json() {
+    let mut codec = messages::Codec::default();
+    let deltas = fixture(include_str!("../testdata/anthropic/empty_tool.sse"), |e| {
+        codec.event(e).unwrap()
+    });
+    assert!(matches!(&deltas[0], StreamDelta::ToolCallStart { name, .. } if name == "echo"));
+    assert!(matches!(&deltas[1], StreamDelta::ToolCallArgsDelta { text, .. } if text == "{}"));
+    assert!(matches!(&deltas[2], StreamDelta::ToolCallDone { .. }));
+    assert!(deltas.iter().any(
+        |d| matches!(d, StreamDelta::Usage(u) if u.input_tokens == 8 && u.output_tokens == 2)
+    ));
+}
+#[test]
 fn opencode_chat_fixture() {
     let mut codec = chat::Codec::default();
     let deltas = fixture(include_str!("../testdata/opencode_go/chat.sse"), |e| {

@@ -19,7 +19,7 @@ The subscription checks must be run locally with authorized accounts. A pass req
 
 | Date | Backend | Model | Outcome |
 | --- | --- | --- | --- |
-| Pending | OpenCode Go | Pending | Unverified against live service |
+| 2026-09-29 EDT | OpenCode Go | `gpt-5.6-luna` | Passed on candidate `ada6eb5`: Responses stream replied, `echo` tool settled, final text `Echo`, process exited 0. Command: `cargo run -p minimal-embed -- --provider opencode-go --protocol responses --model gpt-5.6-luna`. |
 | Pending | ChatGPT plan / Codex | Pending | Unverified against live service |
 
 Commands:
