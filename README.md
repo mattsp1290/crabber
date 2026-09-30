@@ -50,11 +50,24 @@ call `Agent::prompt_keyed(session, text, AdmissionOptions { key, fingerprint,
 behavior_fingerprint })`. Only `Admission::Started` returns a handle;
 `Admission::Replayed` returns the identical immutable receipt. Use
 `Agent::lookup_admission(&session, &key)` for read-only reconciliation. See the
-[store and fingerprint contract](crates/crabber-session/README.md#keyed-admission-memorystore)
+[store and fingerprint contract](crates/crabber-session/README.md#keyed-admission-memorystore-and-postgresql)
 for retention, opaque behavior versioning, custom adapters and unknown outcomes.
 
-Run the credential-free concurrent/terminal replay journey with
-`cargo run -p admission-receipt`. It asserts one provider execution, one user
-message and identical receipts and prints only correlation metadata and source SHA.
-This slice supports keyed admission in `MemoryStore`; PostgreSQL fails explicitly
-with `AdmissionUnsupported` until its durable receipt implementation lands.
+Run the noninteractive, credential-free fake-provider journey:
+
+```sh
+cargo run -p admission-receipt -- --memory
+# Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
+cargo run -p admission-receipt --features postgres -- --postgres
+```
+
+Both modes assert one provider execution, one user message and identical receipts
+across concurrent and terminal retries. Output includes the full source SHA,
+store/schema, fake-provider identity, correlation IDs and measured counts. Memory
+retains receipts only while that store lives; PostgreSQL retains them across restarts.
+An admission receipt proves acceptance, not completion. A committed turn whose host
+dies before spawning execution remains admitted; fenced recovery interrupts that
+non-paused run without repeating its provider request.
+
+The [host algorithm and verification map](docs/admission-receipts.md) explain
+unknown outcomes, retention, custom stores and process fault/restart assertions.

@@ -286,3 +286,7 @@ impl crabber::extension::Extension for VersionedExtension {
         Ok(())
     }
 }
+
+#[cfg(feature = "postgres")]
+#[path = "admission_support/process.rs"]
+mod process;

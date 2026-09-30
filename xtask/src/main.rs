@@ -43,6 +43,17 @@ fn check() {
     run(
         workspace,
         &[
+            "run",
+            "--quiet",
+            "-p",
+            "admission-receipt",
+            "--",
+            "--memory",
+        ],
+    );
+    run(
+        workspace,
+        &[
             "test",
             "-p",
             "crabber",

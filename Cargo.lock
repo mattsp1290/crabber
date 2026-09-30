@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "crabber",
  "sha2",
+ "sqlx",
  "tokio",
 ]
 
@@ -311,6 +312,7 @@ dependencies = [
  "crabber-wasm",
  "serde_json",
  "sha2",
+ "sqlx",
  "thiserror",
  "tokio",
 ]

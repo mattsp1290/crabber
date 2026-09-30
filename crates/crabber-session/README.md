@@ -29,7 +29,8 @@ and directory **before replay**, then check the retained `(session_id, key)`:
 identical fingerprint and semantic digest return `Replayed`; either mismatch returns
 `AdmissionConflict`. Only an absent key reaches active-run `Busy` and fresh admission.
 Another session may use the same key. Receipt/run/message creation is one transaction;
-any failure must roll back all three. Existing unkeyed admission remains available.
+any failure before commit must roll back all three. A failed commit acknowledgement
+may still mean that all records committed; do not report definitive rejection. Existing unkeyed admission remains available.
 
 Custom Store implementors must override both new methods transactionally and run
 `admission_contract::run_contract`, alongside `storetest::run_contract`. The default
@@ -89,3 +90,11 @@ in flight is **not proof of rejection**: the original transaction may still comm
 Keep using the same key; never invent a replacement key to resolve uncertainty.
 Receipts establish admission, not completion or exactly-once external tool effects.
 Existing fenced resume/recover rules remain responsible for execution recovery.
+
+
+A PostgreSQL transport/commit failure is currently sanitized as
+`StoreError::Validation("PostgreSQL operation failed")`. The `Validation` variant
+alone therefore does **not** establish rejection. Do not classify rejection by
+matching human-readable error strings. Unless an error has a documented definitive
+semantic outcome, reconcile it as unknown using the original key and payload. See
+[the complete host decision table](../../docs/admission-receipts.md).
