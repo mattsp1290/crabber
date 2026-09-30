@@ -266,6 +266,29 @@ pub struct Agent {
 }
 
 impl Agent {
+    async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
+        if let Some(registry) = &self.registry {
+            self.mounted
+                .get_or_try_init(|| async {
+                    let mut handles = Vec::new();
+                    for (extension, scope) in &self.extensions {
+                        match registry.mount(Arc::clone(extension), scope.clone()).await {
+                            Ok(handle) => handles.push(handle),
+                            Err(error) => {
+                                for handle in handles.iter().rev() {
+                                    let _ = handle.close().await;
+                                }
+                                return Err(RuntimeError::Extension(error.to_string()));
+                            }
+                        }
+                    }
+                    Ok(handles)
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Waits for queued Datadog exports, if enabled.
     #[cfg(feature = "datadog")]
     /// # Errors
@@ -315,25 +338,7 @@ impl Agent {
         session_id: Option<SessionId>,
         text: impl Into<String>,
     ) -> Result<RunHandle, RuntimeError> {
-        if let Some(registry) = &self.registry {
-            self.mounted
-                .get_or_try_init(|| async {
-                    let mut handles = Vec::new();
-                    for (extension, scope) in &self.extensions {
-                        match registry.mount(Arc::clone(extension), scope.clone()).await {
-                            Ok(handle) => handles.push(handle),
-                            Err(error) => {
-                                for handle in handles.iter().rev() {
-                                    let _ = handle.close().await;
-                                }
-                                return Err(RuntimeError::Extension(error.to_string()));
-                            }
-                        }
-                    }
-                    Ok(handles)
-                })
-                .await?;
-        }
+        self.initialize_extensions().await?;
         let receiver = self.events.subscribe();
         let inner = self
             .runtime
@@ -365,6 +370,7 @@ impl Agent {
     ///
     /// Returns an error if the lease cannot be claimed or the plan changed.
     pub async fn resume(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
+        self.initialize_extensions().await?;
         self.runtime.resume(run_id).await
     }
 
@@ -374,6 +380,7 @@ impl Agent {
     ///
     /// Returns a store or execution error for a claimed run.
     pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+        self.initialize_extensions().await?;
         self.runtime.recover().await
     }
 }
