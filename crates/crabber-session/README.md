@@ -6,7 +6,7 @@ The host calls `PostgresStore::migrate(url)` before `PostgresStore::connect(url)
 
 Set `CRABBER_TEST_POSTGRES_URL` to run the live contract tests. Set `CRABBER_REQUIRE_POSTGRES=1` to fail if that URL is missing.
 
-## Keyed admission (MemoryStore)
+## Keyed admission (MemoryStore and PostgreSQL)
 
 `Store::admit_keyed_run(KeyedAdmitRequest)` atomically creates a session if needed,
 its user message, run/epoch, and immutable `AdmissionReceipt`. The request must
@@ -34,10 +34,13 @@ any failure must roll back all three. Existing unkeyed admission remains availab
 Custom Store implementors must override both new methods transactionally and run
 `admission_contract::run_contract`, alongside `storetest::run_contract`. The default
 implementations return `AdmissionUnsupported`, so adapters cannot silently degrade
-keyed requests to unkeyed starts. Forward both methods in wrappers. PostgreSQL keyed
-admission currently returns this explicit unsupported error; durable receipt schema
-and implementation are the next milestone slice. PostgreSQL's existing unkeyed path
-and schema are unchanged in this slice.
+keyed requests to unkeyed starts. Forward both methods in wrappers.
+
+PostgreSQL schema version 2 adds retained receipts and their semantic digests in a
+forward, idempotent migration that preserves existing sessions, runs and messages.
+Per-session transaction locks serialize keyed and unkeyed admission. Receipt,
+run, epoch and user message commit together. Lookup is read-only; replay never
+changes lease ownership. PostgreSQL receipts survive pool and process restarts.
 
 ### Version 1 fingerprint contract
 
