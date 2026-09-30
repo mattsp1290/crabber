@@ -49,6 +49,18 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Registers the real providers compiled into this binary, using their
+    /// environment variables and the local ChatGPT credential store.
+    #[cfg(any(
+        feature = "anthropic",
+        feature = "openai",
+        feature = "codex",
+        feature = "opencode-go"
+    ))]
+    #[must_use]
+    pub fn providers_from_env(self) -> Self {
+        self.provider(Arc::new(crabber_providers::HttpResolver::from_env()))
+    }
     #[must_use]
     pub fn memory(mut self) -> Self {
         self.store = Some(Arc::new(MemoryStore::new()));

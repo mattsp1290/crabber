@@ -1,14 +1,11 @@
 [package]
-name = "minimal-embed"
+name = "codex-login"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-build = "build.rs"
 
 [dependencies]
-async-trait = "0.1"
-crabber = { path = "../../crates/crabber", features = ["all-providers"] }
-serde_json = "1"
+crabber-auth = { path = "../../crates/crabber-auth" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]

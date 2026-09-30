@@ -8,6 +8,8 @@ pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{PermissionDecision, RunResult, RuntimeError, StaticPolicy};
 
+#[cfg(feature = "codex")]
+pub use crabber_auth as auth;
 pub use crabber_core as core;
 pub use crabber_extension as extension;
 pub use crabber_providers as providers;

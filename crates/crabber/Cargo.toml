@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 crabber-core = { path = "../crabber-core" }
+crabber-auth = { path = "../crabber-auth", optional = true }
 crabber-extension = { path = "../crabber-extension" }
 crabber-providers = { path = "../crabber-providers" }
 crabber-runtime = { path = "../crabber-runtime" }
@@ -18,3 +19,11 @@ tokio = { version = "1", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true
+
+[features]
+default = []
+anthropic = ["crabber-providers/anthropic"]
+openai = ["crabber-providers/openai"]
+codex = ["crabber-providers/codex", "dep:crabber-auth"]
+opencode-go = ["crabber-providers/opencode-go"]
+all-providers = ["crabber-providers/all-providers"]

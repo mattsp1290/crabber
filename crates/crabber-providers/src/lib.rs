@@ -10,6 +10,45 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(any(
+    feature = "anthropic",
+    feature = "openai",
+    feature = "codex",
+    feature = "opencode-go"
+))]
+mod chat;
+#[cfg(any(
+    feature = "anthropic",
+    feature = "openai",
+    feature = "codex",
+    feature = "opencode-go"
+))]
+mod messages;
+#[cfg(any(
+    feature = "anthropic",
+    feature = "openai",
+    feature = "codex",
+    feature = "opencode-go"
+))]
+mod real;
+#[cfg(any(
+    feature = "anthropic",
+    feature = "openai",
+    feature = "codex",
+    feature = "opencode-go"
+))]
+mod responses;
+pub mod sse;
+#[cfg(any(
+    feature = "anthropic",
+    feature = "openai",
+    feature = "codex",
+    feature = "opencode-go"
+))]
+pub use real::{HttpAdapter, HttpResolver, Protocol};
+#[cfg(all(test, feature = "all-providers"))]
+mod codec_tests;
+
 /// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-providers";
 
