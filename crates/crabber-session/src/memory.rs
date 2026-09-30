@@ -20,6 +20,7 @@ pub struct MemoryStore {
     state: Arc<Mutex<State>>,
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
+    snapshot_key: String,
 }
 
 #[derive(Clone, Default)]
@@ -31,6 +32,8 @@ struct State {
     messages: Vec<Message>,
     events: Vec<EventRecord>,
     calls: BTreeMap<ToolCallId, ToolCallRecord>,
+    call_order: Vec<ToolCallId>,
+    snapshot_revisions: BTreeMap<SessionId, u64>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
@@ -68,6 +71,7 @@ impl MemoryStore {
             state: Arc::new(Mutex::new(State::default())),
             clock,
             limits: ByteLimits::default(),
+            snapshot_key: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -454,6 +458,14 @@ impl Store for MemoryStore {
             .cloned())
     }
 
+    async fn snapshot(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::SnapshotOutcome, StoreError> {
+        let state = self.state.lock().expect("memory store poisoned");
+        self.read_snapshot(&state, request)
+    }
+
     async fn list_messages(
         &self,
         id: &SessionId,
@@ -623,6 +635,10 @@ impl ExecutionStore for MemoryExecution {
             }
             message.parts.push(part);
             message.parts.sort_by_key(|entry| entry.ordinal);
+            *state
+                .snapshot_revisions
+                .entry(run.session_id.clone())
+                .or_default() += 1;
             Ok(())
         })
     }
@@ -645,6 +661,7 @@ impl ExecutionStore for MemoryExecution {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
             insert_event(state, run, pending_event)?;
+            state.call_order.push(call.id.clone());
             state.calls.insert(call.id.clone(), call);
             Ok(())
         })
@@ -666,6 +683,10 @@ impl ExecutionStore for MemoryExecution {
                 .get_mut(id)
                 .expect("validated call exists")
                 .status = ToolCallStatus::Running;
+            *state
+                .snapshot_revisions
+                .entry(run.session_id.clone())
+                .or_default() += 1;
             Ok(())
         })
     }
@@ -693,6 +714,7 @@ impl ExecutionStore for MemoryExecution {
             let call = state.calls.get_mut(id).expect("validated call exists");
             call.status = status;
             call.result = Some(result);
+            *state.snapshot_revisions.entry(run.session_id.clone()).or_default() += 1;
             Ok(())
         })
     }
@@ -995,3 +1017,6 @@ mod atomic_claim_tests {
             .unwrap();
     }
 }
+
+#[path = "memory_snapshot.rs"]
+mod snapshot_impl;

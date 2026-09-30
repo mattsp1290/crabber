@@ -323,6 +323,8 @@ pub enum CoreError {
     AdmissionConflict,
     #[error("keyed admission is unsupported by this store")]
     AdmissionUnsupported,
+    #[error("bounded snapshots are unsupported by this store")]
+    SnapshotUnsupported,
     #[error("session identity does not match")]
     SessionIdentityMismatch,
     #[error("session is busy")]

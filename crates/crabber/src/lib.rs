@@ -28,3 +28,8 @@ mod tests {
         assert_eq!(crate::core::CRATE_NAME, "crabber-core");
     }
 }
+
+pub use crabber_session::{
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage,
+};

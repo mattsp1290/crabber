@@ -4,7 +4,12 @@ pub mod admission_contract;
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
+mod snapshot;
 mod store;
+pub use snapshot::{
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage,
+};
 pub mod storetest;
 
 pub use memory::MemoryStore;
