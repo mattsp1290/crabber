@@ -396,7 +396,7 @@ mod tests {
         .await
         .expect("event stream must end after provider failure");
         assert!(observed.contains(&crabber_core::EventKind::TextDelta));
-        assert!(!observed.contains(&crabber_core::EventKind::RunSettled));
+        assert!(observed.contains(&crabber_core::EventKind::RunSettled));
         assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
     }
 }

@@ -228,13 +228,22 @@ impl SafeEvent {
                 .get("duration_ms")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
-            duration_ns: i128::from(
-                e.payload
-                    .get("duration_ms")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-                    .max(0),
-            ) * 1_000_000,
+            duration_ns: e
+                .payload
+                .get("duration_ns")
+                .and_then(Value::as_i64)
+                .map_or_else(
+                    || {
+                        i128::from(
+                            e.payload
+                                .get("duration_ms")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0)
+                                .max(0),
+                        ) * 1_000_000
+                    },
+                    i128::from,
+                ),
             latency_ns: i128::from(
                 e.payload
                     .get("latency_ms")
@@ -284,7 +293,7 @@ impl Observer for DatadogObserver {
 impl DatadogObserver {
     #[must_use]
     pub fn new(config: &DatadogConfig) -> Self {
-        let (tx, rx) = mpsc::channel(config.channel_capacity.max(1));
+        let (tx, rx) = mpsc::channel(config.channel_capacity.clamp(1, 4096));
         let dropped = Arc::new(AtomicU64::new(0));
         tokio::spawn(worker(rx, config.clone(), Arc::clone(&dropped)));
         Self {
@@ -327,22 +336,66 @@ impl DatadogObserver {
             .map_err(|_| ExportError::WorkerStopped)?
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportStage {
+    Spans,
+    Metrics,
+    Logs,
+}
+struct PendingBatch {
+    events: Vec<SafeEvent>,
+    stage: ExportStage,
+    dropped_snapshot: Option<u64>,
+}
+impl Default for PendingBatch {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            stage: ExportStage::Spans,
+            dropped_snapshot: None,
+        }
+    }
+}
 async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, dropped: Arc<AtomicU64>) {
     let Ok(client) = reqwest::Client::builder().timeout(config.timeout).build() else {
         return;
     };
-    let mut pending = Vec::new();
-    let mut last_failure: Option<ExportError> = None;
+    let mut pending = PendingBatch::default();
+    let mut retrying = false;
+    let batch_limit = config.batch_size.clamp(1, 1000);
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
-            command = rx.recv() => match command {
-                Some(Command::Event(event)) => { pending.push(*event); if pending.len() >= config.batch_size.max(1) && let Err(error) = export(&client, &config, &mut pending, &dropped).await { last_failure = Some(error); } },
-                Some(Command::Flush(reply)) => { let result = export(&client, &config, &mut pending, &dropped).await.and_then(|()| last_failure.take().map_or(Ok(()), Err)); let _ = reply.send(result); },
-                Some(Command::Shutdown(reply)) => { let result = export(&client, &config, &mut pending, &dropped).await.and_then(|()| last_failure.take().map_or(Ok(()), Err)); let _ = reply.send(result); break; },
+            command=rx.recv() => match command {
+                Some(Command::Event(event)) => {
+                    if retrying || pending.events.len()>=batch_limit {
+                        dropped.fetch_add(1,Ordering::Relaxed);
+                    } else {
+                        pending.events.push(*event);
+                        if pending.events.len()>=batch_limit {
+                            retrying=export(&client,&config,&mut pending,&dropped).await.is_err();
+                        }
+                    }
+                }
+                Some(Command::Flush(reply)) => {
+                    let result=export(&client,&config,&mut pending,&dropped).await;
+                    retrying=result.is_err();
+                    let _=reply.send(result);
+                }
+                Some(Command::Shutdown(reply)) => {
+                    let result=export(&client,&config,&mut pending,&dropped).await;
+                    retrying=result.is_err();
+                    let success=result.is_ok();
+                    let _=reply.send(result);
+                    if success { break; }
+                }
                 None => break,
             },
-            _ = tick.tick() => { if (!pending.is_empty() || dropped.load(Ordering::Relaxed)>0) && let Err(error) = export(&client, &config, &mut pending, &dropped).await { last_failure = Some(error); } }
+            _=tick.tick() => {
+                if retrying || !pending.events.is_empty() || dropped.load(Ordering::Relaxed)>0 {
+                    retrying=export(&client,&config,&mut pending,&dropped).await.is_err();
+                }
+            }
         }
     }
 }
@@ -371,14 +424,18 @@ fn datadog_id(value: &str) -> String {
     let bytes: [u8; 8] = digest[..8].try_into().expect("sha256 has eight bytes");
     u64::from_be_bytes(bytes).max(1).to_string()
 }
-fn span(e: &SafeEvent) -> Option<Value> {
-    let (name, kind, id_seed, parent_seed) = match &e.kind {
-        EventKind::RunAdmitted => (
+fn spans(e: &SafeEvent) -> Vec<Value> {
+    let mut result = Vec::new();
+    if matches!(e.kind, EventKind::RunSettled) {
+        result.push(span_value(
+            e,
             "crabber.session",
             "agent",
-            format!("{}-session", e.session),
+            &format!("{}-session", e.session),
             None,
-        ),
+        ));
+    }
+    let (name, kind, id_seed, parent_seed) = match &e.kind {
         EventKind::RunSettled => (
             "crabber.run",
             "workflow",
@@ -407,8 +464,18 @@ fn span(e: &SafeEvent) -> Option<Value> {
             format!("{}-epoch-{}", e.run, e.time_ns),
             Some(format!("{}-run", e.run)),
         ),
-        _ => return None,
+        _ => return result,
     };
+    result.push(span_value(e, name, kind, &id_seed, parent_seed));
+    result
+}
+fn span_value(
+    e: &SafeEvent,
+    name: &str,
+    kind: &str,
+    id_seed: &str,
+    parent_seed: Option<String>,
+) -> Value {
     let mut meta = json!({"kind":kind});
     if let Some(model) = &e.model {
         meta["model_name"] = json!(model);
@@ -437,14 +504,12 @@ fn span(e: &SafeEvent) -> Option<Value> {
     } else {
         e.duration_ns.max(1)
     };
-    Some(
-        json!({"name":name,"span_id":datadog_id(&id_seed),"trace_id":datadog_id(&format!("{}-trace",e.run)),
-        "parent_id":parent_seed.map_or_else(|| "undefined".to_string(), |p| datadog_id(&p)),
+    json!({"name":name,"span_id":datadog_id(id_seed),"trace_id":datadog_id(&format!("{}-trace",e.run)),
+        "parent_id":parent_seed.map_or_else(|| "undefined".to_string(),|p| datadog_id(&p)),
         "start_ns":e.time_ns-duration,"duration":duration,"meta":meta,
         "status":e.status.as_deref().unwrap_or("ok"),
         "metrics":{"input_tokens":e.input_tokens,"output_tokens":e.output_tokens,"total_tokens":e.input_tokens+e.output_tokens},
-        "session_id":e.session}),
-    )
+        "session_id":e.session})
 }
 fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
     let mut values = Vec::new();
@@ -466,9 +531,6 @@ fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
                     f64::from(u32::try_from(e.output_tokens).unwrap_or(u32::MAX)),
                 ),
             ]);
-        }
-        EventKind::Custom { name } if name == "run_error" => {
-            values.push(("crabber.run.count", 1.0));
         }
         EventKind::ToolCallSettled => values.push(("crabber.tool.calls", 1.0)),
         EventKind::PermissionDecided => values.push(("crabber.permission.decisions", 1.0)),
@@ -493,8 +555,14 @@ fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
 fn log(c: &DatadogConfig, e: &SafeEvent) -> Option<Value> {
     let (message, status) = match e.kind {
         EventKind::RunAdmitted => ("run admitted", "info"),
-        EventKind::RunSettled => ("run settled", "info"),
-        EventKind::Custom { ref name } if name == "run_error" => ("run error", "error"),
+        EventKind::RunSettled => (
+            "run settled",
+            if e.status.as_deref() == Some("error") {
+                "error"
+            } else {
+                "info"
+            },
+        ),
         EventKind::ToolCallSettled => ("tool settled", "info"),
         EventKind::PermissionDecided => ("permission decided", "info"),
         _ => return None,
@@ -640,42 +708,66 @@ async fn post(
 async fn export(
     client: &reqwest::Client,
     config: &DatadogConfig,
-    pending: &mut Vec<SafeEvent>,
+    pending: &mut PendingBatch,
     dropped: &AtomicU64,
 ) -> Result<(), ExportError> {
-    let batch = std::mem::take(pending);
-    let spans: Vec<_> = batch.iter().filter_map(span).collect();
-    let metrics: Vec<_> = batch.iter().flat_map(|e| series(config, e)).collect();
-    let logs: Vec<_> = batch.iter().filter_map(|e| log(config, e)).collect();
-    let dropped_count = dropped.swap(0, Ordering::Relaxed);
-    let mut metrics = metrics;
-    if !batch.is_empty() {
-        metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
-            "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
+    if pending.stage == ExportStage::Spans {
+        let spans: Vec<_> = pending.events.iter().flat_map(spans).collect();
+        if !spans.is_empty() {
+            post(client,config,format!("{}/api/intake/llm-obs/v1/trace/spans",config.api_origin()),
+                json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}})).await?;
+        }
+        pending.stage = ExportStage::Metrics;
     }
-    if dropped_count > 0 {
-        metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],"tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
+    if pending.stage == ExportStage::Metrics {
+        let mut metrics: Vec<_> = pending
+            .events
+            .iter()
+            .flat_map(|e| series(config, e))
+            .collect();
+        let dropped_count = *pending
+            .dropped_snapshot
+            .get_or_insert_with(|| dropped.load(Ordering::Relaxed));
+        if !pending.events.is_empty() {
+            metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
+                "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
+        }
+        if dropped_count > 0 {
+            metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],
+                "tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
+        }
+        if !metrics.is_empty() {
+            post(
+                client,
+                config,
+                format!("{}/api/v2/series", config.api_origin()),
+                json!({"series":metrics}),
+            )
+            .await?;
+        }
+        if dropped_count > 0 {
+            dropped.fetch_sub(dropped_count, Ordering::Relaxed);
+        }
+        pending.stage = ExportStage::Logs;
     }
-    if !spans.is_empty() {
-        post(client,config,format!("{}/api/intake/llm-obs/v1/trace/spans",config.api_origin()),json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}})).await?;
-    }
-    if !metrics.is_empty() {
-        post(
-            client,
-            config,
-            format!("{}/api/v2/series", config.api_origin()),
-            json!({"series":metrics}),
-        )
-        .await?;
-    }
-    if !logs.is_empty() {
-        post(
-            client,
-            config,
-            format!("{}/api/v2/logs", config.logs_origin()),
-            json!(logs),
-        )
-        .await?;
+    if pending.stage == ExportStage::Logs {
+        let logs: Vec<_> = pending
+            .events
+            .iter()
+            .filter_map(|e| log(config, e))
+            .collect();
+        if !logs.is_empty() {
+            post(
+                client,
+                config,
+                format!("{}/api/v2/logs", config.logs_origin()),
+                json!(logs),
+            )
+            .await?;
+        }
+        pending.events.clear();
+        pending.stage = ExportStage::Spans;
+        pending.dropped_snapshot = None;
     }
     Ok(())
 }
@@ -704,7 +796,11 @@ mod tests {
     use super::*;
     use crabber_core::{RunId, SessionId};
     use flate2::read::GzDecoder;
-    use std::{io::Read, net::TcpListener};
+    use std::{
+        io::Read,
+        net::{TcpListener, TcpStream},
+        sync::atomic::AtomicBool,
+    };
     fn config() -> DatadogConfig {
         DatadogConfig {
             site: "datadoghq.com".into(),
@@ -740,6 +836,48 @@ mod tests {
             live_only: false,
             created_at: time::OffsetDateTime::now_utc(),
         }
+    }
+    fn read_request(stream: &mut TcpStream) -> (String, Value) {
+        let mut all = Vec::new();
+        let mut buffer = [0u8; 8192];
+        let (head_end, length) = loop {
+            let n = stream.read(&mut buffer).unwrap();
+            assert!(n > 0);
+            all.extend_from_slice(&buffer[..n]);
+            if let Some(pos) = all.windows(4).position(|w| w == b"\r\n\r\n") {
+                let end = pos + 4;
+                let head = String::from_utf8_lossy(&all[..end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap();
+                if all.len() >= end + len {
+                    break (end, len);
+                }
+            }
+        };
+        while all.len() < head_end + length {
+            let n = stream.read(&mut buffer).unwrap();
+            assert!(n > 0);
+            all.extend_from_slice(&buffer[..n]);
+        }
+        let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
+        assert!(headers.contains("dd-api-key: test-key"));
+        let mut body_text = String::new();
+        if headers.contains("/api/intake/llm-obs/") {
+            assert!(!headers.contains("content-encoding: gzip"));
+            body_text = String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
+        } else {
+            assert!(headers.contains("content-encoding: gzip"));
+            GzDecoder::new(&all[head_end..head_end + length])
+                .read_to_string(&mut body_text)
+                .unwrap();
+        }
+        assert!(!body_text.contains("PROMPT_SECRET"));
+        (headers, serde_json::from_str(&body_text).unwrap())
     }
     #[test]
     fn summaries_are_opt_in_and_byte_bounded() {
@@ -794,6 +932,208 @@ mod tests {
         assert!(observer.dropped() > 0);
     }
     #[tokio::test]
+    async fn failed_flush_keeps_pending_signals_and_drop_count() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let recovered = Arc::new(AtomicBool::new(false));
+        let recovered_server = Arc::clone(&recovered);
+        let server = std::thread::spawn(move || {
+            let mut accepted = Vec::new();
+            while accepted.len() < 3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                if recovered_server.load(Ordering::SeqCst) {
+                    accepted.push(request);
+                    std::io::Write::write_all(
+                        &mut stream,
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                } else {
+                    std::io::Write::write_all(&mut stream,b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }
+            }
+            accepted
+        });
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        c.channel_capacity = 1;
+        c.batch_size = 100;
+        let observer = DatadogObserver::new(&c);
+        let session = SessionId::new();
+        let run = RunId::new();
+        observer.emit(&event(
+            EventKind::RunSettled,
+            &session,
+            &run,
+            json!({"status":"ok","duration_ms":100,"prompt":"PROMPT_SECRET"}),
+        ));
+        for _ in 0..200 {
+            observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
+        }
+        assert!(observer.dropped() > 0);
+        assert!(observer.flush().await.is_err());
+        recovered.store(true, Ordering::SeqCst);
+        observer.flush().await.unwrap();
+        let accepted = server.join().unwrap();
+        assert!(accepted[0].0.contains("/api/intake/llm-obs/"));
+        assert_eq!(
+            accepted[0].1["data"]["attributes"]["spans"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let metric_series = accepted[1].1["series"].as_array().unwrap();
+        assert!(
+            metric_series
+                .iter()
+                .any(|m| m["metric"] == "crabber.run.count")
+        );
+        assert!(
+            metric_series
+                .iter()
+                .any(|m| m["metric"] == "crabber.export.dropped"
+                    && m["points"][0]["value"].as_u64().unwrap() > 0)
+        );
+        assert!(
+            accepted[2]
+                .1
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["message"] == "run settled")
+        );
+    }
+    struct EchoTool;
+    #[async_trait::async_trait]
+    impl crabber_extension::ToolExecutor for EchoTool {
+        async fn execute(&self, value: Value) -> Result<Value, crabber_extension::ExtensionError> {
+            Ok(value)
+        }
+    }
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Real runtime and mock intake assertions stay together.
+    async fn failed_provider_run_exports_parented_workflow() {
+        use crabber_core::{ToolCallId, ToolInfo};
+        use crabber_extension::{StaticPlanProvider, ToolDefinition};
+        use crabber_providers::{
+            FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta,
+        };
+        use crabber_runtime::{Orchestrator, PermissionDecision, Request, StaticPolicy};
+        use crabber_session::MemoryStore;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_request(&mut stream));
+                std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        let observer = DatadogObserver::new(&c);
+        let call_id = ToolCallId::new();
+        let provider = FakeProvider::scripted(vec![
+            vec![
+                StreamDelta::ToolCallStart {
+                    call_id: call_id.clone(),
+                    name: "echo".into(),
+                },
+                StreamDelta::ToolCallArgsDelta {
+                    call_id: call_id.clone(),
+                    text: "{}".into(),
+                },
+                StreamDelta::ToolCallDone { call_id },
+                StreamDelta::Completed,
+            ],
+            vec![StreamDelta::Error(ProviderError {
+                kind: ProviderErrorKind::Server,
+                message: "PROMPT_SECRET".into(),
+                retryable: false,
+            })],
+        ]);
+        let tool = Arc::new(ToolDefinition {
+            info: ToolInfo {
+                name: "echo".into(),
+                description: "echo".into(),
+                parameters: json!({"type":"object"}),
+                retry_safe: true,
+                required_permissions: vec![],
+            },
+            executor: Arc::new(EchoTool),
+        });
+        let runtime = Orchestrator::builder()
+            .store(Arc::new(MemoryStore::new()))
+            .resolver(Arc::new(provider))
+            .plan_provider(Arc::new(StaticPlanProvider::new(vec![tool], vec![])))
+            .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+            .observer(Arc::new(observer.clone()))
+            .build()
+            .unwrap();
+        let run = runtime
+            .start(Request {
+                session_id: None,
+                workspace_id: "test".into(),
+                directory: ".".into(),
+                title: "test".into(),
+                text: "PROMPT_SECRET".into(),
+                selection: Selection {
+                    provider_id: "fake".into(),
+                    model_id: "demo".into(),
+                },
+                system_prompt: None,
+            })
+            .await
+            .unwrap();
+        assert!(run.done().await.is_err());
+        observer.flush().await.unwrap();
+        let requests = server.join().unwrap();
+        let spans = requests[0].1["data"]["attributes"]["spans"]
+            .as_array()
+            .unwrap();
+        let agent = spans.iter().find(|s| s["meta"]["kind"] == "agent").unwrap();
+        let workflow = spans
+            .iter()
+            .find(|s| s["meta"]["kind"] == "workflow")
+            .unwrap();
+        assert_eq!(workflow["status"], "error");
+        assert_eq!(workflow["parent_id"], agent["span_id"]);
+        for kind in ["llm", "tool"] {
+            let child = spans.iter().find(|s| s["meta"]["kind"] == kind).unwrap();
+            assert_eq!(child["parent_id"], workflow["span_id"]);
+            assert!(agent["start_ns"].as_i64().unwrap() <= child["start_ns"].as_i64().unwrap());
+            assert!(
+                child["start_ns"].as_i64().unwrap() + child["duration"].as_i64().unwrap()
+                    <= agent["start_ns"].as_i64().unwrap() + agent["duration"].as_i64().unwrap()
+            );
+        }
+        assert!(
+            requests[1].1["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["metric"] == "crabber.run.count")
+        );
+        assert!(
+            requests[2]
+                .1
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["message"] == "run settled" && l["status"] == "error")
+        );
+    }
+    #[tokio::test]
     #[allow(clippy::too_many_lines)] // Mock server and payload assertions stay together.
     async fn mock_intake_receives_linked_redacted_signals() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -802,46 +1142,7 @@ mod tests {
             let mut requests = Vec::new();
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut all = Vec::new();
-                let mut buffer = [0u8; 8192];
-                let (head_end, length) = loop {
-                    let n = stream.read(&mut buffer).unwrap();
-                    assert!(n > 0);
-                    all.extend_from_slice(&buffer[..n]);
-                    if let Some(pos) = all.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let end = pos + 4;
-                        let head = String::from_utf8_lossy(&all[..end]).to_ascii_lowercase();
-                        let len: usize = head
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length: "))
-                            .unwrap()
-                            .trim()
-                            .parse()
-                            .unwrap();
-                        if all.len() >= end + len {
-                            break (end, len);
-                        }
-                    }
-                };
-                while all.len() < head_end + length {
-                    let n = stream.read(&mut buffer).unwrap();
-                    assert!(n > 0);
-                    all.extend_from_slice(&buffer[..n]);
-                }
-                let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
-                assert!(headers.contains("dd-api-key: test-key"));
-                let mut body_text = String::new();
-                if headers.contains("/api/intake/llm-obs/") {
-                    assert!(!headers.contains("content-encoding: gzip"));
-                    body_text =
-                        String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
-                } else {
-                    assert!(headers.contains("content-encoding: gzip"));
-                    let mut decoder = GzDecoder::new(&all[head_end..head_end + length]);
-                    decoder.read_to_string(&mut body_text).unwrap();
-                }
-                assert!(!body_text.contains("PROMPT_SECRET"));
-                requests.push((headers, serde_json::from_str::<Value>(&body_text).unwrap()));
+                requests.push(read_request(&mut stream));
                 std::io::Write::write_all(
                     &mut stream,
                     b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -879,18 +1180,26 @@ mod tests {
             EventKind::RunSettled,
             &session,
             &run,
-            json!({"prompt":"PROMPT_SECRET"}),
+            json!({"prompt":"PROMPT_SECRET","duration_ms":1000,"status":"ok"}),
         ));
         observer.flush().await.unwrap();
         let requests = server.join().unwrap();
         let spans = &requests[0].1["data"]["attributes"]["spans"];
         assert_eq!(requests[0].1["data"]["type"], "span");
         assert_eq!(spans.as_array().unwrap().len(), 4);
-        assert_eq!(spans[0]["meta"]["kind"], "agent");
-        assert_eq!(spans[1]["meta"]["kind"], "llm");
-        assert_eq!(spans[2]["meta"]["kind"], "tool");
+        assert_eq!(spans[0]["meta"]["kind"], "llm");
+        assert_eq!(spans[1]["meta"]["kind"], "tool");
+        assert_eq!(spans[2]["meta"]["kind"], "agent");
         assert_eq!(spans[3]["meta"]["kind"], "workflow");
-        assert_eq!(spans[2]["parent_id"], spans[3]["span_id"]);
+        assert_eq!(spans[1]["parent_id"], spans[3]["span_id"]);
+        assert_eq!(spans[3]["parent_id"], spans[2]["span_id"]);
+        let root_start = spans[2]["start_ns"].as_i64().unwrap();
+        let root_end = root_start + spans[2]["duration"].as_i64().unwrap();
+        for child in [0, 1, 3] {
+            let start = spans[child]["start_ns"].as_i64().unwrap();
+            let end = start + spans[child]["duration"].as_i64().unwrap();
+            assert!(root_start <= start && end <= root_end);
+        }
         for item in spans.as_array().unwrap() {
             assert!(
                 item["span_id"]

@@ -246,8 +246,12 @@ dependencies = [
 name = "crabber-obs"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "crabber-core",
+ "crabber-extension",
+ "crabber-providers",
  "crabber-runtime",
+ "crabber-session",
  "flate2",
  "reqwest",
  "serde_json",

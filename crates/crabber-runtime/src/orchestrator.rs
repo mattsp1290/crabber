@@ -452,6 +452,7 @@ impl Orchestrator {
             self.heartbeat_interval,
         );
         let run_id = fence.run_id.clone();
+        let run_started_at = self.clock.now();
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
         let outcome = {
@@ -487,7 +488,9 @@ impl Orchestrator {
             }),
             Err(error) => {
                 let mut settled = self.event(&session_id, &run_id, EventKind::RunSettled);
-                settled.payload = json!({"status":"error"});
+                settled.payload = json!({"status":"error",
+                    "duration_ms":(self.clock.now()-run_started_at).whole_milliseconds(),
+                    "duration_ns":(self.clock.now()-run_started_at).whole_nanoseconds()});
                 if execution
                     .settle_run(
                         RunStatus::Failed,
@@ -498,15 +501,7 @@ impl Orchestrator {
                     .await
                     .is_ok()
                 {
-                    let mut failure = self.event(
-                        &session_id,
-                        &run_id,
-                        EventKind::Custom {
-                            name: "run_error".into(),
-                        },
-                    );
-                    failure.payload = json!({"status":"error"});
-                    self.observer.emit(&failure);
+                    self.observer.emit(&settled);
                 }
                 Err(error)
             }
@@ -561,7 +556,8 @@ impl Orchestrator {
                 let mut settled = self.event(session_id, run_id, EventKind::RunSettled);
                 settled.payload = json!({"status":"ok","input_tokens":usage.input_tokens,
                     "output_tokens":usage.output_tokens,
-                    "duration_ms":(self.clock.now()-run_started_at).whole_milliseconds()});
+                    "duration_ms":(self.clock.now()-run_started_at).whole_milliseconds(),
+                    "duration_ns":(self.clock.now()-run_started_at).whole_nanoseconds()});
                 match execution
                     .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
                     .await
