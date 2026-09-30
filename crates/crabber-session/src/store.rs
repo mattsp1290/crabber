@@ -48,6 +48,9 @@ pub trait Store: Send + Sync {
         id: &SessionId,
         epoch: Option<EpochId>,
     ) -> Result<Vec<Message>, StoreError>;
+    /// Returns the append-only message history, including messages hidden by
+    /// context epoch projections. Used to reconcile a committed turn after a crash.
+    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError>;
     async fn list_events(
         &self,
         id: &SessionId,

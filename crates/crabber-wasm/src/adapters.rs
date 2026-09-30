@@ -483,7 +483,6 @@ impl WasmGuard {
                         }) {
                             Some("allow") => GuardDecision::Allow,
                             Some("ask") => GuardDecision::Ask,
-                            Some("deny") => GuardDecision::Deny,
                             _ => GuardDecision::Deny,
                         },
                         _ => GuardDecision::Deny,

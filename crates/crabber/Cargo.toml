@@ -27,6 +27,7 @@ workspace = true
 
 [features]
 default = []
+postgres = ["crabber-session/postgres"]
 anthropic = ["crabber-providers/anthropic"]
 openai = ["crabber-providers/openai"]
 codex = ["crabber-providers/codex", "dep:crabber-auth"]

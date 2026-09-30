@@ -990,7 +990,7 @@ mod tests {
                 observed
                     .lock()
                     .unwrap()
-                    .push((level.to_owned(), message.to_owned()))
+                    .push((level.to_owned(), message.to_owned()));
             })
         };
         let loader = Loader::new().unwrap().with_log_observer(callback);

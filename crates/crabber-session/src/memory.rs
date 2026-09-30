@@ -384,6 +384,16 @@ impl Store for MemoryStore {
         project_messages(&state, id, epoch)
     }
 
+    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
+        let state = self.state.lock().expect("memory store poisoned");
+        Ok(state
+            .messages
+            .iter()
+            .filter(|message| &message.session_id == id)
+            .cloned()
+            .collect())
+    }
+
     async fn list_events(
         &self,
         id: &SessionId,
@@ -664,6 +674,7 @@ impl ExecutionStore for MemoryExecution {
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.status = RunStatus::Paused;
             entry.checkpoint = Some(checkpoint);
+            entry.lease_until = now;
             entry.updated_at = now;
             Ok(())
         })
