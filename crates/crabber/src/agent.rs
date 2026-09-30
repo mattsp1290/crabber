@@ -53,12 +53,28 @@ pub struct AgentBuilder {
     tools: Vec<Arc<ToolDefinition>>,
     prompts: Vec<Arc<PromptSection>>,
     policy: Option<Arc<dyn PermissionPolicy>>,
+    #[cfg(feature = "datadog")]
+    datadog: Option<crabber_obs::DatadogConfig>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
 }
 
 impl AgentBuilder {
+    /// Enables agentless Datadog export when `DD_API_KEY` is set.
+    #[cfg(feature = "datadog")]
+    #[must_use]
+    pub fn datadog_from_env(mut self) -> Self {
+        self.datadog = crabber_obs::DatadogConfig::from_env();
+        self
+    }
+    /// Enables agentless Datadog export with explicit settings.
+    #[cfg(feature = "datadog")]
+    #[must_use]
+    pub fn datadog(mut self, config: crabber_obs::DatadogConfig) -> Self {
+        self.datadog = Some(config);
+        self
+    }
     /// Registers the real providers compiled into this binary, using their
     /// environment variables and the local ChatGPT credential store.
     #[cfg(any(
@@ -140,8 +156,12 @@ impl AgentBuilder {
         let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
         let config = self.config.ok_or(BuildError::NoConfig)?;
         let (events, _) = broadcast::channel(256);
+        #[cfg(feature = "datadog")]
+        let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
         let observer = Arc::new(EventBroadcaster {
             events: events.clone(),
+            #[cfg(feature = "datadog")]
+            datadog: datadog.clone(),
         });
         let extensions = self.extensions;
         let has_extensions = !extensions.is_empty();
@@ -179,6 +199,8 @@ impl AgentBuilder {
             runtime: runtime.build()?,
             config,
             events,
+            #[cfg(feature = "datadog")]
+            datadog,
             registry,
             extensions: mounts,
             mounted: OnceCell::new(),
@@ -188,11 +210,26 @@ impl AgentBuilder {
 
 struct EventBroadcaster {
     events: broadcast::Sender<Arc<EventRecord>>,
+    #[cfg(feature = "datadog")]
+    datadog: Option<crabber_obs::DatadogObserver>,
 }
 
 impl Observer for EventBroadcaster {
     fn emit(&self, event: &EventRecord) {
         let _ = self.events.send(Arc::new(event.clone()));
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.emit(event);
+            crabber_obs::tracing_bridge::emit(event);
+        }
+    }
+    fn model_completed(&self, event: &EventRecord) {
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.emit(event);
+        }
+        #[cfg(not(feature = "datadog"))]
+        let _ = event;
     }
 }
 
@@ -201,12 +238,36 @@ pub struct Agent {
     runtime: Orchestrator,
     config: AgentConfig,
     events: broadcast::Sender<Arc<EventRecord>>,
+    #[cfg(feature = "datadog")]
+    datadog: Option<crabber_obs::DatadogObserver>,
     registry: Option<Registry>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
     mounted: OnceCell<Vec<MountHandle>>,
 }
 
 impl Agent {
+    /// Waits for queued Datadog exports, if enabled.
+    #[cfg(feature = "datadog")]
+    /// # Errors
+    /// Returns an intake or worker error.
+    pub async fn flush(&self) -> Result<(), crabber_obs::ExportError> {
+        if let Some(datadog) = &self.datadog {
+            datadog.flush().await
+        } else {
+            Ok(())
+        }
+    }
+    /// Stops the Datadog export worker after flushing, if enabled.
+    #[cfg(feature = "datadog")]
+    /// # Errors
+    /// Returns an intake or worker error.
+    pub async fn shutdown(&self) -> Result<(), crabber_obs::ExportError> {
+        if let Some(datadog) = &self.datadog {
+            datadog.shutdown().await
+        } else {
+            Ok(())
+        }
+    }
     #[must_use]
     pub fn builder() -> AgentBuilder {
         AgentBuilder {
@@ -216,6 +277,8 @@ impl Agent {
             tools: Vec::new(),
             prompts: Vec::new(),
             policy: None,
+            #[cfg(feature = "datadog")]
+            datadog: None,
             extensions: Vec::new(),
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),

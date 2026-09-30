@@ -8,11 +8,13 @@ const GLUE_LIMIT: usize = 60;
 
 fn main() {
     let mut args = env::args().skip(1);
-    if let (Some("check"), None) = (args.next().as_deref(), args.next()) {
-        check();
-    } else {
-        eprintln!("usage: cargo xtask check");
-        std::process::exit(2);
+    match (args.next().as_deref(), args.next()) {
+        (Some("check"), None) => check(),
+        (Some("verify-datadog"), None) => verify_datadog(),
+        _ => {
+            eprintln!("usage: cargo xtask <check|verify-datadog>");
+            std::process::exit(2);
+        }
     }
 }
 
@@ -109,5 +111,90 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             files.push(path);
         }
+    }
+}
+
+/// Live ingestion gate. Only this command reads `DD_APP_KEY`.
+fn verify_datadog() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let site = env::var("DD_SITE").expect("DD_SITE is required");
+    let api_key = env::var("DD_API_KEY").expect("DD_API_KEY is required");
+    let application_key = env::var("DD_APP_KEY").expect("DD_APP_KEY is required");
+    let marker = format!(
+        "crabber-{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        std::process::id()
+    );
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let status = Command::new("cargo")
+        .args(["run", "--quiet", "-p", "datadog-export"])
+        .env("CRABBER_OBS_VERIFY_MARKER", &marker)
+        .current_dir(workspace)
+        .status()
+        .expect("run example");
+    assert!(status.success(), "example run or LLM Obs intake failed");
+    println!("llmobs_intake_status=202 marker={marker}");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let origin = format!("https://api.{site}");
+    let mut metrics = false;
+    let mut logs = false;
+    for _ in 0..12 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let metric_response = client
+            .get(format!("{origin}/api/v1/query"))
+            .header("DD-API-KEY", &api_key)
+            .header("DD-APPLICATION-KEY", &application_key)
+            .query(&[
+                ("from", (now - 600).to_string()),
+                ("to", now.to_string()),
+                ("query", format!("sum:crabber.run.count{{verify:{marker}}}")),
+            ])
+            .send();
+        let mut metric_query_http_status = 0;
+        let mut metric_query_status = "transport_error";
+        let mut metric_series_count = 0;
+        if let Ok(response) = metric_response {
+            metric_query_http_status = response.status().as_u16();
+            if let Ok(body) = response.json::<serde_json::Value>() {
+                metric_query_status = match body["status"].as_str() {
+                    Some("ok") => "ok",
+                    Some("error") => "error",
+                    _ => "unknown",
+                };
+                metric_series_count = body["series"].as_array().map_or(0, Vec::len);
+                metrics = metric_query_http_status == 200
+                    && metric_query_status == "ok"
+                    && metric_series_count > 0;
+            }
+        }
+        println!(
+            "metric_query_http_status={metric_query_http_status} metric_query_status={metric_query_status} metric_series_count={metric_series_count}"
+        );
+        let log_response = client.post(format!("{origin}/api/v2/logs/events/search"))
+            .header("DD-API-KEY", &api_key).header("DD-APPLICATION-KEY", &application_key)
+            .json(&serde_json::json!({"filter":{"query":format!("@verify_marker:{marker}"),"from":"now-15m","to":"now"},"page":{"limit":10}})).send();
+        if let Ok(response) = log_response
+            && response.status().is_success()
+            && let Ok(body) = response.json::<serde_json::Value>()
+        {
+            logs = body["data"].as_array().is_some_and(|v| !v.is_empty());
+        }
+        println!("metrics_found={metrics} logs_found={logs}");
+        if metrics && logs {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(10));
+    }
+    if !metrics || !logs {
+        std::process::exit(1);
     }
 }
