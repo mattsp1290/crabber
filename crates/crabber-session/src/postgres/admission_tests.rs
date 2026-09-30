@@ -336,6 +336,7 @@ async fn independent_processes_and_fresh_process_lifecycle() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn forward_migration_preserves_v1_and_connect_is_read_only() {
     let Some(url) = test_url() else { return };
     let _guard = TEST_LOCK.lock().await;
@@ -381,6 +382,7 @@ async fn forward_migration_preserves_v1_and_connect_is_read_only() {
         pool,
         clock,
         limits: ByteLimits::default(),
+        abandon_fault: Arc::default(),
     };
     let session = SessionId::new();
     let admitted = old.admit_run(request(&session)).await.unwrap();

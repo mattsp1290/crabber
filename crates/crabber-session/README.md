@@ -122,7 +122,9 @@ death. Crabber checks the exact expected owner and token atomically; it cannot
 verify external process death. This authority may revoke an unexpired lease.
 
 MemoryStore rotates the claim token before settlement inside a rollback-safe
-transaction. Every Pending or Running tool call becomes Interrupted with one
+transaction. PostgreSQL provides the same contract in one transaction, locking
+the run row before reading its clock or checking ownership; renewal and recovery
+claims serialize on that lock. Every Pending or Running tool call becomes Interrupted with one
 matching result message and ToolCallSettled event. The run becomes Interrupted
 with one durable RunSettled event. All old ExecutionStore writes are fenced out.
 Completed tool records/results, history, usage, checkpoint, admission receipts
@@ -136,10 +138,20 @@ An error is not proof of successful settlement. `NotFound` identifies a missing
 run, and `AlreadyTerminal` identifies a run settled by another operation. A
 different request against a previously abandoned run returns `StaleOwner`.
 Memory state is process-local, so its replay evidence survives only as long as
-the shared store state. PostgreSQL and custom stores currently return
-`Unsupported` until they implement this complete atomic contract.
+the shared store state. PostgreSQL replay survives fresh connections and host
+processes through the durable terminal event; no migration is required. Custom
+stores return `Unsupported` until they implement this complete atomic contract.
 
 Memory verification is in facade `fenced_abandon` and session
 `memory::abandon_tests`: Running/Paused zero-effect journeys, live/stale denial,
 all old-owner writes rejected, privately seeded Pending settlement, rollback
 after tool writes, preserved usage/history/completed tools/inbox and exact replay.
+
+
+Shared session `abandonment_contract` checks Pending/Running/Paused with both
+expiry and administrative authority, the exact expiry boundary, all stale writes,
+completed/failed tool history, usage, checkpoint, admission receipts, inbox rows,
+next admission and exact replay. PostgreSQL `abandon_tests` adds independent-pool
+renewal/recovery/abandonment races, transaction rollback before commit, unknown
+committed-response reconciliation, fresh-process readback/retry and a subprocess
+assertion that required-service tests reject a missing database URL.

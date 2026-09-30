@@ -1008,3 +1008,36 @@ mod atomic_claim_tests {
 #[cfg(test)]
 #[path = "memory/abandon_tests.rs"]
 mod abandon_tests;
+
+#[cfg(test)]
+#[async_trait]
+impl crate::abandonment_contract::FixtureStore for MemoryStore {
+    async fn seed_run(&self, run: Run) {
+        self.state.lock().unwrap().runs.insert(run.id.clone(), run);
+    }
+    async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
+        self.state
+            .lock()
+            .unwrap()
+            .calls
+            .values()
+            .filter(|c| c.run_id == *run)
+            .cloned()
+            .collect()
+    }
+    async fn unconsumed_inbox(&self, session: &SessionId) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .inbox
+            .iter()
+            .filter(|r| r.session_id == *session && r.consumed_by_run.is_none())
+            .count()
+    }
+}
+#[cfg(test)]
+#[tokio::test]
+async fn shared_abandonment_contract() {
+    let clock = Arc::new(crabber_core::ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    crate::abandonment_contract::run_contract(MemoryStore::with_clock(clock.clone()), clock).await;
+}

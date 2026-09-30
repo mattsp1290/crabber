@@ -1,5 +1,6 @@
 //! PostgreSQL 14+ store. JSONB preserves the domain records while relational keys,
 //! ordering columns, and the active-run index enforce ownership across processes.
+mod abandon;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -23,6 +24,8 @@ pub struct PostgresStore {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
+    #[cfg(test)]
+    abandon_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -310,6 +313,8 @@ impl PostgresStore {
             pool,
             clock: Arc::new(SystemClock),
             limits: ByteLimits::default(),
+            #[cfg(test)]
+            abandon_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -602,6 +607,12 @@ impl Store for PostgresStore {
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
         lookup_receipt(&mut *self.pool.acquire().await.map_err(db)?, session, key).await
+    }
+    async fn abandon_run(
+        &self,
+        request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        abandon::abandon(self, request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         let (tx, _) = self.fenced(&fence).await?;
@@ -1227,3 +1238,6 @@ mod tests {
 
 #[cfg(test)]
 mod admission_tests;
+
+#[cfg(test)]
+mod abandon_tests;

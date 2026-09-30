@@ -73,6 +73,6 @@ The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.
 
 Hosts can settle stopped or expired work through `Agent::abandon` without running
-persisted providers, tools or extensions. See the [`MemoryStore` abandonment and
+persisted providers, tools or extensions. See the [Memory/PostgreSQL abandonment and
 administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.

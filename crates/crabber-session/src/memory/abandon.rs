@@ -1,4 +1,5 @@
 use super::{State, insert_event, insert_message};
+#[cfg(test)]
 use crate::StoreError;
 use crate::abandonment::{AbandonEvidence, interrupted_tool, terminal_event};
 use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest, EventKind};
@@ -81,17 +82,20 @@ fn replay(
     run: &Run,
     request: &AbandonRequest,
 ) -> Result<AbandonOutcome, AbandonError> {
-    let event = state
+    let (event, evidence) = state
         .events
         .iter()
-        .find(|event| {
-            event.run_id == run.id
-                && event.kind == EventKind::RunSettled
-                && event.payload.get("abandonment_v1").is_some()
+        .find_map(|event| {
+            if event.run_id != run.id || event.kind != EventKind::RunSettled {
+                return None;
+            }
+            let evidence: AbandonEvidence =
+                serde_json::from_value(event.payload.get("abandonment_v1")?.clone()).ok()?;
+            // Caller-authored history cannot know the newly rotated terminal token.
+            // Only evidence for the exact current terminal snapshot is authoritative.
+            (evidence.run == *run).then_some((event, evidence))
         })
         .ok_or(AbandonError::AlreadyTerminal)?;
-    let evidence: AbandonEvidence = serde_json::from_value(event.payload["abandonment_v1"].clone())
-        .map_err(|_| StoreError::Validation("invalid abandonment evidence".into()))?;
     if &evidence.request != request {
         return Err(AbandonError::StaleOwner);
     }

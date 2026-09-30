@@ -31,3 +31,6 @@ mod tests {
         crate::storetest::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
     }
 }
+
+#[cfg(test)]
+mod abandonment_contract;
