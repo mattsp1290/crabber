@@ -664,6 +664,7 @@ impl ExecutionStore for MemoryExecution {
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.status = RunStatus::Paused;
             entry.checkpoint = Some(checkpoint);
+            entry.lease_until = now;
             entry.updated_at = now;
             Ok(())
         })

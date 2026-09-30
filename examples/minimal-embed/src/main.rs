@@ -11,11 +11,16 @@ use std::{
     sync::Arc,
 };
 
-struct EchoTool;
+struct EchoTool {
+    delay: bool,
+}
 
 #[async_trait]
 impl ToolExecutor for EchoTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
+        if self.delay {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         Ok(arguments)
     }
 }
@@ -27,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         env!("CARGO_PKG_VERSION"),
         env!("CRABBER_GIT_SHA")
     );
-    let (provider, model, protocol) = cli_options()?;
+    let (provider, model, protocol, interrupt_after_first_delta) = cli_options()?;
     let selection = Selection {
         provider_id: provider.clone(),
         model_id: model,
@@ -52,7 +57,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             retry_safe: true,
             required_permissions: vec![],
         },
-        executor: Arc::new(EchoTool),
+        executor: Arc::new(EchoTool {
+            delay: interrupt_after_first_delta,
+        }),
     };
     let agent = Agent::builder()
         .memory()
@@ -62,7 +69,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .build()?;
     let mut run = agent.prompt(None, "Use the echo tool").await?;
+    let session_id = run.session_id().clone();
     let mut events = run.events();
+    let mut interrupted = false;
     loop {
         let Some(event) = events.recv().await? else {
             break;
@@ -71,13 +80,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             EventKind::TextDelta => {
                 print!("{}", event.payload["text"].as_str().unwrap_or_default());
                 io::stdout().flush()?;
+                if interrupt_after_first_delta && !interrupted {
+                    run.interrupt();
+                    interrupted = true;
+                }
             }
             EventKind::ToolCallSettled => println!("\ntool call settled"),
             _ => {}
         }
     }
     println!();
-    run.done().await?;
+    let result = run.done().await?;
+    if interrupted {
+        println!("interrupted run: {:?}", result.status);
+        let resumed = agent
+            .prompt(Some(session_id), "Continue after interruption")
+            .await?;
+        println!("resumed session: {:?}", resumed.done().await?.status);
+    }
     // crabber:glue-end
     Ok(())
 }
@@ -105,12 +125,17 @@ fn fake_provider() -> FakeProvider {
     ])
 }
 
-fn cli_options() -> Result<(String, String, crabber::providers::Protocol), Box<dyn Error>> {
+fn cli_options() -> Result<(String, String, crabber::providers::Protocol, bool), Box<dyn Error>> {
     let mut provider = "fake".to_owned();
     let mut model = None;
     let mut protocol = crabber::providers::Protocol::Responses;
+    let mut interrupt_after_first_delta = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
+        if flag == "--interrupt-after-first-delta" {
+            interrupt_after_first_delta = true;
+            continue;
+        }
         let value = args.next().ok_or("option needs a value")?;
         match flag.as_str() {
             "--provider" => provider = value,
@@ -136,5 +161,5 @@ fn cli_options() -> Result<(String, String, crabber::providers::Protocol), Box<d
     if model.is_empty() {
         return Err("--model is required for real providers".into());
     }
-    Ok((provider, model, protocol))
+    Ok((provider, model, protocol, interrupt_after_first_delta))
 }
