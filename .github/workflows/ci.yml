@@ -10,11 +10,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Install stable Rust with rustfmt and Clippy
@@ -26,6 +21,11 @@ jobs:
           rustup target add wasm32-wasip2
           cargo install wasm-tools --locked
       - name: Check workspace
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: cargo xtask check
 
   postgres:
