@@ -109,7 +109,10 @@ impl tool_middleware_api::Guest for Fixture {
 }
 
 impl event_sink_api::Guest for Fixture {
-    fn emit(_event: types::BoundedEvent) -> Result<(), types::StructuredError> {
+    fn emit(event: types::BoundedEvent) -> Result<(), types::StructuredError> {
+        if event.kind == "fail" {
+            return Err(types::StructuredError { code: "fixture".into(), message: "event failure".into(), retryable: false });
+        }
         let count = crabber::host::state::get("count")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
@@ -129,8 +132,8 @@ impl prompt_section_api::Guest for Fixture {
             order: 0,
         }]
     }
-    fn render(_name: String, _turn: types::TurnMetadata) -> Result<String, types::StructuredError> {
-        Ok("all-in-one prompt".into())
+    fn render(_name: String, turn: types::TurnMetadata) -> Result<String, types::StructuredError> {
+        Ok(format!("all-in-one prompt run {}", turn.run_id))
     }
 }
 impl hook_api::Guest for Fixture {
@@ -143,7 +146,10 @@ impl hook_api::Guest for Fixture {
     ) -> Result<(), types::StructuredError> {
         Ok(())
     }
-    fn before_turn(_turn: types::TurnMetadata) -> Result<(), types::StructuredError> {
+    fn before_turn(turn: types::TurnMetadata) -> Result<(), types::StructuredError> {
+        if turn.run_id == "fail" {
+            return Err(types::StructuredError { code: "fixture".into(), message: "hook failure".into(), retryable: false });
+        }
         Ok(())
     }
     fn after_turn(_turn: types::TurnMetadata) -> Result<(), types::StructuredError> {
@@ -153,8 +159,12 @@ impl hook_api::Guest for Fixture {
 impl model_controls_api::Guest for Fixture {
     fn before_model_request(
         _turn: types::TurnMetadata,
-        _controls_json: String,
+        controls_json: String,
     ) -> types::Replacement {
+        let controls: crabber_guest::serde_json::Value = crabber_guest::serde_json::from_str(&controls_json).unwrap();
+        if controls.get("top-p").is_none() || controls.get("max-tokens").is_none() || controls.get("tool-choice").is_none() {
+            return types::Replacement::Error(types::StructuredError { code: "fixture".into(), message: "missing documented control keys".into(), retryable: false });
+        }
         types::Replacement::Unchanged
     }
 }

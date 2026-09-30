@@ -592,6 +592,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "external-controls"
+version = "0.1.0"
+dependencies = [
+ "crabber-guest",
+]
+
+[[package]]
 name = "external-guest"
 version = "0.1.0"
 dependencies = [

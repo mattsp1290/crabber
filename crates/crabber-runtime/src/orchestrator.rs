@@ -9,11 +9,11 @@ use crabber_core::{
     ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardDecision, HostServices,
-    ModelCompleted, ModelRequestError, ModelRequested, ModelStream as ExtensionModelStream,
-    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, StateSink,
-    ToolContext, ToolDefinition, ToolExecute, ToolPrepare, ToolResultTransform, TurnCompleted,
-    TurnPrepare, TurnStarted,
+    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
+    HostServices, ModelCompleted, ModelRequestError, ModelRequested,
+    ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
+    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolPrepare,
+    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -697,11 +697,33 @@ impl Orchestrator {
             }
             system.push_str(&prompt.text);
         }
+        let mut messages = self.store.list_messages(session_id, None).await?;
+        let turn_index = messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .count();
         let contributions = plan
             .dispatcher
-            .transform::<ContextAssemble>(json!({"system_prelude":[],"user_suffix":[]}))
+            .transform::<ContextAssemble>(json!({
+                "system_prelude":[], "user_suffix":[], "prompt_sections":[],
+                "run_id":run_id.to_string(), "session_id":session_id.to_string(),
+                "provider_id":request.selection.provider_id, "model_id":request.selection.model_id,
+                "turn_index":turn_index, "message_count":messages.len(),
+                "has_system_prompt":request.system_prompt.is_some()
+            }))
             .await
             .map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        if let Some(sections) = contributions
+            .get("prompt_sections")
+            .and_then(Value::as_array)
+        {
+            for section in sections.iter().filter_map(Value::as_str) {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(section);
+            }
+        }
         if let Some(prelude) = contributions
             .get("system_prelude")
             .and_then(Value::as_array)
@@ -710,7 +732,6 @@ impl Orchestrator {
                 system = format!("{line}\n{system}");
             }
         }
-        let mut messages = self.store.list_messages(session_id, None).await?;
         if let Some(suffixes) = contributions.get("user_suffix").and_then(Value::as_array)
             && let Some(message) = messages
                 .iter_mut()
@@ -1285,10 +1306,20 @@ impl Orchestrator {
         arguments: Value,
         lease_lost: &AtomicBool,
     ) -> Result<Result<Value, String>, RuntimeError> {
-        let guard_denied = plan
+        let guard_decisions: Vec<_> = plan
             .guards
             .iter()
-            .any(|guard| guard.check(&tool.info.name, &arguments) == GuardDecision::Deny);
+            .map(|guard| {
+                guard.check_with_context(GuardContext {
+                    tool: &tool.info,
+                    arguments: &arguments,
+                    call_id,
+                    session_id,
+                    run_id,
+                })
+            })
+            .collect();
+        let guard_denied = guard_decisions.contains(&GuardDecision::Deny);
         let restricted = plan
             .restrictions
             .iter()
@@ -1296,7 +1327,14 @@ impl Orchestrator {
         let allowed = if guard_denied || restricted {
             false
         } else {
-            match self.policy.decide(&tool.info, &arguments) {
+            let decision = if guard_decisions.contains(&GuardDecision::Ask) {
+                PermissionDecision::Ask
+            } else if guard_decisions.contains(&GuardDecision::Allow) {
+                PermissionDecision::Allow
+            } else {
+                self.policy.decide(&tool.info, &arguments)
+            };
+            match decision {
                 PermissionDecision::Allow => true,
                 PermissionDecision::Deny => false,
                 PermissionDecision::Ask => {

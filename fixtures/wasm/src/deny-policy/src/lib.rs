@@ -22,6 +22,14 @@ impl permissions_policy_api::Guest for Fixture {
         let action = match request.tool_name.as_str() {
             "dangerous" => types::PermissionAction::Deny,
             "ask_me" => types::PermissionAction::Ask,
+            "contextual" => {
+                if request.permission == "network"
+                    && request.pattern == "network"
+                    && !request.tool_call_id.is_empty()
+                    && !request.session_id.is_empty()
+                    && !request.run_id.is_empty()
+                { types::PermissionAction::Allow } else { types::PermissionAction::Deny }
+            }
             _ => types::PermissionAction::Allow,
         };
         Ok(types::PermissionDecision {

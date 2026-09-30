@@ -15,7 +15,9 @@ pub use dispatch::{
     ModelStream, RunAdmitted, RunBeforeExecute, RunSettled, RunStarted, ToolExecute, ToolPrepare,
     ToolResultTransform, ToolSettled, ToolStarted, TurnCompleted, TurnPrepare, TurnStarted,
 };
-pub use registry::{Extension, GuardDecision, MountHandle, Registrar, Registry, Scope, ToolGuard};
+pub use registry::{
+    Extension, GuardContext, GuardDecision, MountHandle, Registrar, Registry, Scope, ToolGuard,
+};
 pub use state::{StateSink, current_state_sink, with_state_sink};
 
 pub use plan::{

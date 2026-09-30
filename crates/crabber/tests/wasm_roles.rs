@@ -138,6 +138,111 @@ async fn policy_denies_dangerous_tool() {
 }
 
 #[tokio::test]
+async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let allow_agent = Agent::builder()
+        .memory()
+        .provider(Arc::new(provider(call("safe", &json!({})))))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
+        .tool(native_tool("safe", &calls))
+        .wasm_extension(fixture("deny-policy"))
+        .build()
+        .unwrap();
+    allow_agent
+        .prompt(None, "safe")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let ask_agent = Agent::builder()
+        .memory()
+        .provider(Arc::new(provider(call("ask_me", &json!({})))))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .tool(native_tool("ask_me", &calls))
+        .wasm_extension(fixture("deny-policy"))
+        .build()
+        .unwrap();
+    ask_agent
+        .prompt(None, "ask_me")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn policy_guest_receives_permission_and_run_context() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut info = native_tool("contextual", &calls).info.clone();
+    info.required_permissions = vec!["network".into()];
+    let agent = Agent::builder()
+        .memory()
+        .provider(Arc::new(provider(call("contextual", &json!({})))))
+        .config(config())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
+        .tool(Arc::new(ToolDefinition {
+            info,
+            executor: Arc::new(CountTool(Arc::clone(&calls))),
+        }))
+        .wasm_extension(fixture("deny-policy"))
+        .build()
+        .unwrap();
+    agent
+        .prompt(None, "contextual")
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn prompt_section_renders_for_each_run_with_its_run_id() {
+    let fake = FakeProvider::scripted(vec![
+        vec![StreamDelta::TextDelta("one".into()), StreamDelta::Completed],
+        vec![StreamDelta::TextDelta("two".into()), StreamDelta::Completed],
+    ]);
+    let agent = Agent::builder()
+        .memory()
+        .provider(Arc::new(fake.clone()))
+        .config(config())
+        .wasm_extension(fixture("all-in-one"))
+        .build()
+        .unwrap();
+    let first = agent.prompt(None, "first").await.unwrap();
+    let first_id = first.run_id().to_string();
+    first.done().await.unwrap();
+    let second = agent.prompt(None, "second").await.unwrap();
+    let second_id = second.run_id().to_string();
+    second.done().await.unwrap();
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0]
+            .system
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&first_id)
+    );
+    assert!(
+        requests[1]
+            .system
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&second_id)
+    );
+    assert_ne!(first_id, second_id);
+}
+
+#[tokio::test]
 async fn banner_reaches_model_request() {
     let fake = FakeProvider::scripted(vec![vec![
         StreamDelta::TextDelta("done".into()),

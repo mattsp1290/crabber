@@ -6,7 +6,7 @@ use crate::{
     compute_fingerprint,
 };
 use async_trait::async_trait;
-use crabber_core::SessionId;
+use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use std::{
     collections::HashSet,
@@ -154,11 +154,23 @@ impl Registrar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardDecision {
     Abstain,
+    Allow,
+    Ask,
     Deny,
+}
+pub struct GuardContext<'a> {
+    pub tool: &'a ToolInfo,
+    pub arguments: &'a serde_json::Value,
+    pub call_id: &'a ToolCallId,
+    pub session_id: &'a SessionId,
+    pub run_id: &'a RunId,
 }
 pub trait ToolGuard: Send + Sync {
     fn id(&self) -> &str;
     fn check(&self, name: &str, arguments: &serde_json::Value) -> GuardDecision;
+    fn check_with_context(&self, context: GuardContext<'_>) -> GuardDecision {
+        self.check(&context.tool.name, context.arguments)
+    }
 }
 struct Mount {
     id: u64,

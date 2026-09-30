@@ -14,13 +14,13 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use wasmtime::component::{Component, Instance, Linker, ResourceTable, Val, types::ComponentItem};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
@@ -98,6 +98,9 @@ pub enum WasmError {
 pub struct Loader {
     engine: Engine,
     closed: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    drained: Arc<Notify>,
+    close_drain_ms: AtomicU64,
     log_observer: LogObserver,
 }
 
@@ -107,8 +110,23 @@ pub struct LoadedModule {
     pub config: ModuleConfig,
     pub roles: Vec<&'static str>,
     admission: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    drained: Arc<Notify>,
     serial: Mutex<()>,
     log_observer: LogObserver,
+}
+
+struct ActiveCall {
+    active: Arc<AtomicUsize>,
+    drained: Arc<Notify>,
+}
+
+impl Drop for ActiveCall {
+    fn drop(&mut self) {
+        if self.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.drained.notify_waiters();
+        }
+    }
 }
 
 pub struct WasmExtension {
@@ -207,6 +225,43 @@ fn turn_metadata(context: Option<&ToolContext>) -> Val {
         ("has-system-prompt".into(), Val::Bool(false)),
         string("workspace-id", String::new()),
     ])
+}
+
+fn turn_metadata_from_projection(value: &Value) -> Val {
+    let mut metadata = turn_metadata(None);
+    if let Val::Record(fields) = &mut metadata {
+        for (name, key) in [
+            ("run-id", "run_id"),
+            ("session-id", "session_id"),
+            ("provider-id", "provider_id"),
+            ("model-id", "model_id"),
+        ] {
+            if let Some((_, field)) = fields.iter_mut().find(|(field, _)| field == name) {
+                *field = Val::String(value[key].as_str().unwrap_or_default().to_owned());
+            }
+        }
+        for (name, key) in [
+            ("turn-index", "turn_index"),
+            ("message-count", "message_count"),
+        ] {
+            if let Some((_, field)) = fields.iter_mut().find(|(field, _)| field == name) {
+                *field = Val::U32(
+                    value[key]
+                        .as_u64()
+                        .unwrap_or_default()
+                        .try_into()
+                        .unwrap_or(u32::MAX),
+                );
+            }
+        }
+        if let Some((_, field)) = fields
+            .iter_mut()
+            .find(|(field, _)| field == "has-system-prompt")
+        {
+            *field = Val::Bool(value["has_system_prompt"].as_bool().unwrap_or(false));
+        }
+    }
+    metadata
 }
 
 #[async_trait]
@@ -335,10 +390,15 @@ impl Loader {
         config.wasm_component_model(true).epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|error| WasmError::Engine(error.to_string()))?;
         let closed = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
+        let drained = Arc::new(Notify::new());
         let ticker_engine = engine.clone();
         let ticker_closed = Arc::clone(&closed);
+        let ticker_active = Arc::clone(&active);
         std::thread::spawn(move || {
-            while !ticker_closed.load(Ordering::Acquire) {
+            while !ticker_closed.load(Ordering::Acquire)
+                || ticker_active.load(Ordering::Acquire) > 0
+            {
                 std::thread::sleep(Duration::from_millis(10));
                 ticker_engine.increment_epoch();
             }
@@ -352,6 +412,9 @@ impl Loader {
         Ok(Self {
             engine,
             closed,
+            active,
+            drained,
+            close_drain_ms: AtomicU64::new(2_000),
             log_observer,
         })
     }
@@ -379,6 +442,10 @@ impl Loader {
                 "persistent instances are not supported".into(),
             ));
         }
+        self.close_drain_ms.store(
+            u64::try_from(config.limits.close_drain.as_millis()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
         let root = config
             .allowed_root
             .canonicalize()
@@ -420,6 +487,8 @@ impl Loader {
             config,
             roles,
             admission: Arc::clone(&self.closed),
+            active: Arc::clone(&self.active),
+            drained: Arc::clone(&self.drained),
             serial: Mutex::new(()),
             log_observer: Arc::clone(&self.log_observer),
         });
@@ -427,15 +496,32 @@ impl Loader {
         Ok(module)
     }
 
-    pub fn close(&self) {
+    fn stop_admission(&self) {
         self.closed.store(true, Ordering::Release);
         self.engine.increment_epoch();
+    }
+
+    pub async fn close(&self) {
+        self.stop_admission();
+        let drain = Duration::from_millis(self.close_drain_ms.load(Ordering::Acquire));
+        let _ = tokio::time::timeout(drain, async {
+            loop {
+                let notified = self.drained.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.active.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await;
     }
 }
 
 impl Drop for Loader {
     fn drop(&mut self) {
-        self.close();
+        self.stop_admission();
     }
 }
 
@@ -602,9 +688,19 @@ impl LoadedModule {
             },
         );
         store.limiter(|state| &mut state.limits);
-        let ticks = u64::try_from((self.config.limits.call_timeout.as_millis() / 10).max(1))
-            .unwrap_or(u64::MAX);
-        store.set_epoch_deadline(ticks);
+        let admitted = Arc::clone(&self.admission);
+        let started = Instant::now();
+        let timeout = self.config.limits.call_timeout;
+        store.epoch_deadline_callback(move |_| {
+            if admitted.load(Ordering::Acquire) {
+                return Err(wasmtime::Error::msg("loader closed"));
+            }
+            if started.elapsed() >= timeout {
+                return Err(wasmtime::Error::msg("epoch deadline exceeded"));
+            }
+            Ok(UpdateDeadline::Yield(1))
+        });
+        store.set_epoch_deadline(1);
         store
     }
 
@@ -625,6 +721,14 @@ impl LoadedModule {
             return Err(WasmError::Closed);
         }
         let _guard = self.serial.lock().await;
+        self.active.fetch_add(1, Ordering::AcqRel);
+        let _active = ActiveCall {
+            active: Arc::clone(&self.active),
+            drained: Arc::clone(&self.drained),
+        };
+        if self.admission.load(Ordering::Acquire) {
+            return Err(WasmError::Closed);
+        }
         if args
             .iter()
             .any(|arg| val_bytes(arg) > self.config.limits.max_input_bytes)
@@ -741,7 +845,9 @@ fn val_bytes(value: &Val) -> usize {
 #[allow(clippy::needless_pass_by_value)]
 fn classify_trap(error: wasmtime::Error) -> WasmError {
     let message = format!("{error:#}");
-    if message.contains("interrupt") || message.contains("epoch deadline") {
+    if message.contains("loader closed") {
+        WasmError::Closed
+    } else if message.contains("interrupt") || message.contains("epoch deadline") {
         WasmError::Timeout
     } else {
         WasmError::Trap(message)
@@ -876,6 +982,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notify_failures_reach_observer() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let callback: LogObserver = {
+            let observed = Arc::clone(&observed);
+            Arc::new(move |_, level, message| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((level.to_owned(), message.to_owned()))
+            })
+        };
+        let loader = Loader::new().unwrap().with_log_observer(callback);
+        let module = loader.load(fixture("all-in-one")).await.unwrap();
+        let event = Val::Record(vec![
+            ("kind".into(), Val::String("fail".into())),
+            ("session-id".into(), Val::String(String::new())),
+            ("run-id".into(), Val::String(String::new())),
+            ("turn-id".into(), Val::String(String::new())),
+            ("message-id".into(), Val::String(String::new())),
+            ("tool-call-id".into(), Val::String(String::new())),
+            ("epoch-id".into(), Val::String(String::new())),
+            ("timestamp-unix-millis".into(), Val::S64(0)),
+            ("payload-summary".into(), Val::String(String::new())),
+        ]);
+        let event_result = module.call("event-sink-api", "emit", &[event]).await;
+        assert!(adapters::report_notify(&module, "event-sink", event_result).is_err());
+        let hook_result = module
+            .call(
+                "hook-api",
+                "before-turn",
+                &[turn_metadata_from_projection(
+                    &serde_json::json!({"run_id":"fail"}),
+                )],
+            )
+            .await;
+        assert!(adapters::report_notify(&module, "before-turn", hook_result).is_err());
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert!(observed.iter().all(|(level, _)| level == "error"));
+        assert!(observed[0].1.contains("event failure"));
+        assert!(observed[1].1.contains("hook failure"));
+    }
+
+    #[tokio::test]
     async fn rejects_wrong_hash_and_path() {
         let loader = Loader::new().unwrap();
         let mut config = fixture("echo-tool");
@@ -945,6 +1095,34 @@ mod tests {
             .await;
         assert!(matches!(result, Err(WasmError::Timeout)), "{result:?}");
         assert!(started.elapsed() <= Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn close_interrupts_and_drains_active_guest() {
+        let loader = Loader::new().unwrap();
+        let mut config = fixture("slow-tool");
+        config.limits.call_timeout = Duration::from_secs(5);
+        config.limits.close_drain = Duration::from_millis(300);
+        let module = loader.load(config).await.unwrap();
+        let call = tokio::spawn(async move {
+            module
+                .call(
+                    "tool-api",
+                    "execute",
+                    &[
+                        Val::String("slow-tool".into()),
+                        Val::String(String::new()),
+                        Val::String("{}".into()),
+                        turn_metadata(None),
+                    ],
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let started = Instant::now();
+        loader.close().await;
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert!(matches!(call.await.unwrap(), Err(WasmError::Closed)));
     }
 
     #[tokio::test]
@@ -1019,6 +1197,14 @@ mod tests {
         assert_eq!(
             plan.guards[0].check("dangerous", &Value::Null),
             crabber_extension::GuardDecision::Deny
+        );
+        assert_eq!(
+            plan.guards[0].check("ask_me", &Value::Null),
+            crabber_extension::GuardDecision::Ask
+        );
+        assert_eq!(
+            plan.guards[0].check("safe", &Value::Null),
+            crabber_extension::GuardDecision::Allow
         );
         let context = plan
             .dispatcher

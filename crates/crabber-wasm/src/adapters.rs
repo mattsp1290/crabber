@@ -1,7 +1,7 @@
-use super::{LoadedModule, Loader, turn_metadata};
+use super::{LoadedModule, Loader, turn_metadata, turn_metadata_from_projection};
 use crabber_extension::{
-    ContextAssemble, EventPublished, ExtensionError, GuardDecision, ModelStream, Point,
-    PromptSection, Registrar, RunSettled, RunStarted, ToolGuard, ToolPrepare, ToolResultTransform,
+    ContextAssemble, EventPublished, ExtensionError, GuardContext, GuardDecision, ModelStream,
+    Point, Registrar, RunSettled, RunStarted, ToolGuard, ToolPrepare, ToolResultTransform,
     TurnCompleted, TurnStarted,
 };
 use serde_json::{Value, json};
@@ -43,6 +43,21 @@ fn replacement(value: Val) -> Result<Option<Value>, ExtensionError> {
         Val::Variant(name, _) if name == "error" => Err(error("guest rejected replacement")),
         _ => Err(error("invalid replacement")),
     }
+}
+
+pub(super) fn report_notify(
+    module: &LoadedModule,
+    source: &str,
+    result: Result<Val, super::WasmError>,
+) -> Result<(), ExtensionError> {
+    let failure = match result {
+        Ok(Val::Result(Ok(None))) => return Ok(()),
+        Ok(Val::Result(Err(Some(detail)))) => format!("{source} rejected event: {detail:?}"),
+        Ok(other) => format!("{source} returned invalid result: {other:?}"),
+        Err(error) => format!("{source} failed: {error}"),
+    };
+    (module.log_observer)(&module.config.name, "error", &failure);
+    Err(error(failure))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -165,21 +180,39 @@ pub(super) async fn mount(
                     }
                 })
                 .unwrap_or(0);
-            let rendered = module
-                .call(
-                    "prompt-section-api",
-                    "render",
-                    &[Val::String(name.clone()), turn_metadata(None)],
-                )
-                .await
-                .map_err(error)?;
-            let Val::Result(Ok(Some(text))) = rendered else {
-                return Err(error("prompt render rejected"));
-            };
-            let Val::String(text) = *text else {
-                return Err(error("invalid prompt text"));
-            };
-            registrar.prompt(Arc::new(PromptSection { name, order, text }));
+            let module = Arc::clone(module);
+            let loader = Arc::clone(loader);
+            registrar.on_transform(
+                ContextAssemble::ID,
+                order,
+                format!("wasm-prompt-{name}"),
+                Arc::new(move |mut value| {
+                    let module = Arc::clone(&module);
+                    let _loader = Arc::clone(&loader);
+                    let name = name.clone();
+                    Box::pin(async move {
+                        let rendered = module
+                            .call(
+                                "prompt-section-api",
+                                "render",
+                                &[Val::String(name), turn_metadata_from_projection(&value)],
+                            )
+                            .await
+                            .map_err(error)?;
+                        let Val::Result(Ok(Some(text))) = rendered else {
+                            return Err(error("prompt render rejected"));
+                        };
+                        let Val::String(text) = *text else {
+                            return Err(error("invalid prompt text"));
+                        };
+                        value["prompt_sections"]
+                            .as_array_mut()
+                            .ok_or_else(|| error("invalid prompt projection"))?
+                            .push(Value::String(text));
+                        Ok(value)
+                    })
+                }),
+            );
         }
     }
     if module.roles.contains(&"tool-middleware") {
@@ -282,7 +315,11 @@ pub(super) async fn mount(
                         ("timestamp-unix-millis".into(), Val::S64(0)),
                         string("payload-summary", value.to_string()),
                     ]);
-                    let _ = module.call("event-sink-api", "emit", &[event]).await;
+                    report_notify(
+                        &module,
+                        "event-sink",
+                        module.call("event-sink-api", "emit", &[event]).await,
+                    )?;
                     Ok(Value::Null)
                 })
             }),
@@ -309,7 +346,11 @@ pub(super) async fn mount(
                         if function == "after-run" {
                             args.push(Val::String("settled".into()));
                         }
-                        let _ = module.call("hook-api", function, &args).await;
+                        report_notify(
+                            &module,
+                            function,
+                            module.call("hook-api", function, &args).await,
+                        )?;
                         Ok(Value::Null)
                     })
                 }),
@@ -324,14 +365,14 @@ pub(super) async fn mount(
             let _loader = Arc::clone(&loader);
             Box::pin(async move {
                 let controls = json!({
-                    "temperature": value.get("temperature"), "top_p": value.get("top_p"),
-                    "max_tokens": value.get("max_tokens"), "tool_choice": value.get("tool_choice"),
+                    "temperature": value.get("temperature"), "top-p": value.get("top_p"),
+                    "max-tokens": value.get("max_tokens"), "tool-choice": value.get("tool_choice"),
                     "stop": value.get("stop"),
                 });
                 let result = module.call("model-controls-api", "before-model-request", &[turn_metadata(None), Val::String(controls.to_string())]).await.map_err(error)?;
                 if let Some(updated) = replacement(result)? {
-                    for key in ["temperature", "top_p", "max_tokens", "tool_choice", "stop"] {
-                        if let Some(field) = updated.get(key) { value[key] = field.clone(); }
+                    for (guest_key, native_key) in [("temperature", "temperature"), ("top-p", "top_p"), ("max-tokens", "max_tokens"), ("tool-choice", "tool_choice"), ("stop", "stop")] {
+                        if let Some(field) = updated.get(guest_key) { value[native_key] = field.clone(); }
                     }
                 }
                 next.call(value).await
@@ -351,9 +392,62 @@ impl ToolGuard for WasmGuard {
         "wasm-permissions-policy"
     }
     fn check(&self, name: &str, arguments: &Value) -> GuardDecision {
+        self.decide(name, arguments, "", "", "", "", "")
+    }
+    fn check_with_context(&self, context: GuardContext<'_>) -> GuardDecision {
+        let mut decision = GuardDecision::Abstain;
+        for permission in context
+            .tool
+            .required_permissions
+            .iter()
+            .map(String::as_str)
+            .chain(
+                std::iter::once("").take(usize::from(context.tool.required_permissions.is_empty())),
+            )
+        {
+            let next = self.decide(
+                &context.tool.name,
+                context.arguments,
+                &context.call_id.to_string(),
+                &context.session_id.to_string(),
+                &context.run_id.to_string(),
+                permission,
+                permission,
+            );
+            decision = match (decision, next) {
+                (GuardDecision::Deny, _) | (_, GuardDecision::Deny) => GuardDecision::Deny,
+                (GuardDecision::Ask, _) | (_, GuardDecision::Ask) => GuardDecision::Ask,
+                (GuardDecision::Allow, _) | (_, GuardDecision::Allow) => GuardDecision::Allow,
+                _ => GuardDecision::Abstain,
+            };
+            if decision == GuardDecision::Deny {
+                break;
+            }
+        }
+        decision
+    }
+}
+
+impl WasmGuard {
+    #[allow(clippy::too_many_arguments)]
+    fn decide(
+        &self,
+        name: &str,
+        arguments: &Value,
+        call_id: &str,
+        session_id: &str,
+        run_id: &str,
+        permission: &str,
+        pattern: &str,
+    ) -> GuardDecision {
         let module = Arc::clone(&self.module);
         let name = name.to_owned();
         let summary = arguments.to_string();
+        let call_id = call_id.to_owned();
+        let session_id = session_id.to_owned();
+        let run_id = run_id.to_owned();
+        let permission = permission.to_owned();
+        let pattern = pattern.to_owned();
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -364,27 +458,35 @@ impl ToolGuard for WasmGuard {
             runtime.block_on(async move {
                 let request = Val::Record(vec![
                     string("tool-name", name),
-                    string("tool-call-id", ""),
-                    string("permission", ""),
-                    string("pattern", ""),
+                    string("tool-call-id", call_id),
+                    string("permission", permission),
+                    string("pattern", pattern),
                     string("arguments-summary", summary),
-                    string("session-id", ""),
-                    string("run-id", ""),
+                    string("session-id", session_id),
+                    string("run-id", run_id),
                 ]);
                 match module
                     .call("permissions-policy-api", "decide", &[request])
                     .await
                 {
                     Ok(Val::Result(Ok(Some(decision)))) => match *decision {
-                        Val::Record(fields)
-                            if fields.iter().any(|(key, value)| {
-                                key == "action"
-                                    && matches!(value, Val::Enum(action) if action == "deny")
-                            }) =>
-                        {
-                            GuardDecision::Deny
-                        }
-                        _ => GuardDecision::Abstain,
+                        Val::Record(fields) => match fields.iter().find_map(|(key, value)| {
+                            if key == "action" {
+                                if let Val::Enum(action) = value {
+                                    Some(action.as_str())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }) {
+                            Some("allow") => GuardDecision::Allow,
+                            Some("ask") => GuardDecision::Ask,
+                            Some("deny") => GuardDecision::Deny,
+                            _ => GuardDecision::Deny,
+                        },
+                        _ => GuardDecision::Deny,
                     },
                     _ => GuardDecision::Deny,
                 }
