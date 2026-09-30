@@ -568,18 +568,25 @@ async fn post(
             parts.push(first);
             continue;
         }
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(raw.as_bytes())?;
-        let bytes = encoder.finish()?;
+        let is_llmobs = url.contains("llm-obs");
+        let bytes = if is_llmobs {
+            raw.into_bytes()
+        } else {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(raw.as_bytes())?;
+            encoder.finish()?
+        };
         for attempt in 0..3 {
-            let result = client
+            let request = client
                 .post(&url)
                 .header("DD-API-KEY", &config.api_key)
-                .header("Content-Type", "application/json")
-                .header("Content-Encoding", "gzip")
-                .body(bytes.clone())
-                .send()
-                .await;
+                .header("Content-Type", "application/json");
+            let request = if is_llmobs {
+                request
+            } else {
+                request.header("Content-Encoding", "gzip")
+            };
+            let result = request.body(bytes.clone()).send().await;
             match result {
                 Ok(response) if response.status().is_success() => {
                     if url.contains("llm-obs") && response.status().as_u16() != 202 {
@@ -803,10 +810,16 @@ mod tests {
                 }
                 let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
                 assert!(headers.contains("dd-api-key: test-key"));
-                assert!(headers.contains("content-encoding: gzip"));
-                let mut decoder = GzDecoder::new(&all[head_end..head_end + length]);
                 let mut body_text = String::new();
-                decoder.read_to_string(&mut body_text).unwrap();
+                if headers.contains("/api/intake/llm-obs/") {
+                    assert!(!headers.contains("content-encoding: gzip"));
+                    body_text =
+                        String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
+                } else {
+                    assert!(headers.contains("content-encoding: gzip"));
+                    let mut decoder = GzDecoder::new(&all[head_end..head_end + length]);
+                    decoder.read_to_string(&mut body_text).unwrap();
+                }
                 assert!(!body_text.contains("PROMPT_SECRET"));
                 requests.push((headers, serde_json::from_str::<Value>(&body_text).unwrap()));
                 std::io::Write::write_all(
