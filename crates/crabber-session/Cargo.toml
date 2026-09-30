@@ -18,7 +18,7 @@ default = []
 postgres = ["dep:sqlx"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

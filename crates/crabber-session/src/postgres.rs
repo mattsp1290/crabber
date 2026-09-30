@@ -1019,51 +1019,85 @@ mod tests {
         assert_eq!(before, after);
         let first = SessionId::new();
         let second = SessionId::new();
-        let (a, b) = tokio::join!(
-            store.admit_run(request(&first)),
-            store.admit_run(request(&second))
-        );
-        let a = a.unwrap();
-        let b = b.unwrap();
-        let (write_a, write_b) = tokio::join!(
-            async {
-                store
-                    .execution(a.fence.clone())
-                    .await
-                    .unwrap()
-                    .append_message({
-                        let mut value = input(&first, "a");
-                        value.run_id = Some(a.run.id.clone());
-                        value
-                    })
-                    .await
-            },
-            async {
-                store
-                    .execution(b.fence.clone())
-                    .await
-                    .unwrap()
-                    .append_message({
-                        let mut value = input(&second, "b");
-                        value.run_id = Some(b.run.id.clone());
-                        value
-                    })
-                    .await
+        let a = store.admit_run(request(&first)).await.unwrap();
+        let first_execution = store.execution(a.fence.clone()).await.unwrap();
+
+        // Hold this run's row lock until the other session has admitted and written.
+        // A global store mutex would prevent the bounded operation below from finishing.
+        let mut held = store.pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM runs WHERE id=$1 FOR UPDATE")
+            .bind(&a.run.id.0)
+            .fetch_one(&mut *held)
+            .await
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let first_run = a.run.id.clone();
+        let blocked_write = tokio::spawn(async move {
+            let mut value = input(&first, "a");
+            value.run_id = Some(first_run);
+            started_tx.send(()).unwrap();
+            first_execution.append_message(value).await
+        });
+        started_rx.await.unwrap();
+        let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *held)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT data FROM runs WHERE id=%FOR UPDATE%')"
+                )
+                .bind(blocker_pid).fetch_one(&store.pool).await.unwrap();
+                if blocked { break; }
+                tokio::task::yield_now().await;
             }
+        })
+        .await
+        .expect("first writer must reach the held row lock");
+
+        let b = tokio::time::timeout(Duration::from_secs(10), async {
+            let b = store.admit_run(request(&second)).await?;
+            let mut value = input(&second, "b");
+            value.run_id = Some(b.run.id.clone());
+            store
+                .execution(b.fence.clone())
+                .await?
+                .append_message(value)
+                .await?;
+            let mut busy_request = request(&a.session.id);
+            busy_request.session_id = Some(a.session.id.clone());
+            assert_eq!(
+                store.admit_run(busy_request).await.unwrap_err(),
+                StoreError::Busy
+            );
+            Ok::<_, StoreError>(b)
+        })
+        .await
+        .expect("independent session must finish before first lock releases")
+        .unwrap();
+        assert!(
+            !blocked_write.is_finished(),
+            "first write must wait for its row lock"
         );
-        write_a.unwrap();
-        write_b.unwrap();
-        let mut busy_request = request(&first);
-        busy_request.session_id = Some(first.clone());
+        held.commit().await.unwrap();
+        blocked_write.await.unwrap().unwrap();
         assert_eq!(
-            store.admit_run(busy_request).await.unwrap_err(),
-            StoreError::Busy
+            store.list_all_messages(&b.session.id).await.unwrap().len(),
+            2
         );
         let reopened = PostgresStore::connect(&url).await.unwrap();
         assert_eq!(
-            store.list_messages(&first, None).await.unwrap(),
-            reopened.list_messages(&first, None).await.unwrap()
+            store.list_messages(&a.session.id, None).await.unwrap(),
+            reopened.list_messages(&a.session.id, None).await.unwrap()
         );
-        assert_eq!(reopened.list_all_messages(&first).await.unwrap().len(), 2);
+        assert_eq!(
+            reopened
+                .list_all_messages(&a.session.id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }
