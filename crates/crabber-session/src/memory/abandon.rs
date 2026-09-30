@@ -30,6 +30,8 @@ pub(super) fn abandon_transaction(
     run.lease_until = now;
     run.updated_at = now;
     state.runs.insert(run.id.clone(), run.clone());
+    #[cfg(test)]
+    fail_boundary(state, 1)?;
     let calls: Vec<_> = state
         .calls
         .values()
@@ -46,10 +48,16 @@ pub(super) fn abandon_transaction(
     for call in calls {
         let (result, message, event) = interrupted_tool(&run, &call, now);
         insert_message(state, &run, message)?;
+        #[cfg(test)]
+        fail_boundary(state, 2)?;
         insert_event(state, &run, event)?;
+        #[cfg(test)]
+        fail_boundary(state, 3)?;
         let entry = state.calls.get_mut(&call.id).expect("selected call exists");
         entry.status = ToolCallStatus::Interrupted;
         entry.result = Some(result);
+        #[cfg(test)]
+        fail_boundary(state, 4)?;
     }
     #[cfg(test)]
     if state.abandon_fail_after_tools {
@@ -58,12 +66,16 @@ pub(super) fn abandon_transaction(
     run.status = RunStatus::Interrupted;
     // Retain usage, checkpoint and prior error/history verbatim.
     state.runs.insert(run.id.clone(), run.clone());
+    #[cfg(test)]
+    fail_boundary(state, 5)?;
     let evidence = AbandonEvidence {
         request,
         run: run.clone(),
         interrupted_tools,
     };
     insert_event(state, &run, terminal_event(&evidence, now)?)?;
+    #[cfg(test)]
+    fail_boundary(state, 6)?;
     let terminal_event = state
         .events
         .last()
@@ -81,6 +93,8 @@ pub(super) fn abandon_transaction(
             outcome: outcome.clone(),
         },
     );
+    #[cfg(test)]
+    fail_boundary(state, 7)?;
     Ok(outcome)
 }
 
@@ -103,4 +117,12 @@ fn replay(
         return Err(StoreError::Validation("unfinished abandoned tools".into()).into());
     }
     commit.replay(run, request)
+}
+
+#[cfg(test)]
+fn fail_boundary(state: &State, boundary: u8) -> Result<(), AbandonError> {
+    if state.abandon_fault_boundary == boundary {
+        return Err(StoreError::Validation(format!("injected boundary {boundary}")).into());
+    }
+    Ok(())
 }

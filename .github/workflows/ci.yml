@@ -45,6 +45,7 @@ jobs:
     env:
       CRABBER_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
       CRABBER_REQUIRE_POSTGRES: "1"
+      CRABBER_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - name: Install stable Rust
@@ -55,3 +56,7 @@ jobs:
         run: cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
       - name: Noninteractive PostgreSQL admission demo
         run: cargo run --quiet -p admission-receipt --features postgres -- --postgres
+      - name: Public fenced abandonment atomic rollback and process crash
+        run: cargo test -p crabber --features postgres --test fenced_abandon -- --nocapture
+      - name: Noninteractive PostgreSQL fenced abandonment demo
+        run: cargo run --quiet -p fenced-abandon --features postgres -- --postgres

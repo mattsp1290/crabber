@@ -1,3 +1,4 @@
+#[path = "memory/abandon.rs"]
 mod abandon;
 
 use crate::{
@@ -28,6 +29,8 @@ pub struct MemoryStore {
 struct State {
     #[cfg(test)]
     abandon_fail_after_tools: bool,
+    #[cfg(test)]
+    abandon_fault_boundary: u8,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,

@@ -310,7 +310,7 @@ async fn replacement_owner_and_unrelated_terminal_are_not_abandonment_replay() {
             RunStatus::Interrupted,
             None,
             Usage::default(),
-            event(&admitted.run),
+            crate::abandonment_contract::event(&admitted.run, EventKind::RunSettled),
         )
         .await
         .unwrap();
@@ -433,4 +433,62 @@ async fn paused_live_lease_is_not_permission_to_steal() {
         AbandonError::LiveLease
     );
     assert_eq!(store.get_run(&admitted.run.id).await.unwrap(), original);
+}
+
+#[tokio::test]
+async fn facade_each_memory_candidate_boundary_rolls_back_including_private_commit() {
+    for boundary in 1..=7 {
+        let store = MemoryStore::new();
+        let admitted = store.admit_run(request()).await.unwrap();
+        let execution = store.execution(admitted.fence.clone()).await.unwrap();
+        let call = ToolCallRecord {
+            id: ToolCallId::new(),
+            run_id: admitted.run.id.clone(),
+            name: "unavailable".into(),
+            arguments: serde_json::json!({}),
+            status: ToolCallStatus::Pending,
+            retry_safe: false,
+            result: None,
+        };
+        execution
+            .create_tool_call(call, event(&admitted.run))
+            .await
+            .unwrap();
+        let provider = Arc::new(crabber::FakeProvider::scripted(vec![]));
+        let agent = crabber::Agent::builder()
+            .store(Arc::new(PendingFacadeStore(store.clone())))
+            .provider(provider.clone())
+            .config(crabber::AgentConfig::new(crabber::Selection {
+                provider_id: "unavailable".into(),
+                model_id: "unavailable".into(),
+            }))
+            .build()
+            .unwrap();
+        let request = AbandonRequest {
+            expected: admitted.fence,
+            expected_owner: admitted.run.owner,
+            authority: AbandonAuthority::HostStoppedOwner,
+        };
+        let original = store.state.lock().unwrap().clone();
+        store.state.lock().unwrap().abandon_fault_boundary = boundary;
+        assert!(matches!(
+            agent.abandon(request.clone()).await,
+            Err(AbandonError::Store(_))
+        ));
+        {
+            let state = store.state.lock().unwrap();
+            assert_eq!(state.runs, original.runs);
+            assert_eq!(state.calls, original.calls);
+            assert_eq!(state.messages, original.messages);
+            assert_eq!(state.events, original.events);
+            assert!(state.abandonments.is_empty());
+        }
+        store.state.lock().unwrap().abandon_fault_boundary = 0;
+        let outcome = agent.abandon(request.clone()).await.unwrap();
+        assert_eq!(outcome.run.status, RunStatus::Interrupted);
+        assert_eq!(outcome.interrupted_tools.len(), 1);
+        assert_eq!(store.state.lock().unwrap().abandonments.len(), 1);
+        assert_eq!(agent.abandon(request).await.unwrap(), outcome);
+        assert!(provider.requests().is_empty());
+    }
 }

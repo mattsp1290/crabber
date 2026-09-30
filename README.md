@@ -76,3 +76,11 @@ Hosts can settle stopped or expired work through `Agent::abandon` without runnin
 persisted providers, tools or extensions. See the [Memory/PostgreSQL abandonment and
 administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.
+
+The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
+cover unknown-response retry, authoritative worker stop, retained session/inbox
+behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
+with `CRABBER_POSTGRES_URL` configured, run
+`cargo run --quiet -p fenced-abandon --features postgres -- --postgres` for durable
+fresh-process readback. Both print matching compilation/runtime Git SHAs, durable
+run/event IDs and measured zero provider/tool/mount counters.

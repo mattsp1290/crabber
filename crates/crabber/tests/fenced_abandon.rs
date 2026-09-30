@@ -1,12 +1,21 @@
+// Compile private Memory fixtures into this test target; no product fault API.
+pub use crabber::session::{AdmitOutcome, StoreError};
+#[path = "../../crabber-session/src/abandonment.rs"]
+mod abandonment;
+#[path = "../../crabber-session/src/abandonment_contract.rs"]
+mod abandonment_contract;
+#[path = "../../crabber-session/src/memory.rs"]
+#[allow(dead_code)]
+mod memory;
 use async_trait::async_trait;
 use crabber::core::*;
 use crabber::extension::{Extension, ExtensionError, Registrar, Scope};
 use crabber::providers::{ProviderError, Resolver, Selection, Streamer};
 use crabber::session::{
-    AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest, MemoryStore,
-    Store,
+    AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest, Store,
 };
 use crabber::{AbandonAuthority, AbandonError, AbandonRequest, Agent, AgentConfig};
+use memory::MemoryStore;
 use std::{
     sync::{
         Arc,
@@ -87,7 +96,7 @@ fn admit_request(session: &SessionId) -> AdmitRequest {
         lease: Duration::from_secs(30),
     }
 }
-fn agent(store: Arc<MemoryStore>, counters: Arc<AtomicUsize>) -> Agent {
+fn agent(store: Arc<dyn Store>, counters: Arc<AtomicUsize>) -> Agent {
     Agent::builder()
         .store(store)
         .provider(Arc::new(Unavailable(counters.clone())))
@@ -111,218 +120,337 @@ fn agent(store: Arc<MemoryStore>, counters: Arc<AtomicUsize>) -> Agent {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn public_memory_abandon_running_and_paused_without_execution() {
-    for paused in [false, true] {
-        let now = SystemClock.now();
-        let clock = Arc::new(ManualClock::new(now));
-        let store = Arc::new(MemoryStore::with_clock(clock.clone()));
-        let session = SessionId::new();
-        let key = AdmissionKey::new("original").unwrap();
-        let request = admit_request(&session);
-        let options = AdmissionOptions {
-            key: key.clone(),
-            fingerprint: InputFingerprint::new("a".repeat(64)).unwrap(),
-            behavior_fingerprint: InputFingerprint::new("b".repeat(64)).unwrap(),
-        };
-        let KeyedAdmitOutcome::Started { receipt, admitted } = store
-            .admit_keyed_run(KeyedAdmitRequest {
-                request: request.clone(),
-                options,
-            })
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(admitted.run.status, RunStatus::Running);
-        let execution = store.execution(admitted.fence.clone()).await.unwrap();
-        let mut calls = vec![];
-        for index in 0..3 {
-            let call = ToolCallRecord {
-                id: ToolCallId::new(),
-                run_id: admitted.run.id.clone(),
-                name: "unregistered-effect".into(),
-                arguments: serde_json::json!({"index": index}),
-                status: ToolCallStatus::Pending,
-                retry_safe: false,
-                result: None,
+    let clock = Arc::new(ManualClock::new(SystemClock.now()));
+    facade_matrix(Arc::new(MemoryStore::with_clock(clock.clone())), clock).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
+    store: Arc<S>,
+    clock: Arc<ManualClock>,
+) {
+    for authority in [
+        AbandonAuthority::ExpiredLease,
+        AbandonAuthority::HostStoppedOwner,
+    ] {
+        for status in [RunStatus::Pending, RunStatus::Running, RunStatus::Paused] {
+            let paused = status == RunStatus::Paused;
+            let now = SystemClock.now();
+            clock.set(now);
+            let session = SessionId::new();
+            let key = AdmissionKey::new("original").unwrap();
+            let mut worker = OwnerProcess::spawn();
+            let mut request = admit_request(&session);
+            request.owner = format!("process:{}", worker.0.id());
+            let options = AdmissionOptions {
+                key: key.clone(),
+                fingerprint: InputFingerprint::new("a".repeat(64)).unwrap(),
+                behavior_fingerprint: InputFingerprint::new("b".repeat(64)).unwrap(),
             };
-            execution
-                .create_tool_call(
-                    call.clone(),
-                    event(&admitted.run, EventKind::ToolCallPending),
-                )
+            let KeyedAdmitOutcome::Started { receipt, admitted } = store
+                .admit_keyed_run(KeyedAdmitRequest {
+                    request: request.clone(),
+                    options,
+                })
                 .await
-                .unwrap();
-            if index > 0 {
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(admitted.run.status, RunStatus::Running);
+            let execution = store.execution(admitted.fence.clone()).await.unwrap();
+            let mut calls = vec![];
+            for index in 0..4 {
+                let call = ToolCallRecord {
+                    id: ToolCallId::new(),
+                    run_id: admitted.run.id.clone(),
+                    name: "unregistered-effect".into(),
+                    arguments: serde_json::json!({"index": index}),
+                    status: ToolCallStatus::Pending,
+                    retry_safe: false,
+                    result: None,
+                };
                 execution
-                    .claim_tool_call(&call.id, event(&admitted.run, EventKind::ToolCallRunning))
+                    .create_tool_call(
+                        call.clone(),
+                        event(&admitted.run, EventKind::ToolCallPending),
+                    )
+                    .await
+                    .unwrap();
+                if index > 0 {
+                    execution
+                        .claim_tool_call(&call.id, event(&admitted.run, EventKind::ToolCallRunning))
+                        .await
+                        .unwrap();
+                }
+                calls.push(call);
+            }
+            for done in &calls[2..] {
+                let mut result_message = message(&session);
+                result_message.role = Role::Tool;
+                result_message.run_id = Some(admitted.run.id.clone());
+                result_message.parts.push(Part {
+                    id: PartId::new(),
+                    message_id: result_message.id.clone(),
+                    ordinal: 0,
+                    kind: PartKind::FunctionToolResult,
+                    content: ContentBlock::ToolResult {
+                        call_id: done.id.clone(),
+                        content: vec![],
+                        is_error: false,
+                    },
+                });
+                execution
+                    .settle_tool_call(
+                        &done.id,
+                        ToolResult {
+                            status: if done.id == calls[2].id {
+                                ToolResultStatus::Completed
+                            } else {
+                                ToolResultStatus::Failed
+                            },
+                            content: vec![],
+                        },
+                        result_message.clone(),
+                        event(&admitted.run, EventKind::ToolCallSettled),
+                    )
                     .await
                     .unwrap();
             }
-            calls.push(call);
-        }
-        let done = &calls[2];
-        let mut result_message = message(&session);
-        result_message.role = Role::Tool;
-        result_message.run_id = Some(admitted.run.id.clone());
-        result_message.parts.push(Part {
-            id: PartId::new(),
-            message_id: result_message.id.clone(),
-            ordinal: 0,
-            kind: PartKind::FunctionToolResult,
-            content: ContentBlock::ToolResult {
-                call_id: done.id.clone(),
-                content: vec![],
-                is_error: false,
-            },
-        });
-        execution
-            .settle_tool_call(
-                &done.id,
-                ToolResult {
-                    status: ToolResultStatus::Completed,
-                    content: vec![],
-                },
-                result_message.clone(),
-                event(&admitted.run, EventKind::ToolCallSettled),
-            )
-            .await
-            .unwrap();
-        if paused {
-            execution
-                .pause_run(
-                    serde_json::json!({"unavailable_continuation": true}),
-                    event(&admitted.run, EventKind::RunPaused),
-                )
-                .await
-                .unwrap();
-        }
-        if paused {
-            assert_eq!(
+            if paused {
+                execution
+                    .pause_run(
+                        serde_json::json!({"unavailable_continuation": true}),
+                        event(&admitted.run, EventKind::RunPaused),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let mut seeded = store.get_run(&admitted.run.id).await.unwrap().unwrap();
+            seeded.status = status;
+            seeded.lease_until = admitted.run.lease_until;
+            seeded.usage = Usage {
+                input_tokens: 123,
+                output_tokens: 45,
+            };
+            abandonment_contract::FixtureStore::seed_run(store.as_ref(), seeded.clone()).await;
+            let original_calls =
+                abandonment_contract::FixtureStore::calls(store.as_ref(), &admitted.run.id).await;
+            if paused {
+                assert_eq!(
+                    store
+                        .get_run(&admitted.run.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    RunStatus::Paused
+                );
+            }
+            let counters = Arc::new(AtomicUsize::new(0));
+            let agent = agent(store.clone(), counters.clone());
+            let abandon = AbandonRequest {
+                expected: admitted.fence.clone(),
+                expected_owner: admitted.run.owner.clone(),
+                authority,
+            };
+            {
+                assert_eq!(
+                    agent
+                        .abandon(AbandonRequest {
+                            authority: AbandonAuthority::ExpiredLease,
+                            ..abandon.clone()
+                        })
+                        .await
+                        .unwrap_err(),
+                    AbandonError::LiveLease
+                );
+            }
+            worker.stop();
+            if authority == AbandonAuthority::ExpiredLease {
+                clock.set(now + time::Duration::seconds(30));
+            }
+            for kind in [InboxKind::Steer, InboxKind::FollowUp] {
                 store
-                    .get_run(&admitted.run.id)
+                    .enqueue_inbox(&session, kind, message(&session))
+                    .await
+                    .unwrap();
+            }
+            let before = store.list_all_messages(&session).await.unwrap();
+            let outcome = agent.abandon(abandon.clone()).await.unwrap();
+            assert_eq!(outcome.run.status, RunStatus::Interrupted);
+            assert_eq!(outcome.run.usage, seeded.usage);
+            assert_eq!(outcome.run.checkpoint, seeded.checkpoint);
+            let settled_calls =
+                abandonment_contract::FixtureStore::calls(store.as_ref(), &admitted.run.id).await;
+            for prior in &original_calls {
+                if matches!(
+                    prior.status,
+                    ToolCallStatus::Completed | ToolCallStatus::Failed
+                ) {
+                    assert!(settled_calls.contains(prior));
+                }
+            }
+            assert_ne!(outcome.run.claim_token, admitted.fence.claim_token);
+            assert_eq!(outcome.interrupted_tools.len(), 2);
+            assert!(
+                store
+                    .list_unfinished_tool_calls(&admitted.run.id)
                     .await
                     .unwrap()
-                    .unwrap()
-                    .status,
-                RunStatus::Paused
+                    .is_empty()
             );
-        }
-        let counters = Arc::new(AtomicUsize::new(0));
-        let agent = agent(store.clone(), counters.clone());
-        let abandon = AbandonRequest {
-            expected: admitted.fence.clone(),
-            expected_owner: admitted.run.owner.clone(),
-            authority: AbandonAuthority::ExpiredLease,
-        };
-        if !paused {
             assert_eq!(
-                agent.abandon(abandon.clone()).await.unwrap_err(),
-                AbandonError::LiveLease
+                store.lookup_admission(&session, &key).await.unwrap(),
+                Some(receipt)
             );
-        }
-        clock.set(now + time::Duration::seconds(30));
-        let before = store.list_all_messages(&session).await.unwrap();
-        let outcome = agent.abandon(abandon.clone()).await.unwrap();
-        assert_eq!(outcome.run.status, RunStatus::Interrupted);
-        assert_ne!(outcome.run.claim_token, admitted.fence.claim_token);
-        assert_eq!(outcome.interrupted_tools.len(), 2);
-        assert!(
-            store
-                .list_unfinished_tool_calls(&admitted.run.id)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            store.lookup_admission(&session, &key).await.unwrap(),
-            Some(receipt)
-        );
-        let messages = store.list_all_messages(&session).await.unwrap();
-        assert_eq!(&messages[..before.len()], &before);
-        assert!(messages.contains(&result_message));
-        for call in &calls[..2] {
-            assert_eq!(
-                messages
-                    .iter()
-                    .flat_map(|m| &m.parts)
-                    .filter(|p| matches!(&p.content,
+            let messages = store.list_all_messages(&session).await.unwrap();
+            assert_eq!(&messages[..before.len()], &before);
+            for preserved in &before {
+                assert!(messages.contains(preserved));
+            }
+            for call in &calls[..2] {
+                assert_eq!(
+                    messages
+                        .iter()
+                        .flat_map(|m| &m.parts)
+                        .filter(|p| matches!(&p.content,
                 ContentBlock::ToolResult { call_id, is_error: true, .. } if call_id == &call.id))
+                        .count(),
+                    1
+                );
+            }
+            let events = store.list_events(&session, None, 100).await.unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.kind == EventKind::RunSettled)
                     .count(),
                 1
             );
-        }
-        let events = store.list_events(&session, None, 100).await.unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.kind == EventKind::RunSettled)
-                .count(),
-            1
-        );
-        assert!(outcome.terminal_event.cursor.is_some());
-        assert_eq!(agent.abandon(abandon).await.unwrap(), outcome);
-        assert_eq!(
-            store.list_events(&session, None, 100).await.unwrap(),
-            events
-        );
-        assert_eq!(store.list_all_messages(&session).await.unwrap(), messages);
-        assert_eq!(
-            execution
-                .renew_lease(now + time::Duration::hours(1))
-                .await
-                .unwrap_err(),
-            CoreError::Conflict
-        );
-        assert_eq!(
-            execution
-                .append_event(event(
-                    &admitted.run,
-                    EventKind::Custom {
-                        name: "stale".into()
+            assert!(outcome.terminal_event.cursor.is_some());
+            assert_eq!(agent.abandon(abandon).await.unwrap(), outcome);
+            assert_eq!(
+                store.list_events(&session, None, 100).await.unwrap(),
+                events
+            );
+            assert_eq!(store.list_all_messages(&session).await.unwrap(), messages);
+            assert_eq!(
+                execution
+                    .renew_lease(now + time::Duration::hours(1))
+                    .await
+                    .unwrap_err(),
+                CoreError::Conflict
+            );
+            assert_eq!(
+                execution
+                    .append_event(event(
+                        &admitted.run,
+                        EventKind::Custom {
+                            name: "stale".into()
+                        }
+                    ))
+                    .await
+                    .unwrap_err(),
+                CoreError::Conflict
+            );
+            assert_eq!(
+                execution
+                    .settle_run(
+                        RunStatus::Completed,
+                        None,
+                        Usage::default(),
+                        event(&admitted.run, EventKind::RunSettled)
+                    )
+                    .await
+                    .unwrap_err(),
+                CoreError::Conflict
+            );
+            assert_all_owner_writes_revoked(execution.as_ref(), &admitted.run).await;
+            for alteration in 0..3 {
+                let mut changed = AbandonRequest {
+                    expected: admitted.fence.clone(),
+                    expected_owner: admitted.run.owner.clone(),
+                    authority,
+                };
+                match alteration {
+                    0 => changed.expected_owner = "wrong".into(),
+                    1 => changed.expected.claim_token = "wrong".into(),
+                    _ => {
+                        changed.authority = if authority == AbandonAuthority::ExpiredLease {
+                            AbandonAuthority::HostStoppedOwner
+                        } else {
+                            AbandonAuthority::ExpiredLease
+                        }
                     }
-                ))
+                }
+                assert_eq!(
+                    agent.abandon(changed).await.unwrap_err(),
+                    AbandonError::StaleOwner
+                );
+            }
+            assert_eq!(
+                abandonment_contract::FixtureStore::unconsumed_inbox(store.as_ref(), &session)
+                    .await,
+                2
+            );
+            let next = store
+                .admit_run(AdmitRequest {
+                    user_message: message(&session),
+                    ..request
+                })
                 .await
-                .unwrap_err(),
-            CoreError::Conflict
-        );
-        assert_eq!(
-            execution
-                .settle_run(
-                    RunStatus::Completed,
-                    None,
-                    Usage::default(),
-                    event(&admitted.run, EventKind::RunSettled)
-                )
-                .await
-                .unwrap_err(),
-            CoreError::Conflict
-        );
-        store
-            .admit_run(AdmitRequest {
-                user_message: message(&session),
-                ..request
-            })
-            .await
-            .unwrap();
-        assert_eq!(counters.load(Ordering::SeqCst), 0);
+                .unwrap();
+            let next_execution = store.execution(next.fence).await.unwrap();
+            assert_eq!(
+                next_execution
+                    .claim_inbox(InboxKind::Steer)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                next_execution
+                    .claim_inbox_into_history(InboxKind::FollowUp)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(counters.load(Ordering::SeqCst), 0);
+        }
     }
 }
 
 #[tokio::test]
 async fn public_host_stopped_requires_exact_owner_and_fence() {
-    let store = Arc::new(MemoryStore::new());
+    stopped_owner(Arc::new(MemoryStore::new())).await;
+}
+async fn stopped_owner(store: Arc<dyn Store>) {
+    let mut worker = OwnerProcess::spawn();
     let admitted = store
         .admit_run(AdmitRequest {
             session_id: None,
+            owner: format!("process:{}", worker.0.id()),
             ..admit_request(&SessionId::new())
         })
         .await
         .unwrap();
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
     let agent = agent(store.clone(), Arc::new(AtomicUsize::new(0)));
+    assert_eq!(
+        agent
+            .abandon(AbandonRequest {
+                expected: admitted.fence.clone(),
+                expected_owner: admitted.run.owner.clone(),
+                authority: AbandonAuthority::ExpiredLease
+            })
+            .await
+            .unwrap_err(),
+        AbandonError::LiveLease
+    );
     let mut request = AbandonRequest {
         expected: admitted.fence.clone(),
         expected_owner: "wrong-owner".into(),
@@ -339,8 +467,9 @@ async fn public_host_stopped_requires_exact_owner_and_fence() {
         AbandonError::StaleOwner
     );
     request.expected = admitted.fence.clone();
-    // In production the host checks authoritative process/coordinator evidence
-    // before making this assertion. This fixture never starts a worker.
+    // This child represents the authoritative worker process. A host must stop
+    // actual execution and renewal, and wait for confirmed exit.
+    worker.stop();
     assert_eq!(
         agent.abandon(request).await.unwrap().run.status,
         RunStatus::Interrupted
@@ -433,5 +562,96 @@ async fn assert_all_owner_writes_revoked(execution: &dyn ExecutionStore, run: &R
     ];
     for write in writes {
         assert_eq!(write.unwrap_err(), CoreError::Conflict);
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[path = "fenced_support/postgres.rs"]
+mod postgres;
+
+#[tokio::test]
+async fn facade_memory_missing_and_unrelated_terminal_are_honest() {
+    error_semantics(Arc::new(MemoryStore::new())).await;
+}
+async fn error_semantics(store: Arc<dyn Store>) {
+    let counters = Arc::new(AtomicUsize::new(0));
+    let host = agent(store.clone(), counters.clone());
+    let missing = AbandonRequest {
+        expected: RunFence {
+            run_id: RunId::new(),
+            claim_token: "missing".into(),
+        },
+        expected_owner: "missing".into(),
+        authority: AbandonAuthority::ExpiredLease,
+    };
+    assert_eq!(
+        host.abandon(missing).await.unwrap_err(),
+        AbandonError::NotFound
+    );
+    let admitted = store
+        .admit_run(AdmitRequest {
+            session_id: None,
+            ..admit_request(&SessionId::new())
+        })
+        .await
+        .unwrap();
+    let execution = store.execution(admitted.fence.clone()).await.unwrap();
+    execution
+        .settle_run(
+            RunStatus::Completed,
+            None,
+            Usage::default(),
+            event(&admitted.run, EventKind::RunSettled),
+        )
+        .await
+        .unwrap();
+    let before = store
+        .list_events(&admitted.run.session_id, None, 100)
+        .await
+        .unwrap();
+    let request = AbandonRequest {
+        expected: admitted.fence,
+        expected_owner: admitted.run.owner,
+        authority: AbandonAuthority::HostStoppedOwner,
+    };
+    assert_eq!(
+        host.abandon(request).await.unwrap_err(),
+        AbandonError::AlreadyTerminal
+    );
+    assert_eq!(
+        store
+            .list_events(&admitted.run.session_id, None, 100)
+            .await
+            .unwrap(),
+        before
+    );
+    assert_eq!(counters.load(Ordering::SeqCst), 0);
+}
+#[path = "fenced_support/response_loss.rs"]
+mod response_loss;
+
+struct OwnerProcess(std::process::Child);
+impl OwnerProcess {
+    fn spawn() -> Self {
+        Self(
+            std::process::Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        )
+    }
+    fn stop(&mut self) {
+        assert!(self.0.try_wait().unwrap().is_none());
+        self.0.kill().unwrap();
+        assert!(!self.0.wait().unwrap().success());
+        assert!(self.0.try_wait().unwrap().is_some());
+    }
+}
+impl Drop for OwnerProcess {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 }
