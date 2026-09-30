@@ -4,9 +4,10 @@ use crate::policy::{
 };
 use async_trait::async_trait;
 use crabber_core::{
-    Clock, ContentBlock, ContextEpoch, EpochId, EventKind, EventRecord, Message, MessageId, Part,
-    PartId, PartKind, Role, RunFence, RunId, RunStatus, SessionId, SystemClock, ToolCallId,
-    ToolCallRecord, ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
+    EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
+    RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolInfo,
+    ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
     ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
@@ -19,7 +20,10 @@ use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
     Streamer,
 };
-use crabber_session::{AdmitRequest, ExecutionStore, InboxKind, Store, StoreError};
+use crabber_session::{
+    AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
+    Store, StoreError,
+};
 use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -35,6 +39,14 @@ use time::OffsetDateTime;
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+fn admission_error(error: StoreError) -> RuntimeError {
+    if error == StoreError::Busy {
+        RuntimeError::SessionBusy
+    } else {
+        RuntimeError::Store(error)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub session_id: Option<SessionId>,
@@ -44,6 +56,33 @@ pub struct Request {
     pub text: String,
     pub selection: Selection,
     pub system_prompt: Option<String>,
+}
+
+/// A replay has no execution handle and grants no lease authority.
+pub enum Admission {
+    Started {
+        receipt: AdmissionReceipt,
+        handle: RunHandle,
+    },
+    Replayed(AdmissionReceipt),
+}
+
+impl Admission {
+    #[must_use]
+    pub fn receipt(&self) -> &AdmissionReceipt {
+        match self {
+            Self::Started { receipt, .. } | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
+impl std::fmt::Debug for Admission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Started { receipt, .. } => f.debug_tuple("Started").field(receipt).finish(),
+            Self::Replayed(receipt) => f.debug_tuple("Replayed").field(receipt).finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -941,6 +980,63 @@ impl Orchestrator {
     ///
     /// Returns `SessionBusy` for a session with an active run, or a plan/store error.
     pub async fn start(&self, request: Request) -> Result<RunHandle, RuntimeError> {
+        let (plan, admission) = self.prepare_admission(&request).await?;
+        let admitted = self
+            .store
+            .admit_run(admission)
+            .await
+            .map_err(admission_error)?;
+        Ok(self.spawn_admitted(request, plan, admitted))
+    }
+
+    /// Admit with a host-selected stable session ID, or reconcile its original receipt.
+    /// # Errors
+    /// Rejects missing session ID, semantic conflicts, immutable identity changes,
+    /// busy sessions, unsupported stores, or plan/store failures.
+    pub async fn start_keyed(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+    ) -> Result<Admission, RuntimeError> {
+        if request.session_id.is_none() {
+            return Err(StoreError::Validation(
+                "keyed admission requires a stable session ID".into(),
+            )
+            .into());
+        }
+        let (plan, admission) = self.prepare_admission(&request).await?;
+        match self
+            .store
+            .admit_keyed_run(KeyedAdmitRequest {
+                request: admission,
+                options,
+            })
+            .await
+            .map_err(admission_error)?
+        {
+            KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
+                receipt,
+                handle: self.spawn_admitted(request, plan, *admitted),
+            }),
+            KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
+        }
+    }
+
+    /// Reads retained metadata without acquiring a plan or execution lease.
+    /// # Errors
+    /// Returns store errors; None does not rule out a concurrent commit.
+    pub async fn lookup_admission(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<AdmissionReceipt>, RuntimeError> {
+        Ok(self.store.lookup_admission(session, key).await?)
+    }
+
+    async fn prepare_admission(
+        &self,
+        request: &Request,
+    ) -> Result<(RunPlan, AdmitRequest), RuntimeError> {
         let now = self.clock.now();
         let session_id = request.session_id.clone().unwrap_or_default();
         let plan = self
@@ -948,38 +1044,52 @@ impl Orchestrator {
             .acquire_plan(&session_id)
             .await
             .map_err(|error| RuntimeError::Extension(error.to_string()))?;
-        let config = format!(
-            "{}:{}:{:?}:{:?}:{}:{}:{}",
+        // Hash structured, independently observed semantics, never a caller's claim.
+        let mut config = json!([
+            "crabber.runtime.admission.v1",
             request.selection.provider_id,
             request.selection.model_id,
             request.system_prompt,
-            self.execution_mode,
+            format!("{:?}", self.execution_mode),
             self.compaction.trigger_ratio,
             self.compaction.keep_tail_messages,
             self.max_turns,
-        );
-        let config_hash = format!("{:x}", Sha256::digest(config.as_bytes()));
-        let admitted = self
-            .store
-            .admit_run(AdmitRequest {
-                session_id: request.session_id.clone(),
-                workspace_id: request.workspace_id.clone(),
-                directory: request.directory.clone(),
-                title: request.title.clone(),
-                user_message: user_message(session_id, request.text.clone(), now),
-                config_hash,
-                plan_fingerprint: plan.fingerprint().to_string(),
-                owner: RunId::new().to_string(),
-                lease: Duration::from_secs(30),
-            })
-            .await
-            .map_err(|error| {
-                if error == StoreError::Busy {
-                    RuntimeError::SessionBusy
-                } else {
-                    RuntimeError::Store(error)
-                }
-            })?;
+            plan.tools.iter().map(|tool| &tool.info).collect::<Vec<_>>(),
+            plan.prompts
+                .iter()
+                .map(|p| (&p.name, p.order, &p.text))
+                .collect::<Vec<_>>(),
+            plan.restrictions,
+            plan.components,
+            plan.guards
+                .iter()
+                .map(|guard| guard.id())
+                .collect::<Vec<_>>(),
+            plan.providers
+                .iter()
+                .map(|provider| {
+                    let info = provider.info();
+                    (info.id, info.name)
+                })
+                .collect::<Vec<_>>()
+        ]);
+        config.sort_all_objects();
+        let config_hash = format!("{:x}", Sha256::digest(config.to_string().as_bytes()));
+        let admission = AdmitRequest {
+            session_id: request.session_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            directory: request.directory.clone(),
+            title: request.title.clone(),
+            user_message: user_message(session_id, request.text.clone(), now),
+            config_hash,
+            plan_fingerprint: plan.fingerprint().to_string(),
+            owner: RunId::new().to_string(),
+            lease: Duration::from_secs(30),
+        };
+        Ok((plan, admission))
+    }
+
+    fn spawn_admitted(&self, request: Request, plan: RunPlan, admitted: AdmitOutcome) -> RunHandle {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let handle = RunHandle {
@@ -1006,7 +1116,7 @@ impl Orchestrator {
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
         });
-        Ok(handle)
+        handle
     }
 
     #[allow(clippy::too_many_lines)]

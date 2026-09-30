@@ -1,0 +1,13 @@
+[package]
+name = "admission-receipt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber = { path = "../../crates/crabber" }
+tokio = { version = "1", features = ["macros", "rt"] }
+sha2 = "0.10"
+
+[lints]
+workspace = true
