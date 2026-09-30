@@ -12,14 +12,15 @@ fn main() {
         runtime.block_on(journey::child());
         return;
     }
-    let source = journey::source();
+    let check = std::env::args().any(|arg| arg == "--check");
+    let source = journey::source(!check);
     let (backend, stores, child) = match mode.as_str() {
         "--memory" => ("memory", journey::memory(), journey::ChildMode::None),
         #[cfg(feature = "postgres")]
         "--postgres" => (
             "postgres",
             runtime.block_on(journey::postgres(true)),
-            journey::ChildMode::Demo,
+            journey::ChildMode::Demo(check),
         ),
         _ => panic!("usage: bounded-snapshot --memory | --postgres (requires postgres feature)"),
     };

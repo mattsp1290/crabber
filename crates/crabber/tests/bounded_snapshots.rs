@@ -14,7 +14,7 @@ fn runtime() -> tokio::runtime::Runtime {
 fn memory_embedding_pages_settled_relations_then_resumes_events() {
     let runtime = runtime();
     let stores = journey::memory();
-    let source = journey::source();
+    let source = journey::source(false);
     runtime.block_on(journey::journey(
         stores.clone(),
         "memory",
@@ -37,7 +37,7 @@ fn postgres_embedding_independent_pools_and_fresh_process() {
     }
     let runtime = runtime();
     let stores = runtime.block_on(journey::postgres(true));
-    let source = journey::source();
+    let source = journey::source(false);
     runtime.block_on(journey::journey(
         stores.clone(),
         "postgres",

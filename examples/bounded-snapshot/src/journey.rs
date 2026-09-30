@@ -174,7 +174,7 @@ pub fn check_page(page: &SnapshotPage, query: &SnapshotRequest) {
 }
 
 pub fn print_page(
-    source: &str,
+    source: &Source,
     backend: &str,
     session: &SessionId,
     number: usize,
@@ -193,7 +193,18 @@ pub fn print_page(
 
 /// Resolve the invocation checkout at runtime. A reused binary must not silently
 /// label itself using an embedded `CARGO_MANIFEST_DIR` from a different worktree.
-pub fn source() -> String {
+pub struct Source {
+    sha: String,
+    clean: bool,
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} source_clean={}", self.sha, self.clean)
+    }
+}
+
+pub fn source(require_clean: bool) -> Source {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -206,8 +217,9 @@ pub fn source() -> String {
         .output()
         .unwrap();
     assert!(status.status.success());
+    let clean = status.stdout.is_empty();
     assert!(
-        status.stdout.is_empty(),
+        !require_clean || clean,
         "commit the invocation checkout before producing source evidence"
     );
     // The invocation must be the workspace containing this public example.
@@ -221,14 +233,14 @@ pub fn source() -> String {
             .join("examples/bounded-snapshot/src/journey.rs")
             .is_file()
     );
-    sha
+    Source { sha, clean }
 }
 
 /// Test helper and demo differ only in their child entrypoint.
 #[derive(Clone, Copy)]
 pub enum ChildMode {
     None,
-    Demo,
+    Demo(bool),
     Test,
 }
 
@@ -242,10 +254,14 @@ fn verify_child(
     let mut command = Command::new(std::env::current_exe().unwrap());
     match mode {
         ChildMode::None => return,
-        ChildMode::Demo => {
+        ChildMode::Demo(check) => {
             command.arg("--postgres-child");
+            if check {
+                command.env("CRABBER_BOUNDED_CHECK", "1");
+            }
         }
         ChildMode::Test => {
+            command.env("CRABBER_BOUNDED_CHECK", "1");
             command.args(["--exact", "postgres_snapshot_child_process", "--nocapture"]);
         }
     }
@@ -291,7 +307,7 @@ pub async fn child() {
         check_page(&page, &query);
         assert_eq!(*h.get_or_insert(page.high_water), page.high_water);
         print_page(
-            &source(),
+            &source(std::env::var("CRABBER_BOUNDED_CHECK").as_deref() != Ok("1")),
             "postgres-child",
             &query.session_id,
             number,
@@ -330,7 +346,7 @@ async fn tail(reader: &dyn Store, session: &SessionId, h: EventCursor) -> Vec<Ev
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn journey(stores: Stores, backend: &str, source: &str, mode: ChildMode) {
+pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: ChildMode) {
     let (reader, writer) = stores;
     let session = SessionId::from(format!("bounded-{backend}-{}", std::process::id()));
     let admitted = admit(&*writer, &session, "fake").await;
@@ -576,7 +592,7 @@ pub fn allocation_proof(
     runtime: &tokio::runtime::Runtime,
     stores: &Stores,
     backend: &str,
-    source: &str,
+    source: &Source,
 ) {
     let (reader, writer) = stores;
     let mut peaks = Vec::new();

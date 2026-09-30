@@ -24,11 +24,14 @@ without migrating. Avoid pointing test/demo commands at an application database.
 The facade and allocation tests use the same journey source as the executable.
 
 Output records the full invocation checkout Git SHA after checking that its tree is
-clean, backend, host-assigned session identity, page number, immutable H, record
+clean (reported as `source_clean=true`), backend, host-assigned session identity, page number, immutable H, record
 counts, exact text/encoded usage and post-H event IDs. It prints no message payloads,
 continuations, DSNs, credentials or filesystem paths. Runtime Git resolution avoids
 cached binaries embedding another worktree's `CARGO_MANIFEST_DIR`. Invoke through
 Cargo in the intended checkout; a clean checkout is required to label evidence.
+Ordinary facade tests and the xtask Memory demo use check mode (`--check`), which
+permits uncommitted edits and reports `source_clean=false` honestly. Default user
+demos still require a clean commit for publication evidence.
 Session IDs are assigned once per invocation, with backend and process ID suffixes,
 and remain stable across pages, writer pools and the child process.
 
