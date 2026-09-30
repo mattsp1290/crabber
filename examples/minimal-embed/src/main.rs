@@ -55,7 +55,7 @@ impl Extension for NativeExtension {
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         registrar.tool(Arc::new(ToolDefinition {
             info: ToolInfo {
-                name: self.name.into(), description: "Returns its arguments".into(),
+                name: self.name.into(), description: "Echoes arguments; the native guard denies text forbidden".into(),
                 parameters: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
                 retry_safe: true, required_permissions: vec![],
             },
@@ -111,6 +111,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let store = create_store(&store_kind).await?;
     println!("store={store_kind} provider={provider}");
+    let prompt_text = if wasm_enabled {
+        "Use both tools in order. First call native-echo with {\"text\":\"forbidden\"}; its guard denial is expected. Then call echo with {\"text\":\"hello\"} even though the first call was denied. After both tool results, reply Done."
+    } else {
+        "Use the echo tool"
+    };
     // crabber:glue-start
     let mut builder = Agent::builder()
         .store(Arc::clone(&store))
@@ -135,7 +140,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         resume_run(&agent, &store, &run_id).await?;
         return Ok(());
     }
-    let mut run = agent.prompt(None, "Use the echo tool").await?;
+    let mut run = agent.prompt(None, prompt_text).await?;
     let run_id = run.run_id().clone();
     let mut events = run.events();
     let mut interrupted = false;
