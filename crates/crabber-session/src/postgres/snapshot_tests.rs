@@ -573,6 +573,75 @@ fn large_postgres_history_keeps_client_allocation_bounded() {
     );
 }
 
+const AWKWARD_FLOAT_BITS: u64 = 15_097_766_278_683_351_411;
+
+fn opaque_numbers() -> serde_json::Value {
+    serde_json::json!({"negative_zero": -0.0, "awkward_float":f64::from_bits(AWKWARD_FLOAT_BITS), "nested":[-0.0,1e30], "escaped":"\n\"é"})
+}
+
+fn assert_opaque_bits(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "awkward_float" {
+                    assert_eq!(value.as_f64().unwrap().to_bits(), AWKWARD_FLOAT_BITS);
+                }
+                if key == "negative_zero" {
+                    assert_eq!(value.as_f64().unwrap().to_bits(), (-0.0f64).to_bits());
+                }
+                assert_opaque_bits(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                assert_opaque_bits(value);
+            }
+        }
+        _ => {}
+    }
+}
+fn assert_returned_accounting(page: &SnapshotPage) {
+    let returned_bytes: usize = page
+        .messages
+        .iter()
+        .map(|message| serde_json::to_vec(message).unwrap().len())
+        .sum::<usize>()
+        + page
+            .tool_calls
+            .iter()
+            .map(|call| serde_json::to_vec(call).unwrap().len())
+            .sum::<usize>();
+    assert_eq!(
+        returned_bytes, page.usage.encoded_bytes,
+        "returned records must fit the measured encoded-byte cap"
+    );
+    assert_opaque_bits(&serde_json::to_value(&page.messages).unwrap());
+    assert_opaque_bits(&serde_json::to_value(&page.tool_calls).unwrap());
+}
+async fn assert_message_caps(store: &dyn Store, session: &SessionId, messages: &[Message]) {
+    let mut next = query(session);
+    next.limits.tool_calls = 0;
+    for expected in messages {
+        let bytes = serde_json::to_vec(expected).unwrap().len();
+        next.limits.encoded_bytes = bytes - 1;
+        let SnapshotOutcome::Limited {
+            limit: SnapshotLimit::EncodedBytes,
+            continuation,
+            ..
+        } = store.snapshot(next.clone()).await.unwrap()
+        else {
+            panic!("message -1 byte must be limited")
+        };
+        next.continuation = Some(continuation);
+        next.limits.encoded_bytes = bytes;
+        let actual = page(store.snapshot(next.clone()).await.unwrap());
+        assert_eq!(actual.messages.len(), 1);
+        assert_eq!(actual.usage.encoded_bytes, bytes);
+        assert_returned_accounting(&actual);
+        next.continuation = actual.continuation;
+    }
+}
+
 fn normalize_page(mut page: SnapshotPage) -> SnapshotPage {
     for message in &mut page.messages {
         if message.run_id.is_some() {
@@ -598,6 +667,14 @@ async fn assert_canonical_parity(
         actual.usage, expected.usage,
         "accounting must survive opaque numeric mutations"
     );
+    assert_returned_accounting(&expected);
+    assert_returned_accounting(&actual);
+    assert_message_caps(memory, session, &expected.messages).await;
+    assert_message_caps(postgres, session, &expected.messages).await;
+    let first_call_bytes = expected
+        .tool_calls
+        .first()
+        .map(|call| serde_json::to_vec(call).unwrap().len());
     let expected = normalize_page(expected);
     let actual = normalize_page(actual);
     assert_eq!(
@@ -619,7 +696,7 @@ async fn assert_canonical_parity(
             .continuation
             .is_none()
     );
-    if let Some(call) = expected.tool_calls.first() {
+    if let Some(bytes) = first_call_bytes {
         // Position both backends immediately before their first tool record,
         // then require the exact complete record size to admit that record.
         let mut before = query(session);
@@ -631,23 +708,6 @@ async fn assert_canonical_parity(
         let postgres_token = page(postgres.snapshot(before).await.unwrap())
             .continuation
             .unwrap();
-        let mut call = call.clone();
-        // Actual run IDs have UUID length; use the real Memory record for budget.
-        let memory_full = page(
-            memory
-                .snapshot(SnapshotRequest {
-                    limits: SnapshotLimits {
-                        messages: 100,
-                        tool_calls: 100,
-                        ..query(session).limits
-                    },
-                    ..query(session)
-                })
-                .await
-                .unwrap(),
-        );
-        call.run_id = memory_full.tool_calls[0].run_id.clone();
-        let bytes = serde_json::to_vec(&call).unwrap().len();
         let mut next = query(session);
         next.limits.encoded_bytes = bytes - 1;
         next.continuation = Some(memory_token.clone());
@@ -668,19 +728,13 @@ async fn assert_canonical_parity(
         ));
         next.limits.encoded_bytes = bytes;
         next.continuation = Some(memory_token);
-        assert_eq!(
-            page(memory.snapshot(next.clone()).await.unwrap())
-                .usage
-                .encoded_bytes,
-            bytes
-        );
+        let memory_page = page(memory.snapshot(next.clone()).await.unwrap());
+        assert_eq!(memory_page.usage.encoded_bytes, bytes);
+        assert_returned_accounting(&memory_page);
         next.continuation = Some(postgres_token);
-        assert_eq!(
-            page(postgres.snapshot(next).await.unwrap())
-                .usage
-                .encoded_bytes,
-            bytes
-        );
+        let postgres_page = page(postgres.snapshot(next).await.unwrap());
+        assert_eq!(postgres_page.usage.encoded_bytes, bytes);
+        assert_returned_accounting(&postgres_page);
     }
 }
 
@@ -700,7 +754,7 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     let mut admission = request(&session);
     admission.user_message.parts[0].content = ContentBlock::Reasoning {
         text: "opaque input".into(),
-        provider_state: Some(serde_json::json!({"negative_zero":-0.0,"nested":[-0.0,1e30]})),
+        provider_state: Some(opaque_numbers()),
     };
     let message_id = admission.user_message.id.clone();
     let memory_admission = memory.admit_run(admission.clone()).await.unwrap();
@@ -727,8 +781,7 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     postgres_execution.append_part(part).await.unwrap();
     assert_canonical_parity(&memory, &postgres, &session).await;
     let mut tool_call = call(&postgres_admission, &uuid::Uuid::new_v4().to_string());
-    tool_call.arguments =
-        serde_json::json!({"negative_zero":-0.0,"nested":{"zero":-0.0},"escaped":"\n\"é"});
+    tool_call.arguments = opaque_numbers();
     let mut memory_call = tool_call.clone();
     memory_call.run_id = memory_admission.run.id.clone();
     memory_execution
@@ -765,7 +818,7 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
         status: ToolResultStatus::Completed,
         content: vec![ContentBlock::Reasoning {
             text: "result".into(),
-            provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+            provider_state: Some(opaque_numbers()),
         }],
     };
     let mut result_message = assistant(&postgres_admission, "");
@@ -799,7 +852,7 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     let mut inbox = input(&session, "");
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "pending".into(),
-        provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+        provider_state: Some(opaque_numbers()),
     };
     memory
         .enqueue_inbox(&session, InboxKind::FollowUp, inbox.clone())
@@ -829,7 +882,7 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
     let mut inbox = input(&session, "");
     inbox.parts[0].content = ContentBlock::Reasoning {
         text: "claimed without history".into(),
-        provider_state: Some(serde_json::json!({"negative_zero":-0.0})),
+        provider_state: Some(opaque_numbers()),
     };
     memory
         .enqueue_inbox(&session, InboxKind::Steer, inbox.clone())
@@ -855,4 +908,50 @@ async fn canonical_negative_zero_survives_parts_claim_settlement_and_inbox() {
         )
         .unwrap()
     );
+}
+
+#[tokio::test]
+async fn awkward_float_initial_snapshot_preserves_bits_and_exact_encoded_cap() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    let (postgres, _unused) = seed(&url).await;
+    let memory = crate::MemoryStore::with_clock(postgres.clock.clone());
+    let session = SessionId::new();
+    let mut admission = request(&session);
+    admission.user_message.created_at = OffsetDateTime::UNIX_EPOCH;
+    admission.user_message.parts[0].kind = PartKind::ProviderState;
+    admission.user_message.parts[0].content = ContentBlock::ProviderState {
+        codec_id: "fixture".into(),
+        payload: serde_json::json!({"awkward_float":f64::from_bits(AWKWARD_FLOAT_BITS)}),
+    };
+    memory.admit_run(admission.clone()).await.unwrap();
+    postgres.admit_run(admission).await.unwrap();
+    let mut request = query(&session);
+    request.limits.tool_calls = 0;
+    request.limits.parts = 1;
+    request.limits.text_bytes = 0;
+    let expected = page(memory.snapshot(request.clone()).await.unwrap());
+    let bytes = serde_json::to_vec(&expected.messages[0]).unwrap().len();
+    request.limits.encoded_bytes = bytes - 1;
+    for store in [&memory as &dyn Store, &postgres as &dyn Store] {
+        let SnapshotOutcome::Limited {
+            limit: SnapshotLimit::EncodedBytes,
+            continuation,
+            ..
+        } = store.snapshot(request.clone()).await.unwrap()
+        else {
+            panic!("one byte below must be limited")
+        };
+        let mut exact = request.clone();
+        exact.limits.encoded_bytes = bytes;
+        exact.continuation = Some(continuation);
+        let actual = page(store.snapshot(exact).await.unwrap());
+        assert_eq!(actual.usage.encoded_bytes, bytes);
+        assert_returned_accounting(&actual);
+        assert!(actual.continuation.is_none());
+        assert_eq!(
+            serde_json::to_vec(&normalize_page(actual).messages).unwrap(),
+            serde_json::to_vec(&normalize_page(expected.clone()).messages).unwrap()
+        );
+    }
 }
