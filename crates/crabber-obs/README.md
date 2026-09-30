@@ -6,15 +6,16 @@ The original intake acceptance expected gzip for all three signals. In the US3 l
 
 The observer allowlists lifecycle fields before queuing. Prompt and completion text, tool arguments and results, reasoning, and headers are never exported. The bounded queue drops observations when full and reports `crabber.export.dropped`. Call `agent.flush().await` before process exit, or `agent.shutdown().await` to flush and stop the worker.
 
-Run the credential-free example with `cargo run -p datadog-export`. The live gate is `DD_SITE=... DD_API_KEY=... DD_APP_KEY=... cargo xtask verify-datadog`; it submits a marker-tagged fake run, requires LLM Obs intake HTTP 202, and queries metrics and logs for up to two minutes. A user must also confirm the spans in the LLM Observability UI.
+Run the credential-free example with `cargo run -p datadog-export`. The live gate is `DD_SITE=... DD_API_KEY=... DD_APP_KEY=... cargo xtask verify-datadog`; it submits a marker-tagged fake run, requires LLM Obs intake HTTP 202, and queries metrics and logs for up to two minutes. Verify the spans in Datadog's LLM Observability UI or with an authenticated span search.
 
 ## Live verification
 
-| Date | Candidate | Site | Intake | Metrics | Logs | Direct span query | UI spans |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-09-30 02:15 UTC | `42fbb96` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, 1 series) | Found | Not queried | Pending user confirmation |
-| 2026-09-30 03:09 UTC | `653571c73461bc88a2781b6c7cf68cba1454f895` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, status ok, 1 series) | Found | Agent, workflow, and LLM spans found | Pending user confirmation |
+| Date | Candidate | Site | Intake | Metrics | Logs | Span visibility |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-30 02:15 UTC | `42fbb96` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, 1 series) | Found | Later confirmed by direct query |
+| 2026-09-30 03:09 UTC | `653571c` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, status ok, 1 series) | Found | Agent, workflow, and LLM spans found by direct query |
+| 2026-09-30 03:18 UTC | `ceb0924` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, status ok, 1 series) | Found | Agent, workflow, and LLM spans found by direct query |
 
-The `653571c` live gate `cargo xtask verify-datadog` exited 0 with marker `crabber-1790737749-73371`. A direct `pup llm-obs spans search --query 'verify:crabber-1790737749-73371' --from 1h --summary` found agent, workflow, and LLM spans on trace `16248679833872246374`, with the expected parent IDs and 3.218 ms agent and workflow durations. This is a direct Datadog query result; user confirmation in the browser UI remains pending. The earlier `42fbb96` gate also exited 0 with marker `crabber-1790734554-56395` before the retry and span-timing changes. Subsequent chunk-retry and failed-model observation fixes require a live gate rerun on the new candidate.
+The `ceb0924` live gate exited 0 with marker `crabber-1790738310-13253`. The user authorized direct verification with the authenticated `pup` CLI. `pup llm-obs spans search --query 'verify:crabber-1790738310-13253' --from 1h --summary` found linked agent, workflow, and LLM spans on trace `9245911478003124504`; the agent and workflow each covered 1.691 ms. This verifies span visibility through Datadog's read API; a browser UI click was not performed. Earlier gates on `653571c` and `42fbb96` also exited 0 before the final chunk-retry and failed-model observation fixes.
 
 References: [LLM Observability HTTP API](https://docs.datadoghq.com/llm_observability/instrument/api/), [Submit metrics](https://docs.datadoghq.com/api/latest/metrics/submit-metrics/), [Send logs](https://docs.datadoghq.com/api/latest/logs/send-logs/), [Search logs](https://docs.datadoghq.com/api/latest/logs/search-logs-post/).
