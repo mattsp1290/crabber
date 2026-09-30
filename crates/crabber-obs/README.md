@@ -10,10 +10,11 @@ Run the credential-free example with `cargo run -p datadog-export`. The live gat
 
 ## Live verification
 
-| Date | Site | Intake | Metrics | Logs | UI spans |
-| --- | --- | --- | --- | --- | --- |
-| 2026-09-30 02:15 UTC | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, 1 series) | Found | Pending user confirmation |
+| Date | Candidate | Site | Intake | Metrics | Logs | Direct span query | UI spans |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-30 02:15 UTC | `42fbb96` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, 1 series) | Found | Not queried | Pending user confirmation |
+| 2026-09-30 03:09 UTC | `653571c73461bc88a2781b6c7cf68cba1454f895` | `us3.datadoghq.com` | HTTP 202 | Found (query HTTP 200, status ok, 1 series) | Found | Agent, workflow, and LLM spans found | Pending user confirmation |
 
-Live gate `cargo xtask verify-datadog` exited 0 with marker `crabber-1790734554-56395`. LLM Observability intake, metrics, and logs passed; user confirmation of the spans in the UI is still pending. This result was recorded on candidate `42fbb96`; retry and span-timing changes made afterward require another live gate before integration.
+The `653571c` live gate `cargo xtask verify-datadog` exited 0 with marker `crabber-1790737749-73371`. A direct `pup llm-obs spans search --query 'verify:crabber-1790737749-73371' --from 1h --summary` found agent, workflow, and LLM spans on trace `16248679833872246374`, with the expected parent IDs and 3.218 ms agent and workflow durations. This is a direct Datadog query result; user confirmation in the browser UI remains pending. The earlier `42fbb96` gate also exited 0 with marker `crabber-1790734554-56395` before the retry and span-timing changes.
 
 References: [LLM Observability HTTP API](https://docs.datadoghq.com/llm_observability/instrument/api/), [Submit metrics](https://docs.datadoghq.com/api/latest/metrics/submit-metrics/), [Send logs](https://docs.datadoghq.com/api/latest/logs/send-logs/), [Search logs](https://docs.datadoghq.com/api/latest/logs/search-logs-post/).
