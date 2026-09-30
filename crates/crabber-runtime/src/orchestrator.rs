@@ -24,6 +24,7 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -483,6 +484,93 @@ impl Orchestrator {
         OrchestratorBuilder::default()
     }
 
+    /// Rebuilds the latest assistant batch when a resumed process died after
+    /// committing its message but before staging every call.
+    async fn reconcile_committed_assistant(
+        &self,
+        execution: &dyn ExecutionStore,
+        run: &crabber_core::Run,
+        plan: &RunPlan,
+        lease_lost: &AtomicBool,
+    ) -> Result<Option<bool>, RuntimeError> {
+        if run.status != RunStatus::Paused {
+            return Ok(None);
+        }
+        let Some(checkpoint) = &run.checkpoint else {
+            return Ok(None);
+        };
+        let paused_calls: HashSet<&str> = checkpoint
+            .get("pending_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if paused_calls.is_empty() {
+            return Ok(None);
+        }
+        let history = self.store.list_messages(&run.session_id, None).await?;
+        let Some(anchor) = history.iter().rposition(|message| message.parts.iter().any(|part|
+            matches!(&part.content, ContentBlock::ToolCall { call_id, .. } if paused_calls.contains(call_id.0.as_str())))) else {
+            return Ok(None);
+        };
+        let latest = history[anchor + 1..].iter().rev().find(|message| {
+            message.run_id.as_ref() == Some(&run.id)
+                && message.role == Role::Assistant
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| part.kind != PartKind::CompactionSummary)
+        });
+        let Some(latest) = latest else {
+            return Ok(None);
+        };
+        let settled: HashSet<ToolCallId> = history
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| match &part.content {
+                ContentBlock::ToolResult { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let unfinished: HashSet<ToolCallId> = self
+            .store
+            .list_unfinished_tool_calls(&run.id)
+            .await?
+            .into_iter()
+            .map(|call| call.id)
+            .collect();
+        let mut has_calls = false;
+        for part in &latest.parts {
+            if let ContentBlock::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } = &part.content
+            {
+                has_calls = true;
+                if !settled.contains(call_id) && !unfinished.contains(call_id) {
+                    ensure_lease(lease_lost)?;
+                    self.stage_tool(
+                        execution,
+                        &run.session_id,
+                        &run.id,
+                        plan,
+                        PendingCall {
+                            id: call_id.clone(),
+                            name: name.clone(),
+                            raw: String::new(),
+                            arguments: Some(arguments.clone()),
+                        },
+                        lease_lost,
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(Some(has_calls))
+    }
+
     /// Reclaims a paused or expired run and finishes its persisted tool calls.
     ///
     /// # Errors
@@ -518,141 +606,194 @@ impl Orchestrator {
             Arc::clone(&self.clock),
             self.heartbeat_interval,
         );
-        let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
-        execution.append_event(resumed.clone()).await?;
-        self.observer.emit(&resumed);
+        let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
-        let mut interrupted = false;
-        for call in self.store.list_unfinished_tool_calls(run_id).await? {
-            if call.status == ToolCallStatus::Running
-                || (run.status != RunStatus::Paused && !call.retry_safe)
-            {
-                if call.status == ToolCallStatus::Pending {
-                    let event = self.event(&run.session_id, run_id, EventKind::ToolCallRunning);
-                    execution.claim_tool_call(&call.id, event).await?;
-                }
-                self.settle_interrupted_call(
-                    execution.as_ref(),
-                    &run.session_id,
-                    run_id,
-                    &plan,
-                    &call,
-                )
+        let cancellation = CancellationToken::new();
+        let work_cancellation = cancellation.clone();
+        let resumed_work = async move {
+            let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
+            execution.append_event(resumed.clone()).await?;
+            self.observer.emit(&resumed);
+            let committed_turn = self
+                .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
                 .await?;
-                interrupted = true;
-                continue;
-            }
-            let pending = PendingCall {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                raw: String::new(),
-                arguments: Some(call.arguments.clone()),
-            };
-            self.execute_tool(
-                execution.as_ref(),
-                &run.session_id,
-                run_id,
-                &plan,
-                pending,
-                Some(call),
-                None,
-                &CancellationToken::new(),
-                lost.as_ref(),
-            )
-            .await?;
-        }
-        if run.status == RunStatus::Paused
-            && let Some(checkpoint) = &run.checkpoint
-            && let Some(request) = request_from_checkpoint(&run.session_id, checkpoint)
-        {
-            let usage = checkpoint
-                .get("usage")
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_default();
-            self.emit_durable(
-                execution.as_ref(),
-                &run.session_id,
-                run_id,
-                &plan,
-                EventKind::TurnCompleted,
-            )
-            .await?;
-            let outcome = self
-                .run_loop(
-                    execution.as_ref(),
-                    run_id,
-                    &run.session_id,
-                    &request,
-                    &plan,
-                    &CancellationToken::new(),
-                    false,
-                    usage,
-                    lost.as_ref(),
-                )
-                .await;
-            let result = match outcome {
-                Ok(usage) => Ok(RunResult {
-                    session_id: run.session_id.clone(),
-                    run_id: run_id.clone(),
-                    status: RunStatus::Completed,
-                    usage,
-                }),
-                Err(RuntimeError::Paused) => Ok(RunResult {
-                    session_id: run.session_id.clone(),
-                    run_id: run_id.clone(),
-                    status: RunStatus::Paused,
-                    usage: Usage::default(),
-                }),
-                Err(error) => {
-                    self.settle_unfinished_calls(
+            let mut interrupted = false;
+            for call in self.store.list_unfinished_tool_calls(run_id).await? {
+                if call.status == ToolCallStatus::Running
+                    || (run.status != RunStatus::Paused && !call.retry_safe)
+                {
+                    if call.status == ToolCallStatus::Pending {
+                        let event = self.event(&run.session_id, run_id, EventKind::ToolCallRunning);
+                        execution.claim_tool_call(&call.id, event).await?;
+                    }
+                    self.settle_interrupted_call(
                         execution.as_ref(),
                         &run.session_id,
                         run_id,
                         &plan,
-                        true,
+                        &call,
                     )
                     .await?;
+                    interrupted = true;
+                    continue;
+                }
+                let pending = PendingCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    raw: String::new(),
+                    arguments: Some(call.arguments.clone()),
+                };
+                self.execute_tool(
+                    execution.as_ref(),
+                    &run.session_id,
+                    run_id,
+                    &plan,
+                    pending,
+                    Some(call),
+                    None,
+                    &work_cancellation,
+                    lost.as_ref(),
+                )
+                .await?;
+            }
+            if run.status == RunStatus::Paused
+                && let Some(checkpoint) = &run.checkpoint
+                && let Some(request) = request_from_checkpoint(&run.session_id, checkpoint)
+            {
+                let usage = checkpoint
+                    .get("usage")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                if committed_turn == Some(false) {
                     let event = self.run_settled_event(
                         &run.session_id,
                         run_id,
-                        RunStatus::Failed,
-                        &Usage::default(),
+                        RunStatus::Completed,
+                        &usage,
                         run.created_at,
                     );
-                    execution
-                        .settle_run(
-                            RunStatus::Failed,
-                            Some(error.to_string()),
-                            Usage::default(),
-                            event.clone(),
+                    match execution
+                        .settle_run(RunStatus::Completed, None, usage.clone(), event.clone())
+                        .await
+                    {
+                        Ok(()) => {
+                            self.observer.emit(&event);
+                            plan.release();
+                            return Ok(RunResult {
+                                session_id: run.session_id,
+                                run_id: run_id.clone(),
+                                status: RunStatus::Completed,
+                                usage,
+                            });
+                        }
+                        Err(StoreError::PendingInput) => {
+                            self.claim_input(execution.as_ref(), InboxKind::Steer)
+                                .await?;
+                            self.claim_input(execution.as_ref(), InboxKind::FollowUp)
+                                .await?;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                self.emit_durable(
+                    execution.as_ref(),
+                    &run.session_id,
+                    run_id,
+                    &plan,
+                    EventKind::TurnCompleted,
+                )
+                .await?;
+                let outcome = self
+                    .run_loop(
+                        execution.as_ref(),
+                        run_id,
+                        &run.session_id,
+                        &request,
+                        &plan,
+                        &work_cancellation,
+                        false,
+                        usage,
+                        lost.as_ref(),
+                    )
+                    .await;
+                let result = match outcome {
+                    Ok(usage) => Ok(RunResult {
+                        session_id: run.session_id.clone(),
+                        run_id: run_id.clone(),
+                        status: RunStatus::Completed,
+                        usage,
+                    }),
+                    Err(RuntimeError::Paused) => Ok(RunResult {
+                        session_id: run.session_id.clone(),
+                        run_id: run_id.clone(),
+                        status: RunStatus::Paused,
+                        usage: Usage::default(),
+                    }),
+                    Err(error) => {
+                        self.settle_unfinished_calls(
+                            execution.as_ref(),
+                            &run.session_id,
+                            run_id,
+                            &plan,
+                            true,
                         )
                         .await?;
-                    self.observer.emit(&event);
-                    Err(error)
-                }
+                        let event = self.run_settled_event(
+                            &run.session_id,
+                            run_id,
+                            RunStatus::Failed,
+                            &Usage::default(),
+                            run.created_at,
+                        );
+                        execution
+                            .settle_run(
+                                RunStatus::Failed,
+                                Some(error.to_string()),
+                                Usage::default(),
+                                event.clone(),
+                            )
+                            .await?;
+                        self.observer.emit(&event);
+                        Err(error)
+                    }
+                };
+                plan.release();
+                return result;
+            }
+            let status = if interrupted || run.status != RunStatus::Paused {
+                RunStatus::Interrupted
+            } else {
+                RunStatus::Completed
             };
+            let event =
+                self.run_settled_event(&run.session_id, run_id, status, &run.usage, run.created_at);
+            execution
+                .settle_run(status, None, run.usage.clone(), event.clone())
+                .await?;
+            self.observer.emit(&event);
             plan.release();
-            return result;
-        }
-        let status = if interrupted || run.status != RunStatus::Paused {
-            RunStatus::Interrupted
-        } else {
-            RunStatus::Completed
+            Ok(RunResult {
+                session_id: run.session_id,
+                run_id: run_id.clone(),
+                status,
+                usage: run.usage,
+            })
         };
-        let event =
-            self.run_settled_event(&run.session_id, run_id, status, &run.usage, run.created_at);
-        execution
-            .settle_run(status, None, run.usage.clone(), event.clone())
-            .await?;
-        self.observer.emit(&event);
-        plan.release();
-        Ok(RunResult {
-            session_id: run.session_id,
-            run_id: run_id.clone(),
-            status,
-            usage: run.usage,
-        })
+        tokio::pin!(resumed_work);
+        let result = tokio::select! {
+            biased;
+            update = signal.changed() => match update {
+                Ok(()) if *signal.borrow_and_update() => {
+                    cancellation.cancel();
+                    Err(RuntimeError::LeaseLost)
+                }
+                Ok(()) | Err(_) => resumed_work.as_mut().await,
+            },
+            result = &mut resumed_work => result,
+        };
+        drop(heartbeat);
+        result
     }
 
     /// Reclaims expired unfinished runs. Live leases are left to their owners.
@@ -999,7 +1140,8 @@ impl Orchestrator {
                     let estimated =
                         serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len() / 4);
                     #[allow(clippy::cast_precision_loss)]
-                    if model.context_limit > 0
+                    if snapshot.messages.len() > self.compaction.keep_tail_messages
+                        && model.context_limit > 0
                         && (estimated as f64)
                             >= (model.context_limit as f64 * self.compaction.trigger_ratio)
                     {
@@ -1010,6 +1152,8 @@ impl Orchestrator {
                             &snapshot,
                             plan,
                             Arc::clone(&streamer),
+                            false,
+                            cancellation,
                             lease_lost,
                         )
                         .await?;
@@ -1275,6 +1419,8 @@ impl Orchestrator {
                             &snapshot,
                             plan,
                             Arc::clone(&streamer),
+                            true,
+                            cancellation,
                             lease_lost,
                         )
                         .await?;
@@ -1294,7 +1440,7 @@ impl Orchestrator {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn compact(
         &self,
         execution: &dyn ExecutionStore,
@@ -1303,6 +1449,8 @@ impl Orchestrator {
         snapshot: &TurnSnapshot,
         plan: &RunPlan,
         streamer: Arc<dyn Streamer>,
+        overflow: bool,
+        cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<(), RuntimeError> {
         let run = self
@@ -1311,15 +1459,46 @@ impl Orchestrator {
             .await?
             .ok_or(StoreError::NotFound)?;
         let messages = &snapshot.messages;
-        let tail_start = if messages.len() <= self.compaction.keep_tail_messages {
-            messages.len()
+        let context_limit = if let Some(provider) = plan
+            .providers
+            .iter()
+            .find(|provider| provider.info().id == snapshot.selection.provider_id)
+        {
+            provider
+                .models()
+                .await?
+                .into_iter()
+                .find(|model| model.id == snapshot.selection.model_id)
+                .map_or(0, |model| model.context_limit)
         } else {
-            messages.len() - self.compaction.keep_tail_messages
+            0
         };
-        let summary_range = messages
-            .first()
-            .zip(messages.get(tail_start.saturating_sub(1)))
-            .map(|(first, last)| (first.id.clone(), last.id.clone()));
+        let budget_chars = usize::try_from(context_limit)
+            .ok()
+            .filter(|limit| *limit > 0)
+            .unwrap_or(2048)
+            .min(4096);
+        let mut tail_start = messages
+            .len()
+            .saturating_sub(self.compaction.keep_tail_messages);
+        if overflow && !messages.is_empty() {
+            tail_start = tail_start.max(1);
+            while tail_start < messages.len()
+                && serde_json::to_vec(&messages[tail_start..])
+                    .map_or(usize::MAX, |bytes| bytes.len())
+                    > budget_chars
+            {
+                tail_start += 1;
+            }
+        }
+        let summary_range = if tail_start == 0 {
+            None
+        } else {
+            messages
+                .first()
+                .zip(messages.get(tail_start - 1))
+                .map(|(first, last)| (first.id.clone(), last.id.clone()))
+        };
         let epoch = ContextEpoch {
             id: EpochId::new(),
             session_id: session_id.clone(),
@@ -1330,7 +1509,12 @@ impl Orchestrator {
             tail_start_message_id: messages.get(tail_start).map(|message| message.id.clone()),
             provider_id: snapshot.selection.provider_id.clone(),
             model_id: snapshot.selection.model_id.clone(),
-            reason: "context_overflow".into(),
+            reason: if overflow {
+                "context_overflow"
+            } else {
+                "proactive"
+            }
+            .into(),
             next_policy: None,
         };
         ensure_lease(lease_lost)?;
@@ -1343,7 +1527,18 @@ impl Orchestrator {
             EventKind::ContextEpochStarted,
         )
         .await?;
-        let summary_prompt = "Summarize the earlier conversation for continuing this task. Preserve user instructions, decisions, tool results, and unresolved work. Be concise.";
+        let summary_prompt =
+            "Summarize this context for continuation. Preserve instructions and unresolved work.";
+        let raw = serde_json::to_string(&messages[..tail_start]).unwrap_or_default();
+        let excerpt: String = raw
+            .chars()
+            .rev()
+            .take(budget_chars)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let summary_input = user_message(session_id.clone(), excerpt, self.clock.now());
         let request = ModelRequest {
             identity: RequestIdentity {
                 session_id: session_id.clone(),
@@ -1352,26 +1547,61 @@ impl Orchestrator {
             },
             selection: snapshot.selection.clone(),
             system: Some(summary_prompt.into()),
-            messages: messages[..tail_start].to_vec(),
+            messages: vec![summary_input],
             tools: Vec::new(),
             temperature: None,
             max_tokens: Some(1024),
             tool_choice: None,
         };
-        let mut stream = streamer.stream(request).await?;
+        let summary_started = self.clock.now();
+        let observe_summary = |status: &str| {
+            let mut observed = self.event(
+                session_id,
+                run_id,
+                EventKind::Custom {
+                    name: "model_call".into(),
+                },
+            );
+            observed.payload = json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,
+                "status":status,"input_tokens":0,"output_tokens":0,
+                "latency_ms":(self.clock.now()-summary_started).whole_milliseconds(),"purpose":"compaction"});
+            self.observer.model_completed(&observed);
+        };
+        let mut stream = tokio::select! {
+            () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
+            result = streamer.stream(request) => match result {
+                Ok(stream) => stream,
+                Err(error) => { observe_summary("error"); return Err(error.into()); }
+            },
+        };
         let mut text = String::new();
         let mut completed = false;
-        while let Some(delta) = stream.next().await {
+        loop {
+            let delta = tokio::select! {
+                () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
+                result = stream.next() => result,
+            };
+            let Some(delta) = delta else {
+                break;
+            };
             match delta {
                 StreamDelta::TextDelta(fragment) => text.push_str(&fragment),
                 StreamDelta::Completed => {
                     completed = true;
                     break;
                 }
-                StreamDelta::Error(error) => return Err(error.into()),
+                StreamDelta::Error(error) => {
+                    observe_summary("error");
+                    return Err(error.into());
+                }
                 _ => {}
             }
         }
+        if cancellation.is_cancelled() {
+            observe_summary("error");
+            return Err(RuntimeError::Interrupted);
+        }
+        observe_summary(if completed { "ok" } else { "error" });
         if !completed || text.is_empty() {
             return Err(invalid_provider("compaction summary was empty").into());
         }
@@ -1391,6 +1621,9 @@ impl Orchestrator {
                 content: ContentBlock::Text { text },
             }],
         };
+        if cancellation.is_cancelled() {
+            return Err(RuntimeError::Interrupted);
+        }
         ensure_lease(lease_lost)?;
         execution.finish_epoch(&epoch.id, summary).await?;
         self.emit_durable(
