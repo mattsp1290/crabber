@@ -140,6 +140,8 @@ pub enum ExportError {
     },
     #[error("one observation exceeds the configured payload limit")]
     PayloadTooLarge,
+    #[error("metrics intake reported {0} series error(s)")]
+    MetricIntakeErrors(usize),
 }
 
 /// The export queue drops new observations on overflow and never waits in `emit`.
@@ -475,7 +477,18 @@ fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
         }
         _ => (),
     }
-    values.into_iter().map(|(metric,value)| json!({"metric":metric,"type":1,"points":[{"timestamp":e.time_ns/1_000_000_000,"value":value}],"tags":tags(c,e)})).collect()
+    values
+        .into_iter()
+        .map(|(metric, value)| {
+            let gauge = metric.ends_with("_ms");
+            let mut item = json!({"metric":metric,"type":if gauge {3} else {1},
+            "points":[{"timestamp":e.time_ns/1_000_000_000,"value":value}],"tags":tags(c,e)});
+            if !gauge {
+                item["interval"] = json!(1);
+            }
+            item
+        })
+        .collect()
 }
 fn log(c: &DatadogConfig, e: &SafeEvent) -> Option<Value> {
     let (message, status) = match e.kind {
@@ -592,6 +605,13 @@ async fn post(
                     if url.contains("llm-obs") && response.status().as_u16() != 202 {
                         return Err(rejected(response, &url).await);
                     }
+                    if url.contains("/series") {
+                        let body = response.json::<Value>().await.unwrap_or(Value::Null);
+                        let errors = body["errors"].as_array().map_or(0, Vec::len);
+                        if errors > 0 {
+                            return Err(ExportError::MetricIntakeErrors(errors));
+                        }
+                    }
                     continue 'part;
                 }
                 Ok(response) if response.status().as_u16() == 413 => {
@@ -630,11 +650,11 @@ async fn export(
     let dropped_count = dropped.swap(0, Ordering::Relaxed);
     let mut metrics = metrics;
     if !batch.is_empty() {
-        metrics.push(json!({"metric":"crabber.export.batches","type":1,"points":[{"timestamp":time_now(),"value":1}],
+        metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
             "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
     }
     if dropped_count > 0 {
-        metrics.push(json!({"metric":"crabber.export.dropped","type":1,"points":[{"timestamp":time_now(),"value":dropped_count}],"tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
+        metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],"tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
     }
     if !spans.is_empty() {
         post(client,config,format!("{}/api/intake/llm-obs/v1/trace/spans",config.api_origin()),json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}})).await?;
@@ -894,6 +914,20 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|s| s["metric"] == "crabber.model.tokens.input")
+        );
+        assert!(
+            metrics
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["type"] == 3 || s["interval"] == 1)
+        );
+        assert!(
+            metrics
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["metric"] == "crabber.model.latency_ms" && s["type"] == 3)
         );
         assert!(metrics.as_array().unwrap().iter().all(|s| {
             s["tags"]

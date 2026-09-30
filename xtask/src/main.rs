@@ -159,12 +159,26 @@ fn verify_datadog() {
                 ("query", format!("sum:crabber.run.count{{verify:{marker}}}")),
             ])
             .send();
-        if let Ok(response) = metric_response
-            && response.status().is_success()
-            && let Ok(body) = response.json::<serde_json::Value>()
-        {
-            metrics = body["series"].as_array().is_some_and(|v| !v.is_empty());
+        let mut metric_query_http_status = 0;
+        let mut metric_query_status = "transport_error";
+        let mut metric_series_count = 0;
+        if let Ok(response) = metric_response {
+            metric_query_http_status = response.status().as_u16();
+            if let Ok(body) = response.json::<serde_json::Value>() {
+                metric_query_status = match body["status"].as_str() {
+                    Some("ok") => "ok",
+                    Some("error") => "error",
+                    _ => "unknown",
+                };
+                metric_series_count = body["series"].as_array().map_or(0, Vec::len);
+                metrics = metric_query_http_status == 200
+                    && metric_query_status == "ok"
+                    && metric_series_count > 0;
+            }
         }
+        println!(
+            "metric_query_http_status={metric_query_http_status} metric_query_status={metric_query_status} metric_series_count={metric_series_count}"
+        );
         let log_response = client.post(format!("{origin}/api/v2/logs/events/search"))
             .header("DD-API-KEY", &api_key).header("DD-APPLICATION-KEY", &application_key)
             .json(&serde_json::json!({"filter":{"query":format!("@verify_marker:{marker}"),"from":"now-15m","to":"now"},"page":{"limit":10}})).send();
