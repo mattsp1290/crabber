@@ -10,7 +10,7 @@ use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selectio
 use crabber_session::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -54,7 +54,7 @@ enum Kind {
 struct TestExtension {
     kind: Kind,
     calls: Arc<AtomicUsize>,
-    events: Arc<AtomicUsize>,
+    events: Arc<Mutex<Vec<(String, Value)>>>,
     errors: Arc<AtomicUsize>,
 }
 #[async_trait]
@@ -68,6 +68,7 @@ impl Extension for TestExtension {
     fn config_hash(&self) -> String {
         String::new()
     }
+    #[allow(clippy::too_many_lines)]
     async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
         if !matches!(self.kind, Kind::Model) {
             r.tool(Arc::new(ToolDefinition{info:ToolInfo{name:"shell".into(),description:"test".into(),parameters:json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),retry_safe:true,required_permissions:vec![]},executor:Arc::new(CounterTool{calls:Arc::clone(&self.calls),fail:matches!(self.kind,Kind::Lifecycle)})}));
@@ -92,10 +93,10 @@ impl Extension for TestExtension {
                         point,
                         0,
                         format!("observe-{point}"),
-                        Arc::new(move |_| {
+                        Arc::new(move |value| {
                             let observed = Arc::clone(&observed);
                             Box::pin(async move {
-                                observed.fetch_add(1, Ordering::SeqCst);
+                                observed.lock().unwrap().push((point.to_owned(), value));
                                 Ok(Value::Null)
                             })
                         }),
@@ -117,6 +118,22 @@ impl Extension for TestExtension {
                 );
             }
             Kind::Model => {
+                let observed = Arc::clone(&self.events);
+                r.on_notify(
+                    RunSettled::ID,
+                    0,
+                    "failed-run-settled",
+                    Arc::new(move |value| {
+                        let observed = Arc::clone(&observed);
+                        Box::pin(async move {
+                            observed
+                                .lock()
+                                .unwrap()
+                                .push((RunSettled::ID.to_owned(), value));
+                            Ok(Value::Null)
+                        })
+                    }),
+                );
                 r.on_around(
                     ModelStream::ID,
                     0,
@@ -197,14 +214,14 @@ async fn harness(
     FakeProvider,
     Orchestrator,
     Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<(String, Value)>>>,
     Arc<AtomicUsize>,
 ) {
     let store = Arc::new(MemoryStore::new());
     let fake = FakeProvider::scripted(scripts);
     let registry = Registry::new();
     let calls = Arc::new(AtomicUsize::new(0));
-    let events = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::new()));
     let errors = Arc::new(AtomicUsize::new(0));
     registry
         .mount(
@@ -267,7 +284,37 @@ async fn error_result_is_redacted_and_lifecycle_points_fire() {
     let session = run.session_id().clone();
     run.done().await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(events.load(Ordering::SeqCst), 3);
+    let observed = events.lock().unwrap().clone();
+    assert_eq!(observed.len(), 3);
+    let started = &observed
+        .iter()
+        .find(|(point, _)| point == ToolStarted::ID)
+        .unwrap()
+        .1;
+    let settled = &observed
+        .iter()
+        .find(|(point, _)| point == ToolSettled::ID)
+        .unwrap()
+        .1;
+    let run_settled = &observed
+        .iter()
+        .find(|(point, _)| point == RunSettled::ID)
+        .unwrap()
+        .1;
+    let call_id = started["payload"]["call_id"].as_str().unwrap();
+    assert_eq!(started["correlation"], call_id);
+    assert_eq!(started["payload"]["name"], "shell");
+    assert_eq!(started["payload"]["status"], "running");
+    assert_eq!(settled["payload"]["call_id"], call_id);
+    assert_eq!(settled["correlation"], call_id);
+    assert_eq!(settled["payload"]["status"], "failed");
+    assert_eq!(settled["payload"]["is_error"], true);
+    assert_eq!(run_settled["payload"]["status"], "completed");
+    assert_eq!(
+        run_settled["payload"]["usage"],
+        json!({"input_tokens":0,"output_tokens":0})
+    );
+    assert_eq!(run_settled["correlation"], run_settled["run_id"]);
     let stored = message_json(&store.list_messages(&session, None).await.unwrap());
     assert!(stored.contains("[REDACTED]") && !stored.contains("secret-token"));
     let next = message_json(&fake.requests()[1].messages);
@@ -275,7 +322,7 @@ async fn error_result_is_redacted_and_lifecycle_points_fire() {
 }
 #[tokio::test]
 async fn model_controls_context_suffix_and_request_error_dispatch() {
-    let (_store, fake, runtime, _, _, errors) = harness(
+    let (_store, fake, runtime, _, events, errors) = harness(
         Kind::Model,
         vec![vec![StreamDelta::Error(ProviderError {
             kind: ProviderErrorKind::Server,
@@ -287,6 +334,18 @@ async fn model_controls_context_suffix_and_request_error_dispatch() {
     let run = runtime.start(request()).await.unwrap();
     assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
     assert_eq!(errors.load(Ordering::SeqCst), 1);
+    let observed = events.lock().unwrap();
+    let run_settled = &observed
+        .iter()
+        .find(|(point, _)| point == RunSettled::ID)
+        .unwrap()
+        .1;
+    assert_eq!(run_settled["payload"]["status"], "failed");
+    assert_eq!(
+        run_settled["payload"]["usage"],
+        json!({"input_tokens":0,"output_tokens":0})
+    );
+    assert_eq!(run_settled["correlation"], run_settled["run_id"]);
     let request = &fake.requests()[0];
     assert_eq!(request.selection.provider_id, "fake");
     assert_eq!(request.temperature, Some(0.4));

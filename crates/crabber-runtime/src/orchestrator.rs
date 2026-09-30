@@ -499,7 +499,12 @@ impl Orchestrator {
                 usage,
             }),
             Err(error) => {
-                let settled = self.event(&session_id, &run_id, EventKind::RunSettled);
+                let settled = self.run_settled_event(
+                    &session_id,
+                    &run_id,
+                    RunStatus::Failed,
+                    &Usage::default(),
+                );
                 if execution
                     .settle_run(
                         RunStatus::Failed,
@@ -591,17 +596,13 @@ impl Orchestrator {
             .await?;
             if !had_tools && claimed == 0 {
                 ensure_lease(lease_lost)?;
+                let settled =
+                    self.run_settled_event(session_id, run_id, RunStatus::Completed, &usage);
                 match execution
-                    .settle_run(
-                        RunStatus::Completed,
-                        None,
-                        usage.clone(),
-                        self.event(session_id, run_id, EventKind::RunSettled),
-                    )
+                    .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
                     .await
                 {
                     Ok(()) => {
-                        let settled = self.event(session_id, run_id, EventKind::RunSettled);
                         self.observer.emit(&settled);
                         let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
                         plan.dispatcher
@@ -706,6 +707,19 @@ impl Orchestrator {
             live_only: false,
             created_at: self.clock.now(),
         }
+    }
+
+    fn run_settled_event(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        status: RunStatus,
+        usage: &Usage,
+    ) -> EventRecord {
+        let mut event = self.event(session_id, run_id, EventKind::RunSettled);
+        event.payload = json!({"status": status, "usage": usage});
+        event.correlation = Some(run_id.to_string());
+        event
     }
 
     async fn emit_durable(
@@ -1051,7 +1065,10 @@ impl Orchestrator {
             Err(format!("unknown tool: {}", call.name))
         };
         ensure_lease(lease_lost)?;
-        let pending = self.event(session_id, run_id, EventKind::ToolCallPending);
+        let tool_name = call.name.clone();
+        let mut pending = self.event(session_id, run_id, EventKind::ToolCallPending);
+        pending.payload = json!({"call_id": call.id, "name": tool_name, "status": "pending"});
+        pending.correlation = Some(call.id.to_string());
         execution
             .create_tool_call(
                 ToolCallRecord {
@@ -1070,7 +1087,9 @@ impl Orchestrator {
         plan.dispatcher
             .notify::<EventPublished>(serde_json::to_value(&pending).unwrap_or(Value::Null))
             .await;
-        let running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+        let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+        running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
+        running.correlation = Some(call.id.to_string());
         execution.claim_tool_call(&call.id, running.clone()).await?;
         self.observer.emit(&running);
         let running_projection = serde_json::to_value(&running).unwrap_or(Value::Null);
@@ -1150,7 +1169,10 @@ impl Orchestrator {
             }],
             created_at: self.clock.now(),
         };
-        let settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
+        let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
+        settled.payload =
+            json!({"call_id": call.id, "name": tool_name, "status": status, "is_error": is_error});
+        settled.correlation = Some(call.id.to_string());
         execution
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;

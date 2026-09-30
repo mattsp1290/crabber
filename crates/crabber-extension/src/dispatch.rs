@@ -6,7 +6,10 @@ use serde_json::Value;
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tokio_util::sync::CancellationToken;
 
@@ -187,6 +190,7 @@ impl Drop for Inflight {
 #[derive(Clone)]
 pub struct Next {
     shared: Arc<NextShared>,
+    callback_token: u64,
     invoke: Callback,
 }
 impl Next {
@@ -195,6 +199,12 @@ impl Next {
             let mut state = self.shared.state.lock().unwrap();
             if !state.active {
                 return Err(ExtensionError::NextExpired);
+            }
+            if !ACTIVE_NEXT
+                .try_with(|token| *token == self.callback_token)
+                .unwrap_or(false)
+            {
+                return Err(ExtensionError::NextOutsideCallback);
             }
             if state.calls > 0 {
                 state.calls += 1;
@@ -238,8 +248,10 @@ fn around_at(
         let _revoke = RevokeOnDrop(Arc::clone(&shared));
         let next_handlers = Arc::clone(&handlers);
         let next_terminal = Arc::clone(&terminal);
+        let callback_token = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let next = Next {
             shared: Arc::clone(&shared),
+            callback_token,
             invoke: Arc::new(move |v| {
                 around_at(
                     Arc::clone(&next_handlers),
@@ -249,7 +261,9 @@ fn around_at(
                 )
             }),
         };
-        let result = with_mount(mount_id, callback(value, next)).await;
+        let result = ACTIVE_NEXT
+            .scope(callback_token, with_mount(mount_id, callback(value, next)))
+            .await;
         shared.revoke();
         loop {
             let notified = shared.done.notified();
@@ -268,6 +282,8 @@ fn around_at(
     })
 }
 
+static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+tokio::task_local! { static ACTIVE_NEXT: u64; }
 tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
 pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {
     let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
@@ -441,6 +457,45 @@ mod tests {
         );
         gate.notify_one();
         assert_eq!(receiver.await.unwrap(), Err(ExtensionError::NextExpired));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn detached_next_before_callback_returns_cannot_enter_terminal() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let terminal: Callback = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |value| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(value)
+                })
+            })
+        };
+        let callback: AroundCallback = Arc::new(|_, next| {
+            Box::pin(async move {
+                let detached = tokio::spawn(async move { next.call(Value::Null).await });
+                assert_eq!(
+                    detached.await.unwrap(),
+                    Err(ExtensionError::NextOutsideCallback)
+                );
+                Ok(Value::Null)
+            })
+        });
+        let dispatcher = Dispatcher::new(vec![handler(
+            ToolExecute::ID,
+            Mode::Around,
+            0,
+            "detach-before-return",
+            HandlerFn::Around(callback),
+        )]);
+        assert_eq!(
+            dispatcher
+                .around::<ToolExecute>(Value::Null, terminal)
+                .await,
+            Err(ExtensionError::NextNotCalled)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

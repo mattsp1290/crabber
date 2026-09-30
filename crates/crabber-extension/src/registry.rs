@@ -178,9 +178,13 @@ struct RegistryInner {
     mounts: Vec<Arc<Mount>>,
     next_id: u64,
 }
+#[cfg(test)]
+type AcquireHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct Registry {
     inner: Arc<Mutex<RegistryInner>>,
+    #[cfg(test)]
+    acquire_hook: Arc<Mutex<Option<AcquireHook>>>,
 }
 impl Registry {
     #[must_use]
@@ -260,12 +264,18 @@ impl Registry {
     #[must_use]
     pub fn acquire(&self, session: &SessionId) -> RunPlan {
         let inner = self.inner.lock().unwrap();
-        let mut mounts = inner
-            .mounts
-            .iter()
-            .filter(|m| *m.active.lock().unwrap() && m.scope.applies(session))
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut mounts = Vec::new();
+        for mount in &inner.mounts {
+            let active = mount.active.lock().unwrap();
+            if *active && mount.scope.applies(session) {
+                #[cfg(test)]
+                if let Some(hook) = self.acquire_hook.lock().unwrap().as_ref() {
+                    hook();
+                }
+                mount.leases.fetch_add(1, Ordering::SeqCst);
+                mounts.push(Arc::clone(mount));
+            }
+        }
         mounts.sort_by_key(|m| (m.scope.rank(), m.seq));
         let mut tools = vec![];
         let mut prompts = vec![];
@@ -275,7 +285,6 @@ impl Registry {
         let mut providers = vec![];
         let mut components = vec![];
         for mount in &mounts {
-            mount.leases.fetch_add(1, Ordering::SeqCst);
             let r = mount.registrar.lock().unwrap();
             tools.extend(r.tools.iter().cloned());
             for prompt in &r.prompts {
@@ -532,6 +541,64 @@ mod tests {
         plan.release();
         task.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn acquire_lease_is_atomic_with_close_deactivation() {
+        let registry = Registry::new();
+        let shutdown = Arc::new(AtomicUsize::new(0));
+        let handle = registry
+            .mount(
+                Arc::new(ShutdownExtension(Arc::clone(&shutdown))),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+        let resume = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        *registry.acquire_hook.lock().unwrap() = Some(Arc::new({
+            let resume = Arc::clone(&resume);
+            move || {
+                observed_tx.send(()).unwrap();
+                let (lock, ready) = &*resume;
+                let mut resumed = lock.lock().unwrap();
+                while !*resumed {
+                    resumed = ready.wait(resumed).unwrap();
+                }
+            }
+        }));
+        let acquiring = tokio::task::spawn_blocking({
+            let registry = registry.clone();
+            move || registry.acquire(&SessionId::new())
+        });
+        observed_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        let closing = tokio::task::spawn_blocking({
+            let handle = handle.clone();
+            let runtime = tokio::runtime::Handle::current();
+            move || runtime.block_on(handle.close())
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !*handle.mount.closing.lock().unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (lock, ready) = &*resume;
+        *lock.lock().unwrap() = true;
+        ready.notify_one();
+        let plan = acquiring.await.unwrap();
+        assert!(!closing.is_finished());
+        assert_eq!(shutdown.load(Ordering::SeqCst), 0);
+        plan.release();
+        tokio::time::timeout(std::time::Duration::from_secs(1), closing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(shutdown.load(Ordering::SeqCst), 1);
     }
     struct ConfigExtension(&'static str);
     #[async_trait]

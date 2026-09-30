@@ -63,6 +63,8 @@ pub enum ExtensionError {
     NextCalledTwice,
     #[error("around handler next expired")]
     NextExpired,
+    #[error("around handler next called outside its callback")]
+    NextOutsideCallback,
     #[error("mount cannot close itself from its callback")]
     SelfClose,
     #[error("missing host capability: {0}")]
