@@ -917,6 +917,20 @@ impl Orchestrator {
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
         let model_started = self.clock.now();
+        let observe_model = |status: &str, usage: &Usage| {
+            let mut event = self.event(
+                session_id,
+                run_id,
+                EventKind::Custom {
+                    name: "model_call".into(),
+                },
+            );
+            event.payload = json!({"provider": snapshot.selection.provider_id,
+                "model": snapshot.selection.model_id, "status": status,
+                "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                "latency_ms": (self.clock.now() - model_started).whole_milliseconds()});
+            self.observer.model_completed(&event);
+        };
         let mut completed = false;
         while let Some(delta) = stream.next().await {
             match delta {
@@ -940,17 +954,17 @@ impl Orchestrator {
                     arguments: None,
                 }),
                 StreamDelta::ToolCallArgsDelta { call_id, text } => {
-                    let call = calls
-                        .iter_mut()
-                        .find(|call| call.id == call_id)
-                        .ok_or_else(|| invalid_provider("tool arguments without call start"))?;
+                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
+                        observe_model("error", &usage);
+                        return Err(invalid_provider("tool arguments without call start").into());
+                    };
                     call.raw.push_str(&text);
                 }
                 StreamDelta::ToolCallDone { call_id } => {
-                    let call = calls
-                        .iter_mut()
-                        .find(|call| call.id == call_id)
-                        .ok_or_else(|| invalid_provider("tool completion without call start"))?;
+                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
+                        observe_model("error", &usage);
+                        return Err(invalid_provider("tool completion without call start").into());
+                    };
                     call.arguments = Some(
                         serde_json::from_str(&call.raw)
                             .unwrap_or_else(|_| Value::String(call.raw.clone())),
@@ -967,27 +981,22 @@ impl Orchestrator {
                     completed = true;
                     break;
                 }
-                StreamDelta::Error(error) => return Err(request_error(plan, error).await),
+                StreamDelta::Error(error) => {
+                    observe_model("error", &usage);
+                    return Err(request_error(plan, error).await);
+                }
             }
         }
-        let mut model_event = self.event(
-            session_id,
-            run_id,
-            EventKind::Custom {
-                name: "model_call".into(),
-            },
-        );
-        model_event.payload = json!({"provider": snapshot.selection.provider_id, "model": snapshot.selection.model_id,
-            "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-            "latency_ms": (self.clock.now() - model_started).whole_milliseconds()});
-        self.observer.model_completed(&model_event);
         if !completed {
+            observe_model("error", &usage);
             return Err(invalid_provider("model stream ended without completion").into());
         }
         if text.is_empty() && reasoning.is_empty() && calls.is_empty() && provider_state.is_empty()
         {
+            observe_model("error", &usage);
             return Err(invalid_provider("empty model response").into());
         }
+        observe_model("ok", &usage);
         let id = MessageId::new();
         let mut parts = Vec::new();
         if !text.is_empty() {

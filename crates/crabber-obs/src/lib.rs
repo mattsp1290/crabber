@@ -350,6 +350,7 @@ struct PendingBatch {
     events: Vec<SafeEvent>,
     stage: ExportStage,
     dropped_snapshot: Option<u64>,
+    unsent_parts: Vec<Value>,
 }
 impl Default for PendingBatch {
     fn default() -> Self {
@@ -357,6 +358,7 @@ impl Default for PendingBatch {
             events: Vec::new(),
             stage: ExportStage::Spans,
             dropped_snapshot: None,
+            unsent_parts: Vec::new(),
         }
     }
 }
@@ -642,13 +644,13 @@ async fn post(
     client: &reqwest::Client,
     config: &DatadogConfig,
     url: String,
-    body: Value,
+    parts: &mut Vec<Value>,
 ) -> Result<(), ExportError> {
-    let mut parts = vec![body];
-    'part: while let Some(body) = parts.pop() {
+    'part: while let Some(body) = parts.last().cloned() {
         let raw = body.to_string();
         if raw.len() > config.max_payload_bytes {
             let (first, second) = split_payload(&body).ok_or(ExportError::PayloadTooLarge)?;
+            parts.pop();
             parts.push(second);
             parts.push(first);
             continue;
@@ -684,11 +686,13 @@ async fn post(
                             return Err(ExportError::MetricIntakeErrors(errors));
                         }
                     }
+                    parts.pop();
                     continue 'part;
                 }
                 Ok(response) if response.status().as_u16() == 413 => {
                     let (first, second) =
                         split_payload(&body).ok_or(ExportError::PayloadTooLarge)?;
+                    parts.pop();
                     parts.push(second);
                     parts.push(first);
                     continue 'part;
@@ -716,59 +720,73 @@ async fn export(
     dropped: &AtomicU64,
 ) -> Result<(), ExportError> {
     if pending.stage == ExportStage::Spans {
-        let spans: Vec<_> = pending.events.iter().flat_map(spans).collect();
-        if !spans.is_empty() {
-            post(client,config,format!("{}/api/intake/llm-obs/v1/trace/spans",config.api_origin()),
-                json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}})).await?;
+        if pending.unsent_parts.is_empty() {
+            let spans: Vec<_> = pending.events.iter().flat_map(spans).collect();
+            if !spans.is_empty() {
+                pending.unsent_parts.push(json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}}));
+            }
         }
+        post(
+            client,
+            config,
+            format!("{}/api/intake/llm-obs/v1/trace/spans", config.api_origin()),
+            &mut pending.unsent_parts,
+        )
+        .await?;
         pending.stage = ExportStage::Metrics;
     }
     if pending.stage == ExportStage::Metrics {
-        let mut metrics: Vec<_> = pending
-            .events
-            .iter()
-            .flat_map(|e| series(config, e))
-            .collect();
         let dropped_count = *pending
             .dropped_snapshot
             .get_or_insert_with(|| dropped.load(Ordering::Relaxed));
-        if !pending.events.is_empty() {
-            metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
-                "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
+        if pending.unsent_parts.is_empty() {
+            let mut metrics: Vec<_> = pending
+                .events
+                .iter()
+                .flat_map(|e| series(config, e))
+                .collect();
+            if !pending.events.is_empty() {
+                metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
+                    "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
+            }
+            if dropped_count > 0 {
+                metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],
+                    "tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
+            }
+            if !metrics.is_empty() {
+                pending.unsent_parts.push(json!({"series":metrics}));
+            }
         }
-        if dropped_count > 0 {
-            metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],
-                "tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
-        }
-        if !metrics.is_empty() {
-            post(
-                client,
-                config,
-                format!("{}/api/v2/series", config.api_origin()),
-                json!({"series":metrics}),
-            )
-            .await?;
-        }
+        post(
+            client,
+            config,
+            format!("{}/api/v2/series", config.api_origin()),
+            &mut pending.unsent_parts,
+        )
+        .await?;
         if dropped_count > 0 {
             dropped.fetch_sub(dropped_count, Ordering::Relaxed);
         }
         pending.stage = ExportStage::Logs;
     }
     if pending.stage == ExportStage::Logs {
-        let logs: Vec<_> = pending
-            .events
-            .iter()
-            .filter_map(|e| log(config, e))
-            .collect();
-        if !logs.is_empty() {
-            post(
-                client,
-                config,
-                format!("{}/api/v2/logs", config.logs_origin()),
-                json!(logs),
-            )
-            .await?;
+        if pending.unsent_parts.is_empty() {
+            let logs: Vec<_> = pending
+                .events
+                .iter()
+                .filter_map(|e| log(config, e))
+                .collect();
+            if !logs.is_empty() {
+                pending.unsent_parts.push(json!(logs));
+            }
         }
+        post(
+            client,
+            config,
+            format!("{}/api/v2/logs", config.logs_origin()),
+            &mut pending.unsent_parts,
+        )
+        .await?;
         pending.events.clear();
         pending.stage = ExportStage::Spans;
         pending.dropped_snapshot = None;
@@ -1010,6 +1028,78 @@ mod tests {
                 .any(|l| l["message"] == "run settled")
         );
     }
+    #[tokio::test]
+    async fn retry_resumes_after_accepted_metric_chunk() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let recovered = Arc::new(AtomicBool::new(false));
+        let recovered_server = Arc::clone(&recovered);
+        let server = std::thread::spawn(move || {
+            let mut split_sent = false;
+            let mut accepted_first = false;
+            let mut accepted_metrics = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (headers, body) = read_request(&mut stream);
+                let response = if headers.contains("/api/v2/series") {
+                    let items = body["series"].as_array().unwrap();
+                    if !split_sent {
+                        assert_eq!(items.len(), 3);
+                        split_sent = true;
+                        b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+                    } else if !accepted_first {
+                        assert_eq!(items.len(), 1);
+                        accepted_first = true;
+                        accepted_metrics.extend(items.iter().cloned());
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .as_slice()
+                    } else if recovered_server.load(Ordering::SeqCst) {
+                        accepted_metrics.extend(items.iter().cloned());
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .as_slice()
+                    } else {
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+                    }
+                } else {
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .as_slice()
+                };
+                std::io::Write::write_all(&mut stream, response).unwrap();
+                if headers.contains("/api/v2/logs") {
+                    return accepted_metrics;
+                }
+            }
+        });
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        let observer = DatadogObserver::new(&c);
+        let session = SessionId::new();
+        let run = RunId::new();
+        observer.emit(&event(
+            EventKind::RunSettled,
+            &session,
+            &run,
+            json!({"status":"ok","duration_ms":3,"prompt":"PROMPT_SECRET"}),
+        ));
+        assert!(observer.flush().await.is_err());
+        recovered.store(true, Ordering::SeqCst);
+        observer.flush().await.unwrap();
+        let accepted_metrics = server.join().unwrap();
+        let mut names: Vec<_> = accepted_metrics
+            .iter()
+            .map(|item| item["metric"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "crabber.export.batches",
+                "crabber.run.count",
+                "crabber.run.duration_ms"
+            ]
+        );
+    }
     struct EchoTool;
     #[async_trait::async_trait]
     impl crabber_extension::ToolExecutor for EchoTool {
@@ -1112,6 +1202,12 @@ mod tests {
             .unwrap();
         assert_eq!(workflow["status"], "error");
         assert_eq!(workflow["parent_id"], agent["span_id"]);
+        let llm_statuses: Vec<_> = spans
+            .iter()
+            .filter(|s| s["meta"]["kind"] == "llm")
+            .map(|s| s["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(llm_statuses, ["ok", "error"]);
         for kind in ["llm", "tool"] {
             let child = spans.iter().find(|s| s["meta"]["kind"] == kind).unwrap();
             assert_eq!(child["parent_id"], workflow["span_id"]);
@@ -1136,6 +1232,89 @@ mod tests {
                 .iter()
                 .any(|l| l["message"] == "run settled" && l["status"] == "error")
         );
+    }
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Each provider terminal path is checked against a real exporter.
+    async fn invalid_model_streams_export_error_llm_spans() {
+        use crabber_extension::StaticPlanProvider;
+        use crabber_providers::{
+            FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta,
+        };
+        use crabber_runtime::{Orchestrator, Request};
+        use crabber_session::MemoryStore;
+        let cases = [
+            vec![StreamDelta::TextDelta("PROMPT_SECRET".into())],
+            vec![StreamDelta::Completed],
+            vec![StreamDelta::Error(ProviderError {
+                kind: ProviderErrorKind::Server,
+                message: "PROMPT_SECRET".into(),
+                retryable: false,
+            })],
+        ];
+        for deltas in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                for _ in 0..3 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    requests.push(read_request(&mut stream));
+                    std::io::Write::write_all(
+                        &mut stream,
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                }
+                requests
+            });
+            let mut c = config();
+            c.api_origin = Some(origin.clone());
+            c.logs_origin = Some(origin);
+            let observer = DatadogObserver::new(&c);
+            let runtime = Orchestrator::builder()
+                .store(Arc::new(MemoryStore::new()))
+                .resolver(Arc::new(FakeProvider::scripted(vec![deltas])))
+                .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
+                .observer(Arc::new(observer.clone()))
+                .build()
+                .unwrap();
+            let run = runtime
+                .start(Request {
+                    session_id: None,
+                    workspace_id: "test".into(),
+                    directory: ".".into(),
+                    title: "test".into(),
+                    text: "PROMPT_SECRET".into(),
+                    selection: Selection {
+                        provider_id: "fake".into(),
+                        model_id: "demo".into(),
+                    },
+                    system_prompt: None,
+                })
+                .await
+                .unwrap();
+            assert!(run.done().await.is_err());
+            observer.flush().await.unwrap();
+            let requests = server.join().unwrap();
+            let spans = requests[0].1["data"]["attributes"]["spans"]
+                .as_array()
+                .unwrap();
+            let workflow = spans
+                .iter()
+                .find(|s| s["meta"]["kind"] == "workflow")
+                .unwrap();
+            let llm = spans.iter().find(|s| s["meta"]["kind"] == "llm").unwrap();
+            assert_eq!(workflow["status"], "error");
+            assert_eq!(llm["status"], "error");
+            assert_eq!(llm["parent_id"], workflow["span_id"]);
+            assert!(
+                requests[1].1["series"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["metric"] == "crabber.model.calls")
+            );
+        }
     }
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // Mock server and payload assertions stay together.
