@@ -4,9 +4,9 @@ mod orchestrator;
 mod policy;
 
 pub use orchestrator::{
-    CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode, ModelStream, NoopObserver,
-    Observer, Orchestrator, OrchestratorBuilder, Request, RunHandle, RunResult, RuntimeError,
-    TurnSnapshot,
+    Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode, ModelStream,
+    NoopObserver, Observer, Orchestrator, OrchestratorBuilder, Request, RunHandle, RunResult,
+    RuntimeError, TurnSnapshot,
 };
 pub use policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,

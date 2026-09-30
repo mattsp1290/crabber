@@ -2,8 +2,11 @@
 
 mod agent;
 
-pub use agent::{Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
-pub use crabber_core::{EventKind, EventRecord, SessionId};
+pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
+pub use crabber_core::{
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
+    SessionId,
+};
 pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{PermissionDecision, RunResult, RuntimeError, StaticPolicy};

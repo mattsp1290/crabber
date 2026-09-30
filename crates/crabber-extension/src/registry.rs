@@ -381,17 +381,9 @@ fn canonical_hash(hash: &str) -> String {
         .map_or_else(|_| hash.to_owned(), |v| canonical_json(&v).to_string())
 }
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), canonical_json(v)))
-                .collect(),
-        ),
-        serde_json::Value::Array(a) => {
-            serde_json::Value::Array(a.iter().map(canonical_json).collect())
-        }
-        v => v.clone(),
-    }
+    let mut canonical = value.clone();
+    canonical.sort_all_objects();
+    canonical
 }
 #[async_trait]
 impl RunPlanProvider for Registry {

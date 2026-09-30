@@ -1,14 +1,20 @@
 //! PostgreSQL 14+ store. JSONB preserves the domain records while relational keys,
 //! ordering columns, and the active-run index enforce ownership across processes.
-use crate::{AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, Store, StoreError};
+use crate::{
+    AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
+    Store, StoreError,
+};
 use async_trait::async_trait;
 use crabber_core::{
-    ByteLimits, Clock, ContextEpoch, EpochId, EventCursor, EventRecord, Message, MessageId, Part,
-    PartKind, Run, RunFence, RunId, RunStatus, Session, SessionId, SystemClock, ToolCallId,
-    ToolCallRecord, ToolCallStatus, ToolResult, ToolResultStatus, Usage,
+    AdmissionKey, AdmissionReceipt, ByteLimits, Clock, ContextEpoch, EpochId, EventCursor,
+    EventRecord, Message, MessageId, Part, PartKind, Run, RunFence, RunId, RunStatus, Session,
+    SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult,
+    ToolResultStatus, Usage,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions, types::Json};
+use sqlx::{
+    PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions, types::Json,
+};
 use std::{collections::BTreeMap, sync::Arc};
 use time::OffsetDateTime;
 
@@ -170,10 +176,13 @@ async fn insert_event(
         .map_err(db)?;
     Ok(())
 }
-async fn messages(pool: &PgPool, id: &SessionId) -> Result<Vec<Message>, StoreError> {
+async fn messages(
+    connection: &mut PgConnection,
+    id: &SessionId,
+) -> Result<Vec<Message>, StoreError> {
     let rows = sqlx::query("SELECT data FROM messages WHERE session_id=$1 ORDER BY seq")
         .bind(&id.0)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(db)?;
     rows.into_iter()
@@ -181,13 +190,13 @@ async fn messages(pool: &PgPool, id: &SessionId) -> Result<Vec<Message>, StoreEr
         .collect()
 }
 async fn project(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     id: &SessionId,
     epoch: Option<EpochId>,
 ) -> Result<Vec<Message>, StoreError> {
     let exists = sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
         .bind(&id.0)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *connection)
         .await
         .map_err(db)?;
     if exists.is_none() {
@@ -199,7 +208,7 @@ async fn project(
         let row =
             sqlx::query("SELECT data FROM runs WHERE session_id=$1 ORDER BY seq DESC LIMIT 1")
                 .bind(&id.0)
-                .fetch_optional(pool)
+                .fetch_optional(&mut *connection)
                 .await
                 .map_err(db)?;
         row.map(|row| decode::<Run>(row.get("data")).map(|run| run.epoch_id))
@@ -208,7 +217,7 @@ async fn project(
     let selected = if let Some(epoch_id) = epoch_id {
         let row = sqlx::query("SELECT data FROM epochs WHERE id=$1")
             .bind(&epoch_id.0)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *connection)
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
@@ -222,7 +231,7 @@ async fn project(
     } else {
         None
     };
-    let all = messages(pool, id).await?;
+    let all = messages(connection, id).await?;
     let selected = if let Some(epoch) = selected.filter(|epoch| epoch.summary_message_id.is_some())
     {
         let summary_id = epoch.summary_message_id.as_ref().expect("checked");
@@ -259,6 +268,21 @@ async fn project(
         .collect())
 }
 
+async fn lookup_receipt(
+    connection: &mut PgConnection,
+    session: &SessionId,
+    key: &AdmissionKey,
+) -> Result<Option<AdmissionReceipt>, StoreError> {
+    sqlx::query("SELECT data FROM admission_receipts WHERE session_id=$1 AND admission_key=$2")
+        .bind(&session.0)
+        .bind(key.as_str())
+        .fetch_optional(connection)
+        .await
+        .map_err(db)?
+        .map(|row| decode(row.get("data")))
+        .transpose()
+}
+
 impl PostgresStore {
     /// Opens an already migrated dedicated database. The URL is never included in errors.
     /// # Errors
@@ -277,7 +301,7 @@ impl PostgresStore {
                 .ok_or(StoreError::Validation(
                     "unsupported PostgreSQL schema version".into(),
                 ))?;
-        if version != 1 {
+        if version != 2 {
             return Err(StoreError::Validation(
                 "unsupported PostgreSQL schema version".into(),
             ));
@@ -302,14 +326,20 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        for statement in include_str!("../migrations/0001_initial.sql")
-            .split(';')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
+        for statement in concat!(
+            include_str!("../migrations/0001_initial.sql"),
+            "\n",
+            include_str!("../migrations/0002_admission_receipts.sql")
+        )
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
         {
             sqlx::query(statement).execute(&mut *tx).await.map_err(db)?;
         }
-        tx.commit().await.map_err(db)
+        tx.commit().await.map_err(db)?;
+        pool.close().await;
+        Ok(())
     }
     /// Replaces the clock, primarily for deterministic lease tests.
     #[must_use]
@@ -322,26 +352,26 @@ impl PostgresStore {
         self.limits = limits;
         self
     }
-    async fn fenced(
+    async fn admission_transaction(
         &self,
-        fence: &RunFence,
-    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        session: &SessionId,
+    ) -> Result<Transaction<'_, Postgres>, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let run = load_run(&mut tx, &fence.run_id, true).await?;
-        if run.claim_token != fence.claim_token
-            || run.status.is_terminal()
-            || run.lease_until <= self.clock.now()
-        {
-            return Err(StoreError::Conflict);
-        }
-        Ok((tx, run))
+        // Serializes first and subsequent admissions without blocking unrelated sessions.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&session.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        Ok(tx)
     }
-}
-
-#[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
-#[async_trait]
-impl Store for PostgresStore {
-    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
+    #[allow(clippy::too_many_lines)] // One atomic admission transaction.
+    async fn admit_transaction(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: AdmitRequest,
+        allow_create: bool,
+    ) -> Result<AdmitOutcome, StoreError> {
         let now = self.clock.now();
         let lease = time::Duration::try_from(request.lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
@@ -357,22 +387,15 @@ impl Store for PostgresStore {
                 "user message has wrong session".into(),
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        // Serialize admission for one session, including first admission. Other sessions proceed independently.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(&session_id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
         let existing = sqlx::query("SELECT data FROM sessions WHERE id=$1")
             .bind(&session_id.0)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(db)?;
         let had_session = existing.is_some();
         let session: Session = if let Some(row) = existing {
             decode(row.get("data"))?
-        } else if request.session_id.is_some() {
+        } else if request.session_id.is_some() && !allow_create {
             return Err(StoreError::NotFound);
         } else {
             Session {
@@ -388,7 +411,7 @@ impl Store for PostgresStore {
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )
         .bind(&session_id.0)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(db)?
         .is_some();
@@ -396,12 +419,12 @@ impl Store for PostgresStore {
             return Err(StoreError::Busy);
         }
         let prior_history = if had_session {
-            project(&self.pool, &session_id, None).await?
+            project(tx, &session_id, None).await?
         } else {
             Vec::new()
         };
         let previous = sqlx::query("SELECT e.data FROM runs r JOIN epochs e ON e.id = r.data->>'epoch_id' WHERE r.session_id=$1 ORDER BY r.seq DESC LIMIT 1")
-            .bind(&session_id.0).fetch_optional(&mut *tx).await.map_err(db)?;
+            .bind(&session_id.0).fetch_optional(&mut **tx).await.map_err(db)?;
         let previous: Option<ContextEpoch> =
             previous.map(|row| decode(row.get("data"))).transpose()?;
         let run_id = RunId::new();
@@ -450,24 +473,23 @@ impl Store for PostgresStore {
             sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
                 .bind(&session.id.0)
                 .bind(json(&session)?)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(db)?;
         }
         sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut *tx).await.map_err(db)?;
+            .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)
             .bind(&run.id.0)
             .bind(json(&epoch)?)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(db)?;
         let mut user = request.user_message;
         user.run_id = Some(run_id.clone());
-        insert_message(&mut tx, &run, &user).await?;
-        tx.commit().await.map_err(db)?;
+        insert_message(tx, &run, &user).await?;
         Ok(AdmitOutcome {
             session,
             run,
@@ -479,6 +501,107 @@ impl Store for PostgresStore {
             epoch: epoch_id,
             prior_history,
         })
+    }
+    async fn fenced(
+        &self,
+        fence: &RunFence,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let run = load_run(&mut tx, &fence.run_id, true).await?;
+        if run.claim_token != fence.claim_token
+            || run.status.is_terminal()
+            || run.lease_until <= self.clock.now()
+        {
+            return Err(StoreError::Conflict);
+        }
+        Ok((tx, run))
+    }
+}
+
+#[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
+#[async_trait]
+impl Store for PostgresStore {
+    async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
+        let session = request
+            .session_id
+            .as_ref()
+            .unwrap_or(&request.user_message.session_id);
+        let mut tx = self.admission_transaction(session).await?;
+        let admitted = self.admit_transaction(&mut tx, request, false).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(admitted)
+    }
+
+    async fn admit_keyed_run(
+        &self,
+        keyed: KeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        let request = &keyed.request;
+        let session = request.session_id.as_ref().ok_or_else(|| {
+            StoreError::Validation("keyed admission requires a stable session ID".into())
+        })?;
+        if request.user_message.session_id != *session
+            || request.user_message.run_id.is_some()
+            || request
+                .user_message
+                .parts
+                .iter()
+                .any(|part| part.message_id != request.user_message.id)
+        {
+            return Err(StoreError::Validation(
+                "invalid admission message identity".into(),
+            ));
+        }
+        let digest = keyed.semantic_digest()?;
+        let mut tx = self.admission_transaction(session).await?;
+        if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
+            .bind(&session.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+        {
+            let existing: Session = decode(row.get("data"))?;
+            if existing.workspace_id != request.workspace_id
+                || existing.directory != request.directory
+            {
+                return Err(StoreError::SessionIdentityMismatch);
+            }
+        }
+        if let Some(receipt) = lookup_receipt(&mut tx, session, &keyed.options.key).await? {
+            if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest
+            {
+                return Err(StoreError::AdmissionConflict);
+            }
+            tx.commit().await.map_err(db)?;
+            return Ok(KeyedAdmitOutcome::Replayed(receipt));
+        }
+        let session_id = session.clone();
+        let user_message_id = request.user_message.id.clone();
+        let admitted = self.admit_transaction(&mut tx, keyed.request, true).await?;
+        let receipt = AdmissionReceipt {
+            session_id,
+            run_id: admitted.run.id.clone(),
+            user_message_id,
+            fingerprint: keyed.options.fingerprint,
+            semantic_digest_version: 1,
+            semantic_digest: digest,
+        };
+        sqlx::query("INSERT INTO admission_receipts(session_id,admission_key,run_id,user_message_id,data) VALUES($1,$2,$3,$4,$5)")
+            .bind(&receipt.session_id.0).bind(keyed.options.key.as_str()).bind(&receipt.run_id.0).bind(&receipt.user_message_id.0).bind(json(&receipt)?)
+            .execute(&mut *tx).await.map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(KeyedAdmitOutcome::Started {
+            receipt,
+            admitted: Box::new(admitted),
+        })
+    }
+
+    async fn lookup_admission(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<AdmissionReceipt>, StoreError> {
+        lookup_receipt(&mut *self.pool.acquire().await.map_err(db)?, session, key).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         let (tx, _) = self.fenced(&fence).await?;
@@ -511,10 +634,10 @@ impl Store for PostgresStore {
         id: &SessionId,
         epoch: Option<EpochId>,
     ) -> Result<Vec<Message>, StoreError> {
-        project(&self.pool, id, epoch).await
+        project(&mut *self.pool.acquire().await.map_err(db)?, id, epoch).await
     }
     async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
-        messages(&self.pool, id).await
+        messages(&mut *self.pool.acquire().await.map_err(db)?, id).await
     }
     async fn list_events(
         &self,
@@ -939,12 +1062,12 @@ mod tests {
     use super::*;
     use crabber_core::{ContentBlock, ManualClock, PartId, Role};
     use std::time::Duration;
-    static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(super) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    fn test_url() -> Option<String> {
+    pub(super) fn test_url() -> Option<String> {
         match std::env::var("CRABBER_TEST_POSTGRES_URL") {
             Ok(value) => Some(value),
-            Err(std::env::VarError::NotPresent)
+            Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_))
                 if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
             {
                 panic!("CRABBER_TEST_POSTGRES_URL is required")
@@ -973,7 +1096,7 @@ mod tests {
             created_at: OffsetDateTime::now_utc(),
         }
     }
-    fn request(session: &SessionId) -> AdmitRequest {
+    pub(super) fn request(session: &SessionId) -> AdmitRequest {
         AdmitRequest {
             session_id: None,
             workspace_id: "test".into(),
@@ -1101,3 +1224,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod admission_tests;

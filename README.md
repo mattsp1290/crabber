@@ -43,3 +43,31 @@ Run the full workspace quality gate with `cargo xtask check`. It checks formatti
 ## PostgreSQL persistence
 
 Enable the `postgres` feature to use `PostgresStore`. PostgreSQL 14+ and a dedicated database are required; call `PostgresStore::migrate(url)` before connecting. The minimal embedding example enables this feature and accepts `--store postgres`, reading `CRABBER_POSTGRES_URL`. With `--interrupt` (also accepted as `--interrupt-after-first-delta`), it prints the run ID and leaves the interrupted run in PostgreSQL. A later process can run `--store postgres --resume <run-id>` with the same URL. The default `--store memory` remains process local.
+
+Keyed admission lets a host reconcile an ambiguous response without creating a
+second executor. Allocate and retain a `SessionId` before the first request, then
+call `Agent::prompt_keyed(session, text, AdmissionOptions { key, fingerprint,
+behavior_fingerprint })`. Only `Admission::Started` returns a handle;
+`Admission::Replayed` returns the identical immutable receipt. Use
+`Agent::lookup_admission(&session, &key)` for read-only reconciliation. See the
+[store and fingerprint contract](crates/crabber-session/README.md#keyed-admission-memorystore-and-postgresql)
+for retention, opaque behavior versioning, custom adapters and unknown outcomes.
+
+Run the noninteractive, credential-free fake-provider journey:
+
+```sh
+cargo run -p admission-receipt -- --memory
+# Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
+cargo run -p admission-receipt --features postgres -- --postgres
+```
+
+Both modes assert one provider execution, one user message and identical receipts
+across concurrent and terminal retries. Output includes the full source SHA,
+store/schema, fake-provider identity, correlation IDs and measured counts. Memory
+retains receipts only while that store lives; PostgreSQL retains them across restarts.
+An admission receipt proves acceptance, not completion. A committed turn whose host
+dies before spawning execution remains admitted; fenced recovery interrupts that
+non-paused run without repeating its provider request.
+
+The [host algorithm and verification map](docs/admission-receipts.md) explain
+unknown outcomes, retention, custom stores and process fault/restart assertions.

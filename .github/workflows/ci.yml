@@ -49,5 +49,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: PostgreSQL contract and concurrency tests
-        run: cargo test -p crabber-session --features postgres postgres::tests
+      - name: PostgreSQL contracts, concurrency, migration and process durability
+        run: cargo test -p crabber-session --features postgres
+      - name: Public facade response-loss and fresh-process reconciliation
+        run: cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
+      - name: Noninteractive PostgreSQL admission demo
+        run: cargo run --quiet -p admission-receipt --features postgres -- --postgres

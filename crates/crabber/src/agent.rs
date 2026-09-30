@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use crabber_core::{EventRecord, RunId, SessionId};
+use crabber_core::{
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId,
+};
 use crabber_extension::{
     Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
     StaticPlanProvider, ToolDefinition,
@@ -360,6 +362,61 @@ impl Agent {
         })
     }
 
+    /// Starts one keyed prompt; identical retries return metadata only.
+    /// A supplied session ID can create its first session atomically.
+    /// # Errors
+    /// Returns semantic conflict, identity mismatch, Busy, or runtime/store errors.
+    pub async fn prompt_keyed(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+        options: AdmissionOptions,
+    ) -> Result<Admission, RuntimeError> {
+        self.initialize_extensions().await?;
+        let receiver = self.events.subscribe();
+        let admission = self
+            .runtime
+            .start_keyed(
+                Request {
+                    session_id: Some(session_id),
+                    workspace_id: self.config.workspace_id.clone(),
+                    directory: self.config.directory.clone(),
+                    title: self.config.title.clone(),
+                    text: text.into(),
+                    selection: self.config.selection.clone(),
+                    system_prompt: self.config.system_prompt.clone(),
+                },
+                options,
+            )
+            .await?;
+        Ok(match admission {
+            crabber_runtime::Admission::Started {
+                receipt,
+                handle: inner,
+            } => Admission::Started {
+                receipt,
+                handle: RunHandle {
+                    run_id: inner.run_id().clone(),
+                    completion: inner.completion_signal(),
+                    inner,
+                    events: Some(receiver),
+                },
+            },
+            crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
+        })
+    }
+
+    /// Looks up a receipt without executing or claiming a run.
+    /// # Errors
+    /// Returns store errors. An absent receipt may still be in flight.
+    pub async fn lookup_admission(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<AdmissionReceipt>, RuntimeError> {
+        self.runtime.lookup_admission(session, key).await
+    }
+
     pub fn interrupt(&self, run: &RunHandle) {
         run.interrupt();
     }
@@ -382,6 +439,31 @@ impl Agent {
     pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
         self.initialize_extensions().await?;
         self.runtime.recover().await
+    }
+}
+
+/// Only the winner of keyed admission receives a live execution handle.
+pub enum Admission {
+    Started {
+        receipt: AdmissionReceipt,
+        handle: RunHandle,
+    },
+    Replayed(AdmissionReceipt),
+}
+impl Admission {
+    #[must_use]
+    pub fn receipt(&self) -> &AdmissionReceipt {
+        match self {
+            Self::Started { receipt, .. } | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+impl std::fmt::Debug for Admission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Started { receipt, .. } => f.debug_tuple("Started").field(receipt).finish(),
+            Self::Replayed(receipt) => f.debug_tuple("Replayed").field(receipt).finish(),
+        }
     }
 }
 

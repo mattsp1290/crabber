@@ -1,0 +1,18 @@
+[package]
+name = "admission-receipt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber = { path = "../../crates/crabber" }
+tokio = { version = "1", features = ["macros", "rt"] }
+sha2 = "0.10"
+sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+postgres = ["crabber/postgres", "dep:sqlx"]

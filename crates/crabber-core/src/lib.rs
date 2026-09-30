@@ -3,6 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod admission;
+pub use admission::{AdmissionKey, AdmissionOptions, AdmissionReceipt, InputFingerprint};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -316,6 +319,12 @@ pub enum CoreError {
     Limit(String),
     #[error("write conflict")]
     Conflict,
+    #[error("admission key conflicts with retained input")]
+    AdmissionConflict,
+    #[error("keyed admission is unsupported by this store")]
+    AdmissionUnsupported,
+    #[error("session identity does not match")]
+    SessionIdentityMismatch,
     #[error("session is busy")]
     Busy,
     #[error("record not found")]

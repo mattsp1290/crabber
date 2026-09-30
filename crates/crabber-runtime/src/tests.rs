@@ -1811,6 +1811,19 @@ impl Store for DelayedTerminalStore {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(request).await
     }
+    async fn admit_keyed_run(
+        &self,
+        request: crabber_session::KeyedAdmitRequest,
+    ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
+        self.inner.admit_keyed_run(request).await
+    }
+    async fn lookup_admission(
+        &self,
+        session: &SessionId,
+        key: &crabber_core::AdmissionKey,
+    ) -> Result<Option<crabber_core::AdmissionReceipt>, StoreError> {
+        self.inner.lookup_admission(session, key).await
+    }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         Ok(Box::new(DelayedTerminalExecution {
             inner: self.inner.execution(fence).await?,
