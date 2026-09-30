@@ -384,6 +384,16 @@ impl Store for MemoryStore {
         project_messages(&state, id, epoch)
     }
 
+    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
+        let state = self.state.lock().expect("memory store poisoned");
+        Ok(state
+            .messages
+            .iter()
+            .filter(|message| &message.session_id == id)
+            .cloned()
+            .collect())
+    }
+
     async fn list_events(
         &self,
         id: &SessionId,

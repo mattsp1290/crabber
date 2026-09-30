@@ -251,6 +251,7 @@ async fn resumed_tool_stops_when_lease_is_reclaimed() {
 #[allow(clippy::too_many_lines)]
 async fn paused_with_unstaged_assistant(
     has_tool: bool,
+    compacted: bool,
 ) -> (
     Orchestrator,
     Arc<MemoryStore>,
@@ -325,7 +326,7 @@ async fn paused_with_unstaged_assistant(
                 created_at: now,
                 parts: vec![Part {
                     id: crabber_core::PartId::new(),
-                    message_id: result_message_id,
+                    message_id: result_message_id.clone(),
                     ordinal: 0,
                     kind: crabber_core::PartKind::FunctionToolResult,
                     content: ContentBlock::ToolResult {
@@ -341,6 +342,49 @@ async fn paused_with_unstaged_assistant(
         )
         .await
         .unwrap();
+    if compacted {
+        let history = store.list_all_messages(&session_id).await.unwrap();
+        let epoch = ContextEpoch {
+            id: EpochId::new(),
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            parent: Some(store.get_run(&run_id).await.unwrap().unwrap().epoch_id),
+            summarized_range: Some((history[0].id.clone(), history[history.len() - 2].id.clone())),
+            summary_message_id: None,
+            tail_start_message_id: Some(result_message_id.clone()),
+            provider_id: "fake".into(),
+            model_id: "fake".into(),
+            reason: "test crash window".into(),
+            next_policy: None,
+        };
+        execution.start_epoch(epoch.clone()).await.unwrap();
+        let summary_id = crabber_core::MessageId::new();
+        execution
+            .finish_epoch(
+                &epoch.id,
+                Message {
+                    id: summary_id.clone(),
+                    session_id: session_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    role: Role::Assistant,
+                    parent_id: None,
+                    created_at: now,
+                    parts: vec![Part {
+                        id: crabber_core::PartId::new(),
+                        message_id: summary_id,
+                        ordinal: 0,
+                        kind: crabber_core::PartKind::CompactionSummary,
+                        content: ContentBlock::Text {
+                            text: "prior context".into(),
+                        },
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.list_messages(&session_id, None).await.unwrap().iter().all(|message|
+            !message.parts.iter().any(|part| matches!(&part.content, ContentBlock::ToolCall { call_id, .. } if call_id == &original_call.id))));
+    }
     let message_id = crabber_core::MessageId::new();
     let (kind, content) = if has_tool {
         (
@@ -383,7 +427,8 @@ async fn paused_with_unstaged_assistant(
 
 #[tokio::test]
 async fn recovery_does_not_request_model_after_committed_text_response() {
-    let (runtime, store, fake, executed, run_id) = paused_with_unstaged_assistant(false).await;
+    let (runtime, store, fake, executed, run_id) =
+        paused_with_unstaged_assistant(false, false).await;
     let result = runtime.resume(&run_id).await.unwrap();
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(fake.requests().len(), 1);
@@ -399,11 +444,37 @@ async fn recovery_does_not_request_model_after_committed_text_response() {
 
 #[tokio::test]
 async fn recovery_stages_committed_assistant_call_before_next_model_turn() {
-    let (runtime, store, fake, executed, run_id) = paused_with_unstaged_assistant(true).await;
+    let (runtime, store, fake, executed, run_id) =
+        paused_with_unstaged_assistant(true, false).await;
     let result = runtime.resume(&run_id).await.unwrap();
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(executed.load(Ordering::SeqCst), 1);
     assert_eq!(fake.requests().len(), 2);
+    assert!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recovery_reconciles_text_after_compaction_hides_paused_anchor() {
+    let (runtime, _, fake, executed, run_id) = paused_with_unstaged_assistant(false, true).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn recovery_stages_tool_after_compaction_hides_paused_anchor() {
+    let (runtime, store, fake, executed, run_id) = paused_with_unstaged_assistant(true, true).await;
+    let result = runtime.resume(&run_id).await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(fake.requests().len(), 2);
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
     assert!(
         store
             .list_unfinished_tool_calls(&run_id)
@@ -534,8 +605,26 @@ impl Streamer for LimitedProvider {
             if self.block_summary {
                 return Ok(Box::pin(futures::stream::pending()));
             }
+            if bytes > self.limit {
+                return Ok(Box::pin(futures::stream::iter(vec![StreamDelta::Error(
+                    ProviderError {
+                        kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+                        message: "summary exceeded actual limit".into(),
+                        retryable: false,
+                    },
+                )])));
+            }
+            let carries_sentinel = self.requests.lock().unwrap().last().is_some_and(|request| {
+                serde_json::to_string(&request.messages)
+                    .unwrap()
+                    .contains("EARLY_STANDING_INSTRUCTION")
+            });
             return Ok(Box::pin(futures::stream::iter(text_script(
-                "small summary",
+                if carries_sentinel {
+                    "EARLY_STANDING_INSTRUCTION small summary"
+                } else {
+                    "small summary"
+                },
             ))));
         }
         if bytes > self.limit {
@@ -560,30 +649,36 @@ async fn real_size_limit_overflow_summarizes_bounded_input() {
         block_summary: false,
         block_acquisition: false,
     };
+    let store = Arc::new(MemoryStore::new());
     let runtime = Orchestrator::builder()
-        .store(Arc::new(MemoryStore::new()))
+        .store(store.clone())
         .resolver(Arc::new(provider.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
         .build()
         .unwrap();
     let mut request = request();
-    request.text = "large input ".repeat(1000);
-    assert_eq!(
-        runtime
-            .start(request)
-            .await
+    request.text = format!("EARLY_STANDING_INSTRUCTION {}", "large input ".repeat(1000));
+    let handle = runtime.start(request).await.unwrap();
+    let session_id = handle.session_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert!(requests.len() > 3);
+        assert!(serde_json::to_vec(&requests[0].messages).unwrap().len() > provider.limit);
+        assert!(
+            requests[1..]
+                .iter()
+                .all(
+                    |request| serde_json::to_vec(&request.messages).unwrap().len() < provider.limit
+                )
+        );
+    }
+    let projected = store.list_messages(&session_id, None).await.unwrap();
+    assert!(
+        serde_json::to_string(&projected)
             .unwrap()
-            .done()
-            .await
-            .unwrap()
-            .status,
-        RunStatus::Completed
+            .contains("EARLY_STANDING_INSTRUCTION")
     );
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert!(serde_json::to_vec(&requests[0].messages).unwrap().len() > provider.limit);
-    assert!(serde_json::to_vec(&requests[1].messages).unwrap().len() < provider.limit);
-    assert!(serde_json::to_vec(&requests[2].messages).unwrap().len() < provider.limit);
 }
 
 #[tokio::test]
@@ -1741,6 +1836,9 @@ impl Store for DelayedTerminalStore {
         epoch: Option<EpochId>,
     ) -> Result<Vec<Message>, StoreError> {
         self.inner.list_messages(id, epoch).await
+    }
+    async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError> {
+        self.inner.list_all_messages(id).await
     }
     async fn list_events(
         &self,

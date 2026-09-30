@@ -509,7 +509,7 @@ impl Orchestrator {
         if paused_calls.is_empty() {
             return Ok(None);
         }
-        let history = self.store.list_messages(&run.session_id, None).await?;
+        let history = self.store.list_all_messages(&run.session_id).await?;
         let Some(anchor) = history.iter().rposition(|message| message.parts.iter().any(|part|
             matches!(&part.content, ContentBlock::ToolCall { call_id, .. } if paused_calls.contains(call_id.0.as_str())))) else {
             return Ok(None);
@@ -1527,83 +1527,91 @@ impl Orchestrator {
             EventKind::ContextEpochStarted,
         )
         .await?;
-        let summary_prompt =
-            "Summarize this context for continuation. Preserve instructions and unresolved work.";
-        let raw = serde_json::to_string(&messages[..tail_start]).unwrap_or_default();
-        let excerpt: String = raw
+        let summary_prompt = "Summarize this context for continuation. Preserve every standing instruction and unresolved task from the previous summary and new context.";
+        let raw: Vec<char> = serde_json::to_string(&messages[..tail_start])
+            .map_err(|error| invalid_provider(&format!("cannot serialize context: {error}")))?
             .chars()
-            .rev()
-            .take(budget_chars)
-            .collect::<String>()
-            .chars()
-            .rev()
             .collect();
-        let summary_input = user_message(session_id.clone(), excerpt, self.clock.now());
-        let request = ModelRequest {
-            identity: RequestIdentity {
-                session_id: session_id.clone(),
-                run_id: run_id.clone(),
-                turn_id: TurnId::new(),
-            },
-            selection: snapshot.selection.clone(),
-            system: Some(summary_prompt.into()),
-            messages: vec![summary_input],
-            tools: Vec::new(),
-            temperature: None,
-            max_tokens: Some(1024),
-            tool_choice: None,
-        };
-        let summary_started = self.clock.now();
-        let observe_summary = |status: &str| {
-            let mut observed = self.event(
-                session_id,
-                run_id,
-                EventKind::Custom {
-                    name: "model_call".into(),
-                },
-            );
-            observed.payload = json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,
-                "status":status,"input_tokens":0,"output_tokens":0,
-                "latency_ms":(self.clock.now()-summary_started).whole_milliseconds(),"purpose":"compaction"});
-            self.observer.model_completed(&observed);
-        };
-        let mut stream = tokio::select! {
-            () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
-            result = streamer.stream(request) => match result {
-                Ok(stream) => stream,
-                Err(error) => { observe_summary("error"); return Err(error.into()); }
-            },
-        };
+        let mut offset = 0;
         let mut text = String::new();
-        let mut completed = false;
-        loop {
-            let delta = tokio::select! {
-                () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
-                result = stream.next() => result,
-            };
-            let Some(delta) = delta else {
-                break;
-            };
-            match delta {
-                StreamDelta::TextDelta(fragment) => text.push_str(&fragment),
-                StreamDelta::Completed => {
-                    completed = true;
-                    break;
-                }
-                StreamDelta::Error(error) => {
-                    observe_summary("error");
-                    return Err(error.into());
-                }
-                _ => {}
+        while offset < raw.len() {
+            // Every character in the replaced range reaches a summary request.
+            // Reserve room for the prior summary instead of silently taking a suffix.
+            let capacity = budget_chars.saturating_sub(text.chars().count());
+            if capacity == 0 {
+                return Err(invalid_provider("compaction summary exceeded input budget").into());
             }
-        }
-        if cancellation.is_cancelled() {
-            observe_summary("error");
-            return Err(RuntimeError::Interrupted);
-        }
-        observe_summary(if completed { "ok" } else { "error" });
-        if !completed || text.is_empty() {
-            return Err(invalid_provider("compaction summary was empty").into());
+            let end = (offset + capacity).min(raw.len());
+            let chunk: String = raw[offset..end].iter().collect();
+            let input = format!("Previous summary:\n{text}\nNew context:\n{chunk}");
+            let request = ModelRequest {
+                identity: RequestIdentity {
+                    session_id: session_id.clone(),
+                    run_id: run_id.clone(),
+                    turn_id: TurnId::new(),
+                },
+                selection: snapshot.selection.clone(),
+                system: Some(summary_prompt.into()),
+                messages: vec![user_message(session_id.clone(), input, self.clock.now())],
+                tools: Vec::new(),
+                temperature: None,
+                max_tokens: Some(1024),
+                tool_choice: None,
+            };
+            let summary_started = self.clock.now();
+            let observe_summary = |status: &str| {
+                let mut observed = self.event(
+                    session_id,
+                    run_id,
+                    EventKind::Custom {
+                        name: "model_call".into(),
+                    },
+                );
+                observed.payload = json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,
+                    "status":status,"input_tokens":0,"output_tokens":0,
+                    "latency_ms":(self.clock.now()-summary_started).whole_milliseconds(),"purpose":"compaction"});
+                self.observer.model_completed(&observed);
+            };
+            let mut stream = tokio::select! {
+                () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
+                result = streamer.stream(request) => match result {
+                    Ok(stream) => stream,
+                    Err(error) => { observe_summary("error"); return Err(error.into()); }
+                },
+            };
+            let mut next_text = String::new();
+            let mut completed = false;
+            loop {
+                let delta = tokio::select! {
+                    () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
+                    result = stream.next() => result,
+                };
+                let Some(delta) = delta else {
+                    break;
+                };
+                match delta {
+                    StreamDelta::TextDelta(fragment) => next_text.push_str(&fragment),
+                    StreamDelta::Completed => {
+                        completed = true;
+                        break;
+                    }
+                    StreamDelta::Error(error) => {
+                        observe_summary("error");
+                        return Err(error.into());
+                    }
+                    _ => {}
+                }
+            }
+            if cancellation.is_cancelled() {
+                observe_summary("error");
+                return Err(RuntimeError::Interrupted);
+            }
+            observe_summary(if completed { "ok" } else { "error" });
+            if !completed || next_text.is_empty() {
+                return Err(invalid_provider("compaction summary was empty").into());
+            }
+            text = next_text;
+            offset = end;
         }
         let message_id = MessageId::new();
         let summary = Message {
