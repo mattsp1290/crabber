@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/minimal-embed", "examples/codex-login", "xtask"]
+members = ["crates/*", "examples/minimal-embed", "examples/codex-login", "examples/datadog-export", "xtask"]
 resolver = "3"
 
 [workspace.package]

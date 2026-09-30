@@ -79,6 +79,7 @@ pub struct TurnSnapshot {
 
 pub trait Observer: Send + Sync {
     fn emit(&self, event: &EventRecord);
+    fn model_completed(&self, _event: &EventRecord) {}
 }
 
 pub struct NoopObserver;
@@ -485,14 +486,28 @@ impl Orchestrator {
                 usage,
             }),
             Err(error) => {
-                let _ = execution
+                let mut settled = self.event(&session_id, &run_id, EventKind::RunSettled);
+                settled.payload = json!({"status":"error"});
+                if execution
                     .settle_run(
                         RunStatus::Failed,
                         Some(error.to_string()),
                         Usage::default(),
-                        self.event(&session_id, &run_id, EventKind::RunSettled),
+                        settled.clone(),
                     )
-                    .await;
+                    .await
+                    .is_ok()
+                {
+                    let mut failure = self.event(
+                        &session_id,
+                        &run_id,
+                        EventKind::Custom {
+                            name: "run_error".into(),
+                        },
+                    );
+                    failure.payload = json!({"status":"error"});
+                    self.observer.emit(&failure);
+                }
                 Err(error)
             }
         }
@@ -507,6 +522,7 @@ impl Orchestrator {
         plan: &RunPlan,
         lease_lost: &AtomicBool,
     ) -> Result<Usage, RuntimeError> {
+        let run_started_at = self.clock.now();
         self.emit_durable(execution, session_id, run_id, EventKind::RunAdmitted)
             .await?;
         self.emit_durable(execution, session_id, run_id, EventKind::RunStarted)
@@ -542,18 +558,16 @@ impl Orchestrator {
                 .await?;
             if !had_tools && claimed == 0 {
                 ensure_lease(lease_lost)?;
+                let mut settled = self.event(session_id, run_id, EventKind::RunSettled);
+                settled.payload = json!({"status":"ok","input_tokens":usage.input_tokens,
+                    "output_tokens":usage.output_tokens,
+                    "duration_ms":(self.clock.now()-run_started_at).whole_milliseconds()});
                 match execution
-                    .settle_run(
-                        RunStatus::Completed,
-                        None,
-                        usage.clone(),
-                        self.event(session_id, run_id, EventKind::RunSettled),
-                    )
+                    .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
                     .await
                 {
                     Ok(()) => {
-                        self.observer
-                            .emit(&self.event(session_id, run_id, EventKind::RunSettled));
+                        self.observer.emit(&settled);
                         return Ok(usage);
                     }
                     Err(StoreError::PendingInput) => {
@@ -695,6 +709,7 @@ impl Orchestrator {
         let mut provider_state = Vec::new();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
+        let model_started = self.clock.now();
         let mut completed = false;
         while let Some(delta) = stream.next().await {
             match delta {
@@ -748,6 +763,17 @@ impl Orchestrator {
                 StreamDelta::Error(error) => return Err(error.into()),
             }
         }
+        let mut model_event = self.event(
+            session_id,
+            run_id,
+            EventKind::Custom {
+                name: "model_call".into(),
+            },
+        );
+        model_event.payload = json!({"provider": snapshot.selection.provider_id, "model": snapshot.selection.model_id,
+            "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+            "latency_ms": (self.clock.now() - model_started).whole_milliseconds()});
+        self.observer.model_completed(&model_event);
         if !completed {
             return Err(invalid_provider("model stream ended without completion").into());
         }
@@ -843,7 +869,9 @@ impl Orchestrator {
             Err(format!("unknown tool: {}", call.name))
         };
         ensure_lease(lease_lost)?;
-        let pending = self.event(session_id, run_id, EventKind::ToolCallPending);
+        let tool_started_at = self.clock.now();
+        let mut pending = self.event(session_id, run_id, EventKind::ToolCallPending);
+        pending.payload = json!({"tool": call.name, "tool_id": call.id.to_string()});
         execution
             .create_tool_call(
                 ToolCallRecord {
@@ -859,7 +887,8 @@ impl Orchestrator {
             )
             .await?;
         self.observer.emit(&pending);
-        let running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+        let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+        running.payload = pending.payload.clone();
         execution.claim_tool_call(&call.id, running.clone()).await?;
         self.observer.emit(&running);
         execution
@@ -905,7 +934,10 @@ impl Orchestrator {
             }],
             created_at: self.clock.now(),
         };
-        let settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
+        let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
+        settled.payload = json!({"tool": running.payload["tool"], "tool_id": call.id.to_string(),
+            "status": if is_error { "error" } else { "ok" },
+            "duration_ms": (self.clock.now()-tool_started_at).whole_milliseconds()});
         execution
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;

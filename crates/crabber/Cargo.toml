@@ -10,6 +10,7 @@ crabber-auth = { path = "../crabber-auth", optional = true }
 crabber-extension = { path = "../crabber-extension" }
 crabber-providers = { path = "../crabber-providers" }
 crabber-runtime = { path = "../crabber-runtime" }
+crabber-obs = { path = "../crabber-obs", optional = true }
 crabber-session = { path = "../crabber-session" }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
@@ -27,3 +28,5 @@ openai = ["crabber-providers/openai"]
 codex = ["crabber-providers/codex", "dep:crabber-auth"]
 opencode-go = ["crabber-providers/opencode-go"]
 all-providers = ["crabber-providers/all-providers"]
+
+datadog = ["dep:crabber-obs"]
