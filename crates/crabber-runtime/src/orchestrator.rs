@@ -1022,6 +1022,17 @@ impl Orchestrator {
         }
     }
 
+    /// Settles orphaned work without resolving providers, preparing plans or
+    /// executing extension hooks. Retry the same request after unknown responses.
+    /// # Errors
+    /// Returns typed eligibility, ownership or durable settlement failures.
+    pub async fn abandon(
+        &self,
+        request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        self.store.abandon_run(request).await
+    }
+
     /// Reads retained metadata without acquiring a plan or execution lease.
     /// # Errors
     /// Returns store errors; None does not rule out a concurrent commit.

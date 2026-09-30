@@ -1,5 +1,8 @@
 //! Session persistence boundary and in-memory implementation.
 
+pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+
+mod abandonment;
 pub mod admission_contract;
 mod memory;
 #[cfg(feature = "postgres")]

@@ -129,6 +129,19 @@ pub trait Store: Send + Sync {
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
         Err(StoreError::AdmissionUnsupported)
     }
+    /// Atomically revoke the expected fence and interrupt every unfinished tool
+    /// and the run, retaining history, usage, receipts and unrelated inbox rows.
+    /// Expiry must be checked under the transaction lock using the store clock.
+    /// A host-stopped assertion must match both owner and token. Retain durable
+    /// abandonment evidence for identical-request replay, distinct from ordinary
+    /// interruption. An error never implies settlement succeeded. Custom stores
+    /// fail closed until they implement the complete transactional contract.
+    async fn abandon_run(
+        &self,
+        _request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        Err(crabber_core::AbandonError::Unsupported)
+    }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError>;
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError>;

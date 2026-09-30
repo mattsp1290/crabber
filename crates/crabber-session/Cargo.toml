@@ -19,6 +19,7 @@ default = []
 postgres = ["dep:sqlx"]
 
 [dev-dependencies]
+crabber = { path = "../crabber" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [lints]

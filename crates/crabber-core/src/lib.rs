@@ -3,6 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod abandonment;
+pub use abandonment::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+
 mod admission;
 pub use admission::{AdmissionKey, AdmissionOptions, AdmissionReceipt, InputFingerprint};
 

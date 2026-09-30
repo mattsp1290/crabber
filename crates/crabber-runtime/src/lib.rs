@@ -1,5 +1,7 @@
 //! Fresh-run agent orchestration.
 
+pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+
 mod orchestrator;
 mod policy;
 

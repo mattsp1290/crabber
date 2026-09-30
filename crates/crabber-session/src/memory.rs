@@ -1,3 +1,5 @@
+mod abandon;
+
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -24,6 +26,8 @@ pub struct MemoryStore {
 
 #[derive(Clone, Default)]
 struct State {
+    #[cfg(test)]
+    abandon_fail_after_tools: bool,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
     runs: BTreeMap<RunId, Run>,
@@ -77,10 +81,7 @@ impl MemoryStore {
         self
     }
 
-    fn transact<T>(
-        &self,
-        operation: impl FnOnce(&mut State) -> Result<T, StoreError>,
-    ) -> Result<T, StoreError> {
+    fn transact<T, E>(&self, operation: impl FnOnce(&mut State) -> Result<T, E>) -> Result<T, E> {
         let mut guard = self.state.lock().expect("memory store poisoned");
         let mut next = guard.clone();
         let output = operation(&mut next)?;
@@ -93,8 +94,8 @@ impl MemoryStore {
         fence: &RunFence,
         operation: impl FnOnce(&mut State, &Run) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let now = self.clock.now();
         self.transact(|state| {
+            let now = self.clock.now();
             let run = state
                 .runs
                 .get(&fence.run_id)
@@ -426,6 +427,14 @@ impl Store for MemoryStore {
             .cloned())
     }
 
+    async fn abandon_run(
+        &self,
+        request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        // The operation and store-clock read share the owner-write lock.
+        self.transact(|state| abandon::abandon_transaction(state, request, self.clock.now()))
+    }
+
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         self.fenced(&fence, |_, _| Ok(()))?;
         Ok(Box::new(MemoryExecution {
@@ -523,8 +532,8 @@ impl Store for MemoryStore {
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        let now = self.clock.now();
         self.transact(|state| {
+            let now = self.clock.now();
             let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
             if run.status.is_terminal() || run.lease_until > now {
                 return Err(StoreError::Conflict);
@@ -995,3 +1004,7 @@ mod atomic_claim_tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "memory/abandon_tests.rs"]
+mod abandon_tests;
