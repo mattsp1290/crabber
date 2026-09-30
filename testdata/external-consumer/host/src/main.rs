@@ -8,9 +8,10 @@ use std::{error::Error, path::PathBuf, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/wasm32-wasip2/release")
-        .canonicalize()?;
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));
+    let root = target.join("wasm32-wasip2/release").canonicalize()?;
     let module = |name: &str, binary: &str| -> Result<ModuleConfig, Box<dyn Error>> {
         let path = root.join(binary);
         let hash = Sha256::digest(std::fs::read(&path)?).into();
