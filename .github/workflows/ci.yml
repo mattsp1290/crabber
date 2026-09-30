@@ -55,3 +55,7 @@ jobs:
         run: cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
       - name: Noninteractive PostgreSQL admission demo
         run: cargo run --quiet -p admission-receipt --features postgres -- --postgres
+      - name: Public bounded snapshot journey and fresh-process continuation
+        run: cargo test -p crabber --features postgres --test bounded_snapshots -- --nocapture
+      - name: Noninteractive PostgreSQL bounded snapshot demo
+        run: cargo run --quiet -p bounded-snapshot --features postgres -- --postgres

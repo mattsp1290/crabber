@@ -71,3 +71,22 @@ non-paused run without repeating its provider request.
 
 The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.
+
+## Bounded embedding history
+
+Use `Store::snapshot(SnapshotRequest)` to page a large session with explicit message,
+tool-call, part, UTF-8 text and compact-record JSON byte caps. Keep its immutable
+high-water cursor through every page, then consume events strictly after that cursor
+once the snapshot is complete. `Limited` supports same-position retry;
+`Invalidated` requires discarding the pages and restarting.
+
+```sh
+cargo run -p bounded-snapshot -- --memory
+# Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
+cargo run -p bounded-snapshot --features postgres -- --postgres
+```
+
+Run from a clean, committed checkout. Both fake-data modes verify bounded allocation,
+settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
+process. See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
+for ordering, token durability, errors and schema-3 maintenance requirements.
