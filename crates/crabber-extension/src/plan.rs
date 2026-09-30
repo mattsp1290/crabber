@@ -164,9 +164,15 @@ impl StaticPlanProvider {
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
         let mut identities = tools
             .iter()
-            .map(|tool| ComponentIdentity {
-                id: format!("tool:{}", tool.info.name),
-                version: serde_json::to_string(&tool.info).expect("tool metadata serializes"),
+            .map(|tool| {
+                // Sort nested JSON even when a consumer enables preserve_order.
+                // Serialize the struct directly to retain its stable field order.
+                let mut info = tool.info.clone();
+                info.parameters.sort_all_objects();
+                ComponentIdentity {
+                    id: format!("tool:{}", info.name),
+                    version: serde_json::to_string(&info).expect("tool metadata serializes"),
+                }
             })
             .collect::<Vec<_>>();
         identities.extend(prompts.iter().map(|prompt| ComponentIdentity {
@@ -213,6 +219,43 @@ mod tests {
         assert_eq!(
             compute_fingerprint(&[a.clone(), b.clone()]),
             compute_fingerprint(&[b, a])
+        );
+    }
+
+    struct MetadataOnlyTool;
+
+    #[async_trait]
+    impl ToolExecutor for MetadataOnlyTool {
+        async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
+            panic!("metadata test must not execute")
+        }
+    }
+
+    #[test]
+    fn canonical_tool_identity_retains_default_build_serialization() {
+        let provider = StaticPlanProvider::new(
+            vec![Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: "tool".into(),
+                    description: "metadata".into(),
+                    parameters: serde_json::json!({"type":"object","properties":{}}),
+                    retry_safe: false,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(MetadataOnlyTool),
+            })],
+            Vec::new(),
+        );
+        // Before keyed admission, default serde_json builds serialized ToolInfo
+        // fields in declaration order and nested JSON objects in sorted order.
+        let retained_identity = ComponentIdentity {
+            id: "tool:tool".into(),
+            version: r#"{"name":"tool","description":"metadata","parameters":{"properties":{},"type":"object"},"retry_safe":false,"required_permissions":[]}"#.into(),
+        };
+        assert_eq!(provider.plan.components, vec![retained_identity.clone()]);
+        assert_eq!(
+            provider.plan.fingerprint,
+            compute_fingerprint(&[retained_identity])
         );
     }
 
