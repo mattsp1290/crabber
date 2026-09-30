@@ -1,8 +1,7 @@
 use super::{State, insert_event, insert_message};
-#[cfg(test)]
 use crate::StoreError;
-use crate::abandonment::{AbandonEvidence, interrupted_tool, terminal_event};
-use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest, EventKind};
+use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
+use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 use crabber_core::{Run, RunStatus, ToolCallStatus};
 use time::OffsetDateTime;
 
@@ -70,11 +69,19 @@ pub(super) fn abandon_transaction(
         .last()
         .expect("inserted terminal event")
         .clone();
-    Ok(AbandonOutcome {
+    let outcome = AbandonOutcome {
         run,
         terminal_event,
         interrupted_tools: evidence.interrupted_tools,
-    })
+    };
+    state.abandonments.insert(
+        outcome.run.id.clone(),
+        AbandonCommit {
+            request: evidence.request,
+            outcome: outcome.clone(),
+        },
+    );
+    Ok(outcome)
 }
 
 fn replay(
@@ -82,26 +89,18 @@ fn replay(
     run: &Run,
     request: &AbandonRequest,
 ) -> Result<AbandonOutcome, AbandonError> {
-    let (event, evidence) = state
-        .events
-        .iter()
-        .find_map(|event| {
-            if event.run_id != run.id || event.kind != EventKind::RunSettled {
-                return None;
-            }
-            let evidence: AbandonEvidence =
-                serde_json::from_value(event.payload.get("abandonment_v1")?.clone()).ok()?;
-            // Caller-authored history cannot know the newly rotated terminal token.
-            // Only evidence for the exact current terminal snapshot is authoritative.
-            (evidence.run == *run).then_some((event, evidence))
-        })
+    let commit = state
+        .abandonments
+        .get(&run.id)
         .ok_or(AbandonError::AlreadyTerminal)?;
-    if &evidence.request != request {
-        return Err(AbandonError::StaleOwner);
+    if state.calls.values().any(|call| {
+        call.run_id == run.id
+            && matches!(
+                call.status,
+                ToolCallStatus::Pending | ToolCallStatus::Running
+            )
+    }) {
+        return Err(StoreError::Validation("unfinished abandoned tools".into()).into());
     }
-    Ok(AbandonOutcome {
-        run: evidence.run,
-        terminal_event: event.clone(),
-        interrupted_tools: evidence.interrupted_tools,
-    })
+    commit.replay(run, request)
 }

@@ -304,7 +304,7 @@ impl PostgresStore {
                 .ok_or(StoreError::Validation(
                     "unsupported PostgreSQL schema version".into(),
                 ))?;
-        if version != 2 {
+        if version != 3 {
             return Err(StoreError::Validation(
                 "unsupported PostgreSQL schema version".into(),
             ));
@@ -334,7 +334,9 @@ impl PostgresStore {
         for statement in concat!(
             include_str!("../migrations/0001_initial.sql"),
             "\n",
-            include_str!("../migrations/0002_admission_receipts.sql")
+            include_str!("../migrations/0002_admission_receipts.sql"),
+            "\n",
+            include_str!("../migrations/0003_abandonment_commits.sql")
         )
         .split(';')
         .map(str::trim)

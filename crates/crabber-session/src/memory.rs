@@ -28,6 +28,7 @@ pub struct MemoryStore {
 struct State {
     #[cfg(test)]
     abandon_fail_after_tools: bool,
+    abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
     runs: BTreeMap<RunId, Run>,
@@ -1040,4 +1041,15 @@ impl crate::abandonment_contract::FixtureStore for MemoryStore {
 async fn shared_abandonment_contract() {
     let clock = Arc::new(crabber_core::ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     crate::abandonment_contract::run_contract(MemoryStore::with_clock(clock.clone()), clock).await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn untrusted_terminal_markers_are_never_replay_authority() {
+    let clock = Arc::new(crabber_core::ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    crate::abandonment_contract::untrusted_terminal_contract(
+        &MemoryStore::with_clock(clock.clone()),
+        &clock,
+    )
+    .await;
 }

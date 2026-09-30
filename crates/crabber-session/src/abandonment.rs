@@ -1,8 +1,9 @@
 //! Shared durable evidence and settlement artifacts for store implementations.
 use crate::StoreError;
 use crabber_core::{
-    AbandonRequest, ContentBlock, EventKind, EventRecord, Message, MessageId, Part, PartId,
-    PartKind, Role, Run, ToolCallId, ToolCallRecord, ToolResult, ToolResultStatus,
+    AbandonError, AbandonOutcome, AbandonRequest, ContentBlock, EventKind, EventRecord, Message,
+    MessageId, Part, PartId, PartKind, Role, Run, ToolCallId, ToolCallRecord, ToolResult,
+    ToolResultStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -78,4 +79,33 @@ pub(crate) fn terminal_event(
     settled.payload =
         json!({"status": "interrupted", "usage": evidence.run.usage, "abandonment_v1": value});
     Ok(settled)
+}
+
+/// Replay authority lives in private store state, never in caller-writable events.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct AbandonCommit {
+    pub request: AbandonRequest,
+    pub outcome: AbandonOutcome,
+}
+
+impl AbandonCommit {
+    pub fn replay(
+        &self,
+        run: &Run,
+        request: &AbandonRequest,
+    ) -> Result<AbandonOutcome, AbandonError> {
+        if self.outcome.run != *run
+            || !matches!(run.status, crabber_core::RunStatus::Interrupted)
+            || self.outcome.terminal_event.kind != EventKind::RunSettled
+            || self.outcome.terminal_event.run_id != run.id
+            || self.outcome.terminal_event.cursor.is_none()
+            || self.request.expected.claim_token == run.claim_token
+        {
+            return Err(StoreError::Validation("invalid abandonment commit".into()).into());
+        }
+        if &self.request != request {
+            return Err(AbandonError::StaleOwner);
+        }
+        Ok(self.outcome.clone())
+    }
 }

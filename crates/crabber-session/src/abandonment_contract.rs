@@ -451,3 +451,106 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
         AbandonError::AlreadyTerminal
     );
 }
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn untrusted_terminal_contract<S: FixtureStore>(store: &S, clock: &ManualClock) {
+    for terminal in [RunStatus::Interrupted, RunStatus::Completed] {
+        for earlier_assertion in [false, true] {
+            clock.set(time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap());
+            let admitted = store.admit_run(request()).await.unwrap();
+            let execution = store.execution(admitted.fence.clone()).await.unwrap();
+            for running in [false, true] {
+                let call = ToolCallRecord {
+                    id: ToolCallId::new(),
+                    run_id: admitted.run.id.clone(),
+                    name: "unavailable".into(),
+                    arguments: json!({}),
+                    status: ToolCallStatus::Pending,
+                    retry_safe: false,
+                    result: None,
+                };
+                execution
+                    .create_tool_call(
+                        call.clone(),
+                        event(&admitted.run, EventKind::ToolCallPending),
+                    )
+                    .await
+                    .unwrap();
+                if running {
+                    execution
+                        .claim_tool_call(&call.id, event(&admitted.run, EventKind::ToolCallRunning))
+                        .await
+                        .unwrap();
+                }
+            }
+            let real_request = abandon_request(&admitted, AbandonAuthority::HostStoppedOwner);
+            let mut earlier_request = real_request.clone();
+            earlier_request.expected.claim_token = "arbitrary-earlier-fence".into();
+            let fake_request = if earlier_assertion {
+                earlier_request.clone()
+            } else {
+                real_request.clone()
+            };
+            let mut predicted = admitted.run.clone();
+            predicted.status = terminal;
+            predicted.error = None;
+            predicted.usage = Usage::default();
+            predicted.updated_at = clock.now();
+            let mut marker = event(&admitted.run, EventKind::RunSettled);
+            marker.payload = json!({"abandonment_v1": {"request": fake_request, "run": predicted, "interrupted_tools": []}});
+            execution
+                .settle_run(terminal, None, Usage::default(), marker)
+                .await
+                .unwrap();
+            // This reproduces the public exploit exactly: the ordinary event's
+            // snapshot is correct and its assertion may even name another token.
+            assert_eq!(
+                store.get_run(&admitted.run.id).await.unwrap().unwrap(),
+                predicted
+            );
+            let calls = store.calls(&admitted.run.id).await;
+            let messages = store
+                .list_all_messages(&admitted.run.session_id)
+                .await
+                .unwrap();
+            let events = store
+                .list_events(&admitted.run.session_id, None, 100)
+                .await
+                .unwrap();
+            for attempted in [real_request, earlier_request] {
+                assert_eq!(
+                    store.abandon_run(attempted).await.unwrap_err(),
+                    AbandonError::AlreadyTerminal
+                );
+            }
+            assert_eq!(
+                store.get_run(&admitted.run.id).await.unwrap().unwrap(),
+                predicted
+            );
+            assert_eq!(store.calls(&admitted.run.id).await, calls);
+            assert_eq!(
+                store
+                    .list_unfinished_tool_calls(&admitted.run.id)
+                    .await
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                store
+                    .list_all_messages(&admitted.run.session_id)
+                    .await
+                    .unwrap(),
+                messages
+            );
+            assert_eq!(
+                store
+                    .list_events(&admitted.run.session_id, None, 100)
+                    .await
+                    .unwrap(),
+                events
+            );
+            assert_eq!(predicted.claim_token, admitted.fence.claim_token);
+        }
+    }
+}

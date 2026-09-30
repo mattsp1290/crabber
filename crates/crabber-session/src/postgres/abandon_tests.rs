@@ -518,3 +518,16 @@ async fn denials_and_precommit_failure_release_locks_before_return() {
         );
     }
 }
+
+#[tokio::test]
+async fn untrusted_terminal_markers_are_never_replay_authority() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let store = PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    crate::abandonment_contract::untrusted_terminal_contract(&store, &clock).await;
+}

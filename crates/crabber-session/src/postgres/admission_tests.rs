@@ -396,7 +396,7 @@ async fn forward_migration_preserves_v1_and_connect_is_read_only() {
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2]);
+    assert_eq!(versions, vec![1, 2, 3]);
     assert_eq!(
         migrated.get_session(&session).await.unwrap(),
         Some(admitted.session.clone())
@@ -513,4 +513,159 @@ async fn process_crash_before_commit_rolls_back_every_record() {
     let reopened = PostgresStore::connect(&url).await.unwrap();
     assert_eq!(counts(&reopened, &session).await, (1, 1, 1));
     reopened.pool.close().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn v2_migration_preserves_receipts_and_never_authenticates_old_markers() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("abandonment_migration_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let isolated_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&isolated_url)
+        .await
+        .unwrap();
+    for statement in concat!(
+        include_str!("../../migrations/0001_initial.sql"),
+        "\n",
+        include_str!("../../migrations/0002_admission_receipts.sql")
+    )
+    .split(';')
+    .map(str::trim)
+    .filter(|part| !part.is_empty())
+    {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    assert!(
+        PostgresStore::connect(&isolated_url).await.is_err(),
+        "v2 requires explicit forward migration"
+    );
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::now_utc()));
+    let legacy = PostgresStore {
+        pool,
+        clock: clock.clone(),
+        limits: ByteLimits::default(),
+        abandon_fault: Arc::default(),
+    };
+    let session = SessionId::new();
+    let original = keyed(&session, "legacy");
+    let key = original.options.key.clone();
+    let KeyedAdmitOutcome::Started { receipt, admitted } =
+        legacy.admit_keyed_run(original).await.unwrap()
+    else {
+        panic!("new receipt")
+    };
+    let execution = legacy.execution(admitted.fence.clone()).await.unwrap();
+    let call = ToolCallRecord {
+        id: ToolCallId::new(),
+        run_id: admitted.run.id.clone(),
+        name: "unavailable".into(),
+        arguments: serde_json::json!({}),
+        status: ToolCallStatus::Pending,
+        retry_safe: false,
+        result: None,
+    };
+    let mut marker = crate::abandonment_contract::event(&admitted.run, EventKind::ToolCallPending);
+    execution
+        .create_tool_call(call.clone(), marker.clone())
+        .await
+        .unwrap();
+    let assertion = crate::abandonment_contract::abandon_request(
+        &admitted,
+        crabber_core::AbandonAuthority::HostStoppedOwner,
+    );
+    let mut predicted = admitted.run.clone();
+    predicted.status = RunStatus::Interrupted;
+    predicted.updated_at = clock.now();
+    marker.kind = EventKind::RunSettled;
+    marker.payload = serde_json::json!({"abandonment_v1": {"request": assertion, "run": predicted, "interrupted_tools": []}});
+    execution
+        .settle_run(RunStatus::Interrupted, None, Usage::default(), marker)
+        .await
+        .unwrap();
+    let messages = legacy.list_all_messages(&session).await.unwrap();
+    let events = legacy.list_events(&session, None, 100).await.unwrap();
+    legacy.pool.close().await;
+    PostgresStore::migrate(&isolated_url).await.unwrap();
+    PostgresStore::migrate(&isolated_url).await.unwrap();
+    let migrated = PostgresStore::connect(&isolated_url).await.unwrap();
+    assert_eq!(
+        migrated.get_session(&session).await.unwrap(),
+        Some(admitted.session.clone())
+    );
+    assert_eq!(
+        migrated.get_run(&admitted.run.id).await.unwrap(),
+        Some(predicted)
+    );
+    assert_eq!(
+        migrated.lookup_admission(&session, &key).await.unwrap(),
+        Some(receipt)
+    );
+    assert_eq!(
+        migrated.list_all_messages(&session).await.unwrap(),
+        messages
+    );
+    assert_eq!(
+        migrated.list_events(&session, None, 100).await.unwrap(),
+        events
+    );
+    assert_eq!(
+        migrated
+            .list_unfinished_tool_calls(&admitted.run.id)
+            .await
+            .unwrap(),
+        vec![call]
+    );
+    let commits: i64 = sqlx::query_scalar("SELECT count(*) FROM abandonment_commits")
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        commits, 0,
+        "arbitrary historical markers must never be backfilled"
+    );
+    assert_eq!(
+        migrated.abandon_run(assertion).await.unwrap_err(),
+        crabber_core::AbandonError::AlreadyTerminal
+    );
+    assert_eq!(
+        migrated.list_events(&session, None, 100).await.unwrap(),
+        events
+    );
+    let next = migrated
+        .admit_keyed_run(keyed(&session, "next"))
+        .await
+        .unwrap();
+    let KeyedAdmitOutcome::Started { admitted: next, .. } = next else {
+        panic!("next receipt")
+    };
+    let stopped = crate::abandonment_contract::abandon_request(
+        &next,
+        crabber_core::AbandonAuthority::HostStoppedOwner,
+    );
+    let outcome = migrated.abandon_run(stopped.clone()).await.unwrap();
+    assert_eq!(migrated.abandon_run(stopped).await.unwrap(), outcome);
+    let commits: i64 = sqlx::query_scalar("SELECT count(*) FROM abandonment_commits")
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+    assert_eq!(commits, 1);
+    migrated.pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }

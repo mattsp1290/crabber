@@ -139,7 +139,10 @@ run, and `AlreadyTerminal` identifies a run settled by another operation. A
 different request against a previously abandoned run returns `StaleOwner`.
 Memory state is process-local, so its replay evidence survives only as long as
 the shared store state. PostgreSQL replay survives fresh connections and host
-processes through the durable terminal event; no migration is required. Custom
+processes through a private abandonment commit and its terminal event. Schema
+version 3 adds the commit table in an idempotent forward migration preserving
+sessions, receipts and arbitrary event history. Event payloads alone never
+authorize replay; the migration does not backfill caller-authored markers. Custom
 stores return `Unsupported` until they implement this complete atomic contract.
 
 Memory verification is in facade `fenced_abandon` and session

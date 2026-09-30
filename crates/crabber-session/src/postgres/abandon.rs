@@ -2,7 +2,7 @@ use super::{
     PostgresStore, call_status, db, decode, insert_event, insert_message, json, load_run, save_run,
 };
 use crate::StoreError;
-use crate::abandonment::{AbandonEvidence, interrupted_tool, terminal_event};
+use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
 use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 use crabber_core::{EventCursor, EventRecord, Run, RunStatus, ToolCallRecord, ToolCallStatus};
 use sqlx::{Postgres, Row, Transaction};
@@ -105,9 +105,36 @@ async fn settle(
         run: run.clone(),
         interrupted_tools,
     };
-    let event = terminal_event(&evidence, now)?;
+    let mut event = terminal_event(&evidence, now)?;
     insert_event(tx, &run, &event).await?;
-    let outcome = replay(tx, &run, &evidence.request).await?;
+    let seq: i64 =
+        sqlx::query_scalar("SELECT seq FROM events WHERE run_id=$1 ORDER BY seq DESC LIMIT 1")
+            .bind(&run.id.0)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    event.cursor =
+        Some(EventCursor(u64::try_from(seq).map_err(|_| {
+            StoreError::Validation("invalid event cursor".into())
+        })?));
+    let outcome = AbandonOutcome {
+        run,
+        terminal_event: event,
+        interrupted_tools: evidence.interrupted_tools,
+    };
+    // Ordinary event writers have no path to this table. Publish authenticated
+    // provenance only in the transaction that rotated and fully settled the run.
+    let commit = AbandonCommit {
+        request: evidence.request,
+        outcome: outcome.clone(),
+    };
+    sqlx::query("INSERT INTO abandonment_commits(run_id,event_seq,data) VALUES($1,$2,$3)")
+        .bind(&outcome.run.id.0)
+        .bind(seq)
+        .bind(json(&commit)?)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
     Ok((outcome, true))
 }
 
@@ -117,27 +144,22 @@ async fn replay(
     request: &AbandonRequest,
 ) -> Result<AbandonOutcome, AbandonError> {
     let row = sqlx::query(
-        "SELECT seq,data FROM events WHERE run_id=$1 AND data->>'kind'='run_settled' AND data->'payload'->'abandonment_v1'->'run'=$2 ORDER BY seq LIMIT 1",
-    )
-    .bind(&run.id.0)
-    .bind(json(run)?)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db)?
-    .ok_or(AbandonError::AlreadyTerminal)?;
-    let mut event: EventRecord = decode(row.get("data"))?;
-    let evidence: AbandonEvidence = serde_json::from_value(event.payload["abandonment_v1"].clone())
-        .map_err(|_| StoreError::Validation("invalid abandonment evidence".into()))?;
-    if &evidence.request != request {
-        return Err(AbandonError::StaleOwner);
-    }
+        "SELECT abandonment_commits.data,events.seq,events.data AS event FROM abandonment_commits JOIN events ON events.seq=abandonment_commits.event_seq WHERE abandonment_commits.run_id=$1",
+    ).bind(&run.id.0).fetch_optional(&mut **tx).await.map_err(db)?
+        .ok_or(AbandonError::AlreadyTerminal)?;
+    let commit: AbandonCommit = decode(row.get("data"))?;
+    let mut event: EventRecord = decode(row.get("event"))?;
     event.cursor = Some(EventCursor(
         u64::try_from(row.get::<i64, _>("seq"))
             .map_err(|_| StoreError::Validation("invalid event cursor".into()))?,
     ));
-    Ok(AbandonOutcome {
-        run: evidence.run,
-        terminal_event: event,
-        interrupted_tools: evidence.interrupted_tools,
-    })
+    if event != commit.outcome.terminal_event {
+        return Err(StoreError::Validation("invalid abandonment terminal event".into()).into());
+    }
+    let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running'))")
+        .bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db)?;
+    if unfinished {
+        return Err(StoreError::Validation("unfinished abandoned tools".into()).into());
+    }
+    commit.replay(run, request)
 }
