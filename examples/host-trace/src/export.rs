@@ -216,7 +216,7 @@ impl ExportCapture {
                 assert_eq!(span["parent_id"], workflow["span_id"]);
             }
         }
-        assert!(!logs.is_empty());
+        assert_ne!(logs, [] as [&serde_json::Value; 0]);
         for log in &logs {
             assert_eq!(log["dd.trace_id"], apm);
             assert_eq!(log["dd.span_id"], host_span);
