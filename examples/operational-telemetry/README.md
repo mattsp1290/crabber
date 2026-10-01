@@ -12,8 +12,11 @@ host journey outside the workspace.
 The full compiled Git SHA and source root are compared to the actual launching
 checkout's root and HEAD. Dirty or untracked source files fail the identity proof.
 `build.rs` watches the worktree HEAD, referenced common-directory ref and packed
-refs; changing revisions or worktrees with a shared Cargo target rebuilds its
-stamp. Direct invocation of a stale binary from a different checkout fails.
+refs and the actual profile executable. Cargo keeps checkout-specific
+fingerprints while worktrees share that executable; observing the output refreshes
+the stamp when another checkout overwrites it, including when returning to a
+previous checkout. This can cause one bounded package rebuild per Cargo invocation;
+it never cleans the shared target or restarts Cargo. Direct invocation of a stale binary from a different checkout fails.
 Run from the checkout, including when invoking the binary directly.
 
 Fixtures include startup and midstream provider failures, cancellation during

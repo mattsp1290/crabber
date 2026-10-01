@@ -38,5 +38,23 @@ fn main() {
         );
         println!("cargo:rerun-if-changed={path}");
     }
+    // Cargo fingerprints are checkout-specific, but this profile executable is
+    // shared. Another worktree can overwrite it while our fingerprint stays
+    // fresh. Observe the actual output so restoring this checkout refreshes its
+    // stamp and executable rather than running the other checkout's artifact.
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let profile = out
+        .ancestors()
+        .nth(3)
+        .expect("Cargo profile/build/package/out");
+    let executable = if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        "operational-telemetry.exe"
+    } else {
+        "operational-telemetry"
+    };
+    println!(
+        "cargo:rerun-if-changed={}",
+        profile.join(executable).display()
+    );
     println!("cargo:rerun-if-changed=build.rs");
 }
