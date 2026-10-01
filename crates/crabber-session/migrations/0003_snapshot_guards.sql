@@ -28,4 +28,4 @@ BEGIN
 END $$;
 CREATE TRIGGER snapshot_messages BEFORE INSERT OR UPDATE OR DELETE ON messages FOR EACH ROW EXECUTE FUNCTION snapshot_record_guard();
 CREATE TRIGGER snapshot_calls BEFORE INSERT OR UPDATE OR DELETE ON tool_calls FOR EACH ROW EXECUTE FUNCTION snapshot_record_guard();
-INSERT INTO schema_version(version) VALUES (3);
+INSERT INTO schema_version(version) VALUES (3) ON CONFLICT DO NOTHING;

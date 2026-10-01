@@ -1,5 +1,7 @@
 #![doc = include_str!("../../../README.md")]
 
+pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+
 mod agent;
 
 pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};

@@ -50,8 +50,10 @@ pub(super) fn call_record(call: &ToolCallRecord) -> Result<Accounting, StoreErro
 }
 
 pub(super) async fn migrate(tx: &mut Transaction<'_, Postgres>) -> Result<(), StoreError> {
+    // The abandonment branch also used version 3; inspect the snapshot schema
+    // itself so databases from either branch receive the missing migration.
     let done: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=3)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='messages' AND column_name='snapshot_record')")
             .fetch_one(&mut **tx)
             .await
             .map_err(db)?;

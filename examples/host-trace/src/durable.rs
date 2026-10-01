@@ -324,7 +324,7 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             "backend={} schema={} provider=fake session={} run={} attempt_trace={} attempt_span={} observation_attempt={} predecessor={} predecessor_span={} predecessor_attempt={} callbacks={} models={}",
             backend,
             if backend == "postgres" {
-                "3"
+                "4"
             } else {
                 "not-applicable"
             },

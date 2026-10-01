@@ -20,6 +20,7 @@ async-trait = "0.1"
 [dev-dependencies]
 flate2 = "1"
 allocation-counter = "0.8.1"
+uuid = { version = "1", features = ["v4"] }
 time = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
 sha2 = "0.10"

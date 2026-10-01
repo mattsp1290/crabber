@@ -79,7 +79,9 @@ pub enum SnapshotOutcome {
 }
 
 impl SnapshotUsage {
-    pub(crate) fn exceeded(self, limits: SnapshotLimits) -> Option<SnapshotLimit> {
+    /// Returns the first per-page budget exceeded by this usage.
+    #[must_use]
+    pub fn exceeded(self, limits: SnapshotLimits) -> Option<SnapshotLimit> {
         if self.messages > limits.messages {
             Some(SnapshotLimit::Messages)
         } else if self.tool_calls > limits.tool_calls {

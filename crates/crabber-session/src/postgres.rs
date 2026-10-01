@@ -4,7 +4,8 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v3.
+//! connect remains read-only and requires explicit migration to schema v4.
+mod abandon;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -28,6 +29,8 @@ pub struct PostgresStore {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
+    #[cfg(test)]
+    abandon_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -318,7 +321,7 @@ impl PostgresStore {
                 .ok_or(StoreError::Validation(
                     "unsupported PostgreSQL schema version".into(),
                 ))?;
-        if version != 3 {
+        if version != 4 {
             return Err(StoreError::Validation(
                 "unsupported PostgreSQL schema version".into(),
             ));
@@ -327,6 +330,8 @@ impl PostgresStore {
             pool,
             clock: Arc::new(SystemClock),
             limits: ByteLimits::default(),
+            #[cfg(test)]
+            abandon_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -355,6 +360,10 @@ impl PostgresStore {
             sqlx::query(statement).execute(&mut *tx).await.map_err(db)?;
         }
         snapshot::migrate(&mut tx).await?;
+        sqlx::raw_sql(include_str!("../migrations/0004_abandonment_commits.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -620,6 +629,12 @@ impl Store for PostgresStore {
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
         lookup_receipt(&mut *self.pool.acquire().await.map_err(db)?, session, key).await
+    }
+    async fn abandon_run(
+        &self,
+        request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        abandon::abandon(self, request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         let (tx, _) = self.fenced(&fence).await?;
@@ -1265,5 +1280,7 @@ mod admission_tests;
 
 mod snapshot;
 
+#[cfg(test)]
+mod abandon_tests;
 #[cfg(test)]
 mod snapshot_tests;

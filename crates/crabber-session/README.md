@@ -98,3 +98,63 @@ alone therefore does **not** establish rejection. Do not classify rejection by
 matching human-readable error strings. Unless an error has a documented definitive
 semantic outcome, reconcile it as unknown using the original key and payload. See
 [the complete host decision table](../../docs/admission-receipts.md).
+
+## Fenced abandonment (MemoryStore)
+
+`Agent::abandon(AbandonRequest { expected, expected_owner, authority })` calls the
+store directly, without resolving providers, mounting extension plans or invoking
+tools or lifecycle hooks. It handles persisted Pending, Running and Paused runs
+even when their executable configuration is unavailable. Existing live
+`RunHandle::interrupt` and resume/recover behavior remain available.
+
+Use `AbandonAuthority::ExpiredLease` for an observed expired owner. The store
+checks expiry against its own clock under the transaction lock; a live lease,
+including a paused run's live lease, returns `AbandonError::LiveLease`. The exact
+run ID, claim token and owner must match. A replacement owner or stale token
+returns `StaleOwner` without changes. Expiry is inclusive at the lease boundary.
+
+`AbandonAuthority::HostStoppedOwner` is a separate administrative assertion.
+Before using it, the host must verify that the actual worker has stopped using
+authoritative process exit/wait or coordinator evidence, stop its renewal loop,
+and prevent a replacement worker from using that ownership. An expected fence,
+a timeout, a paused checkpoint or an owner string does not establish process
+death. Crabber checks the exact expected owner and token atomically; it cannot
+verify external process death. This authority may revoke an unexpired lease.
+
+MemoryStore rotates the claim token before settlement inside a rollback-safe
+transaction. PostgreSQL provides the same contract in one transaction, locking
+the run row before reading its clock or checking ownership; renewal and recovery
+claims serialize on that lock. Every Pending or Running tool call becomes Interrupted with one
+matching result message and ToolCallSettled event. The run becomes Interrupted
+with one durable RunSettled event. All old ExecutionStore writes are fenced out.
+Completed tool records/results, history, usage, checkpoint, admission receipts
+and unrelated steer/follow-up inbox rows are retained. The session can admit
+subsequent work, which may claim the retained inbox rows.
+
+Retain and retry the identical request after an unknown response. Success returns
+the same saved run snapshot, terminal event and interrupted tool IDs on replay;
+no messages/events are duplicated. Do not resume execution to retry abandonment.
+An error is not proof of successful settlement. `NotFound` identifies a missing
+run, and `AlreadyTerminal` identifies a run settled by another operation. A
+different request against a previously abandoned run returns `StaleOwner`.
+Memory state is process-local, so its replay evidence survives only as long as
+the shared store state. PostgreSQL replay survives fresh connections and host
+processes through a private abandonment commit and its terminal event. Schema
+version 4 adds the commit table in an idempotent forward migration preserving
+sessions, receipts and arbitrary event history. Event payloads alone never
+authorize replay; the migration does not backfill caller-authored markers. Custom
+stores return `Unsupported` until they implement this complete atomic contract.
+
+Memory verification is in facade `fenced_abandon` and session
+`memory::abandon_tests`: Running/Paused zero-effect journeys, live/stale denial,
+all old-owner writes rejected, privately seeded Pending settlement, rollback
+after tool writes, preserved usage/history/completed tools/inbox and exact replay.
+
+
+Shared session `abandonment_contract` checks Pending/Running/Paused with both
+expiry and administrative authority, the exact expiry boundary, all stale writes,
+completed/failed tool history, usage, checkpoint, admission receipts, inbox rows,
+next admission and exact replay. PostgreSQL `abandon_tests` adds independent-pool
+renewal/recovery/abandonment races, transaction rollback before commit, unknown
+committed-response reconciliation, fresh-process readback/retry and a subprocess
+assertion that required-service tests reject a missing database URL.

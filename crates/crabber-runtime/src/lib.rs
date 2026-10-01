@@ -1,6 +1,8 @@
 //! Fresh-run agent orchestration.
 
 mod observation;
+pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
+
 mod orchestrator;
 pub use observation::{
     ModelPurpose, MonotonicClock, OperationKind, OperationalObservation, SystemMonotonicClock,

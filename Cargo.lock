@@ -336,6 +336,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -457,6 +458,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "async-trait",
+ "crabber",
  "crabber-core",
  "hmac",
  "serde",
@@ -843,6 +845,16 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fenced-abandon"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "find-msvc-tools"
