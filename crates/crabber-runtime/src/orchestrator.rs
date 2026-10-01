@@ -678,8 +678,24 @@ impl Orchestrator {
     ///
     /// Returns a conflict for a live lease, or `PlanChanged` if registered
     /// tools and handlers no longer match the admitted plan.
-    #[allow(clippy::too_many_lines)]
     pub async fn resume(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
+        self.resume_with_context(run_id, None).await
+    }
+
+    /// Reclaims one run with explicit current attempt correlation identity.
+    /// The host persists predecessor identity separately from execution authority.
+    /// # Errors
+    /// Returns the same fencing and plan errors as `resume`.
+    pub async fn resume_with_context(
+        &self,
+        run_id: &RunId,
+        context: Option<TraceContext>,
+    ) -> Result<RunResult, RuntimeError> {
+        self.with_context(context).resume_attempt(run_id).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn resume_attempt(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
         let run = self
             .store
             .get_run(run_id)
@@ -910,12 +926,26 @@ impl Orchestrator {
     ///
     /// Returns a store or execution error for a run it successfully claims.
     pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+        self.recover_with_context(|_| None).await
+    }
+
+    /// Selects fresh correlation independently for each eligible run.
+    /// The selector cannot grant a lease; live leases and competing claims stay fenced.
+    /// # Errors
+    /// Returns the same store and execution errors as `recover`.
+    pub async fn recover_with_context<F>(
+        &self,
+        mut context_for: F,
+    ) -> Result<Vec<RunResult>, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
         let mut recovered = Vec::new();
         for run in self.store.list_unfinished_runs().await? {
             if run.lease_until > self.clock.now() {
                 continue;
             }
-            match self.resume(&run.id).await {
+            match self.resume_with_context(&run.id, context_for(&run)).await {
                 Ok(result) => recovered.push(result),
                 Err(RuntimeError::Store(StoreError::Conflict)) => {}
                 Err(error) => return Err(error),

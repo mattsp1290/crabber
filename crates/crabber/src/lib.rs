@@ -5,7 +5,7 @@ mod agent;
 pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
-    SessionId, TraceContext, TraceContextError,
+    SessionId, TraceContext, TraceContextError, TraceLink,
 };
 pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};

@@ -478,8 +478,19 @@ impl Agent {
     ///
     /// Returns an error if the lease cannot be claimed or the plan changed.
     pub async fn resume(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
+        self.resume_with_context(run_id, None).await
+    }
+
+    /// Resumes with host-selected current attempt identity; lease checks are unchanged.
+    /// # Errors
+    /// Returns initialization, plan or lease errors.
+    pub async fn resume_with_context(
+        &self,
+        run_id: &RunId,
+        context: Option<TraceContext>,
+    ) -> Result<RunResult, RuntimeError> {
         self.initialize_extensions().await?;
-        self.runtime.resume(run_id).await
+        self.runtime.resume_with_context(run_id, context).await
     }
 
     /// Reclaims all expired unfinished runs.
@@ -488,8 +499,21 @@ impl Agent {
     ///
     /// Returns a store or execution error for a claimed run.
     pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+        self.recover_with_context(|_| None).await
+    }
+
+    /// Selects context per expired run, preventing shared ambient recovery identity.
+    /// # Errors
+    /// Returns initialization, store or execution errors.
+    pub async fn recover_with_context<F>(
+        &self,
+        context_for: F,
+    ) -> Result<Vec<RunResult>, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
         self.initialize_extensions().await?;
-        self.runtime.recover().await
+        self.runtime.recover_with_context(context_for).await
     }
 }
 

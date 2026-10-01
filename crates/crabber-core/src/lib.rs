@@ -4,7 +4,7 @@
 pub const CRATE_NAME: &str = "crabber-core";
 
 mod trace_context;
-pub use trace_context::{TraceContext, TraceContextError};
+pub use trace_context::{TraceContext, TraceContextError, TraceLink};
 
 mod admission;
 pub use admission::{AdmissionKey, AdmissionOptions, AdmissionReceipt, InputFingerprint};

@@ -9,6 +9,48 @@ use std::fmt;
 pub struct TraceContext {
     trace_id: String,
     span_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predecessor: Option<TraceLink>,
+}
+
+/// One bounded prior attempt identity; contains no nested links or execution authority.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+pub struct TraceLink {
+    trace_id: String,
+    span_id: String,
+}
+impl TraceLink {
+    #[must_use]
+    pub fn trace_id(&self) -> &str {
+        &self.trace_id
+    }
+    #[must_use]
+    pub fn span_id(&self) -> &str {
+        &self.span_id
+    }
+}
+impl<'de> Deserialize<'de> for TraceLink {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Identity {
+            trace_id: String,
+            span_id: String,
+        }
+        let identity = Identity::deserialize(deserializer)
+            .map_err(|_| serde::de::Error::custom(TraceContextError))?;
+        let context = TraceContext::new(&identity.trace_id, &identity.span_id)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            trace_id: context.trace_id,
+            span_id: context.span_id,
+        })
+    }
+}
+impl fmt::Debug for TraceLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TraceLink { identity: [redacted] }")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -33,7 +75,25 @@ impl TraceContext {
         Ok(Self {
             trace_id: trace_id.to_ascii_lowercase(),
             span_id: span_id.to_ascii_lowercase(),
+            predecessor: None,
         })
+    }
+    /// Starts a new trace linked to one prior attempt, discarding its older link.
+    /// # Errors
+    /// Rejects reuse of the prior numeric trace identity (including 64/128-bit aliases).
+    pub fn linked_to(mut self, prior: &Self) -> Result<Self, TraceContextError> {
+        if self.trace_id.trim_start_matches('0') == prior.trace_id.trim_start_matches('0') {
+            return Err(TraceContextError);
+        }
+        self.predecessor = Some(TraceLink {
+            trace_id: prior.trace_id.clone(),
+            span_id: prior.span_id.clone(),
+        });
+        Ok(self)
+    }
+    #[must_use]
+    pub fn predecessor(&self) -> Option<&TraceLink> {
+        self.predecessor.as_ref()
     }
     #[must_use]
     pub fn trace_id(&self) -> &str {
@@ -56,10 +116,21 @@ impl<'de> Deserialize<'de> for TraceContext {
         struct Identity {
             trace_id: String,
             span_id: String,
+            #[serde(default)]
+            predecessor: Option<TraceLink>,
         }
         let identity = Identity::deserialize(deserializer)
             .map_err(|_| serde::de::Error::custom(TraceContextError))?;
-        Self::new(&identity.trace_id, &identity.span_id).map_err(serde::de::Error::custom)
+        let context =
+            Self::new(&identity.trace_id, &identity.span_id).map_err(serde::de::Error::custom)?;
+        match identity.predecessor {
+            Some(link) => {
+                let prior =
+                    Self::new(&link.trace_id, &link.span_id).map_err(serde::de::Error::custom)?;
+                context.linked_to(&prior).map_err(serde::de::Error::custom)
+            }
+            None => Ok(context),
+        }
     }
 }
 
