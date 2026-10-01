@@ -1,6 +1,11 @@
+use crate::observation::{Measurement, result_reason};
 use crate::policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
     PermissionDecision, PermissionPolicy, StaticPolicy, ToolPipeline,
+};
+use crate::{
+    ModelPurpose, MonotonicClock, OperationKind, OperationalObservation, SystemMonotonicClock,
+    TerminalReason,
 };
 use async_trait::async_trait;
 use crabber_core::TraceContext;
@@ -172,7 +177,18 @@ impl Default for ConfigSnapshot {
     }
 }
 
+/// Callbacks execute inline: implementations must remain bounded and nonblocking.
 pub trait Observer: Send + Sync {
+    /// One local execution measurement; does not assert durable settlement.
+    fn operational_completed(&self, _observation: &OperationalObservation) {}
+    fn operational_completed_in_attempt(
+        &self,
+        observation: &OperationalObservation,
+        _context: Option<&TraceContext>,
+        _attempt: &RunId,
+    ) {
+        self.operational_completed(observation);
+    }
     fn emit(&self, event: &EventRecord);
     fn model_completed(&self, _event: &EventRecord) {}
     /// Contextual callbacks default to the legacy callbacks for existing implementors.
@@ -209,6 +225,13 @@ struct ContextObserver {
     attempt: RunId,
 }
 impl Observer for ContextObserver {
+    fn operational_completed(&self, observation: &OperationalObservation) {
+        self.inner.operational_completed_in_attempt(
+            observation,
+            self.context.as_ref(),
+            &self.attempt,
+        );
+    }
     fn emit(&self, event: &EventRecord) {
         self.inner
             .emit_in_attempt(event, self.context.as_ref(), &self.attempt);
@@ -268,6 +291,7 @@ pub struct Orchestrator {
     resolver: Arc<dyn Resolver>,
     plan_provider: Arc<dyn RunPlanProvider>,
     clock: Arc<dyn Clock>,
+    monotonic_clock: Arc<dyn MonotonicClock>,
     observer: Arc<dyn Observer>,
     model_stream: Arc<dyn ModelStream>,
     policy: Arc<dyn PermissionPolicy>,
@@ -286,6 +310,7 @@ pub struct OrchestratorBuilder {
     resolver: Option<Arc<dyn Resolver>>,
     plan_provider: Option<Arc<dyn RunPlanProvider>>,
     clock: Option<Arc<dyn Clock>>,
+    monotonic_clock: Option<Arc<dyn MonotonicClock>>,
     observer: Option<Arc<dyn Observer>>,
     model_stream: Option<Arc<dyn ModelStream>>,
     policy: Option<Arc<dyn PermissionPolicy>>,
@@ -317,6 +342,12 @@ impl OrchestratorBuilder {
     #[must_use]
     pub fn clock(mut self, value: Arc<dyn Clock>) -> Self {
         self.clock = Some(value);
+        self
+    }
+    /// Injects execution timing independently of event/lease wall time.
+    #[must_use]
+    pub fn monotonic_clock(mut self, value: Arc<dyn MonotonicClock>) -> Self {
+        self.monotonic_clock = Some(value);
         self
     }
     #[must_use]
@@ -415,6 +446,9 @@ impl OrchestratorBuilder {
                 .plan_provider
                 .ok_or(RuntimeError::Missing("plan provider"))?,
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
+            monotonic_clock: self
+                .monotonic_clock
+                .unwrap_or_else(|| Arc::new(SystemMonotonicClock::default())),
             observer: self.observer.unwrap_or_else(|| Arc::new(NoopObserver)),
             model_stream: self
                 .model_stream
@@ -733,6 +767,17 @@ impl Orchestrator {
             .store
             .claim_expired_run(run_id, &RunId::new().to_string())
             .await?;
+        let measurement_lost = AtomicBool::new(false);
+        let measurement_cancellation = CancellationToken::new();
+        let mut measurement = Measurement::new(
+            self.observer.as_ref(),
+            self.monotonic_clock.as_ref(),
+            &run.session_id,
+            run_id,
+            OperationKind::Run,
+            &measurement_cancellation,
+            &measurement_lost,
+        );
         let execution = self.store.execution(fence.clone()).await?;
         let execution: Arc<dyn ExecutionStore> = execution.into();
         let heartbeat = HeartbeatGuard::start(
@@ -873,6 +918,10 @@ impl Orchestrator {
                         usage: Usage::default(),
                     }),
                     Err(error) => {
+                        if matches!(error, RuntimeError::LeaseLost) {
+                            plan.release();
+                            return Err(error);
+                        }
                         self.settle_unfinished_calls(
                             execution.as_ref(),
                             &run.session_id,
@@ -936,6 +985,7 @@ impl Orchestrator {
             result = &mut resumed_work => result,
         };
         drop(heartbeat);
+        measurement.observation.reason = result_reason(&result);
         result
     }
 
@@ -1229,8 +1279,33 @@ impl Orchestrator {
         handle
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn run(
+        &self,
+        fence: RunFence,
+        session_id: SessionId,
+        request: Request,
+        plan: RunPlan,
+        cancellation: CancellationToken,
+    ) -> Result<RunResult, RuntimeError> {
+        let lost = AtomicBool::new(false);
+        let mut measurement = Measurement::new(
+            self.observer.as_ref(),
+            self.monotonic_clock.as_ref(),
+            &session_id,
+            &fence.run_id,
+            OperationKind::Run,
+            &cancellation,
+            &lost,
+        );
+        let result = self
+            .run_inner(fence, session_id, request, plan, cancellation.clone())
+            .await;
+        measurement.observation.reason = result_reason(&result);
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn run_inner(
         &self,
         fence: RunFence,
         session_id: SessionId,
@@ -1327,15 +1402,16 @@ impl Orchestrator {
                     &Usage::default(),
                     run_started_at,
                 );
-                if execution
-                    .settle_run(
-                        status,
-                        Some(error.to_string()),
-                        Usage::default(),
-                        settled.clone(),
-                    )
-                    .await
-                    .is_ok()
+                if !matches!(error, RuntimeError::LeaseLost)
+                    && execution
+                        .settle_run(
+                            status,
+                            Some(error.to_string()),
+                            Usage::default(),
+                            settled.clone(),
+                        )
+                        .await
+                        .is_ok()
                 {
                     self.observer.emit(&settled);
                     let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
@@ -1853,7 +1929,20 @@ impl Orchestrator {
                 max_tokens: Some(1024),
                 tool_choice: None,
             };
-            let summary_started = self.clock.now();
+            let mut measurement = Measurement::new(
+                self.observer.as_ref(),
+                self.monotonic_clock.as_ref(),
+                session_id,
+                run_id,
+                OperationKind::Model {
+                    purpose: ModelPurpose::Compaction,
+                    provider: snapshot.selection.provider_id.clone(),
+                    model: snapshot.selection.model_id.clone(),
+                },
+                cancellation,
+                lease_lost,
+            );
+            let summary_started = self.monotonic_clock.now();
             let observe_summary = |status: &str| {
                 let mut observed = self.event(
                     session_id,
@@ -1864,7 +1953,7 @@ impl Orchestrator {
                 );
                 observed.payload = json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,
                     "status":status,"input_tokens":0,"output_tokens":0,
-                    "latency_ms":(self.clock.now()-summary_started).whole_milliseconds(),"purpose":"compaction"});
+                    "latency_ms":self.monotonic_clock.now().saturating_sub(summary_started).as_millis(),"purpose":"compaction"});
                 self.observer.model_completed(&observed);
             };
             let mut stream = tokio::select! {
@@ -1885,7 +1974,10 @@ impl Orchestrator {
                     break;
                 };
                 match delta {
-                    StreamDelta::TextDelta(fragment) => next_text.push_str(&fragment),
+                    StreamDelta::TextDelta(fragment) => {
+                        measurement.first_text(&fragment);
+                        next_text.push_str(&fragment);
+                    }
                     StreamDelta::Completed => {
                         completed = true;
                         break;
@@ -1905,6 +1997,8 @@ impl Orchestrator {
             if !completed || next_text.is_empty() {
                 return Err(invalid_provider("compaction summary was empty").into());
             }
+            measurement.observation.reason = TerminalReason::Success;
+            drop(measurement);
             text = next_text;
             offset = end;
         }
@@ -2069,6 +2163,20 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
+        let mut measurement = Measurement::new(
+            self.observer.as_ref(),
+            self.monotonic_clock.as_ref(),
+            session_id,
+            run_id,
+            OperationKind::Model {
+                purpose: ModelPurpose::Turn,
+                provider: snapshot.selection.provider_id.clone(),
+                model: snapshot.selection.model_id.clone(),
+            },
+            cancellation,
+            lease_lost,
+        );
+        let model_started = self.monotonic_clock.now();
         let request = ModelRequest {
             identity: snapshot.identity.clone(),
             selection: snapshot.selection.clone(),
@@ -2186,7 +2294,6 @@ impl Orchestrator {
         let mut provider_state = Vec::new();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
-        let model_started = self.clock.now();
         let observe_model = |status: &str, usage: &Usage| {
             let mut event = self.event(
                 session_id,
@@ -2198,7 +2305,7 @@ impl Orchestrator {
             event.payload = json!({"provider": snapshot.selection.provider_id,
                 "model": snapshot.selection.model_id, "status": status,
                 "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-                "latency_ms": (self.clock.now() - model_started).whole_milliseconds()});
+                "latency_ms": self.monotonic_clock.now().saturating_sub(model_started).as_millis()});
             self.observer.model_completed(&event);
         };
         let mut completed = false;
@@ -2206,6 +2313,7 @@ impl Orchestrator {
             let delta = tokio::select! {
                 () = cancellation.cancelled() => {
                     observe_model("error", &usage);
+                    drop(measurement);
                     if !text.is_empty() || !reasoning.is_empty() {
                         let id = MessageId::new();
                         let mut parts = Vec::new();
@@ -2224,6 +2332,7 @@ impl Orchestrator {
             };
             match delta {
                 StreamDelta::TextDelta(fragment) => {
+                    measurement.first_text(&fragment);
                     text.push_str(&fragment);
                     let mut event = self.event(session_id, run_id, EventKind::TextDelta);
                     event.live_only = true;
@@ -2285,6 +2394,8 @@ impl Orchestrator {
             observe_model("error", &usage);
             return Err(invalid_provider("empty model response").into());
         }
+        measurement.observation.reason = TerminalReason::Success;
+        drop(measurement);
         observe_model("ok", &usage);
         let id = MessageId::new();
         let mut parts = Vec::new();
@@ -2441,7 +2552,18 @@ impl Orchestrator {
         };
         ensure_lease(lease_lost)?;
         let tool_name = call.name.clone();
-        let tool_started_at = self.clock.now();
+        let mut measurement = Measurement::new(
+            self.observer.as_ref(),
+            self.monotonic_clock.as_ref(),
+            session_id,
+            run_id,
+            OperationKind::Tool {
+                name: tool_name.clone(),
+            },
+            cancellation,
+            lease_lost,
+        );
+        let tool_started_at = self.monotonic_clock.now();
         let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
         running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
         running.correlation = Some(call.id.to_string());
@@ -2472,7 +2594,10 @@ impl Orchestrator {
                     arguments,
                     cancellation,
                     lease_lost,
-                    ) => result?,
+                    ) => result.map_err(|error| {
+                        if matches!(error, RuntimeError::LeaseLost) { measurement.observation.reason = TerminalReason::LeaseLost; }
+                        error
+                    })?,
                 }
             }
             (_, Err(error)) => Err(error),
@@ -2508,6 +2633,12 @@ impl Orchestrator {
             Ok(value) => (ToolResultStatus::Completed, value, false),
             Err(error) => (ToolResultStatus::Failed, Value::String(error), true),
         };
+        measurement.observation.reason = if is_error {
+            TerminalReason::ToolError
+        } else {
+            TerminalReason::Success
+        };
+        drop(measurement);
         let text = serde_json::to_string(&output).expect("JSON value serializes");
         let content = vec![ContentBlock::Text { text }];
         let result = ToolResult {
@@ -2538,7 +2669,7 @@ impl Orchestrator {
         settled.payload = json!({"call_id": call.id, "name": tool_name,
             "status": status, "is_error": is_error,
             "tool": tool_name, "tool_id": call.id.to_string(),
-            "duration_ms": (self.clock.now()-tool_started_at).whole_milliseconds()});
+            "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()});
         settled.correlation = Some(call.id.to_string());
         if let Some((index, receiver, _)) = &settlement {
             let mut receiver = receiver.clone();

@@ -9,7 +9,11 @@ pub use crabber_core::{
 };
 pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
-pub use crabber_runtime::{Observer, PermissionDecision, RunResult, RuntimeError, StaticPolicy};
+pub use crabber_runtime::{
+    ModelPurpose, MonotonicClock, Observer, OperationKind, OperationalObservation,
+    PermissionDecision, RunResult, RuntimeError, StaticPolicy, SystemMonotonicClock,
+    TerminalReason,
+};
 
 #[cfg(feature = "codex")]
 pub use crabber_auth as auth;

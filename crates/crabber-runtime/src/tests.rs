@@ -170,7 +170,9 @@ async fn paused_call_resumes_from_persisted_input() {
     let store = Arc::new(MemoryStore::new());
     let executed = Arc::new(AtomicUsize::new(0));
     let prepared = Arc::new(AtomicUsize::new(0));
+    let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .observer(capture.clone())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(FakeProvider::scripted(vec![
             call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
@@ -194,6 +196,14 @@ async fn paused_call_resumes_from_persisted_input() {
     );
     assert_eq!(executed.load(Ordering::SeqCst), 1);
     assert_eq!(prepared.load(Ordering::SeqCst), 1);
+    let values = capture.values.lock().unwrap().clone();
+    let runs: Vec<_> = values
+        .iter()
+        .filter(|value| value.kind == crate::OperationKind::Run)
+        .collect();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].reason, crate::TerminalReason::Paused);
+    assert_eq!(runs[1].reason, crate::TerminalReason::Success);
     assert!(
         store
             .list_unfinished_tool_calls(&run_id)
@@ -650,7 +660,9 @@ async fn real_size_limit_overflow_summarizes_bounded_input() {
         block_acquisition: false,
     };
     let store = Arc::new(MemoryStore::new());
+    let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .observer(capture.clone())
         .store(store.clone())
         .resolver(Arc::new(provider.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -673,6 +685,39 @@ async fn real_size_limit_overflow_summarizes_bounded_input() {
                 )
         );
     }
+    let values = capture.values.lock().unwrap().clone();
+    let summaries: Vec<_> = values
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.kind,
+                crate::OperationKind::Model {
+                    purpose: crate::ModelPurpose::Compaction,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert!(!summaries.is_empty());
+    assert!(
+        summaries
+            .iter()
+            .all(|value| value.reason == crate::TerminalReason::Success
+                && value.first_token.is_some())
+    );
+    assert_eq!(
+        summaries.len(),
+        provider
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request
+                .system
+                .as_deref()
+                .is_some_and(|system| system.starts_with("Summarize this context")))
+            .count()
+    );
     let projected = store.list_messages(&session_id, None).await.unwrap();
     assert!(
         serde_json::to_string(&projected)
@@ -691,7 +736,9 @@ async fn interrupt_cancels_blocked_compaction_summary() {
         block_summary: true,
         block_acquisition: false,
     };
+    let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .observer(capture.clone())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(provider))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -707,6 +754,22 @@ async fn interrupt_cancels_blocked_compaction_summary() {
         .unwrap()
         .unwrap();
     assert_eq!(result.status, RunStatus::Interrupted);
+    let values = capture.values.lock().unwrap().clone();
+    let summaries: Vec<_> = values
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.kind,
+                crate::OperationKind::Model {
+                    purpose: crate::ModelPurpose::Compaction,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].reason, crate::TerminalReason::Cancelled);
+    assert_eq!(summaries[0].first_token, None);
 }
 
 #[tokio::test]
@@ -719,7 +782,9 @@ async fn interrupt_cancels_summary_stream_acquisition() {
         block_summary: false,
         block_acquisition: true,
     };
+    let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .observer(capture.clone())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(provider))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -735,6 +800,22 @@ async fn interrupt_cancels_summary_stream_acquisition() {
         .unwrap()
         .unwrap();
     assert_eq!(result.status, RunStatus::Interrupted);
+    let values = capture.values.lock().unwrap().clone();
+    let summaries: Vec<_> = values
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.kind,
+                crate::OperationKind::Model {
+                    purpose: crate::ModelPurpose::Compaction,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].reason, crate::TerminalReason::Cancelled);
+    assert_eq!(summaries[0].first_token, None);
 }
 
 #[tokio::test]
@@ -2166,4 +2247,313 @@ async fn linked_expired_recovery_preserves_pending_and_running_interruption_poli
                 .all(|(id, observed)| id == &run_id && observed.as_ref() == Some(&current))
         );
     }
+}
+
+#[derive(Default)]
+struct OperationalCapture {
+    values: Mutex<Vec<crate::OperationalObservation>>,
+    text: Notify,
+}
+impl Observer for OperationalCapture {
+    fn emit(&self, event: &EventRecord) {
+        if event.kind == EventKind::TextDelta {
+            self.text.notify_one();
+        }
+    }
+    fn operational_completed(&self, value: &crate::OperationalObservation) {
+        self.values.lock().unwrap().push(value.clone());
+    }
+}
+#[derive(Default)]
+struct OperationalClock(AtomicUsize);
+impl crate::MonotonicClock for OperationalClock {
+    fn now(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.0.load(Ordering::SeqCst) as u64)
+    }
+}
+#[derive(Clone)]
+struct OperationalStream {
+    clock: Arc<OperationalClock>,
+    startup_error: bool,
+    script: Vec<(usize, StreamDelta)>,
+    entered: Option<Arc<Notify>>,
+    block_setup: bool,
+    block_end: bool,
+}
+#[async_trait]
+impl Resolver for OperationalStream {
+    async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
+        Ok(Arc::new(self.clone()))
+    }
+}
+#[async_trait]
+impl Streamer for OperationalStream {
+    async fn stream(&self, _: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        self.clock.0.store(10, Ordering::SeqCst);
+        if let Some(entered) = &self.entered {
+            entered.notify_one();
+        }
+        if self.block_setup {
+            futures::future::pending::<()>().await;
+        }
+        if self.startup_error {
+            return Err(operational_error("SECRET startup"));
+        }
+        let clock = self.clock.clone();
+        let script = self.script.clone();
+        let stream = futures::stream::iter(script).map(move |(at, delta)| {
+            clock.0.store(at, Ordering::SeqCst);
+            delta
+        });
+        if self.block_end {
+            Ok(Box::pin(stream.chain(futures::stream::pending())))
+        } else {
+            Ok(Box::pin(stream))
+        }
+    }
+}
+fn operational_runtime(
+    capture: Arc<OperationalCapture>,
+    clock: Arc<OperationalClock>,
+    stream: OperationalStream,
+) -> Orchestrator {
+    Orchestrator::builder()
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(stream))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .observer(capture)
+        .monotonic_clock(clock)
+        .build()
+        .unwrap()
+}
+fn operational_stream(clock: Arc<OperationalClock>) -> OperationalStream {
+    OperationalStream {
+        clock,
+        startup_error: false,
+        script: Vec::new(),
+        entered: None,
+        block_setup: false,
+        block_end: false,
+    }
+}
+#[tokio::test]
+async fn operational_startup_midstream_success_and_first_text_boundaries() {
+    use crate::{OperationKind, TerminalReason};
+    for (startup_error, script, reason, first_token, elapsed) in [
+        (true, vec![], TerminalReason::ProviderError, None, 10),
+        (
+            false,
+            vec![
+                (15, StreamDelta::ReasoningDelta("SECRET reasoning".into())),
+                (20, StreamDelta::Error(operational_error("SECRET error"))),
+            ],
+            TerminalReason::ProviderError,
+            None,
+            20,
+        ),
+        (
+            false,
+            vec![
+                (15, StreamDelta::TextDelta(String::new())),
+                (20, StreamDelta::TextDelta("SECRET token".into())),
+                (30, StreamDelta::TextDelta("SECRET second".into())),
+                (40, StreamDelta::Completed),
+            ],
+            TerminalReason::Success,
+            Some(20),
+            40,
+        ),
+        (
+            false,
+            vec![
+                (20, StreamDelta::ReasoningDelta("SECRET reasoning".into())),
+                (40, StreamDelta::Completed),
+            ],
+            TerminalReason::Success,
+            None,
+            40,
+        ),
+    ] {
+        let clock = Arc::new(OperationalClock::default());
+        let capture = Arc::new(OperationalCapture::default());
+        let mut stream = operational_stream(clock.clone());
+        stream.startup_error = startup_error;
+        stream.script = script;
+        let runtime = operational_runtime(capture.clone(), clock, stream);
+        let result = runtime.start(request()).await.unwrap().done().await;
+        assert_eq!(result.is_ok(), reason == TerminalReason::Success);
+        let values = capture.values.lock().unwrap().clone();
+        assert_eq!(values.len(), 2);
+        assert!(matches!(values[0].kind, OperationKind::Model { .. }));
+        assert_eq!(values[0].reason, reason);
+        assert_eq!(values[0].elapsed, std::time::Duration::from_millis(elapsed));
+        assert_eq!(
+            values[0].first_token,
+            first_token.map(std::time::Duration::from_millis)
+        );
+        assert_eq!(values[1].kind, OperationKind::Run);
+        assert_eq!(values[1].reason, reason);
+        assert_eq!(values[1].elapsed, std::time::Duration::from_millis(elapsed));
+        assert!(!format!("{values:?}").contains("SECRET"));
+    }
+}
+#[tokio::test]
+async fn operational_cancellation_before_and_after_stream_setup() {
+    for block_setup in [true, false] {
+        let clock = Arc::new(OperationalClock::default());
+        let capture = Arc::new(OperationalCapture::default());
+        let entered = Arc::new(Notify::new());
+        let mut stream = operational_stream(clock.clone());
+        stream.entered = Some(entered.clone());
+        stream.block_setup = block_setup;
+        stream.block_end = true;
+        stream.script = vec![(20, StreamDelta::TextDelta("partial".into()))];
+        let runtime = operational_runtime(capture.clone(), clock, stream);
+        let handle = runtime.start(request()).await.unwrap();
+        if block_setup {
+            entered.notified().await;
+        } else {
+            capture.text.notified().await;
+        }
+        handle.interrupt();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Interrupted);
+        let values = capture.values.lock().unwrap().clone();
+        assert_eq!(values.len(), 2);
+        assert!(
+            values
+                .iter()
+                .all(|value| value.reason == crate::TerminalReason::Cancelled)
+        );
+        assert_eq!(values[0].first_token.is_some(), !block_setup);
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn operational_lease_loss_is_local_once_and_does_not_settle_replacement() {
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let wall = Arc::new(ManualClock::new(now));
+    let store = Arc::new(MemoryStore::with_clock(wall.clone()));
+    let clock = Arc::new(OperationalClock::default());
+    let capture = Arc::new(OperationalCapture::default());
+    let entered = Arc::new(Notify::new());
+    let mut stream = operational_stream(clock.clone());
+    stream.entered = Some(entered.clone());
+    stream.block_setup = true;
+    let runtime = Orchestrator::builder()
+        .store(store.clone())
+        .clock(wall.clone())
+        .monotonic_clock(clock)
+        .resolver(Arc::new(stream))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .observer(capture.clone())
+        .heartbeat_interval(std::time::Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    entered.notified().await;
+    wall.set(now + time::Duration::seconds(31));
+    let replacement = store.claim_expired_run(&run, "replacement").await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(matches!(handle.done().await, Err(RuntimeError::LeaseLost)));
+    let values = capture.values.lock().unwrap().clone();
+    assert_eq!(values.len(), 2);
+    assert!(
+        values
+            .iter()
+            .all(|value| value.reason == crate::TerminalReason::LeaseLost)
+    );
+    assert!(
+        store
+            .list_events(&session, None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != EventKind::RunSettled)
+    );
+    assert_eq!(
+        store.get_run(&run).await.unwrap().unwrap().claim_token,
+        replacement.claim_token
+    );
+}
+#[tokio::test]
+async fn operational_tool_failure_remains_distinct_when_run_succeeds() {
+    let capture = Arc::new(OperationalCapture::default());
+    let clock = Arc::new(OperationalClock::default());
+    let runtime = Orchestrator::builder()
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"SECRET argument"}"#),
+            text_script("after"),
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(OperationalFailingTool(clock.clone())))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .monotonic_clock(clock)
+        .observer(capture.clone())
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    let values = capture.values.lock().unwrap().clone();
+    assert_eq!(values.len(), 4);
+    assert_eq!(values[1].reason, crate::TerminalReason::ToolError);
+    assert_eq!(values[1].elapsed, std::time::Duration::from_millis(15));
+    assert!(matches!(values[1].kind, crate::OperationKind::Tool { .. }));
+    assert_eq!(values[3].reason, crate::TerminalReason::Success);
+}
+
+fn operational_error(message: &str) -> ProviderError {
+    ProviderError {
+        kind: crabber_providers::ProviderErrorKind::Invalid,
+        message: message.into(),
+        retryable: false,
+    }
+}
+
+struct OperationalFailingTool(Arc<OperationalClock>);
+#[async_trait]
+impl ToolExecutor for OperationalFailingTool {
+    async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
+        self.0.0.store(15, Ordering::SeqCst);
+        Err(ExtensionError::Plan("SECRET tool error".into()))
+    }
+}
+
+#[tokio::test]
+async fn operational_regressing_clock_saturates_to_zero() {
+    let clock = Arc::new(OperationalClock::default());
+    clock.0.store(100, Ordering::SeqCst);
+    let capture = Arc::new(OperationalCapture::default());
+    let mut stream = operational_stream(clock.clone());
+    stream.script = vec![
+        (20, StreamDelta::TextDelta("text".into())),
+        (30, StreamDelta::Completed),
+    ];
+    let runtime = operational_runtime(capture.clone(), clock, stream);
+    runtime
+        .start(request())
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    let values = capture.values.lock().unwrap();
+    assert!(
+        values
+            .iter()
+            .all(|value| value.elapsed == std::time::Duration::ZERO)
+    );
+    assert_eq!(values[0].first_token, Some(std::time::Duration::ZERO));
 }

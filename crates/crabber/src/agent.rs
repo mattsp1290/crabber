@@ -52,6 +52,7 @@ pub enum BuildError {
 
 pub struct AgentBuilder {
     observers: Vec<Arc<dyn Observer>>,
+    monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
     config: Option<AgentConfig>,
@@ -66,6 +67,12 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Injects execution timing independently of event/lease wall time.
+    #[must_use]
+    pub fn monotonic_clock(mut self, clock: Arc<dyn crabber_runtime::MonotonicClock>) -> Self {
+        self.monotonic_clock = Some(clock);
+        self
+    }
     /// Adds a host observer alongside broadcasts and optional Datadog export.
     /// Each registered observer receives each callback once. Hosts own tracing setup.
     #[must_use]
@@ -223,6 +230,9 @@ impl AgentBuilder {
             .execution_mode(self.execution_mode)
             .compaction(self.compaction)
             .observer(observer);
+        if let Some(clock) = self.monotonic_clock {
+            runtime = runtime.monotonic_clock(clock);
+        }
         if let Some(policy) = self.policy {
             runtime = runtime.policy(policy);
         }
@@ -247,6 +257,29 @@ struct EventBroadcaster {
 }
 
 impl Observer for EventBroadcaster {
+    fn operational_completed(&self, observation: &crabber_runtime::OperationalObservation) {
+        for observer in &self.observers {
+            observer.operational_completed(observation);
+        }
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.operational_completed(observation);
+        }
+    }
+    fn operational_completed_in_attempt(
+        &self,
+        observation: &crabber_runtime::OperationalObservation,
+        context: Option<&TraceContext>,
+        attempt: &RunId,
+    ) {
+        for observer in &self.observers {
+            observer.operational_completed_in_attempt(observation, context, attempt);
+        }
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.operational_completed_in_attempt(observation, context, attempt);
+        }
+    }
     fn emit(&self, event: &EventRecord) {
         self.emit_with_context(event, None);
     }
@@ -367,6 +400,7 @@ impl Agent {
     pub fn builder() -> AgentBuilder {
         AgentBuilder {
             observers: Vec::new(),
+            monotonic_clock: None,
             store: None,
             resolver: None,
             config: None,

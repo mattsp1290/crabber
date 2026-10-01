@@ -97,3 +97,7 @@ payload capture, durable PostgreSQL workers and native recovery links. It
 includes request-to-assertion evidence, Observer/Store adoption guidance and a
 host-owned APM live verification procedure. Automated runs need no credentials;
 current live linked-product evidence is UNVERIFIED.
+
+[Operational observation adoption](docs/operational-observation.md) describes safe
+finite terminal reasons, run/model/tool and first-token measurements, monotonic
+clock injection, and the host-local limits of lease-loss reporting.

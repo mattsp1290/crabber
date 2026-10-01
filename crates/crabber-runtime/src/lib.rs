@@ -1,6 +1,11 @@
 //! Fresh-run agent orchestration.
 
+mod observation;
 mod orchestrator;
+pub use observation::{
+    ModelPurpose, MonotonicClock, OperationKind, OperationalObservation, SystemMonotonicClock,
+    TerminalReason,
+};
 mod policy;
 
 pub use orchestrator::{
