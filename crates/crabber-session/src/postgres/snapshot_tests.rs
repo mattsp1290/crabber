@@ -504,12 +504,12 @@ async fn delayed_event_commit_cannot_cross_snapshot_high_water_unseen() {
     .expect("second writer must wait for lower cursor commit");
     let during = page(other.snapshot(query(&a.session.id)).await.unwrap());
     assert_eq!(during.high_water, initial.high_water);
-    assert!(
+    assert_eq!(
         other
             .list_events(&a.session.id, Some(initial.high_water), 100)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crabber_core::EventRecord; 0]
     );
     held.commit().await.unwrap();
     writer.await.unwrap();

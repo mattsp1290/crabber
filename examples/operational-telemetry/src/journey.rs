@@ -850,12 +850,11 @@ async fn outage_overflow() {
     let intake = Intake::new().await;
     intake.status.store(503, Ordering::SeqCst);
     let capture = Arc::new(Capture::default());
+    let clock = Arc::new(Clock::default());
     let host = Agent::builder()
         .memory()
-        .provider(Arc::new(Provider::new(
-            Arc::new(Clock::default()),
-            vec![text()],
-        )))
+        .monotonic_clock(clock.clone())
+        .provider(Arc::new(Provider::new(clock, vec![text()])))
         .config(AgentConfig::new(selection()))
         .observer(capture.clone())
         .datadog(intake.config())
