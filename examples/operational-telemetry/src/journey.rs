@@ -720,9 +720,12 @@ pub async fn run() {
             .count(),
         observed
             .iter()
-            .filter(|v| matches!(v.kind, OperationKind::Model { .. }))
+            .filter(|v| matches!(v.kind, OperationKind::Model { .. })
+                && !matches!(
+                    v.reason,
+                    TerminalReason::Cancelled | TerminalReason::LeaseLost
+                ))
             .count()
-            - 1
     );
     let counts = requests
         .iter()
