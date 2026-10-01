@@ -25,7 +25,15 @@ These observations describe a local execution attempt. They never claim that a
 run or call settled durably. In particular, `LeaseLost` is emitted locally once
 when an attempt loses ownership; it does not emit a durable `RunSettled`, settle
 unfinished calls, or invoke run settlement through the lost fence. A replacement
-owner remains authoritative. Existing execution-store fencing remains in effect
+owner remains authoritative. When a store rejects an operation before heartbeat
+notices a takeover, the runtime checks retained claim identity/lease expiry before
+failure cleanup. Verified loss produces the same local LeaseLost run sample and
+skips subsequent cleanup/settlement. The original returned `RuntimeError::Store`
+is preserved; an ordinary Conflict with a live retained fence remains RuntimeError.
+A paused run intentionally releases its lease; unchanged paused ownership is
+not classified as loss. A failed verification read cannot assert loss. Store failures in model/tool setup
+are RuntimeError, while provider acquisition failures and tool-body failures retain
+their own classifications. Existing execution-store fencing remains in effect
 for all other writes. Admission rejection and keyed replay do not execute and
 produce no operational run observation.
 
@@ -33,7 +41,7 @@ produce no operational run observation.
 | --- | --- |
 | `Success` | Model stream completed with valid content, tool returned a successful result, or run returned Completed. |
 | `ProviderError` | Model acquisition or consumption failed (including invalid stream protocol). |
-| `ToolError` | Tool setup, validation, permission denial, execution, or result transformation failed. A later successful model/run does not erase this call observation. |
+| `ToolError` | Tool preparation/validation, permission denial, execution, or result transformation failed. A later successful model/run does not erase this call observation. |
 | `Cancelled` | Explicit cancellation stopped an in-flight model/tool or the run returned Interrupted. |
 | `LeaseLost` | This execution attempt stopped because lease ownership was lost. |
 | `Paused` | The run checkpointed and returned Paused; this is an attempt boundary, not a durable terminal run status. |

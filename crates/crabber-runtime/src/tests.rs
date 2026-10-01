@@ -1879,7 +1879,14 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
     );
 }
 
+#[derive(Default)]
 struct SettlementGate {
+    append: Option<Arc<OperationalAppendGate>>,
+    settlements: AtomicUsize,
+    tool_settlements: AtomicUsize,
+    unfinished_reads: AtomicUsize,
+    fail_claim: std::sync::atomic::AtomicBool,
+    fail_permission_event: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
@@ -1957,6 +1964,7 @@ impl Store for DelayedTerminalStore {
         &self,
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
+        self.gate.unfinished_reads.fetch_add(1, Ordering::SeqCst);
         self.inner.list_unfinished_tool_calls(run).await
     }
     async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
@@ -1985,12 +1993,27 @@ impl ExecutionStore for DelayedTerminalExecution {
         self.inner.renew_lease(until).await
     }
     async fn append_message(&self, message: Message) -> Result<(), StoreError> {
+        if message.role == Role::Assistant
+            && let Some(gate) = &self.gate.append
+            && gate.enabled.load(Ordering::SeqCst)
+        {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+            if gate.conflict.load(Ordering::SeqCst) {
+                return Err(StoreError::Conflict);
+            }
+        }
         self.inner.append_message(message).await
     }
     async fn append_part(&self, part: Part) -> Result<(), StoreError> {
         self.inner.append_part(part).await
     }
     async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
+        if event.kind == EventKind::PermissionRequested
+            && self.gate.fail_permission_event.load(Ordering::SeqCst)
+        {
+            return Err(StoreError::Validation("SECRET permission backend".into()));
+        }
         self.inner.append_event(event).await
     }
     async fn create_tool_call(
@@ -2005,6 +2028,9 @@ impl ExecutionStore for DelayedTerminalExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
+        if self.gate.fail_claim.load(Ordering::SeqCst) {
+            return Err(StoreError::Validation("SECRET backend".into()));
+        }
         self.inner.claim_tool_call(id, running_event).await
     }
     async fn settle_tool_call(
@@ -2014,6 +2040,7 @@ impl ExecutionStore for DelayedTerminalExecution {
         result_message: Message,
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
+        self.gate.tool_settlements.fetch_add(1, Ordering::SeqCst);
         self.inner
             .settle_tool_call(id, result, result_message, terminal_event)
             .await
@@ -2034,6 +2061,7 @@ impl ExecutionStore for DelayedTerminalExecution {
         usage: Usage,
         event: EventRecord,
     ) -> Result<(), StoreError> {
+        self.gate.settlements.fetch_add(1, Ordering::SeqCst);
         let result = self.inner.settle_run(status, error, usage, event).await;
         if status == RunStatus::Completed && result.is_ok() {
             if let Some(sender) = self
@@ -2072,6 +2100,7 @@ async fn completed_commit_survives_heartbeat_channel_closing_before_settle_retur
         entered: Mutex::new(Some(entered_tx)),
         release: Notify::new(),
         terminal_reads: AtomicUsize::new(0),
+        ..SettlementGate::default()
     });
     let store = Arc::new(DelayedTerminalStore {
         inner: Arc::clone(&inner),
@@ -2556,4 +2585,252 @@ async fn operational_regressing_clock_saturates_to_zero() {
             .all(|value| value.elapsed == std::time::Duration::ZERO)
     );
     assert_eq!(values[0].first_token, Some(std::time::Duration::ZERO));
+}
+
+#[derive(Default)]
+struct OperationalAppendGate {
+    enabled: std::sync::atomic::AtomicBool,
+    conflict: std::sync::atomic::AtomicBool,
+    entered: Notify,
+    release: Notify,
+}
+#[tokio::test(start_paused = true)]
+async fn operational_store_first_takeover_skips_settlement_initial_and_resume() {
+    for resume in [false, true] {
+        let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let wall = Arc::new(ManualClock::new(now));
+        let inner = Arc::new(MemoryStore::with_clock(wall.clone()));
+        let append = Arc::new(OperationalAppendGate::default());
+        let gate = Arc::new(SettlementGate {
+            append: Some(append.clone()),
+            ..SettlementGate::default()
+        });
+        let store = Arc::new(DelayedTerminalStore {
+            inner: inner.clone(),
+            gate: gate.clone(),
+        });
+        let capture = Arc::new(OperationalCapture::default());
+        let scripts = if resume {
+            vec![
+                call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+                text_script("resumed"),
+            ]
+        } else {
+            vec![text_script("initial")]
+        };
+        let mut builder = Orchestrator::builder()
+            .store(store)
+            .clock(wall.clone())
+            .observer(capture.clone())
+            .resolver(Arc::new(FakeProvider::scripted(scripts)))
+            .plan_provider(Arc::new(StaticPlanProvider::new(
+                vec![tool(Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))))],
+                Vec::new(),
+            )));
+        if resume {
+            builder = builder.policy(Arc::new(PausePolicy));
+        }
+        let runtime = builder.build().unwrap();
+        append.enabled.store(!resume, Ordering::SeqCst);
+        let handle = runtime.start(request()).await.unwrap();
+        let run_id = handle.run_id().clone();
+        let session = handle.session_id().clone();
+        let done = if resume {
+            assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+            capture.values.lock().unwrap().clear();
+            append.enabled.store(true, Ordering::SeqCst);
+            let runtime = runtime.clone();
+            let run_id = run_id.clone();
+            tokio::spawn(async move { runtime.resume(&run_id).await })
+        } else {
+            tokio::spawn(handle.done())
+        };
+        append.entered.notified().await;
+        gate.settlements.store(0, Ordering::SeqCst);
+        gate.tool_settlements.store(0, Ordering::SeqCst);
+        gate.unfinished_reads.store(0, Ordering::SeqCst);
+        wall.set(now + time::Duration::seconds(31));
+        let replacement = inner
+            .claim_expired_run(&run_id, "replacement")
+            .await
+            .unwrap();
+        append.release.notify_one();
+        assert!(matches!(
+            done.await.unwrap(),
+            Err(RuntimeError::Store(StoreError::Conflict))
+        ));
+        assert_eq!(gate.settlements.load(Ordering::SeqCst), 0);
+        assert_eq!(gate.tool_settlements.load(Ordering::SeqCst), 0);
+        assert_eq!(gate.unfinished_reads.load(Ordering::SeqCst), 0);
+        let values = capture.values.lock().unwrap().clone();
+        let runs: Vec<_> = values
+            .iter()
+            .filter(|sample| sample.kind == crate::OperationKind::Run)
+            .collect();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].reason, crate::TerminalReason::LeaseLost);
+        assert!(
+            inner
+                .list_events(&session, None, 100)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| event.kind != EventKind::RunSettled)
+        );
+        assert_eq!(
+            inner.get_run(&run_id).await.unwrap().unwrap().claim_token,
+            replacement.claim_token
+        );
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn operational_ordinary_store_conflict_keeps_runtime_error_and_settlement() {
+    let append = Arc::new(OperationalAppendGate::default());
+    append.enabled.store(true, Ordering::SeqCst);
+    append.conflict.store(true, Ordering::SeqCst);
+    let gate = Arc::new(SettlementGate {
+        append: Some(append.clone()),
+        ..SettlementGate::default()
+    });
+    let capture = Arc::new(OperationalCapture::default());
+    let runtime = Orchestrator::builder()
+        .store(Arc::new(DelayedTerminalStore {
+            inner: Arc::new(MemoryStore::new()),
+            gate: gate.clone(),
+        }))
+        .resolver(Arc::new(FakeProvider::scripted(vec![text_script("text")])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
+        .observer(capture.clone())
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    append.entered.notified().await;
+    append.release.notify_one();
+    assert!(matches!(
+        handle.done().await,
+        Err(RuntimeError::Store(StoreError::Conflict))
+    ));
+    assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
+    let values = capture.values.lock().unwrap();
+    assert_eq!(
+        values.last().unwrap().reason,
+        crate::TerminalReason::RuntimeError
+    );
+}
+#[tokio::test]
+async fn operational_tool_store_setup_error_is_not_tool_error() {
+    for permission_event in [false, true] {
+        let gate = Arc::new(SettlementGate::default());
+        gate.fail_claim.store(!permission_event, Ordering::SeqCst);
+        gate.fail_permission_event
+            .store(permission_event, Ordering::SeqCst);
+        let capture = Arc::new(OperationalCapture::default());
+        let executed = Arc::new(AtomicUsize::new(0));
+        let runtime = Orchestrator::builder()
+            .store(Arc::new(DelayedTerminalStore {
+                inner: Arc::new(MemoryStore::new()),
+                gate,
+            }))
+            .resolver(Arc::new(FakeProvider::scripted(vec![call_script(
+                ToolCallId::new(),
+                r#"{"text":"ok"}"#,
+            )])))
+            .plan_provider(Arc::new(StaticPlanProvider::new(
+                vec![tool(Arc::new(EchoTool(executed.clone())))],
+                Vec::new(),
+            )))
+            .policy(Arc::new(StaticPolicy::new(if permission_event {
+                PermissionDecision::Ask
+            } else {
+                PermissionDecision::Allow
+            })))
+            .observer(capture.clone())
+            .build()
+            .unwrap();
+        assert!(matches!(
+            runtime.start(request()).await.unwrap().done().await,
+            Err(RuntimeError::Store(StoreError::Validation(_)))
+        ));
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+        let values = capture.values.lock().unwrap();
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0].reason, crate::TerminalReason::Success);
+        assert!(matches!(values[1].kind, crate::OperationKind::Tool { .. }));
+        assert_eq!(values[1].reason, crate::TerminalReason::RuntimeError);
+        assert_eq!(values[2].reason, crate::TerminalReason::RuntimeError);
+    }
+}
+
+struct OperationalSetupExtension(bool);
+#[async_trait]
+impl crabber_extension::Extension for OperationalSetupExtension {
+    fn id(&self) -> &'static str {
+        "operational-setup"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        self.0.to_string()
+    }
+    async fn install(
+        &self,
+        registrar: &mut crabber_extension::Registrar,
+    ) -> Result<(), ExtensionError> {
+        use crabber_extension::Point;
+        let reject = self.0;
+        registrar.on_around(
+            crabber_extension::ModelStream::ID,
+            0,
+            "setup",
+            Arc::new(move |_, _| {
+                Box::pin(async move {
+                    if reject {
+                        Err(ExtensionError::Plan("SECRET extension".into()))
+                    } else {
+                        Ok(Value::Null)
+                    }
+                })
+            }),
+        );
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn operational_extension_setup_rejection_and_omission_are_runtime_errors() {
+    for reject in [true, false] {
+        let registry = crabber_extension::Registry::new();
+        registry
+            .mount(
+                Arc::new(OperationalSetupExtension(reject)),
+                crabber_extension::Scope::Global,
+            )
+            .await
+            .unwrap();
+        let fake = FakeProvider::scripted(vec![text_script("never")]);
+        let capture = Arc::new(OperationalCapture::default());
+        let runtime = Orchestrator::builder()
+            .store(Arc::new(MemoryStore::new()))
+            .resolver(Arc::new(fake.clone()))
+            .plan_provider(Arc::new(registry))
+            .observer(capture.clone())
+            .build()
+            .unwrap();
+        assert!(matches!(
+            runtime.start(request()).await.unwrap().done().await,
+            Err(RuntimeError::Extension(_))
+        ));
+        assert!(fake.requests().is_empty());
+        let values = capture.values.lock().unwrap();
+        assert_eq!(values.len(), 2);
+        assert!(matches!(values[0].kind, crate::OperationKind::Model { .. }));
+        assert_eq!(values[1].kind, crate::OperationKind::Run);
+        assert!(
+            values
+                .iter()
+                .all(|value| value.reason == crate::TerminalReason::RuntimeError
+                    && value.first_token.is_none())
+        );
+        assert!(!format!("{values:?}").contains("SECRET"));
+    }
 }

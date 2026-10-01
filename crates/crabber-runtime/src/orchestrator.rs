@@ -767,7 +767,7 @@ impl Orchestrator {
             .store
             .claim_expired_run(run_id, &RunId::new().to_string())
             .await?;
-        let measurement_lost = AtomicBool::new(false);
+        let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
         let mut measurement = Measurement::new(
             self.observer.as_ref(),
@@ -778,12 +778,20 @@ impl Orchestrator {
             &measurement_cancellation,
             &measurement_lost,
         );
-        let execution = self.store.execution(fence.clone()).await?;
+        let execution = match self.store.execution(fence.clone()).await {
+            Ok(execution) => execution,
+            Err(error) => {
+                if self.verified_lease_loss(&fence).await {
+                    measurement_lost.store(true, Ordering::SeqCst);
+                }
+                return Err(error.into());
+            }
+        };
         let execution: Arc<dyn ExecutionStore> = execution.into();
         let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
-            fence,
+            fence.clone(),
             Arc::clone(&self.clock),
             self.heartbeat_interval,
         );
@@ -797,6 +805,8 @@ impl Orchestrator {
             session_id: run.session_id.clone(),
             lost: Arc::clone(&lost),
         });
+        let work_fence = fence.clone();
+        let observed_lost = Arc::clone(&measurement_lost);
         let resumed_work = async move {
             let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
             execution.append_event(resumed.clone()).await?;
@@ -918,7 +928,11 @@ impl Orchestrator {
                         usage: Usage::default(),
                     }),
                     Err(error) => {
-                        if matches!(error, RuntimeError::LeaseLost) {
+                        if lost.load(Ordering::SeqCst)
+                            || matches!(error, RuntimeError::LeaseLost)
+                            || self.verified_lease_loss(&work_fence).await
+                        {
+                            observed_lost.store(true, Ordering::SeqCst);
                             plan.release();
                             return Err(error);
                         }
@@ -985,6 +999,9 @@ impl Orchestrator {
             result = &mut resumed_work => result,
         };
         drop(heartbeat);
+        if result.is_err() && self.verified_lease_loss(&fence).await {
+            measurement_lost.store(true, Ordering::SeqCst);
+        }
         measurement.observation.reason = result_reason(&result);
         result
     }
@@ -1172,6 +1189,22 @@ impl Orchestrator {
         }
     }
 
+    // A generic store Conflict is not evidence of lease loss. Verify retained
+    // authority before classifying it or skipping settlement, and keep the original error.
+    async fn verified_lease_loss(&self, fence: &RunFence) -> bool {
+        self.store
+            .get_run(&fence.run_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|run| {
+                run.claim_token != fence.claim_token
+                    || (run.status != RunStatus::Paused
+                        && !run.status.is_terminal()
+                        && run.lease_until <= self.clock.now())
+            })
+    }
+
     fn with_context(&self, context: Option<TraceContext>) -> Self {
         let mut runtime = self.clone();
         runtime.observer = Arc::new(ContextObserver {
@@ -1298,8 +1331,18 @@ impl Orchestrator {
             &lost,
         );
         let result = self
-            .run_inner(fence, session_id, request, plan, cancellation.clone())
+            .run_inner(
+                fence.clone(),
+                session_id,
+                request,
+                plan,
+                cancellation.clone(),
+                &lost,
+            )
             .await;
+        if result.is_err() && self.verified_lease_loss(&fence).await {
+            lost.store(true, Ordering::SeqCst);
+        }
         measurement.observation.reason = result_reason(&result);
         result
     }
@@ -1312,6 +1355,7 @@ impl Orchestrator {
         request: Request,
         plan: RunPlan,
         cancellation: CancellationToken,
+        observed_lost: &AtomicBool,
     ) -> Result<RunResult, RuntimeError> {
         let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
         execution
@@ -1379,6 +1423,14 @@ impl Orchestrator {
                         status: RunStatus::Paused,
                         usage: Usage::default(),
                     });
+                }
+                if lost.load(Ordering::SeqCst)
+                    || matches!(error, RuntimeError::LeaseLost)
+                    || self.verified_lease_loss(&fence).await
+                {
+                    observed_lost.store(true, Ordering::SeqCst);
+                    plan.release();
+                    return Err(error);
                 }
                 if !matches!(error, RuntimeError::LeaseLost) {
                     self.settle_unfinished_calls(
@@ -2279,8 +2331,12 @@ impl Orchestrator {
         if let Some(error) = provider_error {
             return Err(error.into());
         }
-        dispatched.map_err(|e| RuntimeError::Extension(e.to_string()))?;
+        dispatched.map_err(|e| {
+            measurement.observation.reason = TerminalReason::RuntimeError;
+            RuntimeError::Extension(e.to_string())
+        })?;
         let mut stream = stream_slot.lock().unwrap().take().ok_or_else(|| {
+            measurement.observation.reason = TerminalReason::RuntimeError;
             RuntimeError::Extension("model stream did not produce a stream".into())
         })?;
         if calls_to_next.load(Ordering::SeqCst) != 1 {
@@ -2567,7 +2623,12 @@ impl Orchestrator {
         let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
         running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
         running.correlation = Some(call.id.to_string());
-        execution.claim_tool_call(&call.id, running.clone()).await?;
+        execution
+            .claim_tool_call(&call.id, running.clone())
+            .await
+            .inspect_err(|_| {
+                measurement.observation.reason = TerminalReason::RuntimeError;
+            })?;
         self.observer.emit(&running);
         let running_projection = serde_json::to_value(&running).unwrap_or(Value::Null);
         plan.dispatcher
@@ -2578,7 +2639,10 @@ impl Orchestrator {
             .await;
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await?;
+            .await
+            .inspect_err(|_| {
+                measurement.observation.reason = TerminalReason::RuntimeError;
+            })?;
         ensure_lease(lease_lost)?;
         let outcome: Result<Value, String> = match (definition, prepared) {
             (Some(tool), Ok(arguments)) => {
@@ -2594,9 +2658,13 @@ impl Orchestrator {
                     arguments,
                     cancellation,
                     lease_lost,
-                    ) => result.map_err(|error| {
-                        if matches!(error, RuntimeError::LeaseLost) { measurement.observation.reason = TerminalReason::LeaseLost; }
-                        error
+                    ) => result.inspect_err(|error| {
+                        measurement.observation.reason = match error {
+                            RuntimeError::LeaseLost => TerminalReason::LeaseLost,
+                            RuntimeError::Interrupted => TerminalReason::Cancelled,
+                            RuntimeError::Paused => TerminalReason::Paused,
+                            _ => TerminalReason::RuntimeError,
+                        };
                     })?,
                 }
             }
