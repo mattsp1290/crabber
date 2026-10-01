@@ -395,7 +395,7 @@ async fn terminals(export: &DatadogObserver) -> Vec<OperationalObservation> {
                 deltas: vec![(10, StreamDelta::Completed)],
                 ..Script::default()
             },
-            TerminalReason::Success,
+            TerminalReason::ProviderError,
             None,
             20,
         ),
@@ -922,7 +922,6 @@ fn validate_tags(series: &Value) {
                         | "cancelled"
                         | "lease_lost"
                         | "paused"
-                        | "abandoned"
                         | "runtime_error"
                 )),
                 _ => {}
