@@ -9,6 +9,7 @@ use crabber::{
     InputFingerprint, Observer, Selection, SessionId, StreamDelta, TraceContext,
     session::{MemoryStore, Store},
 };
+use serde_json::Value;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -109,10 +110,9 @@ async fn concurrent_contexts_and_context_free_execution_are_isolated() {
         let bodies = export.raw().await;
         let spans: Vec<_> = bodies
             .iter()
-            .filter_map(|body| {
-                body.pointer("/0/spans")
-                    .and_then(serde_json::Value::as_array)
-            })
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
             .flatten()
             .collect();
         let logs: Vec<_> = bodies
@@ -334,10 +334,9 @@ async fn context_free_and_reused_host_context_resume_have_distinct_closed_graphs
         let bodies = export.raw().await;
         let spans: Vec<_> = bodies
             .iter()
-            .filter_map(|body| {
-                body.pointer("/0/spans")
-                    .and_then(serde_json::Value::as_array)
-            })
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
             .flatten()
             .collect();
         let roots: Vec<_> = spans
@@ -504,10 +503,9 @@ mod durable_process {
             serde_json::from_slice(&std::fs::read(dir.join("loss-exports.json")).unwrap()).unwrap();
         let spans: Vec<_> = before
             .iter()
-            .filter_map(|body| {
-                body.pointer("/0/spans")
-                    .and_then(serde_json::Value::as_array)
-            })
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
             .flatten()
             .collect();
         assert!(spans.iter().any(|span| span["meta"]["kind"] == "llm"));

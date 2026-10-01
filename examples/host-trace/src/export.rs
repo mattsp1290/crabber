@@ -77,10 +77,26 @@ impl ExportCapture {
                 ] {
                     assert!(!body.contains(secret));
                 }
-                captured
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(&body).unwrap());
+                let value: Value = serde_json::from_str(&body).unwrap();
+                if value.pointer("/0/event_type").is_some() {
+                    for envelope in value.as_array().unwrap() {
+                        assert_eq!(envelope["_dd.stage"], "raw");
+                        assert_eq!(
+                            envelope["_dd.tracer_version"],
+                            concat!("crabber-", env!("CARGO_PKG_VERSION"))
+                        );
+                        assert_eq!(envelope["event_type"], "span");
+                        assert_eq!(envelope["spans"].as_array().unwrap().len(), 1);
+                        assert!(
+                            envelope["spans"][0]["tags"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|tag| tag == "language:rust")
+                        );
+                    }
+                }
+                captured.lock().unwrap().push(value);
                 if let Some(path) = &capture_file {
                     std::fs::write(
                         path,
@@ -138,7 +154,9 @@ impl ExportCapture {
         let requests = self.raw().await;
         let spans: Vec<_> = requests
             .iter()
-            .filter_map(|body| body.pointer("/0/spans").and_then(Value::as_array))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
             .flatten()
             .collect();
         let logs: Vec<_> = requests

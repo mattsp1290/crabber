@@ -26,10 +26,11 @@ The exporter now sends plain JSON raw envelopes to
 `https://llmobs-intake.{DD_SITE}/api/v2/llmobs`, the native transport used by the
 [official Datadog Python SDK at pinned revision 57aff59616e141dbf16cf92ac868a78b37ef7e1a](https://github.com/DataDog/dd-trace-py/blob/57aff59616e141dbf16cf92ac868a78b37ef7e1a/ddtrace/llmobs/_writer.py).
 Each batch is `[{"_dd.stage":"raw","_dd.tracer_version":"crabber-<version>",
-"event_type":"span","spans":[...]}]`; it uses Crabber's own version identity.
+"event_type":"span","spans":[event]}, ...]`; it uses Crabber's own version identity.
 Metrics/logs keep their existing gzip v2 origins. Local `api_origin` overrides
 both span and metric origins. Allow-list/firewall users must adopt the new span
-origin/path; mock intakes must decode `/0/spans` and split within that array.
+origin/path; mock intakes must flatten each envelope’s singleton `spans` array. Batches split
+the outer raw-envelope array, exactly matching the first-party writer’s shape.
 Accepted chunks are not replayed after later chunk failure. Native v2 follows
 the official SDK success rule (any 2xx); successful submission alone is never
 linked-product evidence.

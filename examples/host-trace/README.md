@@ -72,14 +72,21 @@ same numeric trace, including a 64-bit trace and its zero-padded 128-bit alias.
 Only one predecessor trace/span pair is retained: linking to a context that already
 has a predecessor strips the earlier link. Serde accepts this bounded identity and
 rejects nested links. The prior pair is correlation only, never lease authority.
-An exporter can derive a prior attempt's LLM root from the unchanged event run ID
-and that predecessor pair. Host span identity is APM correlation; it is not an
-internal LLM parent. Datadog payload mapping is handled in the next milestone slice.
+For native LLM lineage use `current.linked_to_attempt(&prior, &prior_observation_attempt)?`.
+The runtime supplies the fresh observation-attempt UUID in Observer attempt callbacks;
+retain the winning UUID alongside host context in the bounded host journal. Host-only
+`linked_to` metadata cannot uniquely identify an LLM attempt and creates no native
+LLM link. Host span identity is APM correlation, never an internal LLM parent.
+The Datadog exporter maps the approved attempt UUID and unchanged session/run to
+internal LLM identity and links to that specifically observed prior root.
 
 Crabber Store remains at schema3. Correlation lives in host durable queue/journal
 records; there is no Store migration or persistence requirement for custom Stores.
-The example fsyncs its current attempt journal before its designated resume worker
-claims the run. Production hosts must coordinate journal writes with their worker
+The example fsyncs its completed/paused attempt journal after execution supplies
+the winning observation UUID. Its controlled loss tool flushes telemetry and fsyncs
+that UUID before signaling readiness for a test kill. It has a single designated
+worker; a general crash between claim and journal persistence can leave no known
+LLM predecessor. Production hosts must coordinate journal writes with their worker
 claim policy, record the actual winning attempt, and preserve enough prior identity
 to recover after loss before/after admission. A candidate that loses a lease race
 must not replace the journal's winning attempt. No recursive baggage or attempt

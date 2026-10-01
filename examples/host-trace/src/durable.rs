@@ -371,7 +371,9 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             let root = |bodies: &[Value]| {
                 bodies
                     .iter()
-                    .filter_map(|body| body.pointer("/0/spans").and_then(Value::as_array))
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
                     .flatten()
                     .find(|span| span["meta"]["kind"] == "agent")
                     .unwrap()

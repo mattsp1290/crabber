@@ -658,9 +658,7 @@ fn log(c: &DatadogConfig, e: &SafeEvent) -> Option<Value> {
     Some(value)
 }
 fn split_payload(body: &Value) -> Option<(Value, Value)> {
-    let pointer = if body.pointer("/0/spans").is_some() {
-        "/0/spans"
-    } else if body.is_array() {
+    let pointer = if body.is_array() {
         ""
     } else if body.get("series").is_some() {
         "/series"
@@ -781,13 +779,15 @@ async fn export(
                 .map(|(event, mut span)| {
                     let mut labels = tags(config, event);
                     labels.push(format!("ml_app:{}", config.ml_app));
+                    labels.push("language:rust".into());
                     span["tags"] = json!(labels);
                     span["service"] = json!(config.service);
                     span
                 })
                 .collect();
             if !spans.is_empty() {
-                pending.unsent_parts.push(json!([{"_dd.stage":"raw","_dd.tracer_version":concat!("crabber-",env!("CARGO_PKG_VERSION")),"event_type":"span","spans":spans}]));
+                let envelopes: Vec<_> = spans.into_iter().map(|span| json!({"_dd.stage":"raw","_dd.tracer_version":concat!("crabber-",env!("CARGO_PKG_VERSION")),"event_type":"span","spans":[span]})).collect();
+                pending.unsent_parts.push(json!(envelopes));
             }
         }
         post(
@@ -899,6 +899,15 @@ mod tests {
         net::{TcpListener, TcpStream},
         sync::atomic::AtomicBool,
     };
+    fn span_payload(body: &Value) -> Vec<Value> {
+        body.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
+            .flatten()
+            .cloned()
+            .collect()
+    }
     fn config() -> DatadogConfig {
         DatadogConfig {
             site: "datadoghq.com".into(),
@@ -1053,7 +1062,7 @@ mod tests {
             while accepted.len() < 3 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let (_, body) = read_request(&mut stream);
-                let spans = body[0]["spans"].as_array().unwrap();
+                let spans = span_payload(&body);
                 let status = if !split {
                     assert_eq!(spans.len(), 3);
                     split = true;
@@ -1072,7 +1081,9 @@ mod tests {
             }
             accepted
         });
-        let mut parts = vec![json!([{"_dd.stage":"raw","event_type":"span","spans":[1,2,3]}])];
+        let mut parts = vec![
+            json!([{"_dd.stage":"raw","event_type":"span","spans":[1]},{"_dd.stage":"raw","event_type":"span","spans":[2]},{"_dd.stage":"raw","event_type":"span","spans":[3]}]),
+        ];
         let client = reqwest::Client::new();
         assert!(
             post(&client, &config(), url.clone(), &mut parts)
@@ -1121,10 +1132,11 @@ mod tests {
     }
     #[test]
     fn oversized_payload_splits_without_losing_items() {
-        let body = json!([{"_dd.stage":"raw","event_type":"span","spans":[1,2,3]}]);
+        let body = json!([{"_dd.stage":"raw","event_type":"span","spans":[1]},{"_dd.stage":"raw","event_type":"span","spans":[2]},{"_dd.stage":"raw","event_type":"span","spans":[3]}]);
         let (a, b) = split_payload(&body).unwrap();
         assert_eq!(a[0]["spans"], json!([1]));
-        assert_eq!(b[0]["spans"], json!([2, 3]));
+        assert_eq!(b[0]["spans"], json!([2]));
+        assert_eq!(b[1]["spans"], json!([3]));
     }
     #[test]
     fn sites_and_config_debug() {
@@ -1202,7 +1214,7 @@ mod tests {
         observer.flush().await.unwrap();
         let accepted = server.join().unwrap();
         assert!(accepted[0].0.contains("/api/v2/llmobs"));
-        assert_eq!(accepted[0].1[0]["spans"].as_array().unwrap().len(), 2);
+        assert_eq!(span_payload(&accepted[0].1).len(), 2);
         let metric_series = accepted[1].1["series"].as_array().unwrap();
         assert!(
             metric_series
@@ -1389,7 +1401,7 @@ mod tests {
         assert!(run.done().await.is_err());
         observer.flush().await.unwrap();
         let requests = server.join().unwrap();
-        let spans = requests[0].1[0]["spans"].as_array().unwrap();
+        let spans = span_payload(&requests[0].1);
         let agent = spans.iter().find(|s| s["meta"]["kind"] == "agent").unwrap();
         let workflow = spans
             .iter()
@@ -1487,7 +1499,7 @@ mod tests {
             assert!(run.done().await.is_err());
             observer.flush().await.unwrap();
             let requests = server.join().unwrap();
-            let spans = requests[0].1[0]["spans"].as_array().unwrap();
+            let spans = span_payload(&requests[0].1);
             let workflow = spans
                 .iter()
                 .find(|s| s["meta"]["kind"] == "workflow")
@@ -1556,7 +1568,7 @@ mod tests {
         ));
         observer.flush().await.unwrap();
         let requests = server.join().unwrap();
-        let spans = &requests[0].1[0]["spans"];
+        let spans = json!(span_payload(&requests[0].1));
         assert_eq!(requests[0].1[0]["event_type"], "span");
         assert_eq!(spans.as_array().unwrap().len(), 4);
         assert_eq!(spans[0]["meta"]["kind"], "agent");
