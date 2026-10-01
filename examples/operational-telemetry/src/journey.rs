@@ -884,10 +884,23 @@ async fn outage_overflow() {
     assert_eq!(recovered.pending_depth, 0);
     assert!(recovered.last_success_unix_seconds.is_some());
     host.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while host.export_health().unwrap().worker_status != WorkerStatus::Stopped {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let terminal = host.export_health().unwrap();
+    assert_eq!(terminal.accepted, recovered.accepted);
+    assert_eq!(terminal.dropped, 0);
+    assert_eq!(terminal.queue_depth, 0);
+    assert_eq!(terminal.pending_depth, 0);
     // Stress only uses captured genuine runtime measurements; main outcomes above execute runtime.
     let mut config = intake.config();
     config.channel_capacity = 2;
     config.batch_size = 2;
+    intake.status.store(503, Ordering::SeqCst);
     let export = DatadogObserver::new(&config);
     let sample = values(&capture)[0].clone();
     // current-thread worker cannot poll until this bounded synchronous producer returns.
@@ -899,6 +912,15 @@ async fn outage_overflow() {
     assert_eq!(overflow.dropped, 98);
     assert_eq!(overflow.queue_depth, 2);
     assert_eq!(overflow.pending_depth, 0);
+    assert!(export.flush().await.is_err());
+    let retained = export.health();
+    assert_eq!(retained.accepted, 2);
+    assert_eq!(retained.dropped, 98);
+    assert_eq!(retained.pending_depth, 2);
+    assert!(retained.failures > 0);
+    assert!(retained.retries > 0);
+    assert_eq!(retained.last_success_unix_seconds, None);
+    intake.status.store(202, Ordering::SeqCst);
     export.flush().await.unwrap();
     let drained = export.health();
     assert_eq!(drained.accepted, 2);

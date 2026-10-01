@@ -113,9 +113,9 @@ replacement fence and assert there is no durable RunSettled. A custom Provider
 can expose setup/consumption barriers for cancellation; `RunHandle::interrupt`
 cancels either boundary without an exporter or credentials.
 
-Datadog distributions and local exporter health are provided by the following
-exporter slice; this runtime API alone does not promise network submission or
-live percentile visibility.
+Datadog distributions and local exporter health are documented in
+[the exporter](../crates/crabber-obs/README.md); the runtime API alone does not
+promise network submission or live percentile visibility.
 
 The composed credential-free host acceptance journey is
 [`operational-telemetry`](../examples/operational-telemetry/README.md), run with

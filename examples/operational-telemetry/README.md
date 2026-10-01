@@ -39,7 +39,8 @@ result/response content must be absent. The fixture rejects a later log stage
 then recovers without replaying accepted earlier chunks/stages. A separate 503
 fixture proves run completion and broadcasts independent of intake availability.
 A synchronous burst on the current-thread runtime deterministically fills a
-two-record queue: two accepted, 98 dropped. This supplemental queue stress reuses
+two-record queue during a persistent 503 outage: two accepted, 98 dropped.
+Retained observations remain bounded and recover without resetting counters. This supplemental queue stress reuses
 an actual captured model measurement; it does not manufacture main runtime outcomes.
 
 Slow intake is first synchronized to an actual stalled request, then Tokio time
