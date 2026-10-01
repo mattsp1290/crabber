@@ -273,6 +273,36 @@ impl Observer for EventBroadcaster {
             datadog.model_completed_with_context(event, context);
         }
     }
+    fn emit_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        attempt: &RunId,
+    ) {
+        let _ = self.events.send(Arc::new(event.clone()));
+        for observer in &self.observers {
+            observer.emit_in_attempt(event, context, attempt);
+        }
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.emit_in_attempt(event, context, attempt);
+            crabber_obs::tracing_bridge::emit_with_context(event, context);
+        }
+    }
+    fn model_completed_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        attempt: &RunId,
+    ) {
+        for observer in &self.observers {
+            observer.model_completed_in_attempt(event, context, attempt);
+        }
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.model_completed_in_attempt(event, context, attempt);
+        }
+    }
 }
 
 /// A configured agent ready to prompt a new or existing session.

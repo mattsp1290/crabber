@@ -1,5 +1,10 @@
 mod admission_receipts;
 mod bounded_snapshots;
+mod trace_context;
+#[path = "../../../../examples/host-trace/src/export.rs"]
+mod export;
+#[path = "../../../../examples/host-trace/src/journey.rs"]
+mod journey;
 
 use crabber::{
     Agent, AgentConfig, FakeProvider, PermissionDecision, Selection, StaticPolicy, StreamDelta,
@@ -13,6 +18,8 @@ use std::{error::Error, path::PathBuf, sync::Arc};
 async fn main() -> Result<(), Box<dyn Error>> {
     admission_receipts::run().await?;
     bounded_snapshots::run().await?;
+    trace_context::run().await?;
+    journey::journey().await;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));

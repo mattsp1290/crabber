@@ -19,3 +19,52 @@ Run the credential-free example with `cargo run -p datadog-export`. The live gat
 The `ceb0924` live gate exited 0 with marker `crabber-1790738310-13253`. The user authorized direct verification with the authenticated `pup` CLI. `pup llm-obs spans search --query 'verify:crabber-1790738310-13253' --from 1h --summary` found linked agent, workflow, and LLM spans on trace `9245911478003124504`; the agent and workflow each covered 1.691 ms. This verifies span visibility through Datadog's read API; a browser UI click was not performed. Earlier gates on `653571c` and `42fbb96` also exited 0 before the final chunk-retry and failed-model observation fixes.
 
 References: [LLM Observability HTTP API](https://docs.datadoghq.com/llm_observability/instrument/api/), [Submit metrics](https://docs.datadoghq.com/api/latest/metrics/submit-metrics/), [Send logs](https://docs.datadoghq.com/api/latest/logs/send-logs/), [Search logs](https://docs.datadoghq.com/api/latest/logs/search-logs-post/).
+
+## Context and native recovery-link transport (2026-10-01)
+
+The exporter now sends plain JSON raw envelopes to
+`https://llmobs-intake.{DD_SITE}/api/v2/llmobs`, the native transport used by the
+[official Datadog Python SDK at pinned revision 57aff59616e141dbf16cf92ac868a78b37ef7e1a](https://github.com/DataDog/dd-trace-py/blob/57aff59616e141dbf16cf92ac868a78b37ef7e1a/ddtrace/llmobs/_writer.py).
+Each batch is `[{"_dd.stage":"raw","_dd.tracer_version":"crabber-<version>",
+"event_type":"span","spans":[...]}]`; it uses Crabber's own version identity.
+Metrics/logs keep their existing gzip v2 origins. Local `api_origin` overrides
+both span and metric origins. Allow-list/firewall users must adopt the new span
+origin/path; mock intakes must decode `/0/spans` and split within that array.
+Accepted chunks are not replayed after later chunk failure. Native v2 follows
+the official SDK success rule (any 2xx); successful submission alone is never
+linked-product evidence.
+
+The [current HTTP API reference](https://docs.datadoghq.com/llm_observability/instrument/api/)
+documents top-level `apm_trace_id` on the public v1 API, but does not document
+native `span_links` there. The exporter therefore uses the supported SDK v2
+transport rather than assuming v1 accepts native links. The
+[official SDK event mapping](https://github.com/DataDog/dd-trace-py/blob/57aff59616e141dbf16cf92ac868a78b37ef7e1a/ddtrace/llmobs/_llmobs.py)
+emits `_dd.apm_trace_id`, `_dd.trace_id` and `_dd.span_id` for host APM association,
+separately from internal LLM `trace_id`, `span_id`, and `parent_id`. The
+[official OTel mapping](https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation/)
+also distinguishes host correlation from LLM parentage and maps native links.
+Both documentation pages were fetched successfully on 2026-10-01; v2 native
+transport is supported by the pinned first-party implementation, not described
+as the public v1 contract.
+
+Validated host trace IDs are converted numerically: at most u64 becomes decimal;
+larger values use all 32 lowercase hexadecimal digits. Host span IDs become
+unsigned decimal. Logs use `dd.trace_id`/`dd.span_id` with the same conversions.
+Internal LLM trace IDs use 32 hexadecimal digits, span/parent IDs use unsigned
+64-bit decimal, and root parent is `undefined`. Internal attempt identity always includes the runtime observation-attempt UUID,
+even when a host reuses its context. `linked_to_attempt` supplies the specific
+prior observation UUID for native lineage. Older `linked_to` host-only metadata
+remains readable, but does not claim a native LLM predecessor. Host APM
+span IDs are association only. Context-free exports omit host correlation.
+The closed admission anchors and loss/recovery delivery limits are described in
+[the assembled example](../../examples/host-trace/README.md); they are causal
+parents, not elapsed run-duration measurements.
+
+Queued records own validated context and runtime attempt identity independently
+of raw event payload. Tool spans use real runtime `call_id`/`name` fields. Status
+is restricted to `ok`/`error`; paused admission remains `ok`. Rejection diagnostics
+contain a finite signal/status/category and never response-body text. Transport
+errors do not expose endpoint URLs through Display or Debug. Live results listed
+above are historical v1 runs, not verification of this revision's context/link
+transport. Current full correlation is **UNVERIFIED** until the assembled live
+procedure returns actual linked LLM/APM/log evidence.

@@ -30,8 +30,7 @@ impl Envelope {
             fingerprint: InputFingerprint::new("a".repeat(64)).unwrap(),
             behavior_fingerprint: InputFingerprint::new("b".repeat(64)).unwrap(),
             prompt: "safe demo".into(),
-            context: TraceContext::new("1234567890abcdef1234567890abcdef", "1234567890abcdef")
-                .unwrap(),
+            context: crate::journey::host_context(),
         }
     }
     pub fn options(&self) -> AdmissionOptions {
@@ -63,10 +62,33 @@ pub fn read(path: &Path) -> Envelope {
     serde_json::from_slice(&fs::read(path).unwrap())
         .unwrap_or_else(|_| panic!("invalid durable envelope"))
 }
-struct Effect;
+struct Effect {
+    #[cfg(feature = "datadog")]
+    loss_exporter: Option<crabber::obs::DatadogObserver>,
+    #[cfg(feature = "datadog")]
+    capture: Arc<Capture>,
+}
 #[async_trait]
 impl ToolExecutor for Effect {
     async fn execute(&self, _: Value) -> Result<Value, crabber::ExtensionError> {
+        #[cfg(feature = "datadog")]
+        if let Some(exporter) = &self.loss_exporter {
+            exporter.flush().await.unwrap();
+            let path = std::path::PathBuf::from(std::env::var_os("CRABBER_TRACE_QUEUE").unwrap());
+            {
+                let context = self.capture.events.lock().unwrap()[0].1.clone().unwrap();
+                let attempt = self
+                    .capture
+                    .observation_attempt
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap();
+                persist_attempt(&path, &context, &attempt);
+            }
+            fs::write(path.parent().unwrap().join("loss-ready"), b"ready").unwrap();
+            std::future::pending::<()>().await;
+        }
         Ok(json!({"ok":true}))
     }
 }
@@ -85,7 +107,7 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
         StreamDelta::TextDelta("done".into()),
         StreamDelta::Completed,
     ];
-    let scripts = if mode == "resume" {
+    let scripts = if matches!(mode, "resume" | "recover") {
         vec![text]
     } else {
         vec![
@@ -109,6 +131,12 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
     } else {
         Arc::new(StaticPolicy::new(PermissionDecision::Allow))
     };
+    #[cfg(feature = "datadog")]
+    let loss_exporter = if mode == "loss" {
+        capture.exporter.clone()
+    } else {
+        None
+    };
     Agent::builder()
         .store(store)
         .provider(Arc::new(FakeProvider::scripted(scripts)))
@@ -116,7 +144,7 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
             provider_id: "fake".into(),
             model_id: "scripted".into(),
         }))
-        .observer(capture)
+        .observer(capture.clone())
         .policy(policy)
         .tool(Arc::new(ToolDefinition {
             info: ToolInfo {
@@ -126,7 +154,12 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
                 retry_safe: true,
                 required_permissions: vec![],
             },
-            executor: Arc::new(Effect),
+            executor: Arc::new(Effect {
+                #[cfg(feature = "datadog")]
+                loss_exporter,
+                #[cfg(feature = "datadog")]
+                capture,
+            }),
         }))
         .build()
         .unwrap()
@@ -134,18 +167,39 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
 pub fn next_context(prior: &TraceContext) -> TraceContext {
     // A demo-generated UUID supplies fresh numeric identity without an SDK.
     // Production hosts normally obtain this from their own tracing instrumentation.
+    if let (Ok(trace), Ok(span)) = (
+        std::env::var("CRABBER_RECOVERY_TRACE_ID"),
+        std::env::var("CRABBER_RECOVERY_SPAN_ID"),
+    ) {
+        return TraceContext::new(&trace, &span)
+            .unwrap()
+            .linked_to(prior)
+            .unwrap();
+    }
     let trace = crabber::core::RunId::new().to_string().replace('-', "");
     TraceContext::new(&trace, &trace[..16])
         .unwrap()
         .linked_to(prior)
         .unwrap()
 }
-fn persist_attempt(path: &Path, context: &TraceContext) {
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Attempt {
+    context: TraceContext,
+    observation_attempt: crabber::core::RunId,
+}
+fn persist_attempt(path: &Path, context: &TraceContext, attempt: &crabber::core::RunId) {
     let parent = path.parent().unwrap();
     let temporary = parent.join("attempt.tmp");
     let mut file = fs::File::create(&temporary).unwrap();
-    file.write_all(&serde_json::to_vec(context).unwrap())
-        .unwrap();
+    file.write_all(
+        &serde_json::to_vec(&Attempt {
+            context: context.clone(),
+            observation_attempt: attempt.clone(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
     file.sync_all().unwrap();
     fs::rename(temporary, parent.join("attempt.json")).unwrap();
     fs::File::open(parent).unwrap().sync_all().unwrap();
@@ -162,16 +216,23 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         assert_eq!(serde_json::to_value(outcome).unwrap(), evidence["outcome"]);
     }
     let envelope = read(path);
-    let capture = Arc::new(Capture::default());
+    #[cfg(feature = "datadog")]
+    let export = crate::export::ExportCapture::new();
+    let capture = Arc::new(Capture {
+        #[cfg(feature = "datadog")]
+        exporter: Some(export.observer.clone()),
+        #[cfg(feature = "datadog")]
+        live_exporter: export.live.clone(),
+        ..Capture::default()
+    });
     let agent = agent(store.clone(), capture.clone(), mode);
-    let current = if mode == "resume" {
+    let current = if matches!(mode, "resume" | "recover") {
         let previous = path.parent().unwrap().join("attempt.json");
-        let prior = if previous.exists() {
-            serde_json::from_slice(&fs::read(previous).unwrap()).unwrap()
-        } else {
-            envelope.context.clone()
-        };
-        next_context(&prior)
+        let prior: Attempt = serde_json::from_slice(&fs::read(previous).unwrap())
+            .unwrap_or_else(|_| panic!("invalid attempt journal"));
+        next_context(&prior.context)
+            .linked_to_attempt(&prior.context, &prior.observation_attempt)
+            .unwrap()
     } else {
         envelope.context.clone()
     };
@@ -179,10 +240,8 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
     // coordinate its durable attempt journal with its worker/queue claim policy.
     // Initial admission identity is already durable in the immutable envelope.
     // Redelivery in the original admission mode must not replace a resumed attempt.
-    if mode == "resume" {
-        persist_attempt(path, &current);
-    }
-    let (receipt, expected) = if mode == "resume" {
+
+    let (receipt, expected) = if matches!(mode, "resume" | "recover") {
         let receipt = agent
             .lookup_admission(&envelope.session, &envelope.key)
             .await
@@ -193,7 +252,14 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             .resume_with_context(&receipt.run_id, Some(current.clone()))
             .await
             .unwrap();
-        assert_eq!(result.status, RunStatus::Completed);
+        assert_eq!(
+            result.status,
+            if mode == "recover" {
+                RunStatus::Interrupted
+            } else {
+                RunStatus::Completed
+            }
+        );
         let new = store.get_run(&receipt.run_id).await.unwrap().unwrap();
         assert_ne!(old.claim_token, new.claim_token);
         assert_eq!(
@@ -203,7 +269,7 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
                 .unwrap(),
             Some(receipt.clone())
         );
-        (receipt, 1)
+        (receipt, usize::from(mode != "recover"))
     } else {
         let admission = agent
             .prompt_keyed_with_context(
@@ -232,38 +298,91 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         };
         (receipt, expected)
     };
-    let events = capture.events.lock().unwrap();
-    let models = capture.models.lock().unwrap();
-    assert_eq!(models.len(), expected);
-    assert!(
-        events
-            .iter()
-            .chain(models.iter())
-            .all(|(event, context)| event.run_id == receipt.run_id
-                && context.as_ref() == Some(&current))
-    );
-    if expected > 0 && mode != "pause" {
+    if expected > 0 || mode == "recover" {
+        let attempt = capture.observation_attempt.lock().unwrap().clone().unwrap();
+        persist_attempt(path, &current, &attempt);
+    }
+    {
+        let events = capture.events.lock().unwrap();
+        let models = capture.models.lock().unwrap();
+        assert_eq!(models.len(), expected);
         assert!(
             events
                 .iter()
-                .any(|(event, _)| event.kind == crabber::EventKind::ToolCallSettled)
+                .chain(models.iter())
+                .all(|(event, context)| event.run_id == receipt.run_id
+                    && context.as_ref() == Some(&current))
+        );
+        if expected > 0 && mode != "pause" {
+            assert!(
+                events
+                    .iter()
+                    .any(|(event, _)| event.kind == crabber::EventKind::ToolCallSettled)
+            );
+        }
+        println!(
+            "backend={} schema={} provider=fake session={} run={} attempt_trace={} attempt_span={} observation_attempt={} predecessor={} predecessor_span={} predecessor_attempt={} callbacks={} models={}",
+            backend,
+            if backend == "postgres" {
+                "3"
+            } else {
+                "not-applicable"
+            },
+            envelope.session,
+            receipt.run_id,
+            current.trace_id(),
+            current.span_id(),
+            capture
+                .observation_attempt
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or_else(|| "none".to_string(), ToString::to_string),
+            current.predecessor().map_or("none", |link| link.trace_id()),
+            current.predecessor().map_or("none", |link| link.span_id()),
+            current
+                .predecessor()
+                .and_then(|link| link.observation_attempt())
+                .map_or_else(|| "none".to_string(), ToString::to_string),
+            events.len(),
+            models.len()
         );
     }
-    println!(
-        "backend={} schema={} provider=fake session={} run={} attempt_trace={} predecessor={} callbacks={} models={}",
-        backend,
-        if backend == "postgres" {
-            "3"
-        } else {
-            "not-applicable"
-        },
-        envelope.session,
-        receipt.run_id,
-        current.trace_id(),
-        current.predecessor().map_or("none", |link| link.trace_id()),
-        events.len(),
-        models.len()
-    );
+    #[cfg(feature = "datadog")]
+    {
+        let payloads = export.finish(&current, expected).await;
+        if !payloads.is_empty() {
+            fs::write(
+                path.parent().unwrap().join(format!("{mode}-exports.json")),
+                serde_json::to_vec(&payloads).unwrap(),
+            )
+            .unwrap();
+        }
+        if matches!(mode, "resume" | "recover") {
+            let prior: Vec<Value> = serde_json::from_slice(
+                &fs::read(path.parent().unwrap().join(if mode == "recover" {
+                    "loss-exports.json"
+                } else {
+                    "pause-exports.json"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let root = |bodies: &[Value]| {
+                bodies
+                    .iter()
+                    .filter_map(|body| body.pointer("/0/spans").and_then(Value::as_array))
+                    .flatten()
+                    .find(|span| span["meta"]["kind"] == "agent")
+                    .unwrap()
+                    .clone()
+            };
+            let before = root(&prior);
+            let after = root(&payloads);
+            assert_eq!(after["span_links"][0]["trace_id"], before["trace_id"]);
+            assert_eq!(after["span_links"][0]["span_id"], before["span_id"]);
+        }
+    }
 }
 pub async fn memory(path: &Path) {
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());

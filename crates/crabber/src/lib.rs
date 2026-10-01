@@ -26,6 +26,9 @@ pub use crabber_session::{
     SnapshotRequest, SnapshotUsage,
 };
 
+#[cfg(feature = "datadog")]
+pub use crabber_obs as obs;
+
 #[cfg(test)]
 mod tests {
     #[test]

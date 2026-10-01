@@ -182,6 +182,23 @@ pub trait Observer: Send + Sync {
     fn model_completed_with_context(&self, event: &EventRecord, _context: Option<&TraceContext>) {
         self.model_completed(event);
     }
+    /// Execution identity is fresh even when the host supplies no trace context.
+    fn emit_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        _attempt: &RunId,
+    ) {
+        self.emit_with_context(event, context);
+    }
+    fn model_completed_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        _attempt: &RunId,
+    ) {
+        self.model_completed_with_context(event, context);
+    }
 }
 
 // Owned by one execution attempt; cloning the runtime into tasks keeps the identity
@@ -189,14 +206,16 @@ pub trait Observer: Send + Sync {
 struct ContextObserver {
     inner: Arc<dyn Observer>,
     context: Option<TraceContext>,
+    attempt: RunId,
 }
 impl Observer for ContextObserver {
     fn emit(&self, event: &EventRecord) {
-        self.inner.emit_with_context(event, self.context.as_ref());
+        self.inner
+            .emit_in_attempt(event, self.context.as_ref(), &self.attempt);
     }
     fn model_completed(&self, event: &EventRecord) {
         self.inner
-            .model_completed_with_context(event, self.context.as_ref());
+            .model_completed_in_attempt(event, self.context.as_ref(), &self.attempt);
     }
 }
 
@@ -1108,6 +1127,7 @@ impl Orchestrator {
         runtime.observer = Arc::new(ContextObserver {
             inner: Arc::clone(&self.observer),
             context,
+            attempt: RunId::new(),
         });
         runtime
     }

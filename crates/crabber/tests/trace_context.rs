@@ -1,3 +1,6 @@
+#[cfg(feature = "datadog")]
+#[path = "../../../examples/host-trace/src/export.rs"]
+mod export;
 #[path = "../../../examples/host-trace/src/journey.rs"]
 mod journey;
 
@@ -48,8 +51,15 @@ async fn host_observes_model_parallel_tools_and_lifecycle_without_global_subscri
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // Compare every callback and captured signal per simultaneous session.
 async fn concurrent_contexts_and_context_free_execution_are_isolated() {
-    let capture = Arc::new(journey::Capture::default());
+    #[cfg(feature = "datadog")]
+    let export = export::ExportCapture::new();
+    let capture = Arc::new(journey::Capture {
+        #[cfg(feature = "datadog")]
+        exporter: Some(export.observer.clone()),
+        ..journey::Capture::default()
+    });
     let agent = Arc::new(build(capture.clone(), Arc::new(MemoryStore::new())));
     let contexts = [
         Some(context("1234567890abcdef")),
@@ -75,23 +85,74 @@ async fn concurrent_contexts_and_context_free_execution_are_isolated() {
     for task in tasks {
         identities.push(task.await.unwrap());
     }
-    for (run, context) in identities {
+    for (run, context) in &identities {
         let events = capture.events.lock().unwrap();
         let models = capture.models.lock().unwrap();
-        assert!(events.iter().any(|(event, _)| event.run_id == run));
+        assert!(events.iter().any(|(event, _)| &event.run_id == run));
         assert_eq!(
             models
                 .iter()
-                .filter(|(event, _)| event.run_id == run)
+                .filter(|(event, _)| &event.run_id == run)
                 .count(),
             1
         );
         for (event, observed) in events
             .iter()
             .chain(models.iter())
-            .filter(|(event, _)| event.run_id == run)
+            .filter(|(event, _)| &event.run_id == run)
         {
-            assert_eq!(observed, &context, "wrong context for {}", event.run_id);
+            assert_eq!(observed, context, "wrong context for {}", event.run_id);
+        }
+    }
+    #[cfg(feature = "datadog")]
+    {
+        let bodies = export.raw().await;
+        let spans: Vec<_> = bodies
+            .iter()
+            .filter_map(|body| {
+                body.pointer("/0/spans")
+                    .and_then(serde_json::Value::as_array)
+            })
+            .flatten()
+            .collect();
+        let logs: Vec<_> = bodies
+            .iter()
+            .filter(|body| body.pointer("/0/message").is_some())
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+            .collect();
+        let mut traces = std::collections::HashSet::new();
+        for (run, context) in &identities {
+            let events = capture.events.lock().unwrap();
+            let session = events
+                .iter()
+                .find(|(event, _)| &event.run_id == run)
+                .unwrap()
+                .0
+                .session_id
+                .to_string();
+            let selected: Vec<_> = spans
+                .iter()
+                .filter(|span| span["session_id"] == session)
+                .collect();
+            assert_eq!(selected.len(), 3);
+            assert!(traces.insert(selected[0]["trace_id"].as_str().unwrap()));
+            for span in selected {
+                if let Some(context) = context {
+                    let numeric = u128::from_str_radix(context.trace_id(), 16).unwrap();
+                    let expected = if numeric > u128::from(u64::MAX) {
+                        format!("{numeric:032x}")
+                    } else {
+                        numeric.to_string()
+                    };
+                    assert_eq!(span["_dd"]["apm_trace_id"], expected);
+                } else {
+                    assert!(span["_dd"].get("apm_trace_id").is_none());
+                }
+            }
+            for log in logs.iter().filter(|log| log["run_id"] == run.to_string()) {
+                assert_eq!(log.get("dd.trace_id").is_some(), context.is_some());
+            }
         }
     }
 }
@@ -246,6 +307,63 @@ async fn durable_memory_paused_resume_and_duplicate_delivery() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(feature = "datadog")]
+#[tokio::test]
+async fn context_free_and_reused_host_context_resume_have_distinct_closed_graphs() {
+    for context in [None, Some(context("1234567890abcdef1234567890abcdef"))] {
+        let export = export::ExportCapture::new();
+        let capture = Arc::new(journey::Capture {
+            exporter: Some(export.observer.clone()),
+            ..journey::Capture::default()
+        });
+        let store = Arc::new(MemoryStore::new());
+        let first = durable::agent(store.clone(), capture.clone(), "pause");
+        let result = first
+            .prompt_with_context(None, "safe", context.clone())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap();
+        assert_eq!(result.status, crabber::core::RunStatus::Paused);
+        let second = durable::agent(store, capture, "resume");
+        second
+            .resume_with_context(&result.run_id, context.clone())
+            .await
+            .unwrap();
+        let bodies = export.raw().await;
+        let spans: Vec<_> = bodies
+            .iter()
+            .filter_map(|body| {
+                body.pointer("/0/spans")
+                    .and_then(serde_json::Value::as_array)
+            })
+            .flatten()
+            .collect();
+        let roots: Vec<_> = spans
+            .iter()
+            .filter(|span| span["meta"]["kind"] == "agent")
+            .collect();
+        assert_eq!(roots.len(), 2);
+        assert_ne!(roots[0]["trace_id"], roots[1]["trace_id"]);
+        assert_ne!(roots[0]["span_id"], roots[1]["span_id"]);
+        let mut ids = std::collections::HashSet::new();
+        for span in &spans {
+            assert!(ids.insert(span["span_id"].as_str().unwrap()));
+            assert_eq!(span["_dd"].get("apm_trace_id").is_some(), context.is_some());
+            assert!(span.get("span_links").is_none());
+            if span["parent_id"] != "undefined" {
+                assert!(
+                    spans
+                        .iter()
+                        .any(|parent| parent["span_id"] == span["parent_id"]
+                            && parent["trace_id"] == span["trace_id"])
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn predecessor_is_validated_bounded_and_requires_a_new_numeric_trace() {
     let first = context("0000000000000001");
@@ -322,6 +440,87 @@ mod durable_process {
             "worker_source={}",
             String::from_utf8(output.stdout).unwrap().trim()
         );
+    }
+    #[cfg(feature = "datadog")]
+    #[tokio::test]
+    async fn killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
+        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+            assert!(
+                std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
+                "CRABBER_TEST_POSTGRES_URL required"
+            );
+            return;
+        };
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let envelope = durable::Envelope::demo();
+        let dir = std::env::temp_dir().join(format!("crabber-loss-{}", envelope.session));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("queue.json");
+        durable::enqueue(&path, &envelope);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "durable_process::worker_child", "--nocapture"])
+            .env("CRABBER_TRACE_WORKER", "loss")
+            .env("CRABBER_TRACE_QUEUE", &path)
+            .env("CRABBER_TRACE_CAPTURE_FILE", dir.join("loss-exports.json"))
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !dir.join("loss-ready").exists() {
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("loss handshake timeout");
+            }
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "loss worker exited before handshake"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let receipt = store
+            .lookup_admission(&envelope.session, &envelope.key)
+            .await
+            .unwrap()
+            .unwrap();
+        let before = store.get_run(&receipt.run_id).await.unwrap().unwrap();
+        assert_eq!(before.status, crabber::core::RunStatus::Running);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // Real lease expiry, without SQL mutation or bypassing execution authority.
+        tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+        spawn(&path, "recover").await;
+        let after = store.get_run(&receipt.run_id).await.unwrap().unwrap();
+        assert_ne!(after.claim_token, before.claim_token);
+        assert_eq!(after.status, crabber::core::RunStatus::Interrupted);
+        assert_eq!(
+            store
+                .lookup_admission(&envelope.session, &envelope.key)
+                .await
+                .unwrap(),
+            Some(receipt)
+        );
+        let before: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(dir.join("loss-exports.json")).unwrap()).unwrap();
+        let spans: Vec<_> = before
+            .iter()
+            .filter_map(|body| {
+                body.pointer("/0/spans")
+                    .and_then(serde_json::Value::as_array)
+            })
+            .flatten()
+            .collect();
+        assert!(spans.iter().any(|span| span["meta"]["kind"] == "llm"));
+        for span in &spans {
+            if span["parent_id"] != "undefined" {
+                assert!(
+                    spans
+                        .iter()
+                        .any(|parent| parent["span_id"] == span["parent_id"])
+                );
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn postgres_fresh_workers_preserve_schema3_receipts_sessions_and_cursors() {
