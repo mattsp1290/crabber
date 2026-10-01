@@ -43,7 +43,9 @@ two-record queue: two accepted, 98 dropped. This supplemental queue stress reuse
 an actual captured model measurement; it does not manufacture main runtime outcomes.
 
 Slow intake is first synchronized to an actual stalled request, then Tokio time
-is paused and advanced to the configured ten-second control budgets. A timed-out
+is paused and advanced to the configured ten-second control budgets. Elapsed
+virtual time is asserted within that budget plus Tokio's one-millisecond timer
+precision, rather than allowing arbitrary automatic time advancement. A timed-out
 flush leaves a live worker; shutdown eventually stops it, zeros local depths and
 accounts for outstanding drops. Fast loopback requests run with real Tokio time.
 

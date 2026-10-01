@@ -968,7 +968,7 @@ async fn control_bounds() {
     let (result, elapsed) = shutdown.await.unwrap();
     assert!(result.is_err());
     assert!(
-        elapsed <= Duration::from_secs(10),
+        elapsed <= Duration::from_secs(10) + Duration::from_millis(1),
         "shutdown elapsed: {elapsed:?}"
     );
     stopped(&export).await;
@@ -980,7 +980,7 @@ async fn control_bounds() {
     tokio::time::resume();
     server.abort();
     println!(
-        "control_timeout_budget_seconds=10 flush_timeout_worker=running shutdown_worker=stopped outstanding_dropped={}",
+        "control_timeout_budget_seconds=10 timer_precision_milliseconds=1 flush_timeout_worker=running shutdown_worker=stopped outstanding_dropped={}",
         health.dropped
     );
 }
