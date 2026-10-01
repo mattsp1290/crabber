@@ -102,13 +102,16 @@ session/run/attempt/call/trace/span IDs. Host-controlled static tags remain the
 host's responsibility. Native span identities/context and safe logs are preserved.
 Adding this config field is a source API change: update explicit struct literals
 with `metric_dimensions: MetricDimensions::default()` or host allowlists.
+`ExportError::MetricIntakeErrors(count)` becomes `IntakeErrors { signal, count }`
+to distinguish distribution and v2 metrics acknowledgements; `IntakeResponse`
+reports invalid or oversized acknowledgements without their contents.
 
 Read `DatadogObserver::health()` or, with the facade `datadog` feature,
 `Agent::export_health()` without network activity. The facade returns `None` when
 export is not configured (including `datadog_from_env` without `DD_API_KEY`). The
 method is unavailable when the feature is disabled. `accepted` counts observations
-successfully enqueued, not samples or deliveries; one model observation can yield
-two samples. `dropped` counts enqueue rejections, nonblocking producer contention,
+reserved and submitted to the channel, not samples or deliveries; one model observation can yield
+two samples. `dropped` counts enqueue rejections,
 observations shed while a failed batch is retained, and outstanding observations
 at worker termination. Accepted and dropped can therefore overlap. Both counters
 are cumulative and never reset; `crabber.export.dropped` is now a cumulative gauge.
@@ -122,8 +125,12 @@ channel bound during a concurrent receive transition; controls are excluded. Las
 whole nonempty batch across spans, metrics, distributions and logs, `None` before
 that point; empty flushes and partial-stage acceptance do not update it.
 
-Emission never waits for intake or a lock: a contended producer gate drops the
-new observation. A failed batch remains bounded; additional received records are
+Emission never waits for intake or a bookkeeping lock. It reserves channel
+capacity before incrementing record counters and sending; concurrent producers
+with available capacity do not shed records for bookkeeping contention. At worker
+termination, dropped is derived from rejected plus accepted minus fully delivered
+records, so submissions racing termination are accounted without counter
+underflow. A failed batch remains bounded; additional received records are
 shed, accounted locally. Successful chunks/stages are removed before progressing
 and are not replayed after a later known rejection. Response loss is inherently
 at-least-once: a request accepted remotely but lost locally can be retried.

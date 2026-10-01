@@ -13,7 +13,7 @@ use std::{
     fmt,
     io::Write,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -91,13 +91,13 @@ pub struct ExportHealth {
 }
 #[derive(Default)]
 struct Health {
-    gate: Mutex<()>,
     accepted: AtomicU64,
-    dropped: AtomicU64,
+    rejected: AtomicU64,
+    shed: AtomicU64,
+    delivered: AtomicU64,
     retries: AtomicU64,
     resume: AtomicU64,
     failures: AtomicU64,
-    outstanding: AtomicU64,
     queued: AtomicU64,
     pending: AtomicU64,
     last_success: AtomicU64,
@@ -106,11 +106,6 @@ struct Health {
 struct WorkerGuard(Arc<Health>);
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
-        let _lock = self.0.gate.lock().expect("health gate");
-        self.0.dropped.fetch_add(
-            self.0.outstanding.swap(0, Ordering::SeqCst),
-            Ordering::SeqCst,
-        );
         self.0.pending.store(0, Ordering::SeqCst);
         self.0.queued.store(0, Ordering::SeqCst);
         self.0.stopped.store(1, Ordering::SeqCst);
@@ -476,48 +471,63 @@ impl DatadogObserver {
         }
     }
     fn enqueue(&self, command: Command) -> Result<(), ()> {
-        let Ok(_lock) = self.health.gate.try_lock() else {
-            self.health.dropped.fetch_add(1, Ordering::SeqCst);
-            return Err(());
-        };
         if self.health.stopped.load(Ordering::SeqCst) != 0 {
-            self.health.dropped.fetch_add(1, Ordering::SeqCst);
+            self.health.rejected.fetch_add(1, Ordering::SeqCst);
             return Err(());
         }
         let Ok(permit) = self.tx.try_reserve() else {
-            self.health.dropped.fetch_add(1, Ordering::SeqCst);
+            self.health.rejected.fetch_add(1, Ordering::SeqCst);
             return Err(());
         };
-        self.health.outstanding.fetch_add(1, Ordering::SeqCst);
+        self.submit(permit, command);
+        Ok(())
+    }
+    fn submit(&self, permit: mpsc::Permit<'_, Command>, command: Command) {
         self.health.queued.fetch_add(1, Ordering::SeqCst);
         self.health.accepted.fetch_add(1, Ordering::SeqCst);
         permit.send(command);
-        Ok(())
     }
     #[must_use]
     pub fn dropped(&self) -> u64 {
-        self.health.dropped.load(Ordering::SeqCst)
+        let rejected = self.health.rejected.load(Ordering::SeqCst);
+        let lost = if self.health.stopped.load(Ordering::SeqCst) == 0 {
+            self.health.shed.load(Ordering::SeqCst)
+        } else {
+            self.health
+                .accepted
+                .load(Ordering::SeqCst)
+                .saturating_sub(self.health.delivered.load(Ordering::SeqCst))
+        };
+        rejected.saturating_add(lost)
     }
     #[must_use]
     pub fn health(&self) -> ExportHealth {
-        let pending = self.health.pending.load(Ordering::SeqCst);
+        let stopped = self.health.stopped.load(Ordering::SeqCst) != 0;
+        let pending = if stopped {
+            0
+        } else {
+            self.health.pending.load(Ordering::SeqCst)
+        };
         let last = self.health.last_success.load(Ordering::SeqCst);
         ExportHealth {
             accepted: self.health.accepted.load(Ordering::SeqCst),
             dropped: self.dropped(),
             retries: self.health.retries.load(Ordering::SeqCst),
             failures: self.health.failures.load(Ordering::SeqCst),
-            queue_depth: self
-                .health
-                .queued
-                .load(Ordering::SeqCst)
-                .min(self.tx.max_capacity() as u64),
+            queue_depth: if stopped {
+                0
+            } else {
+                self.health
+                    .queued
+                    .load(Ordering::SeqCst)
+                    .min(self.tx.max_capacity() as u64)
+            },
             pending_depth: pending,
             last_success_unix_seconds: (last > 0).then_some(last),
-            worker_status: if self.health.stopped.load(Ordering::SeqCst) == 0 {
-                WorkerStatus::Running
-            } else {
+            worker_status: if stopped {
                 WorkerStatus::Stopped
+            } else {
+                WorkerStatus::Running
             },
         }
     }
@@ -602,8 +612,7 @@ async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, guard: W
                 Some(Command::Event(event)) => {
                     health.queued.fetch_sub(1,Ordering::SeqCst);
                     if retrying || pending.records>=batch_limit {
-                        health.dropped.fetch_add(1,Ordering::SeqCst);
-                        health.outstanding.fetch_sub(1,Ordering::SeqCst);
+                        health.shed.fetch_add(1,Ordering::SeqCst);
                     } else {
                         pending.events.push(*event);
                         pending.records += 1;
@@ -616,8 +625,7 @@ async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, guard: W
                 Some(Command::Measurement(measurement)) => {
                     health.queued.fetch_sub(1,Ordering::SeqCst);
                     if retrying || pending.records >= batch_limit {
-                        health.dropped.fetch_add(1,Ordering::SeqCst);
-                        health.outstanding.fetch_sub(1,Ordering::SeqCst);
+                        health.shed.fetch_add(1,Ordering::SeqCst);
                     } else {
                         pending.measurements.push(measurement);
                         pending.records += 1;
@@ -1075,9 +1083,12 @@ async fn export(
         pending.stage = ExportStage::Metrics;
     }
     if pending.stage == ExportStage::Metrics {
-        let dropped_count = *pending
-            .dropped_snapshot
-            .get_or_insert_with(|| health.dropped.load(Ordering::SeqCst));
+        let dropped_count = *pending.dropped_snapshot.get_or_insert_with(|| {
+            health
+                .rejected
+                .load(Ordering::SeqCst)
+                .saturating_add(health.shed.load(Ordering::SeqCst))
+        });
         if pending.unsent_parts.is_empty() {
             let mut metrics: Vec<_> = pending
                 .events
@@ -1159,8 +1170,8 @@ async fn export(
                 .store(u64::try_from(time_now()).unwrap_or(0), Ordering::SeqCst);
         }
         health
-            .outstanding
-            .fetch_sub(pending.records as u64, Ordering::SeqCst);
+            .delivered
+            .fetch_add(pending.records as u64, Ordering::SeqCst);
         health.pending.store(0, Ordering::SeqCst);
         pending.records = 0;
         pending.measurements.clear();
@@ -2001,6 +2012,63 @@ mod tests {
         assert_eq!(health.dropped, 4000);
         assert_eq!(health.queue_depth, 0);
         assert_eq!(health.pending_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn simultaneous_producers_with_ample_capacity_preserve_all_records() {
+        let mut c = config();
+        c.channel_capacity = 4096;
+        c.batch_size = 1000;
+        let observer = DatadogObserver::new(&c);
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let observer = observer.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..100 {
+                        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+                    }
+                });
+            }
+            barrier.wait();
+        });
+        // The single-thread runtime has not polled the worker while producers ran.
+        let health = observer.health();
+        assert_eq!(health.accepted, 800);
+        assert_eq!(health.dropped, 0);
+        assert_eq!(health.queue_depth, 800);
+        assert_eq!(health.pending_depth, 0);
+        observer.abort.abort();
+        stopped(&observer).await;
+        assert_eq!(observer.health().accepted, 800);
+        assert_eq!(observer.health().dropped, 800);
+        assert_eq!(observer.health().queue_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn reserved_submission_racing_worker_stop_is_accounted_as_terminal_drop() {
+        let observer = DatadogObserver::new(&config());
+        let permit = observer.tx.try_reserve().unwrap();
+        observer.abort.abort();
+        stopped(&observer).await;
+        // Resume a producer suspended after reserving capacity but before submit.
+        observer.submit(
+            permit,
+            Command::Measurement(Measurement {
+                samples: vec![json!({"safe":true})],
+            }),
+        );
+        let health = observer.health();
+        assert_eq!(health.accepted, 1);
+        assert_eq!(health.dropped, 1);
+        assert_eq!(health.worker_status, WorkerStatus::Stopped);
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.pending_depth, 0);
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        assert_eq!(observer.health().accepted, 1);
+        assert_eq!(observer.health().dropped, 2);
     }
     struct EchoTool;
     #[async_trait::async_trait]
