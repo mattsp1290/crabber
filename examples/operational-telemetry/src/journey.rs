@@ -953,13 +953,24 @@ async fn control_bounds() {
     assert!(deadline_start.elapsed() <= Duration::from_secs(10));
     assert_eq!(export.health().worker_status, WorkerStatus::Running);
     assert_eq!(export.health().last_success_unix_seconds, None);
-    let shutdown_start = tokio::time::Instant::now();
+    // Synchronize actual control polling, rather than relying on a single yield.
+    let started = Arc::new(Notify::new());
+    let signal = started.clone();
     let shutting = export.clone();
-    let shutdown = tokio::spawn(async move { shutting.shutdown().await });
-    tokio::task::yield_now().await;
+    let shutdown = tokio::spawn(async move {
+        let start = tokio::time::Instant::now();
+        signal.notify_one();
+        let result = shutting.shutdown().await;
+        (result, start.elapsed())
+    });
+    started.notified().await;
     tokio::time::advance(Duration::from_secs(10)).await;
-    assert!(shutdown.await.unwrap().is_err());
-    assert!(shutdown_start.elapsed() <= Duration::from_secs(10));
+    let (result, elapsed) = shutdown.await.unwrap();
+    assert!(result.is_err());
+    assert!(
+        elapsed <= Duration::from_secs(10),
+        "shutdown elapsed: {elapsed:?}"
+    );
     stopped(&export).await;
     let health = export.health();
     assert_eq!(health.queue_depth, 0);
