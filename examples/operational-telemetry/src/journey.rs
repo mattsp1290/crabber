@@ -1134,13 +1134,12 @@ async fn cardinality() {
                         .iter()
                         .any(|id| tag.contains(id))
                 );
-                if let Some((dimension, value)) = tag.split_once(':') {
-                    if let Some(index) = ["provider", "model", "tool"]
+                if let Some((dimension, value)) = tag.split_once(':')
+                    && let Some(index) = ["provider", "model", "tool"]
                         .iter()
                         .position(|name| *name == dimension)
-                    {
-                        dimensions[index].insert(value.to_owned());
-                    }
+                {
+                    dimensions[index].insert(value.to_owned());
                 }
             }
         }

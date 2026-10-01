@@ -152,12 +152,9 @@ async fn interrupt_settles_running_tool_and_run() {
     let result = handle.done().await.unwrap();
     assert_eq!(result.status, RunStatus::Interrupted);
     assert_eq!(completed.load(Ordering::SeqCst), 0);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
     assert_eq!(
         store.get_run(&run_id).await.unwrap().unwrap().status,
@@ -204,12 +201,9 @@ async fn paused_call_resumes_from_persisted_input() {
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].reason, crate::TerminalReason::Paused);
     assert_eq!(runs[1].reason, crate::TerminalReason::Success);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -443,12 +437,9 @@ async fn recovery_does_not_request_model_after_committed_text_response() {
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(fake.requests().len(), 1);
     assert_eq!(executed.load(Ordering::SeqCst), 0);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -460,12 +451,9 @@ async fn recovery_stages_committed_assistant_call_before_next_model_turn() {
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(executed.load(Ordering::SeqCst), 1);
     assert_eq!(fake.requests().len(), 2);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -485,12 +473,9 @@ async fn recovery_stages_tool_after_compaction_hides_paused_anchor() {
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(fake.requests().len(), 2);
     assert_eq!(executed.load(Ordering::SeqCst), 1);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -698,7 +683,7 @@ async fn real_size_limit_overflow_summarizes_bounded_input() {
             )
         })
         .collect();
-    assert!(!summaries.is_empty());
+    assert_ne!(summaries, [] as [&crate::OperationalObservation; 0]);
     assert!(
         summaries
             .iter()
@@ -1067,12 +1052,9 @@ async fn resume_reexecutes_only_retry_safe_pending_call() {
     let result = runtime.resume(&run_id).await.unwrap();
     assert_eq!(result.status, RunStatus::Interrupted);
     assert_eq!(executed.load(Ordering::SeqCst), 1);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -1083,12 +1065,9 @@ async fn recover_interrupts_expired_running_call() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].status, RunStatus::Interrupted);
     assert_eq!(executed.load(Ordering::SeqCst), 0);
-    assert!(
-        store
-            .list_unfinished_tool_calls(&run_id)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -1371,12 +1350,12 @@ async fn invalid_tool_arguments_settle_failed_and_continue() {
                 ContentBlock::ToolResult { is_error: true, .. }
             ))
     );
-    assert!(
+    assert_eq!(
         store
             .list_unfinished_tool_calls(&fake.requests()[0].identity.run_id)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 }
 
@@ -1540,7 +1519,10 @@ async fn stream_eof_without_completed_fails_without_assistant_commit() {
     let messages = store.list_messages(&session, None).await.unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, Role::User);
-    assert!(store.list_unfinished_runs().await.unwrap().is_empty());
+    assert_eq!(
+        store.list_unfinished_runs().await.unwrap(),
+        [] as [crabber_core::Run; 0]
+    );
     assert_eq!(
         store
             .list_events(&session, None, 100)
@@ -2250,12 +2232,9 @@ async fn linked_expired_recovery_preserves_pending_and_running_interruption_poli
         assert_eq!(results[0].run_id, run_id);
         assert_eq!(results[0].status, RunStatus::Interrupted);
         assert_eq!(executed.load(Ordering::SeqCst), usize::from(!running));
-        assert!(
-            store
-                .list_unfinished_tool_calls(&run_id)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.list_unfinished_tool_calls(&run_id).await.unwrap(),
+            [] as [crabber_core::ToolCallRecord; 0]
         );
         let new = store.get_run(&run_id).await.unwrap().unwrap();
         assert_ne!(old.claim_token, new.claim_token);
@@ -2820,7 +2799,7 @@ async fn operational_extension_setup_rejection_and_omission_are_runtime_errors()
             runtime.start(request()).await.unwrap().done().await,
             Err(RuntimeError::Extension(_))
         ));
-        assert!(fake.requests().is_empty());
+        assert_eq!(fake.requests(), [] as [crabber_providers::ModelRequest; 0]);
         let values = capture.values.lock().unwrap();
         assert_eq!(values.len(), 2);
         assert!(matches!(values[0].kind, crate::OperationKind::Model { .. }));
