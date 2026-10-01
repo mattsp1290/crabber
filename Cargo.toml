@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/minimal-embed", "examples/admission-receipt", "examples/bounded-snapshot", "examples/native-extension", "examples/wasm-extension", "examples/codex-login", "examples/datadog-export", "xtask"]
+members = ["crates/*", "examples/minimal-embed", "examples/admission-receipt", "examples/host-trace", "examples/bounded-snapshot", "examples/native-extension", "examples/wasm-extension", "examples/codex-login", "examples/datadog-export", "xtask"]
 resolver = "3"
 
 [workspace.package]

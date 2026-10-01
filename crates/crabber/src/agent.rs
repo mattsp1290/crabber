@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use crabber_core::{
-    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
 };
 use crabber_extension::{
     Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
@@ -51,6 +51,7 @@ pub enum BuildError {
 }
 
 pub struct AgentBuilder {
+    observers: Vec<Arc<dyn Observer>>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
     config: Option<AgentConfig>,
@@ -65,6 +66,13 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Adds a host observer alongside broadcasts and optional Datadog export.
+    /// Each registered observer receives each callback once. Hosts own tracing setup.
+    #[must_use]
+    pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observers.push(observer);
+        self
+    }
     /// Mounts a SHA-256 verified Component Model extension.
     #[cfg(feature = "wasm")]
     #[must_use]
@@ -181,6 +189,7 @@ impl AgentBuilder {
         #[cfg(feature = "datadog")]
         let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
         let observer = Arc::new(EventBroadcaster {
+            observers: self.observers,
             events: events.clone(),
             #[cfg(feature = "datadog")]
             datadog: datadog.clone(),
@@ -231,6 +240,7 @@ impl AgentBuilder {
 }
 
 struct EventBroadcaster {
+    observers: Vec<Arc<dyn Observer>>,
     events: broadcast::Sender<Arc<EventRecord>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogObserver>,
@@ -238,20 +248,30 @@ struct EventBroadcaster {
 
 impl Observer for EventBroadcaster {
     fn emit(&self, event: &EventRecord) {
-        let _ = self.events.send(Arc::new(event.clone()));
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.emit(event);
-            crabber_obs::tracing_bridge::emit(event);
-        }
+        self.emit_with_context(event, None);
     }
     fn model_completed(&self, event: &EventRecord) {
+        self.model_completed_with_context(event, None);
+    }
+    fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        let _ = self.events.send(Arc::new(event.clone()));
+        for observer in &self.observers {
+            observer.emit_with_context(event, context);
+        }
         #[cfg(feature = "datadog")]
         if let Some(datadog) = &self.datadog {
-            datadog.emit(event);
+            datadog.emit_with_context(event, context);
+            crabber_obs::tracing_bridge::emit_with_context(event, context);
         }
-        #[cfg(not(feature = "datadog"))]
-        let _ = event;
+    }
+    fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        for observer in &self.observers {
+            observer.model_completed_with_context(event, context);
+        }
+        #[cfg(feature = "datadog")]
+        if let Some(datadog) = &self.datadog {
+            datadog.model_completed_with_context(event, context);
+        }
     }
 }
 
@@ -316,6 +336,7 @@ impl Agent {
     #[must_use]
     pub fn builder() -> AgentBuilder {
         AgentBuilder {
+            observers: Vec::new(),
             store: None,
             resolver: None,
             config: None,
@@ -340,19 +361,34 @@ impl Agent {
         session_id: Option<SessionId>,
         text: impl Into<String>,
     ) -> Result<RunHandle, RuntimeError> {
+        self.prompt_with_context(session_id, text, None).await
+    }
+
+    /// Starts a prompt with validated host correlation identity.
+    /// # Errors
+    /// Returns admission, provider or plan failures.
+    pub async fn prompt_with_context(
+        &self,
+        session_id: Option<SessionId>,
+        text: impl Into<String>,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
         self.initialize_extensions().await?;
         let receiver = self.events.subscribe();
         let inner = self
             .runtime
-            .start(Request {
-                session_id,
-                workspace_id: self.config.workspace_id.clone(),
-                directory: self.config.directory.clone(),
-                title: self.config.title.clone(),
-                text: text.into(),
-                selection: self.config.selection.clone(),
-                system_prompt: self.config.system_prompt.clone(),
-            })
+            .start_with_context(
+                Request {
+                    session_id,
+                    workspace_id: self.config.workspace_id.clone(),
+                    directory: self.config.directory.clone(),
+                    title: self.config.title.clone(),
+                    text: text.into(),
+                    selection: self.config.selection.clone(),
+                    system_prompt: self.config.system_prompt.clone(),
+                },
+                context,
+            )
             .await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
@@ -372,11 +408,25 @@ impl Agent {
         text: impl Into<String>,
         options: AdmissionOptions,
     ) -> Result<Admission, RuntimeError> {
+        self.prompt_keyed_with_context(session_id, text, options, None)
+            .await
+    }
+
+    /// Keyed prompt with transport metadata. Retries do not replace the winner's context.
+    /// # Errors
+    /// Returns semantic conflict, identity mismatch, Busy or runtime/store errors.
+    pub async fn prompt_keyed_with_context(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
         self.initialize_extensions().await?;
         let receiver = self.events.subscribe();
         let admission = self
             .runtime
-            .start_keyed(
+            .start_keyed_with_context(
                 Request {
                     session_id: Some(session_id),
                     workspace_id: self.config.workspace_id.clone(),
@@ -387,6 +437,7 @@ impl Agent {
                     system_prompt: self.config.system_prompt.clone(),
                 },
                 options,
+                context,
             )
             .await?;
         Ok(match admission {

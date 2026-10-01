@@ -5,11 +5,11 @@ mod agent;
 pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
-    SessionId,
+    SessionId, TraceContext, TraceContextError,
 };
 pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
-pub use crabber_runtime::{PermissionDecision, RunResult, RuntimeError, StaticPolicy};
+pub use crabber_runtime::{Observer, PermissionDecision, RunResult, RuntimeError, StaticPolicy};
 
 #[cfg(feature = "codex")]
 pub use crabber_auth as auth;

@@ -3,6 +3,7 @@ use crate::policy::{
     PermissionDecision, PermissionPolicy, StaticPolicy, ToolPipeline,
 };
 use async_trait::async_trait;
+use crabber_core::TraceContext;
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
     EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
@@ -174,6 +175,29 @@ impl Default for ConfigSnapshot {
 pub trait Observer: Send + Sync {
     fn emit(&self, event: &EventRecord);
     fn model_completed(&self, _event: &EventRecord) {}
+    /// Contextual callbacks default to the legacy callbacks for existing implementors.
+    fn emit_with_context(&self, event: &EventRecord, _context: Option<&TraceContext>) {
+        self.emit(event);
+    }
+    fn model_completed_with_context(&self, event: &EventRecord, _context: Option<&TraceContext>) {
+        self.model_completed(event);
+    }
+}
+
+// Owned by one execution attempt; cloning the runtime into tasks keeps the identity
+// explicit and immutable, without depending on task-local or global tracing state.
+struct ContextObserver {
+    inner: Arc<dyn Observer>,
+    context: Option<TraceContext>,
+}
+impl Observer for ContextObserver {
+    fn emit(&self, event: &EventRecord) {
+        self.inner.emit_with_context(event, self.context.as_ref());
+    }
+    fn model_completed(&self, event: &EventRecord) {
+        self.inner
+            .model_completed_with_context(event, self.context.as_ref());
+    }
 }
 
 pub struct NoopObserver;
@@ -980,13 +1004,25 @@ impl Orchestrator {
     ///
     /// Returns `SessionBusy` for a session with an active run, or a plan/store error.
     pub async fn start(&self, request: Request) -> Result<RunHandle, RuntimeError> {
-        let (plan, admission) = self.prepare_admission(&request).await?;
+        self.start_with_context(request, None).await
+    }
+
+    /// Starts a run with validated transport metadata, excluded from its semantic fingerprint.
+    /// # Errors
+    /// Returns the same admission errors as `start`.
+    pub async fn start_with_context(
+        &self,
+        request: Request,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let runtime = self.with_context(context);
+        let (plan, admission) = runtime.prepare_admission(&request).await?;
         let admitted = self
             .store
             .admit_run(admission)
             .await
             .map_err(admission_error)?;
-        Ok(self.spawn_admitted(request, plan, admitted))
+        Ok(runtime.spawn_admitted(request, plan, admitted))
     }
 
     /// Admit with a host-selected stable session ID, or reconcile its original receipt.
@@ -997,6 +1033,19 @@ impl Orchestrator {
         &self,
         request: Request,
         options: AdmissionOptions,
+    ) -> Result<Admission, RuntimeError> {
+        self.start_keyed_with_context(request, options, None).await
+    }
+
+    /// Keyed admission with optional host identity. Replay never attaches replacement
+    /// context or executes the retained receipt; identity is not semantic input.
+    /// # Errors
+    /// Returns the same admission errors as `start_keyed`.
+    pub async fn start_keyed_with_context(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
         if request.session_id.is_none() {
             return Err(StoreError::Validation(
@@ -1016,10 +1065,21 @@ impl Orchestrator {
         {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
                 receipt,
-                handle: self.spawn_admitted(request, plan, *admitted),
+                handle: self
+                    .with_context(context)
+                    .spawn_admitted(request, plan, *admitted),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
         }
+    }
+
+    fn with_context(&self, context: Option<TraceContext>) -> Self {
+        let mut runtime = self.clone();
+        runtime.observer = Arc::new(ContextObserver {
+            inner: Arc::clone(&self.observer),
+            context,
+        });
+        runtime
     }
 
     /// Reads retained metadata without acquiring a plan or execution lease.
