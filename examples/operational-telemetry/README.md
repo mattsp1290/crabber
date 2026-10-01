@@ -32,7 +32,9 @@ Mock requests are decoded from actual deflate distributions, gzip metrics/logs,
 and plain native LLM envelopes. Accepted sample counts are distinguished from
 HTTP attempts. Every expected individual measurement is checked against captured
 samples, including exact integer values; fractional values fail. Metric dimensions
-and finite purpose/reason labels are checked, and sentinel prompt/token/argument/
+and finite purpose/reason labels are checked. A separate real native-tool journey
+uses 64 provider/model/tool identities per dimension and proves the first-32 cap
+plus one overflow category in distributions and existing metrics, and sentinel prompt/token/argument/
 result/response content must be absent. The fixture rejects a later log stage
 then recovers without replaying accepted earlier chunks/stages. A separate 503
 fixture proves run completion and broadcasts independent of intake availability.

@@ -377,6 +377,18 @@ async fn terminals(export: &DatadogObserver) -> Vec<OperationalObservation> {
             None,
             20,
         ),
+        (
+            Script {
+                deltas: vec![
+                    (10, StreamDelta::TextDelta("SECRET failing token".into())),
+                    (10, StreamDelta::Error(error())),
+                ],
+                ..Script::default()
+            },
+            TerminalReason::ProviderError,
+            Some(20),
+            30,
+        ),
         (text(), TerminalReason::Success, Some(30), 50),
         (
             Script {
@@ -602,21 +614,13 @@ fn sample_key(value: &OperationalObservation) -> &'static str {
 }
 fn captured_samples(requests: &[Request]) -> Vec<(String, u64)> {
     let mut samples = Vec::new();
-    for request in requests
-        .iter()
-        .filter(|r| r.accepted && r.path == "/api/v2/series")
-    {
-        for series in request.body["series"].as_array().unwrap() {
-            validate_tags(series);
-        }
-    }
+
     for request in requests
         .iter()
         .filter(|r| r.accepted && r.path == "/api/v1/distribution_points")
     {
         for series in request.body["series"].as_array().unwrap() {
             assert!(series.get("type").is_none());
-            validate_tags(series);
             for point in series["points"].as_array().unwrap() {
                 for sample in point[1].as_array().unwrap() {
                     let number = sample.as_f64().unwrap();
@@ -659,13 +663,16 @@ async fn stopped(observer: &DatadogObserver) {
     .unwrap();
 }
 /// Runs assertions and prints only safe counts. No credentials or external services.
+#[allow(clippy::too_many_lines)] // Verify all captured signals against the composed runtime observations.
 pub async fn run() {
     // No network tasks exist during the deliberately paused fencing fixture.
     let fenced = lease().await;
     let intake = Intake::new().await;
     let export = DatadogObserver::new(&intake.config());
     assert_eq!(export.health().last_success_unix_seconds, None);
+    tokio::time::pause();
     let mut observed = terminals(&export).await;
+    tokio::time::resume();
     // Forward genuine local fence callbacks after returning to real-time IO.
     for value in &fenced {
         export.operational_completed(value);
@@ -673,8 +680,64 @@ pub async fn run() {
     observed.extend(fenced);
     export.flush().await.unwrap();
     let requests = intake.requests.lock().unwrap().clone();
+    validate_requests(&requests);
     assert_eq!(captured_samples(&requests), expected_samples(&observed));
-    assert!(requests.iter().any(|r| r.path == "/api/v2/llmobs"));
+    let spans: Vec<_> = requests
+        .iter()
+        .filter(|r| r.accepted && r.path == "/api/v2/llmobs")
+        .flat_map(|r| r.body.as_array().unwrap())
+        .flat_map(|envelope| envelope["spans"].as_array().unwrap())
+        .collect();
+    let runs = observed
+        .iter()
+        .filter(|v| v.kind == OperationKind::Run)
+        .count();
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span["meta"]["kind"] == "agent")
+            .count(),
+        runs - 1
+    );
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span["meta"]["kind"] == "workflow")
+            .count(),
+        runs - 1
+    );
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span["meta"]["kind"] == "tool")
+            .count(),
+        2
+    );
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|span| span["meta"]["kind"] == "llm")
+            .count(),
+        observed
+            .iter()
+            .filter(|v| matches!(v.kind, OperationKind::Model { .. }))
+            .count()
+            - 1
+    );
+    let counts = requests
+        .iter()
+        .filter(|r| r.accepted && r.path == "/api/v2/series")
+        .flat_map(|r| r.body["series"].as_array().unwrap())
+        .filter(|series| series["metric"] == "crabber.run.count")
+        .count();
+    assert_eq!(counts, runs - 1);
+    let logs = requests
+        .iter()
+        .filter(|r| r.accepted && r.path == "/api/v2/logs")
+        .flat_map(|r| r.body.as_array().unwrap())
+        .filter(|log| log["message"] == "run settled")
+        .count();
+    assert_eq!(logs, runs - 1);
     assert!(requests.iter().any(|r| r.path == "/api/v2/series"));
     assert!(requests.iter().any(|r| r.path == "/api/v2/logs"));
     assert!(
@@ -692,12 +755,14 @@ pub async fn run() {
     export.shutdown().await.unwrap();
     stopped(&export).await;
     println!(
-        "terminal_fixtures=10 outcomes=success,provider_error,tool_error,cancelled,lease_lost distributions={} first_token_samples={} accepted={} dropped={} live_percentiles=UNVERIFIED",
+        "terminal_fixtures={} outcomes=success,provider_error,tool_error,cancelled,lease_lost distributions={} first_token_samples={} accepted={} dropped={} live_percentiles=UNVERIFIED",
+        runs,
         expected_samples(&observed).len(),
         observed.iter().filter(|v| v.first_token.is_some()).count(),
         health.accepted,
         health.dropped
     );
+    cardinality().await;
     partial_recovery().await;
     outage_overflow().await;
     control_bounds().await;
@@ -719,9 +784,11 @@ async fn partial_recovery() {
         Some(&export),
         false,
     );
+    tokio::time::pause();
     for _ in 0..3 {
         complete(&host, true).await;
     }
+    tokio::time::resume();
     assert!(export.flush().await.is_err());
     let before = export.health();
     assert_eq!(before.last_success_unix_seconds, None);
@@ -874,18 +941,22 @@ async fn control_bounds() {
     let flush = tokio::spawn(async move { flushing.flush().await });
     entered.notified().await; // Request is actually stalled before pausing virtual time.
     tokio::time::pause();
+    let deadline_start = tokio::time::Instant::now();
     tokio::time::advance(Duration::from_secs(10)).await;
     assert!(matches!(
         flush.await.unwrap(),
         Err(crabber::obs::ExportError::Timeout)
     ));
+    assert!(deadline_start.elapsed() <= Duration::from_secs(10));
     assert_eq!(export.health().worker_status, WorkerStatus::Running);
     assert_eq!(export.health().last_success_unix_seconds, None);
+    let shutdown_start = tokio::time::Instant::now();
     let shutting = export.clone();
     let shutdown = tokio::spawn(async move { shutting.shutdown().await });
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(10)).await;
     assert!(shutdown.await.unwrap().is_err());
+    assert!(shutdown_start.elapsed() <= Duration::from_secs(10));
     stopped(&export).await;
     let health = export.health();
     assert_eq!(health.queue_depth, 0);
@@ -928,4 +999,112 @@ fn validate_tags(series: &Value) {
             }
         }
     }
+}
+
+fn validate_requests(requests: &[Request]) {
+    for request in requests.iter().filter(|r| {
+        r.accepted
+            && matches!(
+                r.path.as_str(),
+                "/api/v2/series" | "/api/v1/distribution_points"
+            )
+    }) {
+        for series in request.body["series"].as_array().unwrap() {
+            validate_tags(series);
+        }
+    }
+}
+async fn cardinality() {
+    use std::collections::BTreeSet;
+    let intake = Intake::new().await;
+    let names: Vec<String> = (0..64).map(|n| format!("identity-{n}")).collect();
+    let mut config = intake.config();
+    config.metric_dimensions = MetricDimensions {
+        providers: names.clone(),
+        models: names.clone(),
+        tools: names.clone(),
+    };
+    let export = DatadogObserver::new(&config);
+    let capture = Arc::new(Capture::default());
+    tokio::time::pause();
+    for name in &names {
+        let clock = Arc::new(Clock::default());
+        let mut script = tool_script();
+        for (_, delta) in &mut script.deltas {
+            if let StreamDelta::ToolCallStart { name: tool, .. } = delta {
+                tool.clone_from(name);
+            }
+        }
+        let host = Agent::builder()
+            .memory()
+            .provider(Arc::new(Provider::new(clock.clone(), vec![script, text()])))
+            .monotonic_clock(clock.clone())
+            .config(AgentConfig::new(Selection {
+                provider_id: name.clone(),
+                model_id: name.clone(),
+            }))
+            .observer(capture.clone())
+            .observer(Arc::new(export.clone()))
+            .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+            .tool(Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: name.clone(),
+                    description: "native cardinality fixture".into(),
+                    parameters: json!({"type":"object"}),
+                    retry_safe: true,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(Echo { clock, fail: false }),
+            }))
+            .build()
+            .unwrap();
+        complete(&host, true).await;
+    }
+    tokio::time::resume();
+    export.flush().await.unwrap();
+    let requests = intake.requests.lock().unwrap().clone();
+    assert_eq!(
+        captured_samples(&requests),
+        expected_samples(&values(&capture))
+    );
+    let mut dimensions = [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()];
+    for request in requests.iter().filter(|r| {
+        r.accepted
+            && matches!(
+                r.path.as_str(),
+                "/api/v2/series" | "/api/v1/distribution_points"
+            )
+    }) {
+        for series in request.body["series"].as_array().unwrap() {
+            for tag in series["tags"].as_array().unwrap() {
+                let tag = tag.as_str().unwrap();
+                assert!(
+                    !["session", "run_id", "attempt", "trace", "span", "call_id"]
+                        .iter()
+                        .any(|id| tag.contains(id))
+                );
+                if let Some((dimension, value)) = tag.split_once(':') {
+                    if let Some(index) = ["provider", "model", "tool"]
+                        .iter()
+                        .position(|name| *name == dimension)
+                    {
+                        dimensions[index].insert(value.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    let expected: BTreeSet<_> = names
+        .iter()
+        .take(32)
+        .cloned()
+        .chain(["overflow".to_owned()])
+        .collect();
+    assert!(dimensions.iter().all(|dimension| *dimension == expected));
+    assert_eq!(export.health().dropped, 0);
+    export.shutdown().await.unwrap();
+    stopped(&export).await;
+    println!(
+        "runtime_identities_per_dimension=64 metric_values_per_dimension=33 allowlist_cap=32 overflow=verified"
+    );
 }
