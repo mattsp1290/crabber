@@ -23,7 +23,7 @@ impl Streamer for LedgerProvider {
         self.fake.stream(request).await
     }
 }
-struct LedgerTool(PathBuf);
+struct LedgerTool(PathBuf, bool);
 #[async_trait]
 impl crabber::ToolExecutor for LedgerTool {
     async fn execute(
@@ -31,10 +31,20 @@ impl crabber::ToolExecutor for LedgerTool {
         _: serde_json::Value,
     ) -> Result<serde_json::Value, crabber::ExtensionError> {
         append(&self.0.join("ledger"), "tool");
+        if self.1 {
+            fs::write(self.0.join("tool-running"), "ready").unwrap();
+            wait(&self.0.join("tool-release")).await;
+        }
         Ok(serde_json::json!({"ok":true}))
     }
 }
-pub(super) fn agent(store: Arc<dyn Store>, dir: &Path, gate: bool) -> Agent {
+pub(super) fn agent(
+    store: Arc<dyn Store>,
+    dir: &Path,
+    gate: bool,
+    capture: Arc<ContextCapture>,
+    tool_loss: bool,
+) -> Agent {
     let call = ToolCallId::new();
     let fake = FakeProvider::scripted(vec![
         vec![
@@ -56,6 +66,7 @@ pub(super) fn agent(store: Arc<dyn Store>, dir: &Path, gate: bool) -> Agent {
     ]);
     Agent::builder()
         .store(store)
+        .observer(capture)
         .provider(Arc::new(LedgerProvider {
             fake,
             dir: dir.to_owned(),
@@ -73,7 +84,7 @@ pub(super) fn agent(store: Arc<dyn Store>, dir: &Path, gate: bool) -> Agent {
                 retry_safe: false,
                 required_permissions: vec![],
             },
-            executor: Arc::new(LedgerTool(dir.to_owned())),
+            executor: Arc::new(LedgerTool(dir.to_owned(), tool_loss)),
         }))
         .build()
         .unwrap()

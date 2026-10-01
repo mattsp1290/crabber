@@ -43,6 +43,22 @@ fn check() {
     run(
         workspace,
         &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "datadog",
+            "--test",
+            "trace_context",
+        ],
+    );
+    run(
+        workspace,
+        &["run", "--quiet", "-p", "host-trace", "--", "memory"],
+    );
+    run(
+        workspace,
+        &[
             "run",
             "--quiet",
             "-p",

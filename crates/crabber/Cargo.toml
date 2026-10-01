@@ -18,11 +18,13 @@ thiserror = "2"
 async-trait = "0.1"
 
 [dev-dependencies]
+flate2 = "1"
 allocation-counter = "0.8.1"
 time = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
 sha2 = "0.10"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
 
 [lints]

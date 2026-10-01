@@ -1,5 +1,5 @@
 //! Redaction-first, nonblocking Datadog export for Crabber runtime events.
-use crabber_core::{EventKind, EventRecord};
+use crabber_core::{EventKind, EventRecord, TraceContext};
 use crabber_runtime::Observer;
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ pub struct DatadogConfig {
     pub channel_capacity: usize,
     pub max_payload_bytes: usize,
     pub timeout: Duration,
-    /// Overrides the API origin for a local intake test.
+    /// Overrides both metrics and native LLM spans origins for a local intake test.
     pub api_origin: Option<String>,
     /// Overrides the logs origin for a local intake test.
     pub logs_origin: Option<String>,
@@ -126,8 +126,8 @@ pub enum ExportError {
     WorkerStopped,
     #[error("export timed out")]
     Timeout,
-    #[error("http export failed: {0}")]
-    Http(#[from] reqwest::Error),
+    #[error("http export failed")]
+    Http,
     #[error("gzip failed: {0}")]
     Gzip(#[from] std::io::Error),
     #[error("intake rejected export: HTTP {0}")]
@@ -160,6 +160,8 @@ enum Command {
 #[derive(Clone)]
 struct SafeEvent {
     kind: EventKind,
+    context: Option<TraceContext>,
+    attempt: Option<String>,
     session: String,
     run: String,
     time_ns: i128,
@@ -179,6 +181,7 @@ struct SafeEvent {
     redactions: Vec<String>,
 }
 impl SafeEvent {
+    #[allow(clippy::too_many_lines)] // Construct the bounded allow-listed queue record together.
     fn from_event(e: &EventRecord, policy: &RedactionPolicy) -> Option<Self> {
         if matches!(
             e.kind,
@@ -200,17 +203,18 @@ impl SafeEvent {
         };
         Some(Self {
             kind: e.kind.clone(),
+            context: None,
+            attempt: None,
             session: e.session_id.to_string(),
             run: e.run_id.to_string(),
             time_ns: e.created_at.unix_timestamp_nanos(),
             provider: safe("provider"),
             model: safe("model"),
-            tool: safe("tool"),
-            tool_id: safe("tool_id"),
+            tool: safe("name"),
+            tool_id: safe("call_id"),
             status: safe("status").map(|status| match status.as_str() {
-                "completed" => "ok".to_string(),
-                "failed" | "interrupted" => "error".to_string(),
-                _ => status,
+                "completed" | "paused" | "ok" => "ok".to_string(),
+                _ => "error".to_string(),
             }),
             input_tokens: e
                 .payload
@@ -292,6 +296,39 @@ impl Observer for DatadogObserver {
     }
     fn model_completed(&self, event: &EventRecord) {
         self.emit(event);
+    }
+    fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        if let Some(mut event) = SafeEvent::from_event(event, &self.redaction) {
+            event.context = context.cloned();
+            if self.tx.try_send(Command::Event(Box::new(event))).is_err() {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        self.emit_with_context(event, context);
+    }
+    fn emit_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        attempt: &crabber_core::RunId,
+    ) {
+        if let Some(mut event) = SafeEvent::from_event(event, &self.redaction) {
+            event.context = context.cloned();
+            event.attempt = Some(attempt.to_string());
+            if self.tx.try_send(Command::Event(Box::new(event))).is_err() {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    fn model_completed_in_attempt(
+        &self,
+        event: &EventRecord,
+        context: Option<&TraceContext>,
+        attempt: &crabber_core::RunId,
+    ) {
+        self.emit_in_attempt(event, context, attempt);
     }
 }
 impl DatadogObserver {
@@ -430,20 +467,41 @@ fn datadog_id(value: &str) -> String {
     let bytes: [u8; 8] = digest[..8].try_into().expect("sha256 has eight bytes");
     u64::from_be_bytes(bytes).max(1).to_string()
 }
+fn attempt_seed(e: &SafeEvent, attempt: &str) -> String {
+    format!("{}:{}:{attempt}", e.session, e.run)
+}
+fn current_attempt(e: &SafeEvent) -> String {
+    attempt_seed(e, e.attempt.as_deref().unwrap_or("legacy"))
+}
+fn llm_trace(seed: &str) -> String {
+    let digest = Sha256::digest(format!("{seed}:llm-trace").as_bytes());
+    format!(
+        "{:032x}",
+        u128::from_be_bytes(digest[..16].try_into().expect("digest length")).max(1)
+    )
+}
+fn apm_trace(trace: &str) -> String {
+    let number = u128::from_str_radix(trace, 16).expect("validated trace");
+    if number > u128::from(u64::MAX) {
+        format!("{number:032x}")
+    } else {
+        number.to_string()
+    }
+}
 fn spans(e: &SafeEvent) -> Vec<Value> {
     let mut result = Vec::new();
-    if matches!(e.kind, EventKind::RunSettled) {
+    if matches!(e.kind, EventKind::RunStarted | EventKind::RunResumed) {
         result.push(span_value(
             e,
-            "crabber.session",
+            "crabber.attempt.admission",
             "agent",
             &format!("{}-session", e.session),
             None,
         ));
     }
     let (name, kind, id_seed, parent_seed) = match &e.kind {
-        EventKind::RunSettled => (
-            "crabber.run",
+        EventKind::RunStarted | EventKind::RunResumed => (
+            "crabber.workflow.admission",
             "workflow",
             format!("{}-run", e.run),
             Some(format!("{}-session", e.session)),
@@ -505,17 +563,32 @@ fn span_value(
     if let Some(summary) = &e.output_summary {
         meta["output"] = json!({"value":summary});
     }
-    let duration = if kind == "llm" {
+    let duration = if matches!(e.kind, EventKind::RunStarted | EventKind::RunResumed) {
+        1
+    } else if kind == "llm" {
         e.latency_ns.max(1)
     } else {
         e.duration_ns.max(1)
     };
-    json!({"name":name,"span_id":datadog_id(id_seed),"trace_id":datadog_id(&format!("{}-trace",e.run)),
-        "parent_id":parent_seed.map_or_else(|| "undefined".to_string(),|p| datadog_id(&p)),
+    let attempt = current_attempt(e);
+    let mut value = json!({"name":name,"span_id":datadog_id(&format!("{attempt}:{id_seed}")),"trace_id":llm_trace(&attempt),
+        "parent_id":parent_seed.map_or_else(|| "undefined".to_string(),|p| datadog_id(&format!("{attempt}:{p}"))),
         "start_ns":e.time_ns-duration,"duration":duration,"meta":meta,
         "status":e.status.as_deref().unwrap_or("ok"),
         "metrics":{"input_tokens":e.input_tokens,"output_tokens":e.output_tokens,"total_tokens":e.input_tokens+e.output_tokens},
-        "session_id":e.session})
+        "session_id":e.session});
+    value["_dd"] = json!({});
+    if let Some(context) = &e.context {
+        value["_dd"] = json!({"apm_trace_id":apm_trace(context.trace_id()),"trace_id":apm_trace(context.trace_id()),"span_id":u64::from_str_radix(context.span_id(),16).expect("validated span").to_string()});
+        if kind == "agent"
+            && let Some(prior) = context.predecessor()
+            && let Some(attempt) = prior.observation_attempt()
+        {
+            let seed = attempt_seed(e, &attempt.to_string());
+            value["span_links"] = json!([{"trace_id":llm_trace(&seed),"span_id":datadog_id(&format!("{seed}:{}-session",e.session)),"attributes":{"from":"output","to":"input"}}]);
+        }
+    }
+    value
 }
 fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
     let mut values = Vec::new();
@@ -573,9 +646,16 @@ fn log(c: &DatadogConfig, e: &SafeEvent) -> Option<Value> {
         EventKind::PermissionDecided => ("permission decided", "info"),
         _ => return None,
     };
-    Some(
-        json!({"message":message,"status":status,"service":c.service,"ddsource":"crabber","ddtags":tags(c,e).join(","),"session_id":e.session,"run_id":e.run,"tool_call_id":e.tool_id,"verify_marker":c.tags.iter().find_map(|tag| tag.strip_prefix("verify:"))}),
-    )
+    let mut value = json!({"message":message,"status":status,"service":c.service,"ddsource":"crabber","ddtags":tags(c,e).join(","),"session_id":e.session,"run_id":e.run,"tool_call_id":e.tool_id,"verify_marker":c.tags.iter().find_map(|tag| tag.strip_prefix("verify:"))});
+    if let Some(context) = &e.context {
+        value["dd.trace_id"] = json!(apm_trace(context.trace_id()));
+        value["dd.span_id"] = json!(
+            u64::from_str_radix(context.span_id(), 16)
+                .expect("validated span")
+                .to_string()
+        );
+    }
+    Some(value)
 }
 fn split_payload(body: &Value) -> Option<(Value, Value)> {
     let pointer = if body.is_array() {
@@ -597,7 +677,7 @@ fn split_payload(body: &Value) -> Option<(Value, Value)> {
     Some((first, second))
 }
 fn intake_signal(url: &str) -> &'static str {
-    if url.contains("llm-obs") {
+    if url.contains("llmobs") {
         "llmobs"
     } else if url.contains("/series") {
         "metrics"
@@ -605,40 +685,14 @@ fn intake_signal(url: &str) -> &'static str {
         "logs"
     }
 }
-async fn rejected(response: reqwest::Response, url: &str) -> ExportError {
+fn rejected(response: &reqwest::Response, url: &str) -> ExportError {
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    let diagnostic = serde_json::from_str::<Value>(&body)
-        .ok()
-        .and_then(|json| json.get("errors")?.as_array()?.first().cloned())
-        .map_or_else(
-            || "no structured field detail".to_string(),
-            |error| {
-                if let Some(message) = error.as_str() {
-                    return safe_diagnostic(message);
-                }
-                let title = error
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("rejected");
-                let pointer = error
-                    .pointer("/source/pointer")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown field");
-                format!("{} at {}", safe_diagnostic(title), safe_diagnostic(pointer))
-            },
-        );
+    let diagnostic = "intake rejected observation".to_string();
     ExportError::Rejected {
         signal: intake_signal(url),
         status,
         diagnostic,
     }
-}
-fn safe_diagnostic(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_ascii_alphabetic() || "/._- ".contains(*c))
-        .take(80)
-        .collect()
 }
 async fn post(
     client: &reqwest::Client,
@@ -655,7 +709,7 @@ async fn post(
             parts.push(first);
             continue;
         }
-        let is_llmobs = url.contains("llm-obs");
+        let is_llmobs = url.contains("llmobs");
         let bytes = if is_llmobs {
             raw.into_bytes()
         } else {
@@ -676,9 +730,6 @@ async fn post(
             let result = request.body(bytes.clone()).send().await;
             match result {
                 Ok(response) if response.status().is_success() => {
-                    if url.contains("llm-obs") && response.status().as_u16() != 202 {
-                        return Err(rejected(response, &url).await);
-                    }
                     if url.contains("/series") {
                         let body = response.json::<Value>().await.unwrap_or(Value::Null);
                         let errors = body["errors"].as_array().map_or(0, Vec::len);
@@ -704,8 +755,8 @@ async fn post(
                         return Err(ExportError::Status(response.status()));
                     }
                 }
-                Ok(response) => return Err(rejected(response, &url).await),
-                Err(error) if attempt == 2 => return Err(ExportError::Http(error)),
+                Ok(response) => return Err(rejected(&response, &url)),
+                Err(_) if attempt == 2 => return Err(ExportError::Http),
                 Err(_) => (),
             }
             tokio::time::sleep(Duration::from_millis(200 * (1 << attempt))).await;
@@ -721,15 +772,34 @@ async fn export(
 ) -> Result<(), ExportError> {
     if pending.stage == ExportStage::Spans {
         if pending.unsent_parts.is_empty() {
-            let spans: Vec<_> = pending.events.iter().flat_map(spans).collect();
+            let spans: Vec<_> = pending
+                .events
+                .iter()
+                .flat_map(|event| spans(event).into_iter().map(move |span| (event, span)))
+                .map(|(event, mut span)| {
+                    let mut labels = tags(config, event);
+                    labels.push(format!("ml_app:{}", config.ml_app));
+                    labels.push("language:rust".into());
+                    span["tags"] = json!(labels);
+                    span["service"] = json!(config.service);
+                    span
+                })
+                .collect();
             if !spans.is_empty() {
-                pending.unsent_parts.push(json!({"data":{"type":"span","attributes":{"ml_app":config.ml_app,"spans":spans,"tags":config.tags}}}));
+                let envelopes: Vec<_> = spans.into_iter().map(|span| json!({"_dd.stage":"raw","_dd.tracer_version":concat!("crabber-",env!("CARGO_PKG_VERSION")),"event_type":"span","spans":[span]})).collect();
+                pending.unsent_parts.push(json!(envelopes));
             }
         }
         post(
             client,
             config,
-            format!("{}/api/intake/llm-obs/v1/trace/spans", config.api_origin()),
+            format!(
+                "{}/api/v2/llmobs",
+                config
+                    .api_origin
+                    .clone()
+                    .unwrap_or_else(|| format!("https://llmobs-intake.{}", config.site))
+            ),
             &mut pending.unsent_parts,
         )
         .await?;
@@ -801,15 +871,21 @@ fn time_now() -> i64 {
 
 /// Emits safe lifecycle fields into the host's installed tracing subscriber.
 pub mod tracing_bridge {
-    use crabber_core::{EventKind, EventRecord};
+    use crabber_core::{EventKind, EventRecord, TraceContext};
     pub fn emit(event: &EventRecord) {
+        emit_with_context(event, None);
+    }
+    /// Emits only approved identity; subscriber installation remains host-owned.
+    pub fn emit_with_context(event: &EventRecord, context: Option<&TraceContext>) {
         let kind = match event.kind {
             EventKind::RunStarted => "run.started",
             EventKind::RunSettled => "run.settled",
             EventKind::ToolCallSettled => "tool.settled",
             _ => return,
         };
-        tracing::info!(session.id=%event.session_id, run.id=%event.run_id, kind, "crabber event");
+        tracing::info!(session.id=%event.session_id, run.id=%event.run_id,
+            host.trace_id=context.map(TraceContext::trace_id),
+            host.span_id=context.map(TraceContext::span_id), kind, "crabber event");
     }
 }
 
@@ -823,6 +899,15 @@ mod tests {
         net::{TcpListener, TcpStream},
         sync::atomic::AtomicBool,
     };
+    fn span_payload(body: &Value) -> Vec<Value> {
+        body.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|envelope| envelope.get("spans").and_then(Value::as_array))
+            .flatten()
+            .cloned()
+            .collect()
+    }
     fn config() -> DatadogConfig {
         DatadogConfig {
             site: "datadoghq.com".into(),
@@ -889,7 +974,7 @@ mod tests {
         let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
         assert!(headers.contains("dd-api-key: test-key"));
         let mut body_text = String::new();
-        if headers.contains("/api/intake/llm-obs/") {
+        if headers.contains("/api/v2/llmobs") {
             assert!(!headers.contains("content-encoding: gzip"));
             body_text = String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
         } else {
@@ -900,6 +985,133 @@ mod tests {
         }
         assert!(!body_text.contains("PROMPT_SECRET"));
         (headers, serde_json::from_str(&body_text).unwrap())
+    }
+    #[tokio::test]
+    async fn all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets() {
+        for path in ["/api/v2/llmobs", "/api/v2/series", "/api/v2/logs"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}{path}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = read_request(&mut stream);
+                let body = r#"{"errors":["ALPHABETICSECRET /private/PRIVATE_PATH_SECRET CREDENTIAL_SECRET"]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            });
+            let client = reqwest::Client::new();
+            let mut parts = vec![json!({"safe":true})];
+            let error = post(&client, &config(), url, &mut parts).await.unwrap_err();
+            let diagnostic = format!("{error} {error:?}");
+            for secret in [
+                "ALPHABETICSECRET",
+                "PRIVATE_PATH_SECRET",
+                "CREDENTIAL_SECRET",
+                "/private/",
+            ] {
+                assert!(!diagnostic.contains(secret));
+            }
+            server.join().unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let mut parts = vec![json!({"safe":true})];
+        let error = post(
+            &reqwest::Client::new(),
+            &config(),
+            format!("http://{address}/PRIVATE_PATH_SECRET?token=CREDENTIAL_SECRET"),
+            &mut parts,
+        )
+        .await
+        .unwrap_err();
+        let diagnostic = format!("{error} {error:?}");
+        assert!(!diagnostic.contains("SECRET"));
+        assert!(!diagnostic.contains("http://"));
+    }
+    #[test]
+    fn context_free_spans_and_logs_do_not_fabricate_host_identity() {
+        let record = event(
+            EventKind::RunSettled,
+            &SessionId::new(),
+            &RunId::new(),
+            json!({"status":"paused"}),
+        );
+        let safe = SafeEvent::from_event(&record, &RedactionPolicy::default()).unwrap();
+        assert_eq!(safe.status.as_deref(), Some("ok"));
+        for span in spans(&safe) {
+            assert!(span["_dd"].get("apm_trace_id").is_none());
+        }
+        let log = log(&config(), &safe).unwrap();
+        assert!(log.get("dd.trace_id").is_none());
+        assert!(log.get("dd.span_id").is_none());
+    }
+    #[tokio::test]
+    async fn native_span_chunks_resume_after_413_and_later_chunk_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/v2/llmobs", listener.local_addr().unwrap());
+        let recovered = Arc::new(AtomicBool::new(false));
+        let ready = recovered.clone();
+        let server = std::thread::spawn(move || {
+            let mut split = false;
+            let mut accepted = Vec::new();
+            while accepted.len() < 3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (_, body) = read_request(&mut stream);
+                let spans = span_payload(&body);
+                let status = if !split {
+                    assert_eq!(spans.len(), 3);
+                    split = true;
+                    "413 Payload Too Large"
+                } else if accepted.is_empty() || ready.load(Ordering::SeqCst) {
+                    accepted.extend(spans.iter().cloned());
+                    "202 Accepted"
+                } else {
+                    "503 Service Unavailable"
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+            accepted
+        });
+        let mut parts = vec![
+            json!([{"_dd.stage":"raw","event_type":"span","spans":[1]},{"_dd.stage":"raw","event_type":"span","spans":[2]},{"_dd.stage":"raw","event_type":"span","spans":[3]}]),
+        ];
+        let client = reqwest::Client::new();
+        assert!(
+            post(&client, &config(), url.clone(), &mut parts)
+                .await
+                .is_err()
+        );
+        recovered.store(true, Ordering::SeqCst);
+        post(&client, &config(), url, &mut parts).await.unwrap();
+        assert_eq!(server.join().unwrap(), vec![json!(1), json!(2), json!(3)]);
+    }
+    #[test]
+    fn legacy_host_predecessor_does_not_fabricate_a_native_llm_link() {
+        let prior = TraceContext::new("0000000000000001", "1234567890abcdef").unwrap();
+        let context = TraceContext::new("0000000000000002", "1234567890abcdef")
+            .unwrap()
+            .linked_to(&prior)
+            .unwrap();
+        let record = event(
+            EventKind::RunStarted,
+            &SessionId::new(),
+            &RunId::new(),
+            Value::Null,
+        );
+        let mut safe = SafeEvent::from_event(&record, &RedactionPolicy::default()).unwrap();
+        safe.context = Some(context);
+        for span in spans(&safe) {
+            assert!(span.get("span_links").is_none());
+        }
     }
     #[test]
     fn summaries_are_opt_in_and_byte_bounded() {
@@ -920,10 +1132,11 @@ mod tests {
     }
     #[test]
     fn oversized_payload_splits_without_losing_items() {
-        let body = json!({"data":{"type":"span","attributes":{"ml_app":"app","spans":[1,2,3]}}});
+        let body = json!([{"_dd.stage":"raw","event_type":"span","spans":[1]},{"_dd.stage":"raw","event_type":"span","spans":[2]},{"_dd.stage":"raw","event_type":"span","spans":[3]}]);
         let (a, b) = split_payload(&body).unwrap();
-        assert_eq!(a["data"]["attributes"]["spans"], json!([1]));
-        assert_eq!(b["data"]["attributes"]["spans"], json!([2, 3]));
+        assert_eq!(a[0]["spans"], json!([1]));
+        assert_eq!(b[0]["spans"], json!([2]));
+        assert_eq!(b[1]["spans"], json!([3]));
     }
     #[test]
     fn sites_and_config_debug() {
@@ -980,11 +1193,12 @@ mod tests {
         let mut c = config();
         c.api_origin = Some(origin.clone());
         c.logs_origin = Some(origin);
-        c.channel_capacity = 1;
+        c.channel_capacity = 2;
         c.batch_size = 100;
         let observer = DatadogObserver::new(&c);
         let session = SessionId::new();
         let run = RunId::new();
+        observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
         observer.emit(&event(
             EventKind::RunSettled,
             &session,
@@ -995,18 +1209,12 @@ mod tests {
             observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
         }
         assert!(observer.dropped() > 0);
-        assert!(observer.flush().await.is_err());
+        assert!(observer.shutdown().await.is_err());
         recovered.store(true, Ordering::SeqCst);
         observer.flush().await.unwrap();
         let accepted = server.join().unwrap();
-        assert!(accepted[0].0.contains("/api/intake/llm-obs/"));
-        assert_eq!(
-            accepted[0].1["data"]["attributes"]["spans"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
+        assert!(accepted[0].0.contains("/api/v2/llmobs"));
+        assert_eq!(span_payload(&accepted[0].1).len(), 2);
         let metric_series = accepted[1].1["series"].as_array().unwrap();
         assert!(
             metric_series
@@ -1076,6 +1284,7 @@ mod tests {
         let observer = DatadogObserver::new(&c);
         let session = SessionId::new();
         let run = RunId::new();
+        observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
         observer.emit(&event(
             EventKind::RunSettled,
             &session,
@@ -1192,15 +1401,13 @@ mod tests {
         assert!(run.done().await.is_err());
         observer.flush().await.unwrap();
         let requests = server.join().unwrap();
-        let spans = requests[0].1["data"]["attributes"]["spans"]
-            .as_array()
-            .unwrap();
+        let spans = span_payload(&requests[0].1);
         let agent = spans.iter().find(|s| s["meta"]["kind"] == "agent").unwrap();
         let workflow = spans
             .iter()
             .find(|s| s["meta"]["kind"] == "workflow")
             .unwrap();
-        assert_eq!(workflow["status"], "error");
+        assert_eq!(workflow["status"], "ok");
         assert_eq!(workflow["parent_id"], agent["span_id"]);
         let llm_statuses: Vec<_> = spans
             .iter()
@@ -1211,11 +1418,7 @@ mod tests {
         for kind in ["llm", "tool"] {
             let child = spans.iter().find(|s| s["meta"]["kind"] == kind).unwrap();
             assert_eq!(child["parent_id"], workflow["span_id"]);
-            assert!(agent["start_ns"].as_i64().unwrap() <= child["start_ns"].as_i64().unwrap());
-            assert!(
-                child["start_ns"].as_i64().unwrap() + child["duration"].as_i64().unwrap()
-                    <= agent["start_ns"].as_i64().unwrap() + agent["duration"].as_i64().unwrap()
-            );
+            assert!(child["duration"].as_i64().unwrap() > 0);
         }
         assert!(
             requests[1].1["series"]
@@ -1296,15 +1499,13 @@ mod tests {
             assert!(run.done().await.is_err());
             observer.flush().await.unwrap();
             let requests = server.join().unwrap();
-            let spans = requests[0].1["data"]["attributes"]["spans"]
-                .as_array()
-                .unwrap();
+            let spans = span_payload(&requests[0].1);
             let workflow = spans
                 .iter()
                 .find(|s| s["meta"]["kind"] == "workflow")
                 .unwrap();
             let llm = spans.iter().find(|s| s["meta"]["kind"] == "llm").unwrap();
-            assert_eq!(workflow["status"], "error");
+            assert_eq!(workflow["status"], "ok");
             assert_eq!(llm["status"], "error");
             assert_eq!(llm["parent_id"], workflow["span_id"]);
             assert!(
@@ -1367,22 +1568,15 @@ mod tests {
         ));
         observer.flush().await.unwrap();
         let requests = server.join().unwrap();
-        let spans = &requests[0].1["data"]["attributes"]["spans"];
-        assert_eq!(requests[0].1["data"]["type"], "span");
+        let spans = json!(span_payload(&requests[0].1));
+        assert_eq!(requests[0].1[0]["event_type"], "span");
         assert_eq!(spans.as_array().unwrap().len(), 4);
-        assert_eq!(spans[0]["meta"]["kind"], "llm");
-        assert_eq!(spans[1]["meta"]["kind"], "tool");
-        assert_eq!(spans[2]["meta"]["kind"], "agent");
-        assert_eq!(spans[3]["meta"]["kind"], "workflow");
-        assert_eq!(spans[1]["parent_id"], spans[3]["span_id"]);
-        assert_eq!(spans[3]["parent_id"], spans[2]["span_id"]);
-        let root_start = spans[2]["start_ns"].as_i64().unwrap();
-        let root_end = root_start + spans[2]["duration"].as_i64().unwrap();
-        for child in [0, 1, 3] {
-            let start = spans[child]["start_ns"].as_i64().unwrap();
-            let end = start + spans[child]["duration"].as_i64().unwrap();
-            assert!(root_start <= start && end <= root_end);
-        }
+        assert_eq!(spans[0]["meta"]["kind"], "agent");
+        assert_eq!(spans[1]["meta"]["kind"], "workflow");
+        assert_eq!(spans[2]["meta"]["kind"], "llm");
+        assert_eq!(spans[3]["meta"]["kind"], "tool");
+        assert_eq!(spans[3]["parent_id"], spans[1]["span_id"]);
+        assert_eq!(spans[1]["parent_id"], spans[0]["span_id"]);
         for item in spans.as_array().unwrap() {
             assert!(
                 item["span_id"]
@@ -1396,7 +1590,7 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .chars()
-                    .all(|c| c.is_ascii_digit())
+                    .all(|c| c.is_ascii_hexdigit())
             );
         }
         let metrics = &requests[1].1["series"];

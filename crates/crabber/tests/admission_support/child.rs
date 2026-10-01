@@ -2,6 +2,7 @@ use super::*;
 
 // Invoked by the parent harness in a genuinely fresh OS process, never recursively.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn facade_child() {
     let Ok(mode) = std::env::var("CRABBER_RECEIPT_CHILD") else {
         return;
@@ -16,7 +17,16 @@ async fn facade_child() {
         mode: mode.clone(),
         dir: dir.clone(),
     });
-    let agent = agent(wrapped, &dir, mode == "execution-loss");
+    let capture = Arc::new(ContextCapture::default());
+    let context: TraceContext =
+        serde_json::from_slice(&fs::read(dir.join("context.json")).unwrap()).unwrap();
+    let agent = agent(
+        wrapped,
+        &dir,
+        mode == "execution-loss",
+        capture.clone(),
+        mode == "tool-loss",
+    );
     if mode.starts_with("race-") {
         fs::write(dir.join(&mode), "ready").unwrap();
         wait(&dir.join("go")).await;
@@ -52,7 +62,12 @@ async fn facade_child() {
         None
     };
     let result = agent
-        .prompt_keyed(session.clone(), "process input", options())
+        .prompt_keyed_with_context(
+            session.clone(),
+            "process input",
+            options(),
+            Some(context.clone()),
+        )
         .await;
     if mode == "precommit" || mode == "commit-loss" {
         assert!(matches!(
@@ -95,7 +110,40 @@ async fn facade_child() {
         return;
     }
     if mode == "recover" {
-        recover(&agent, &store, &session, &receipt, before.unwrap()).await;
+        let current = TraceContext::new("9876543210abcdef9876543210abcdef", "9876543210abcdef")
+            .unwrap()
+            .linked_to(&context)
+            .unwrap();
+        recover(
+            &agent,
+            &store,
+            &session,
+            &receipt,
+            before.unwrap(),
+            current.clone(),
+        )
+        .await;
+        assert!(!capture.0.lock().unwrap().is_empty());
+        assert!(
+            capture
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(event, observed)| event.run_id == receipt.run_id
+                    && observed.as_ref() == Some(&current))
+        );
+    }
+    if mode != "recover" {
+        assert!(
+            capture
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(event, observed)| event.run_id == receipt.run_id
+                    && observed.as_ref() == Some(&context))
+        );
     }
     fs::write(
         dir.join(format!("{mode}.json")),
@@ -114,12 +162,16 @@ async fn recover(
     session: &SessionId,
     receipt: &AdmissionReceipt,
     old: Run,
+    context: TraceContext,
 ) {
     let stale = RunFence {
         run_id: old.id.clone(),
         claim_token: old.claim_token,
     };
-    let result = agent.resume(&receipt.run_id).await.unwrap();
+    let result = agent
+        .resume_with_context(&receipt.run_id, Some(context))
+        .await
+        .unwrap();
     assert_eq!(result.status, RunStatus::Interrupted);
     assert_ne!(
         store

@@ -59,3 +59,8 @@ jobs:
         run: cargo test -p crabber --features postgres --test bounded_snapshots -- --nocapture
       - name: Noninteractive PostgreSQL bounded snapshot demo
         run: cargo run --quiet -p bounded-snapshot --features postgres -- --postgres
+
+      - name: Required real Datadog payload and fresh-process recovery contracts
+        run: cargo test -p crabber --features datadog,postgres --test trace_context -- --nocapture
+      - name: Noninteractive PostgreSQL host tracing and export capture
+        run: cargo run --quiet -p host-trace --features postgres -- postgres

@@ -2,7 +2,8 @@
 use super::{config, options};
 use async_trait::async_trait;
 use crabber::{
-    Admission, AdmissionKey, AdmissionReceipt, Agent, FakeProvider, RuntimeError, StreamDelta,
+    Admission, AdmissionKey, AdmissionReceipt, Agent, FakeProvider, Observer, RuntimeError,
+    StreamDelta, TraceContext,
     core::{
         EpochId, EventCursor, EventRecord, Message, Role, Run, RunFence, RunId, RunStatus, Session,
         SessionId, ToolCallId, ToolCallRecord,
@@ -19,9 +20,26 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+#[derive(Default)]
+struct ContextCapture(Mutex<Vec<(EventRecord, Option<TraceContext>)>>);
+impl Observer for ContextCapture {
+    fn emit(&self, event: &EventRecord) {
+        self.emit_with_context(event, None);
+    }
+    fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.clone(), context.cloned()));
+    }
+    fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
+        self.emit_with_context(event, context);
+    }
+}
 
 fn append(path: &Path, entry: &str) {
     let mut file = fs::OpenOptions::new()
@@ -102,6 +120,24 @@ fn handoff() -> (Handoff, SessionId) {
         serde_json::to_vec(&session).unwrap(),
     )
     .unwrap();
+    fs::File::open(path.join("session.json"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    // Host API accepts the durable queue before any Crabber admission. This
+    // allow-listed identity is transport metadata alongside the fixed request.
+    let context =
+        TraceContext::new("1234567890abcdef1234567890abcdef", "1234567890abcdef").unwrap();
+    let mut queue = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path.join("context.json"))
+        .unwrap();
+    queue
+        .write_all(&serde_json::to_vec(&context).unwrap())
+        .unwrap();
+    queue.sync_all().unwrap();
+    fs::File::open(&path).unwrap().sync_all().unwrap();
     (Handoff(path), session)
 }
 async fn evidence(url: &str, dir: &Path, session: &SessionId, executions: usize, tools: usize) {
@@ -142,6 +178,7 @@ async fn evidence(url: &str, dir: &Path, session: &SessionId, executions: usize,
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|ext| ext == "json")
             && path.file_name().unwrap() != "session.json"
+            && path.file_name().unwrap() != "context.json"
         {
             let child: AdmissionReceipt = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
             assert_eq!(child, receipt);
@@ -209,6 +246,18 @@ async fn postgres_public_facade_fault_restart_journey() {
     finish(spawn(&dir.0, "recover")).await;
     finish(spawn(&dir.0, "reconcile")).await;
     evidence(&url, &dir.0, &session, 0, 0).await;
+    // Kill a genuine OS worker after its running tool effect is durable. Recovery
+    // interrupts that running call rather than repeating an ambiguous effect.
+    let (dir, session) = handoff();
+    let mut lost = spawn(&dir.0, "tool-loss");
+    wait(&dir.0.join("tool-running")).await;
+    lost.0.kill().unwrap();
+    lost.0.wait().unwrap();
+    // The first heartbeat renews the live execution lease to 30 seconds.
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    finish(spawn(&dir.0, "recover")).await;
+    finish(spawn(&dir.0, "reconcile")).await;
+    evidence(&url, &dir.0, &session, 1, 1).await;
     // Public host response is withheld after provider execution begins. Another
     // process reconciles while the worker is live; after release it finishes once.
     let (dir, session) = handoff();

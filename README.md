@@ -90,3 +90,10 @@ Run from a clean, committed checkout. Both fake-data modes verify bounded alloca
 settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
 process. See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
 for ordering, token durability, errors and schema-3 maintenance requirements.
+
+The [host tracing embedding](examples/host-trace/README.md) demonstrates explicit
+validated 64/128-bit context, composed callbacks and broadcasts, real Datadog
+payload capture, durable PostgreSQL workers and native recovery links. It
+includes request-to-assertion evidence, Observer/Store adoption guidance and a
+host-owned APM live verification procedure. Automated runs need no credentials;
+current live linked-product evidence is UNVERIFIED.

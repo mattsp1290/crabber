@@ -3,6 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod trace_context;
+pub use trace_context::{TraceContext, TraceContextError, TraceLink};
+
 mod admission;
 pub use admission::{AdmissionKey, AdmissionOptions, AdmissionReceipt, InputFingerprint};
 
