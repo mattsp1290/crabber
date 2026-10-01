@@ -91,7 +91,7 @@ where
         .await
         .expect("first admission");
     assert_eq!(admitted.session.id, session_id);
-    assert!(admitted.prior_history.is_empty());
+    assert_eq!(admitted.prior_history, [] as [Message; 0]);
 
     let mut second = request;
     second.session_id = Some(session_id.clone());
@@ -113,12 +113,9 @@ where
         execution.append_event(live).await,
         Err(StoreError::Validation(_))
     ));
-    assert!(
-        store
-            .list_events(&session_id, None, 100)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.list_events(&session_id, None, 100).await.unwrap(),
+        [] as [EventRecord; 0]
     );
 
     let old = message(
@@ -326,12 +323,12 @@ where
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         store
             .list_unfinished_tool_calls(&admitted.run.id)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
 
     clock.set(now + time::Duration::seconds(2));
@@ -403,18 +400,18 @@ where
         execution.claim_inbox(InboxKind::FollowUp).await.unwrap(),
         vec![follow_up]
     );
-    assert!(
-        execution
-            .claim_inbox(InboxKind::FollowUp)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        execution.claim_inbox(InboxKind::FollowUp).await.unwrap(),
+        [] as [Message; 0]
     );
     execution
         .settle_run(RunStatus::Completed, None, Usage::default(), settled)
         .await
         .unwrap();
-    assert!(store.list_unfinished_runs().await.unwrap().is_empty());
+    assert_eq!(
+        store.list_unfinished_runs().await.unwrap(),
+        [] as [crabber_core::Run; 0]
+    );
 
     let new_user = message(
         &session_id,

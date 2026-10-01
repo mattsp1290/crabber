@@ -101,3 +101,7 @@ current live linked-product evidence is UNVERIFIED.
 [Operational observation adoption](docs/operational-observation.md) describes safe
 finite terminal reasons, run/model/tool and first-token measurements, monotonic
 clock injection, and the host-local limits of lease-loss reporting.
+
+Run the complete operational host check with
+`cargo run -p operational-telemetry -- --check`; see
+[the example](examples/operational-telemetry/README.md) for offline fixtures and adoption.

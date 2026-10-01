@@ -82,6 +82,17 @@ fn check() {
     run(
         workspace,
         &[
+            "run",
+            "--quiet",
+            "-p",
+            "operational-telemetry",
+            "--",
+            "--check",
+        ],
+    );
+    run(
+        workspace,
+        &[
             "test",
             "-p",
             "crabber",

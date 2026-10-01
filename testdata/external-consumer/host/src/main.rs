@@ -1,3 +1,5 @@
+#[path = "../../../../examples/operational-telemetry/src/journey.rs"]
+mod operational;
 mod admission_receipts;
 mod bounded_snapshots;
 mod trace_context;
@@ -14,8 +16,9 @@ use crabber::{
 use sha2::{Digest, Sha256};
 use std::{error::Error, path::PathBuf, sync::Arc};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    operational::run().await;
     admission_receipts::run().await?;
     bounded_snapshots::run().await?;
     trace_context::run().await?;

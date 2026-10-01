@@ -116,3 +116,8 @@ cancels either boundary without an exporter or credentials.
 Datadog distributions and local exporter health are provided by the following
 exporter slice; this runtime API alone does not promise network submission or
 live percentile visibility.
+
+The composed credential-free host acceptance journey is
+[`operational-telemetry`](../examples/operational-telemetry/README.md), run with
+`cargo run -p operational-telemetry -- --check`. It exercises real public runtime
+outcomes, distribution capture, local exporter outage/recovery and bounded controls.
