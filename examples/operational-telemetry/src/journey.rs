@@ -963,16 +963,25 @@ async fn control_bounds() {
     );
     complete(&host, true).await;
     let flushing = export.clone();
-    let flush = tokio::spawn(async move { flushing.flush().await });
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let flush = tokio::spawn(async move {
+        let start = tokio::time::Instant::now();
+        start_tx.send(start).unwrap();
+        let result = flushing.flush().await;
+        (result, start.elapsed())
+    });
+    let flush_start = start_rx.await.unwrap();
     entered.notified().await; // Request is actually stalled before pausing virtual time.
     tokio::time::pause();
-    let deadline_start = tokio::time::Instant::now();
-    tokio::time::advance(Duration::from_secs(10)).await;
-    assert!(matches!(
-        flush.await.unwrap(),
-        Err(crabber::obs::ExportError::Timeout)
-    ));
-    assert!(deadline_start.elapsed() <= Duration::from_secs(10));
+    let remaining = (flush_start + Duration::from_secs(10))
+        .saturating_duration_since(tokio::time::Instant::now());
+    tokio::time::advance(remaining).await;
+    let (result, elapsed) = flush.await.unwrap();
+    assert!(matches!(result, Err(crabber::obs::ExportError::Timeout)));
+    assert!(
+        elapsed <= Duration::from_secs(10) + Duration::from_millis(1),
+        "flush elapsed: {elapsed:?}"
+    );
     assert_eq!(export.health().worker_status, WorkerStatus::Running);
     assert_eq!(export.health().last_success_unix_seconds, None);
     // Synchronize actual control polling, rather than relying on a single yield.
