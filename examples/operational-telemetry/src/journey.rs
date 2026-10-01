@@ -927,6 +927,12 @@ async fn outage_overflow() {
     assert_eq!(drained.dropped, 98);
     assert_eq!(drained.queue_depth, 0);
     assert_eq!(drained.pending_depth, 0);
+    let mut expected = values(&capture);
+    expected.extend([sample.clone(), sample]);
+    assert_eq!(
+        captured_samples(&intake.requests.lock().unwrap()),
+        expected_samples(&expected)
+    );
     export.shutdown().await.unwrap();
     stopped(&export).await;
     assert_eq!(export.health().worker_status, WorkerStatus::Stopped);
