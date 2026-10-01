@@ -55,6 +55,7 @@ async fn main() {
                 // below is a fresh executable and only the retained key grants admission.
                 for worker_mode in ["pause", "resume", "duplicate"] {
                     let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+                        .kill_on_drop(true)
                         .env("CRABBER_TRACE_WORKER", worker_mode)
                         .env("CRABBER_TRACE_QUEUE", &path)
                         .spawn()

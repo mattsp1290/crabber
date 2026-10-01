@@ -385,7 +385,11 @@ mod durable_process {
             serde_json::to_vec(&serde_json::json!({"request":request,"outcome":expected})).unwrap(),
         )
         .unwrap();
+        let journal = std::fs::read(dir.join("attempt.json")).unwrap();
+        // Retry the original queue delivery mode, not only a special replay mode.
+        spawn(&path, "pause").await;
         spawn(&path, "duplicate").await;
+        assert_eq!(std::fs::read(dir.join("attempt.json")).unwrap(), journal);
         assert_eq!(
             store
                 .lookup_admission(&envelope.session, &envelope.key)

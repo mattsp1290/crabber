@@ -120,6 +120,10 @@ fn handoff() -> (Handoff, SessionId) {
         serde_json::to_vec(&session).unwrap(),
     )
     .unwrap();
+    fs::File::open(path.join("session.json"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
     // Host API accepts the durable queue before any Crabber admission. This
     // allow-listed identity is transport metadata alongside the fixed request.
     let context =

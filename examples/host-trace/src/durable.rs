@@ -177,7 +177,9 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
     };
     // This small fixture has one designated resume worker. A production host must
     // coordinate its durable attempt journal with its worker/queue claim policy.
-    if mode == "resume" || mode == "pause" || mode == "start" {
+    // Initial admission identity is already durable in the immutable envelope.
+    // Redelivery in the original admission mode must not replace a resumed attempt.
+    if mode == "resume" {
         persist_attempt(path, &current);
     }
     let (receipt, expected) = if mode == "resume" {
@@ -267,5 +269,11 @@ pub async fn memory(path: &Path) {
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     worker(store.clone(), path, "pause", "memory").await;
     worker(store.clone(), path, "resume", "memory").await;
+    let journal = fs::read(path.parent().unwrap().join("attempt.json")).unwrap();
+    worker(store.clone(), path, "pause", "memory").await;
     worker(store, path, "duplicate", "memory").await;
+    assert_eq!(
+        fs::read(path.parent().unwrap().join("attempt.json")).unwrap(),
+        journal
+    );
 }
