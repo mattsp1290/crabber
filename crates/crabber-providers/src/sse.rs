@@ -80,7 +80,10 @@ mod tests {
     #[test]
     fn framing_across_chunks() {
         let mut parser = Parser::default();
-        assert!(parser.push(b"event: foo\r\ndata: a").unwrap().is_empty());
+        assert_eq!(
+            parser.push(b"event: foo\r\ndata: a").unwrap(),
+            [] as [super::Event; 0]
+        );
         assert_eq!(
             parser.push(b"\r\ndata: b\r\n\r\n").unwrap(),
             vec![Event {
