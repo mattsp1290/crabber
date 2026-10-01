@@ -339,9 +339,15 @@ async fn independent_processes_and_fresh_process_lifecycle() {
 async fn forward_migration_preserves_v1_and_connect_is_read_only() {
     let Some(url) = test_url() else { return };
     let _guard = TEST_LOCK.lock().await;
+    legacy_migration(&url, 1).await;
+    legacy_migration(&url, 2).await;
+}
+
+#[allow(clippy::too_many_lines)] // One isolated-schema legacy migration lifecycle.
+async fn legacy_migration(url: &str, legacy_version: i32) {
     let admin = PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .unwrap();
     let schema = format!("receipt_migration_{}", uuid::Uuid::new_v4().simple());
@@ -376,16 +382,137 @@ async fn forward_migration_preserves_v1_and_connect_is_read_only() {
         "v1 requires explicit migration"
     );
     let clock = Arc::new(ManualClock::new(OffsetDateTime::now_utc()));
-    // Construct the old store against precisely the v1 schema and retain its data.
-    let old = PostgresStore {
-        pool,
-        clock,
-        limits: ByteLimits::default(),
-    };
+    // Populate precisely the v1 schema using domain fixtures; current writers
+    // intentionally require v3 accounting columns.
+    let memory = crate::MemoryStore::with_clock(clock);
     let session = SessionId::new();
-    let admitted = old.admit_run(request(&session)).await.unwrap();
-    let messages = old.list_all_messages(&session).await.unwrap();
-    old.pool.close().await;
+    let admitted = memory.admit_run(request(&session)).await.unwrap();
+    let mut messages = memory.list_all_messages(&session).await.unwrap();
+    let result = ToolResult {
+        status: ToolResultStatus::Completed,
+        content: vec![crabber_core::ContentBlock::Text {
+            text: "legacy result".into(),
+        }],
+    };
+    let mut result_message = tests::input(&session, "");
+    result_message.run_id = Some(admitted.run.id.clone());
+    result_message.role = crabber_core::Role::Tool;
+    result_message.parts[0].content = crabber_core::ContentBlock::ToolResult {
+        call_id: ToolCallId::from("z-first"),
+        content: result.content.clone(),
+        is_error: false,
+    };
+    messages.push(result_message);
+
+    sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
+        .bind(&session.0)
+        .bind(json(&admitted.session).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(&admitted.run.id.0).bind(&session.0).bind(status(admitted.run.status)).bind(&admitted.run.claim_token).bind(micros(admitted.run.lease_until)).bind(json(&admitted.run).unwrap()).execute(&pool).await.unwrap();
+    let epoch = ContextEpoch {
+        id: admitted.epoch.clone(),
+        session_id: session.clone(),
+        run_id: admitted.run.id.clone(),
+        parent: None,
+        summarized_range: None,
+        summary_message_id: None,
+        tail_start_message_id: None,
+        provider_id: String::new(),
+        model_id: String::new(),
+        reason: "initial".into(),
+        next_policy: None,
+    };
+    sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
+        .bind(&epoch.id.0)
+        .bind(&session.0)
+        .bind(&admitted.run.id.0)
+        .bind(json(&epoch).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    for message in &messages {
+        sqlx::query("INSERT INTO messages(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
+            .bind(&message.id.0)
+            .bind(&session.0)
+            .bind(&admitted.run.id.0)
+            .bind(json(message).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        for part in &message.parts {
+            sqlx::query("INSERT INTO parts(id,message_id,ordinal,data) VALUES($1,$2,$3,$4)")
+                .bind(&part.id.0)
+                .bind(&message.id.0)
+                .bind(i64::from(part.ordinal))
+                .bind(json(part).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    if legacy_version == 2 {
+        sqlx::raw_sql(include_str!("../../migrations/0002_admission_receipts.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            PostgresStore::connect(&isolated_url).await.is_err(),
+            "v2 requires explicit migration"
+        );
+    }
+    let mut legacy_calls = Vec::new();
+    for id in ["z-first", "a-second", "0-untracked"] {
+        let call = ToolCallRecord {
+            id: id.into(),
+            run_id: admitted.run.id.clone(),
+            name: "legacy".into(),
+            arguments: serde_json::Value::Null,
+            status: ToolCallStatus::Completed,
+            retry_safe: false,
+            result: Some(result.clone()),
+        };
+        sqlx::query("INSERT INTO tool_calls(id,run_id,status,data) VALUES($1,$2,$3,$4)")
+            .bind(id)
+            .bind(&admitted.run.id.0)
+            .bind(call_status(call.status))
+            .bind(json(&call).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        if id != "0-untracked" {
+            let event = EventRecord {
+                cursor: None,
+                session_id: session.clone(),
+                run_id: admitted.run.id.clone(),
+                turn_id: None,
+                kind: EventKind::ToolCallPending,
+                payload: serde_json::json!({"call_id":id}),
+                correlation: None,
+                live_only: false,
+                created_at: admitted.run.created_at,
+            };
+            sqlx::query("INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3)")
+                .bind(&session.0)
+                .bind(&admitted.run.id.0)
+                .bind(json(&event).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        legacy_calls.push(call);
+    }
+    let legacy_inbox = tests::input(&session, "legacy pending message");
+    sqlx::query("INSERT INTO inbox(session_id,kind,data) VALUES($1,$2,$3)")
+        .bind(&session.0)
+        .bind(inbox_kind(InboxKind::FollowUp))
+        .bind(json(&legacy_inbox).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
     PostgresStore::migrate(&isolated_url).await.unwrap();
     PostgresStore::migrate(&isolated_url).await.unwrap();
     let migrated = PostgresStore::connect(&isolated_url).await.unwrap();
@@ -394,7 +521,7 @@ async fn forward_migration_preserves_v1_and_connect_is_read_only() {
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2]);
+    assert_eq!(versions, vec![1, 2, 3]);
     assert_eq!(
         migrated.get_session(&session).await.unwrap(),
         Some(admitted.session.clone())
@@ -414,12 +541,39 @@ async fn forward_migration_preserves_v1_and_connect_is_read_only() {
             .unwrap()
             .is_none()
     );
+    let query = crate::SnapshotRequest {
+        session_id: session.clone(),
+        continuation: None,
+        limits: crate::SnapshotLimits {
+            messages: 100,
+            tool_calls: 100,
+            parts: 100,
+            text_bytes: 10_000,
+            encoded_bytes: 100_000,
+        },
+    };
+    let crate::SnapshotOutcome::Page(snapshot) = migrated.snapshot(query).await.unwrap() else {
+        panic!("snapshot")
+    };
+    assert_eq!(snapshot.messages, messages);
+    assert_eq!(snapshot.tool_calls, legacy_calls);
+    assert!(snapshot.continuation.is_none());
+    assert_eq!(
+        migrated
+            .execution(admitted.fence.clone())
+            .await
+            .unwrap()
+            .claim_inbox(InboxKind::FollowUp)
+            .await
+            .unwrap(),
+        vec![legacy_inbox]
+    );
     finish(&migrated, &admitted).await;
     migrated
         .admit_keyed_run(keyed(&session, "new"))
         .await
         .unwrap();
-    assert_eq!(counts(&migrated, &session).await, (2, 2, 1));
+    assert_eq!(counts(&migrated, &session).await, (2, 3, 1));
     // Setting the whole connection read-only proves connect and lookup use no DDL/DML.
     let read_only_url = format!(
         "{url}{separator}options=-csearch_path%3D{schema}%20-cdefault_transaction_read_only%3Don"

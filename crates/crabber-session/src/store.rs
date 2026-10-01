@@ -132,12 +132,28 @@ pub trait Store: Send + Sync {
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError>;
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError>;
+    /// Bounded all-history snapshot, in message append order then tool creation
+    /// order. Includes hidden epochs and pending/settled tool records unchanged.
+    /// Relations may span pages; preserve IDs, parent IDs and call IDs and assemble
+    /// all pages before projecting. A successful complete read has one immutable
+    /// high-water, captured atomically with history. Reads must measure limits
+    /// before cloning/materializing records, never load the whole history first.
+    /// Concurrent appends remain outside the snapshot; mutable captured records
+    /// must be frozen or cause explicit Invalidated/restart, never silently change.
+    /// Custom stores fail closed until they implement this contract.
+    async fn snapshot(
+        &self,
+        _request: crate::SnapshotRequest,
+    ) -> Result<crate::SnapshotOutcome, StoreError> {
+        Err(StoreError::SnapshotUnsupported)
+    }
+    /// Unbounded runtime context projection. Embeddings should use `snapshot`.
     async fn list_messages(
         &self,
         id: &SessionId,
         epoch: Option<EpochId>,
     ) -> Result<Vec<Message>, StoreError>;
-    /// Returns the append-only message history, including messages hidden by
+    /// Unbounded: returns the append-only message history, including messages hidden by
     /// context epoch projections. Used to reconcile a committed turn after a crash.
     async fn list_all_messages(&self, id: &SessionId) -> Result<Vec<Message>, StoreError>;
     async fn list_events(

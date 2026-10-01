@@ -54,6 +54,18 @@ fn check() {
     run(
         workspace,
         &[
+            "run",
+            "--quiet",
+            "-p",
+            "bounded-snapshot",
+            "--",
+            "--memory",
+            "--check",
+        ],
+    );
+    run(
+        workspace,
+        &[
             "test",
             "-p",
             "crabber",

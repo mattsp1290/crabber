@@ -51,6 +51,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -162,6 +168,17 @@ name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
+
+[[package]]
+name = "bounded-snapshot"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "crabber",
+ "serde_json",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "bumpalo"
@@ -301,6 +318,7 @@ dependencies = [
 name = "crabber"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
  "crabber-auth",
  "crabber-core",
@@ -314,6 +332,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
 ]
 
@@ -434,8 +453,10 @@ dependencies = [
 name = "crabber-session"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
  "crabber-core",
+ "hmac",
  "serde",
  "serde_json",
  "sha2",
