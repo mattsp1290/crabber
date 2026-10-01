@@ -1,14 +1,19 @@
 //! Redaction-first, nonblocking Datadog export for Crabber runtime events.
 use crabber_core::{EventKind, EventRecord, TraceContext};
-use crabber_runtime::Observer;
-use flate2::{Compression, write::GzEncoder};
+use crabber_runtime::{
+    ModelPurpose, Observer, OperationKind, OperationalObservation, TerminalReason,
+};
+use flate2::{
+    Compression,
+    write::{GzEncoder, ZlibEncoder},
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fmt,
     io::Write,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -43,6 +48,78 @@ fn bounded_summary(value: Option<&Value>, limit: usize) -> Option<String> {
     Some(result)
 }
 
+/// Host-controlled metric identities. At most 32 sanitized values per dimension
+/// are honored; all other runtime identities map to `overflow`.
+#[derive(Debug, Clone, Default)]
+pub struct MetricDimensions {
+    pub providers: Vec<String>,
+    pub models: Vec<String>,
+    pub tools: Vec<String>,
+}
+fn dimension(value: &str, allowed: &[String]) -> String {
+    fn sanitize(value: &str) -> String {
+        value
+            .chars()
+            .take(100)
+            .filter(|c| c.is_ascii_alphanumeric() || "._-/".contains(*c))
+            .collect()
+    }
+    let value = sanitize(value);
+    if !value.is_empty() && allowed.iter().take(32).any(|name| sanitize(name) == value) {
+        value
+    } else {
+        "overflow".into()
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerStatus {
+    Running,
+    Stopped,
+}
+/// Cumulative host-local record/submission counts; queue and pending are current
+/// observation depths. Last success is a completed nonempty batch, not a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportHealth {
+    pub accepted: u64,
+    pub dropped: u64,
+    pub retries: u64,
+    pub failures: u64,
+    pub queue_depth: u64,
+    pub pending_depth: u64,
+    pub last_success_unix_seconds: Option<u64>,
+    pub worker_status: WorkerStatus,
+}
+#[derive(Default)]
+struct Health {
+    gate: Mutex<()>,
+    accepted: AtomicU64,
+    dropped: AtomicU64,
+    retries: AtomicU64,
+    resume: AtomicU64,
+    failures: AtomicU64,
+    outstanding: AtomicU64,
+    queued: AtomicU64,
+    pending: AtomicU64,
+    last_success: AtomicU64,
+    stopped: AtomicU64,
+}
+struct WorkerGuard(Arc<Health>);
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        let _lock = self.0.gate.lock().expect("health gate");
+        self.0.dropped.fetch_add(
+            self.0.outstanding.swap(0, Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+        self.0.pending.store(0, Ordering::SeqCst);
+        self.0.queued.store(0, Ordering::SeqCst);
+        self.0.stopped.store(1, Ordering::SeqCst);
+    }
+}
+#[derive(Clone)]
+struct Measurement {
+    samples: Vec<Value>,
+}
 /// Agentless intake settings. The API key is always hidden in `Debug` output.
 #[derive(Clone)]
 pub struct DatadogConfig {
@@ -58,6 +135,7 @@ pub struct DatadogConfig {
     pub channel_capacity: usize,
     pub max_payload_bytes: usize,
     pub timeout: Duration,
+    pub metric_dimensions: MetricDimensions,
     /// Overrides both metrics and native LLM spans origins for a local intake test.
     pub api_origin: Option<String>,
     /// Overrides the logs origin for a local intake test.
@@ -102,6 +180,7 @@ impl DatadogConfig {
             channel_capacity: 4096,
             max_payload_bytes: 512_000,
             timeout: Duration::from_secs(10),
+            metric_dimensions: MetricDimensions::default(),
             api_origin: None,
             logs_origin: None,
         })
@@ -140,20 +219,25 @@ pub enum ExportError {
     },
     #[error("one observation exceeds the configured payload limit")]
     PayloadTooLarge,
-    #[error("metrics intake reported {0} series error(s)")]
-    MetricIntakeErrors(usize),
+    #[error("{signal} intake reported {count} series error(s)")]
+    IntakeErrors { signal: &'static str, count: usize },
+    #[error("invalid or oversized intake acknowledgement")]
+    IntakeResponse,
 }
 
 /// The export queue drops new observations on overflow and never waits in `emit`.
 #[derive(Clone)]
 pub struct DatadogObserver {
     tx: mpsc::Sender<Command>,
-    dropped: Arc<AtomicU64>,
+    health: Arc<Health>,
+    abort: tokio::task::AbortHandle,
+    dimensions: MetricDimensions,
     timeout: Duration,
     redaction: RedactionPolicy,
 }
 enum Command {
     Event(Box<SafeEvent>),
+    Measurement(Measurement),
     Flush(oneshot::Sender<Result<(), ExportError>>),
     Shutdown(oneshot::Sender<Result<(), ExportError>>),
 }
@@ -196,8 +280,8 @@ impl SafeEvent {
         let safe = |name: &str| {
             e.payload.get(name).and_then(Value::as_str).map(|s| {
                 s.chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || "._-/".contains(*c))
                     .take(100)
+                    .filter(|c| c.is_ascii_alphanumeric() || "._-/".contains(*c))
                     .collect()
             })
         };
@@ -287,11 +371,60 @@ impl SafeEvent {
     }
 }
 impl Observer for DatadogObserver {
-    fn emit(&self, event: &EventRecord) {
-        if let Some(event) = SafeEvent::from_event(event, &self.redaction)
-            && self.tx.try_send(Command::Event(Box::new(event))).is_err()
+    fn operational_completed(&self, observation: &OperationalObservation) {
+        let reason = match observation.reason {
+            TerminalReason::Success => "success",
+            TerminalReason::ProviderError => "provider_error",
+            TerminalReason::ToolError => "tool_error",
+            TerminalReason::Cancelled => "cancelled",
+            TerminalReason::LeaseLost => "lease_lost",
+            TerminalReason::Paused => "paused",
+            TerminalReason::RuntimeError => "runtime_error",
+        };
+        let mut labels = vec![format!("reason:{reason}")];
+        let prefix = match &observation.kind {
+            OperationKind::Run => "crabber.run",
+            OperationKind::Model {
+                purpose,
+                provider,
+                model,
+            } => {
+                labels.push(format!(
+                    "provider:{}",
+                    dimension(provider, &self.dimensions.providers)
+                ));
+                labels.push(format!(
+                    "model:{}",
+                    dimension(model, &self.dimensions.models)
+                ));
+                labels.push(format!(
+                    "purpose:{}",
+                    match purpose {
+                        ModelPurpose::Turn => "turn",
+                        ModelPurpose::Compaction => "compaction",
+                    }
+                ));
+                "crabber.model"
+            }
+            OperationKind::Tool { name } => {
+                labels.push(format!("tool:{}", dimension(name, &self.dimensions.tools)));
+                "crabber.tool"
+            }
+        };
+        let timestamp = time_now();
+        let sample = |name: String, duration: Duration| json!({"metric":name,"points":[[timestamp,[duration.as_secs_f64()*1000.0]]],"tags":labels});
+        let mut samples = vec![sample(format!("{prefix}.elapsed_ms"), observation.elapsed)];
+        if matches!(observation.kind, OperationKind::Model { .. })
+            && let Some(first) = observation.first_token
         {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            samples.push(sample("crabber.model.first_token_ms".into(), first));
+        }
+        let _ = self.enqueue(Command::Measurement(Measurement { samples }));
+    }
+
+    fn emit(&self, event: &EventRecord) {
+        if let Some(event) = SafeEvent::from_event(event, &self.redaction) {
+            let _ = self.enqueue(Command::Event(Box::new(event)));
         }
     }
     fn model_completed(&self, event: &EventRecord) {
@@ -300,9 +433,7 @@ impl Observer for DatadogObserver {
     fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
         if let Some(mut event) = SafeEvent::from_event(event, &self.redaction) {
             event.context = context.cloned();
-            if self.tx.try_send(Command::Event(Box::new(event))).is_err() {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+            let _ = self.enqueue(Command::Event(Box::new(event)));
         }
     }
     fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
@@ -317,9 +448,7 @@ impl Observer for DatadogObserver {
         if let Some(mut event) = SafeEvent::from_event(event, &self.redaction) {
             event.context = context.cloned();
             event.attempt = Some(attempt.to_string());
-            if self.tx.try_send(Command::Event(Box::new(event))).is_err() {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+            let _ = self.enqueue(Command::Event(Box::new(event)));
         }
     }
     fn model_completed_in_attempt(
@@ -335,18 +464,62 @@ impl DatadogObserver {
     #[must_use]
     pub fn new(config: &DatadogConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.channel_capacity.clamp(1, 4096));
-        let dropped = Arc::new(AtomicU64::new(0));
-        tokio::spawn(worker(rx, config.clone(), Arc::clone(&dropped)));
+        let health = Arc::new(Health::default());
+        let handle = tokio::spawn(worker(rx, config.clone(), WorkerGuard(Arc::clone(&health))));
         Self {
             tx,
-            dropped,
+            health,
+            abort: handle.abort_handle(),
+            dimensions: config.metric_dimensions.clone(),
             timeout: config.timeout,
             redaction: config.redaction.clone(),
         }
     }
+    fn enqueue(&self, command: Command) -> Result<(), ()> {
+        let Ok(_lock) = self.health.gate.try_lock() else {
+            self.health.dropped.fetch_add(1, Ordering::SeqCst);
+            return Err(());
+        };
+        if self.health.stopped.load(Ordering::SeqCst) != 0 {
+            self.health.dropped.fetch_add(1, Ordering::SeqCst);
+            return Err(());
+        }
+        let Ok(permit) = self.tx.try_reserve() else {
+            self.health.dropped.fetch_add(1, Ordering::SeqCst);
+            return Err(());
+        };
+        self.health.outstanding.fetch_add(1, Ordering::SeqCst);
+        self.health.queued.fetch_add(1, Ordering::SeqCst);
+        self.health.accepted.fetch_add(1, Ordering::SeqCst);
+        permit.send(command);
+        Ok(())
+    }
     #[must_use]
     pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.health.dropped.load(Ordering::SeqCst)
+    }
+    #[must_use]
+    pub fn health(&self) -> ExportHealth {
+        let pending = self.health.pending.load(Ordering::SeqCst);
+        let last = self.health.last_success.load(Ordering::SeqCst);
+        ExportHealth {
+            accepted: self.health.accepted.load(Ordering::SeqCst),
+            dropped: self.dropped(),
+            retries: self.health.retries.load(Ordering::SeqCst),
+            failures: self.health.failures.load(Ordering::SeqCst),
+            queue_depth: self
+                .health
+                .queued
+                .load(Ordering::SeqCst)
+                .min(self.tx.max_capacity() as u64),
+            pending_depth: pending,
+            last_success_unix_seconds: (last > 0).then_some(last),
+            worker_status: if self.health.stopped.load(Ordering::SeqCst) == 0 {
+                WorkerStatus::Running
+            } else {
+                WorkerStatus::Stopped
+            },
+        }
     }
     /// Waits for queued records to be exported.
     /// # Errors
@@ -367,24 +540,33 @@ impl DatadogObserver {
         } else {
             Command::Flush(tx)
         };
-        tokio::time::timeout(self.timeout, self.tx.send(command))
-            .await
-            .map_err(|_| ExportError::Timeout)?
-            .map_err(|_| ExportError::WorkerStopped)?;
-        tokio::time::timeout(self.timeout, rx)
-            .await
-            .map_err(|_| ExportError::Timeout)?
-            .map_err(|_| ExportError::WorkerStopped)?
+        let result = tokio::time::timeout(self.timeout, async {
+            self.tx
+                .send(command)
+                .await
+                .map_err(|_| ExportError::WorkerStopped)?;
+            rx.await.map_err(|_| ExportError::WorkerStopped)?
+        })
+        .await
+        .map_err(|_| ExportError::Timeout)
+        .and_then(|result| result);
+        if shutdown {
+            self.abort.abort();
+        }
+        result
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExportStage {
     Spans,
     Metrics,
+    Distributions,
     Logs,
 }
 struct PendingBatch {
     events: Vec<SafeEvent>,
+    measurements: Vec<Measurement>,
+    records: usize,
     stage: ExportStage,
     dropped_snapshot: Option<u64>,
     unsent_parts: Vec<Value>,
@@ -393,50 +575,74 @@ impl Default for PendingBatch {
     fn default() -> Self {
         Self {
             events: Vec::new(),
+            measurements: Vec::new(),
+            records: 0,
             stage: ExportStage::Spans,
             dropped_snapshot: None,
             unsent_parts: Vec::new(),
         }
     }
 }
-async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, dropped: Arc<AtomicU64>) {
+async fn worker(mut rx: mpsc::Receiver<Command>, config: DatadogConfig, guard: WorkerGuard) {
+    let health = Arc::clone(&guard.0);
+    let _guard = guard;
     let Ok(client) = reqwest::Client::builder().timeout(config.timeout).build() else {
         return;
     };
     let mut pending = PendingBatch::default();
     let mut retrying = false;
     let batch_limit = config.batch_size.clamp(1, 1000);
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
     loop {
         tokio::select! {
             command=rx.recv() => match command {
                 Some(Command::Event(event)) => {
-                    if retrying || pending.events.len()>=batch_limit {
-                        dropped.fetch_add(1,Ordering::Relaxed);
+                    health.queued.fetch_sub(1,Ordering::SeqCst);
+                    if retrying || pending.records>=batch_limit {
+                        health.dropped.fetch_add(1,Ordering::SeqCst);
+                        health.outstanding.fetch_sub(1,Ordering::SeqCst);
                     } else {
                         pending.events.push(*event);
-                        if pending.events.len()>=batch_limit {
-                            retrying=export(&client,&config,&mut pending,&dropped).await.is_err();
+                        pending.records += 1;
+                        health.pending.store(pending.records as u64, Ordering::SeqCst);
+                        if pending.records>=batch_limit {
+                            retrying=export(&client,&config,&mut pending,&health).await.is_err();
                         }
                     }
                 }
+                Some(Command::Measurement(measurement)) => {
+                    health.queued.fetch_sub(1,Ordering::SeqCst);
+                    if retrying || pending.records >= batch_limit {
+                        health.dropped.fetch_add(1,Ordering::SeqCst);
+                        health.outstanding.fetch_sub(1,Ordering::SeqCst);
+                    } else {
+                        pending.measurements.push(measurement);
+                        pending.records += 1;
+                        health.pending.store(pending.records as u64,Ordering::SeqCst);
+                        if pending.records >= batch_limit { retrying=export(&client,&config,&mut pending,&health).await.is_err(); }
+                    }
+                }
                 Some(Command::Flush(reply)) => {
-                    let result=export(&client,&config,&mut pending,&dropped).await;
+                    if retrying { health.resume.store(1,Ordering::SeqCst); }
+                    let result=export(&client,&config,&mut pending,&health).await;
                     retrying=result.is_err();
                     let _=reply.send(result);
                 }
                 Some(Command::Shutdown(reply)) => {
-                    let result=export(&client,&config,&mut pending,&dropped).await;
-                    retrying=result.is_err();
-                    let success=result.is_ok();
+                    if retrying { health.resume.store(1,Ordering::SeqCst); }
+                    let result=export(&client,&config,&mut pending,&health).await;
                     let _=reply.send(result);
-                    if success { break; }
+                    break;
                 }
                 None => break,
             },
             _=tick.tick() => {
-                if retrying || !pending.events.is_empty() || dropped.load(Ordering::Relaxed)>0 {
-                    retrying=export(&client,&config,&mut pending,&dropped).await.is_err();
+                if retrying || pending.records > 0 {
+                    if retrying { health.resume.store(1,Ordering::SeqCst); }
+                    retrying=export(&client,&config,&mut pending,&health).await.is_err();
                 }
             }
         }
@@ -461,6 +667,18 @@ fn tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
             .collect()
     }));
     t
+}
+fn metric_tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
+    let mut event = e.clone();
+    event.provider = e
+        .provider
+        .as_deref()
+        .map(|v| dimension(v, &c.metric_dimensions.providers));
+    event.model = e
+        .model
+        .as_deref()
+        .map(|v| dimension(v, &c.metric_dimensions.models));
+    tags(c, &event)
 }
 fn datadog_id(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
@@ -623,7 +841,7 @@ fn series(c: &DatadogConfig, e: &SafeEvent) -> Vec<Value> {
         .map(|(metric, value)| {
             let gauge = metric.ends_with("_ms");
             let mut item = json!({"metric":metric,"type":if gauge {3} else {1},
-            "points":[{"timestamp":e.time_ns/1_000_000_000,"value":value}],"tags":tags(c,e)});
+            "points":[{"timestamp":e.time_ns/1_000_000_000,"value":value}],"tags":metric_tags(c,e)});
             if !gauge {
                 item["interval"] = json!(1);
             }
@@ -679,6 +897,8 @@ fn split_payload(body: &Value) -> Option<(Value, Value)> {
 fn intake_signal(url: &str) -> &'static str {
     if url.contains("llmobs") {
         "llmobs"
+    } else if url.contains("distribution_points") {
+        "distributions"
     } else if url.contains("/series") {
         "metrics"
     } else {
@@ -694,11 +914,45 @@ fn rejected(response: &reqwest::Response, url: &str) -> ExportError {
         diagnostic,
     }
 }
+async fn acknowledge(
+    mut response: reqwest::Response,
+    health: &Health,
+    signal: &'static str,
+) -> Result<(), ExportError> {
+    let result = async {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| ExportError::Http)? {
+            if bytes.len() + chunk.len() > 65536 {
+                return Err(ExportError::IntakeResponse);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).map_err(|_| ExportError::IntakeResponse)?
+        };
+        let errors = body["errors"].as_array().map_or(0, Vec::len);
+        if errors > 0 {
+            return Err(ExportError::IntakeErrors {
+                signal,
+                count: errors,
+            });
+        }
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        health.failures.fetch_add(1, Ordering::SeqCst);
+    }
+    result
+}
 async fn post(
     client: &reqwest::Client,
     config: &DatadogConfig,
     url: String,
     parts: &mut Vec<Value>,
+    health: &Health,
 ) -> Result<(), ExportError> {
     'part: while let Some(body) = parts.last().cloned() {
         let raw = body.to_string();
@@ -710,14 +964,22 @@ async fn post(
             continue;
         }
         let is_llmobs = url.contains("llmobs");
+        let distribution = url.contains("distribution_points");
         let bytes = if is_llmobs {
             raw.into_bytes()
+        } else if distribution {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(raw.as_bytes())?;
+            encoder.finish()?
         } else {
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
             encoder.write_all(raw.as_bytes())?;
             encoder.finish()?
         };
         for attempt in 0..3 {
+            if attempt > 0 || health.resume.swap(0, Ordering::SeqCst) > 0 {
+                health.retries.fetch_add(1, Ordering::SeqCst);
+            }
             let request = client
                 .post(&url)
                 .header("DD-API-KEY", &config.api_key)
@@ -725,17 +987,22 @@ async fn post(
             let request = if is_llmobs {
                 request
             } else {
-                request.header("Content-Encoding", "gzip")
+                request.header(
+                    "Content-Encoding",
+                    if distribution { "deflate" } else { "gzip" },
+                )
             };
             let result = request.body(bytes.clone()).send().await;
+            if !result
+                .as_ref()
+                .is_ok_and(|response| response.status().is_success())
+            {
+                health.failures.fetch_add(1, Ordering::SeqCst);
+            }
             match result {
                 Ok(response) if response.status().is_success() => {
-                    if url.contains("/series") {
-                        let body = response.json::<Value>().await.unwrap_or(Value::Null);
-                        let errors = body["errors"].as_array().map_or(0, Vec::len);
-                        if errors > 0 {
-                            return Err(ExportError::MetricIntakeErrors(errors));
-                        }
+                    if url.contains("/series") || distribution {
+                        acknowledge(response, health, intake_signal(&url)).await?;
                     }
                     parts.pop();
                     continue 'part;
@@ -764,11 +1031,12 @@ async fn post(
     }
     Ok(())
 }
+#[allow(clippy::too_many_lines)] // Preserve ordered stage progress in one state machine.
 async fn export(
     client: &reqwest::Client,
     config: &DatadogConfig,
     pending: &mut PendingBatch,
-    dropped: &AtomicU64,
+    health: &Health,
 ) -> Result<(), ExportError> {
     if pending.stage == ExportStage::Spans {
         if pending.unsent_parts.is_empty() {
@@ -801,6 +1069,7 @@ async fn export(
                     .unwrap_or_else(|| format!("https://llmobs-intake.{}", config.site))
             ),
             &mut pending.unsent_parts,
+            health,
         )
         .await?;
         pending.stage = ExportStage::Metrics;
@@ -808,19 +1077,19 @@ async fn export(
     if pending.stage == ExportStage::Metrics {
         let dropped_count = *pending
             .dropped_snapshot
-            .get_or_insert_with(|| dropped.load(Ordering::Relaxed));
+            .get_or_insert_with(|| health.dropped.load(Ordering::SeqCst));
         if pending.unsent_parts.is_empty() {
             let mut metrics: Vec<_> = pending
                 .events
                 .iter()
                 .flat_map(|e| series(config, e))
                 .collect();
-            if !pending.events.is_empty() {
+            if pending.records > 0 {
                 metrics.push(json!({"metric":"crabber.export.batches","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":1}],
                     "tags":[format!("service:{}",config.service),format!("env:{}",config.env),"outcome:ok"]}));
             }
             if dropped_count > 0 {
-                metrics.push(json!({"metric":"crabber.export.dropped","type":1,"interval":1,"points":[{"timestamp":time_now(),"value":dropped_count}],
+                metrics.push(json!({"metric":"crabber.export.dropped","type":3,"points":[{"timestamp":time_now(),"value":dropped_count}],
                     "tags":[format!("service:{}",config.service),format!("env:{}",config.env)]}));
             }
             if !metrics.is_empty() {
@@ -832,11 +1101,37 @@ async fn export(
             config,
             format!("{}/api/v2/series", config.api_origin()),
             &mut pending.unsent_parts,
+            health,
         )
         .await?;
-        if dropped_count > 0 {
-            dropped.fetch_sub(dropped_count, Ordering::Relaxed);
+        pending.stage = ExportStage::Distributions;
+    }
+    if pending.stage == ExportStage::Distributions {
+        if pending.unsent_parts.is_empty() {
+            let samples: Vec<_> = pending
+                .measurements
+                .iter()
+                .flat_map(|m| m.samples.iter().cloned())
+                .map(|mut sample| {
+                    let tags = sample["tags"].as_array_mut().expect("measurement tags");
+                    tags.push(json!(format!("service:{}", config.service)));
+                    tags.push(json!(format!("env:{}", config.env)));
+                    tags.push(json!(format!("version:{}", config.version)));
+                    sample
+                })
+                .collect();
+            if !samples.is_empty() {
+                pending.unsent_parts.push(json!({"series":samples}));
+            }
         }
+        post(
+            client,
+            config,
+            format!("{}/api/v1/distribution_points", config.api_origin()),
+            &mut pending.unsent_parts,
+            health,
+        )
+        .await?;
         pending.stage = ExportStage::Logs;
     }
     if pending.stage == ExportStage::Logs {
@@ -855,8 +1150,20 @@ async fn export(
             config,
             format!("{}/api/v2/logs", config.logs_origin()),
             &mut pending.unsent_parts,
+            health,
         )
         .await?;
+        if pending.records > 0 {
+            health
+                .last_success
+                .store(u64::try_from(time_now()).unwrap_or(0), Ordering::SeqCst);
+        }
+        health
+            .outstanding
+            .fetch_sub(pending.records as u64, Ordering::SeqCst);
+        health.pending.store(0, Ordering::SeqCst);
+        pending.records = 0;
+        pending.measurements.clear();
         pending.events.clear();
         pending.stage = ExportStage::Spans;
         pending.dropped_snapshot = None;
@@ -922,6 +1229,7 @@ mod tests {
             channel_capacity: 32,
             max_payload_bytes: 512_000,
             timeout: Duration::from_secs(3),
+            metric_dimensions: MetricDimensions::default(),
             api_origin: None,
             logs_origin: None,
         }
@@ -977,6 +1285,11 @@ mod tests {
         if headers.contains("/api/v2/llmobs") {
             assert!(!headers.contains("content-encoding: gzip"));
             body_text = String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
+        } else if headers.contains("distribution_points") {
+            assert!(headers.contains("content-encoding: deflate"));
+            flate2::read::ZlibDecoder::new(&all[head_end..head_end + length])
+                .read_to_string(&mut body_text)
+                .unwrap();
         } else {
             assert!(headers.contains("content-encoding: gzip"));
             GzDecoder::new(&all[head_end..head_end + length])
@@ -1005,7 +1318,9 @@ mod tests {
             });
             let client = reqwest::Client::new();
             let mut parts = vec![json!({"safe":true})];
-            let error = post(&client, &config(), url, &mut parts).await.unwrap_err();
+            let error = post(&client, &config(), url, &mut parts, &Health::default())
+                .await
+                .unwrap_err();
             let diagnostic = format!("{error} {error:?}");
             for secret in [
                 "ALPHABETICSECRET",
@@ -1026,6 +1341,7 @@ mod tests {
             &config(),
             format!("http://{address}/PRIVATE_PATH_SECRET?token=CREDENTIAL_SECRET"),
             &mut parts,
+            &Health::default(),
         )
         .await
         .unwrap_err();
@@ -1086,12 +1402,20 @@ mod tests {
         ];
         let client = reqwest::Client::new();
         assert!(
-            post(&client, &config(), url.clone(), &mut parts)
-                .await
-                .is_err()
+            post(
+                &client,
+                &config(),
+                url.clone(),
+                &mut parts,
+                &Health::default()
+            )
+            .await
+            .is_err()
         );
         recovered.store(true, Ordering::SeqCst);
-        post(&client, &config(), url, &mut parts).await.unwrap();
+        post(&client, &config(), url, &mut parts, &Health::default())
+            .await
+            .unwrap();
         assert_eq!(server.join().unwrap(), vec![json!(1), json!(2), json!(3)]);
     }
     #[test]
@@ -1209,9 +1533,23 @@ mod tests {
             observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
         }
         assert!(observer.dropped() > 0);
-        assert!(observer.shutdown().await.is_err());
+        assert!(observer.flush().await.is_err());
+        let outage = observer.health();
+        assert_eq!(outage.accepted, 2);
+        assert_eq!(outage.dropped, 200);
+        assert_eq!(outage.pending_depth, 2);
+        assert_eq!(outage.queue_depth, 0);
+        assert_eq!(outage.last_success_unix_seconds, None);
+        assert_eq!(outage.failures, 3);
         recovered.store(true, Ordering::SeqCst);
         observer.flush().await.unwrap();
+        let healthy = observer.health();
+        assert_eq!(healthy.accepted, outage.accepted);
+        assert_eq!(healthy.dropped, outage.dropped);
+        assert_eq!(healthy.pending_depth, 0);
+        assert_eq!(healthy.queue_depth, 0);
+        assert!(healthy.last_success_unix_seconds.is_some());
+        assert!(healthy.retries > outage.retries);
         let accepted = server.join().unwrap();
         assert!(accepted[0].0.contains("/api/v2/llmobs"));
         assert_eq!(span_payload(&accepted[0].1).len(), 2);
@@ -1309,6 +1647,361 @@ mod tests {
             ]
         );
     }
+
+    async fn stopped(observer: &DatadogObserver) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while observer.health().worker_status != WorkerStatus::Stopped {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker cancellation must become terminal");
+    }
+    fn measurement(
+        kind: OperationKind,
+        elapsed: u64,
+        first: Option<u64>,
+    ) -> OperationalObservation {
+        OperationalObservation {
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            kind,
+            reason: TerminalReason::Cancelled,
+            elapsed: Duration::from_millis(elapsed),
+            first_token: first.map(Duration::from_millis),
+        }
+    }
+    #[tokio::test]
+    async fn typed_distributions_preserve_values_counts_and_finite_dimensions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_request(&mut stream));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            requests
+        });
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        c.batch_size = 1000;
+        c.channel_capacity = 4096;
+        c.metric_dimensions.providers = vec!["fake".into()];
+        c.metric_dimensions.models = vec!["demo".into()];
+        c.metric_dimensions.tools = vec!["echo".into()];
+        let observer = DatadogObserver::new(&c);
+        observer.operational_completed(&measurement(OperationKind::Run, 50, None));
+        observer.operational_completed(&measurement(
+            OperationKind::Tool {
+                name: "echo".into(),
+            },
+            10,
+            None,
+        ));
+        for i in 0..100 {
+            observer.operational_completed(&measurement(
+                OperationKind::Model {
+                    purpose: if i % 2 == 0 {
+                        ModelPurpose::Turn
+                    } else {
+                        ModelPurpose::Compaction
+                    },
+                    provider: if i == 0 {
+                        "fake".into()
+                    } else {
+                        format!("provider-{i}")
+                    },
+                    model: if i == 0 {
+                        "demo".into()
+                    } else {
+                        format!("model-{i}")
+                    },
+                },
+                20,
+                if i < 2 { Some(3) } else { None },
+            ));
+        }
+        observer.flush().await.unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests[0].0.contains("/api/v2/series"));
+        assert!(requests[1].0.contains("/api/v1/distribution_points"));
+        let series = requests[1].1["series"].as_array().unwrap();
+        assert_eq!(series.len(), 104);
+        for (name, value, count) in [
+            ("crabber.run.elapsed_ms", 50.0, 1),
+            ("crabber.tool.elapsed_ms", 10.0, 1),
+            ("crabber.model.elapsed_ms", 20.0, 100),
+            ("crabber.model.first_token_ms", 3.0, 2),
+        ] {
+            let samples: Vec<_> = series.iter().filter(|s| s["metric"] == name).collect();
+            assert_eq!(samples.len(), count);
+            assert!(samples.iter().all(|s| s["points"][0][1] == json!([value])));
+        }
+        let tags: std::collections::BTreeSet<_> = series
+            .iter()
+            .flat_map(|s| {
+                s["tags"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_str().unwrap())
+            })
+            .collect();
+        assert!(tags.contains("provider:overflow") && tags.contains("model:overflow"));
+        assert!(tags.contains("purpose:turn") && tags.contains("purpose:compaction"));
+        assert!(!tags.iter().any(|tag| {
+            ["session", "run_id", "attempt", "trace", "span", "call"]
+                .iter()
+                .any(|name| tag.starts_with(name))
+        }));
+        let health = observer.health();
+        assert_eq!(health.accepted, 102);
+        assert_eq!(health.dropped, 0);
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.pending_depth, 0);
+        assert!(health.last_success_unix_seconds.is_some());
+        observer.shutdown().await.unwrap();
+        stopped(&observer).await;
+        assert_eq!(observer.health().worker_status, WorkerStatus::Stopped);
+    }
+    #[tokio::test]
+    async fn distribution_split_retry_never_replays_completed_chunks_or_stages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            let mut values = Vec::new();
+            let mut step = 0;
+            let mut logs = 0;
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (headers, body) = read_request(&mut stream);
+                let path = headers.lines().next().unwrap().to_string();
+                paths.push(path.clone());
+                let status = if path.contains("distribution_points") {
+                    step += 1;
+                    match step {
+                        1 => "413 Payload Too Large",
+                        3 => "403 Forbidden",
+                        _ => {
+                            values.extend(
+                                body["series"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|s| s["points"][0][1][0].as_f64().unwrap()),
+                            );
+                            "202 Accepted"
+                        }
+                    }
+                } else if path.contains("/api/v2/logs") {
+                    logs += 1;
+                    if logs == 1 {
+                        "400 Bad Request"
+                    } else {
+                        "202 Accepted"
+                    }
+                } else {
+                    "202 Accepted"
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                if logs == 2 {
+                    return (paths, values);
+                }
+            }
+        });
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        let observer = DatadogObserver::new(&c);
+        let session = SessionId::new();
+        let run = RunId::new();
+        observer.emit(&event(EventKind::RunStarted, &session, &run, Value::Null));
+        observer.emit(&event(
+            EventKind::RunSettled,
+            &session,
+            &run,
+            json!({"status":"ok"}),
+        ));
+        for value in [1, 2, 3, 4] {
+            observer.operational_completed(&measurement(OperationKind::Run, value, None));
+        }
+        assert!(observer.flush().await.is_err());
+        assert_eq!(observer.health().last_success_unix_seconds, None);
+        assert!(observer.flush().await.is_err());
+        assert_eq!(observer.health().last_success_unix_seconds, None);
+        observer.flush().await.unwrap();
+        let (paths, values) = server.join().unwrap();
+        assert_eq!(values, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|p| p.contains("/api/v2/series"))
+                .count(),
+            1
+        );
+        assert_eq!(observer.health().failures, 3);
+        assert!(observer.health().retries >= 1);
+        observer.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn bounded_shutdown_is_terminal_offline_and_overflow_health_is_cumulative() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let mut c = config();
+        c.api_origin = Some(origin.clone());
+        c.logs_origin = Some(origin);
+        c.timeout = Duration::from_millis(40);
+        c.channel_capacity = 2;
+        let observer = DatadogObserver::new(&c);
+        for _ in 0..100 {
+            observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        }
+        assert_eq!(observer.health().accepted, 2);
+        assert_eq!(observer.health().dropped, 98);
+        let start = tokio::time::Instant::now();
+        assert!(observer.shutdown().await.is_err());
+        assert!(start.elapsed() < Duration::from_millis(200));
+        stopped(&observer).await;
+        let health = observer.health();
+        assert_eq!(health.worker_status, WorkerStatus::Stopped);
+        assert_eq!(health.dropped, 100);
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.pending_depth, 0);
+        assert_eq!(health.last_success_unix_seconds, None);
+        assert!(health.failures > 0);
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        assert_eq!(observer.health().dropped, 101);
+    }
+
+    #[tokio::test]
+    async fn distribution_status_and_acknowledgement_errors_are_safe_and_counted() {
+        for status in [400, 403, 429, 500, 200, 202] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://{}/api/v1/distribution_points",
+                listener.local_addr().unwrap()
+            );
+            let attempts = if status == 429 || status == 500 { 3 } else { 1 };
+            let server = std::thread::spawn(move || {
+                for _ in 0..attempts {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let _ = read_request(&mut stream);
+                    let body = r#"{"errors":["PROMPT_SECRET RESPONSE_SECRET PRIVATE_URL_SECRET"]}"#;
+                    write!(stream,"HTTP/1.1 {status} Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                }
+            });
+            let health = Health::default();
+            let mut parts =
+                vec![json!({"series":[{"metric":"crabber.run.elapsed_ms","points":[[1,[2.0]]]}]})];
+            let error = post(&reqwest::Client::new(), &config(), url, &mut parts, &health)
+                .await
+                .unwrap_err();
+            let message = format!("{error} {error:?}");
+            for secret in [
+                "PROMPT_SECRET",
+                "RESPONSE_SECRET",
+                "PRIVATE_URL_SECRET",
+                "http://",
+            ] {
+                assert!(!message.contains(secret));
+            }
+            assert_eq!(health.failures.load(Ordering::SeqCst), attempts);
+            assert_eq!(health.retries.load(Ordering::SeqCst), attempts - 1);
+            assert_eq!(parts.len(), 1);
+            server.join().unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn slow_intake_flush_timeout_remains_live_shutdown_cancels_worker() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (arrived_tx, arrived_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request(&mut stream);
+            let _ = arrived_tx.send(());
+            release_rx.recv().unwrap();
+        });
+        let mut c = config();
+        c.api_origin = Some(origin);
+        c.timeout = Duration::from_millis(60);
+        let observer = DatadogObserver::new(&c);
+        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+        let flushing = observer.clone();
+        let task = tokio::spawn(async move { flushing.flush().await });
+        arrived_rx.await.unwrap();
+        let health = observer.health();
+        assert_eq!(health.pending_depth, 1);
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.last_success_unix_seconds, None);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(observer.health().worker_status, WorkerStatus::Running);
+        assert!(observer.shutdown().await.is_err());
+        stopped(&observer).await;
+        assert_eq!(observer.health().worker_status, WorkerStatus::Stopped);
+        assert_eq!(observer.health().dropped, 1);
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
+    #[test]
+    fn dimension_allowlist_has_a_hard_cap_and_sanitized_overflow() {
+        let allowed: Vec<_> = (0..100).map(|i| format!("model-{i}")).collect();
+        assert_eq!(dimension("model-31", &allowed), "model-31");
+        assert_eq!(dimension("model-32", &allowed), "overflow");
+        assert_eq!(dimension("", &allowed), "overflow");
+        assert_eq!(dimension("model-1 SECRET", &allowed), "overflow");
+        assert_eq!(
+            dimension(&format!("{}x", "!".repeat(1000)), &["x".into()]),
+            "overflow"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_producers_keep_local_observation_depths_bounded() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let mut c = config();
+        c.api_origin = Some(origin);
+        c.channel_capacity = 8;
+        c.batch_size = 4;
+        c.timeout = Duration::from_millis(40);
+        let observer = DatadogObserver::new(&c);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let observer = observer.clone();
+                scope.spawn(move || {
+                    for _ in 0..1000 {
+                        observer.operational_completed(&measurement(OperationKind::Run, 1, None));
+                        let health = observer.health();
+                        assert!(health.queue_depth <= 8);
+                        assert!(health.pending_depth <= 4);
+                    }
+                });
+            }
+        });
+        let _ = observer.shutdown().await;
+        stopped(&observer).await;
+        let health = observer.health();
+        assert_eq!(health.worker_status, WorkerStatus::Stopped);
+        assert_eq!(health.dropped, 4000);
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.pending_depth, 0);
+    }
     struct EchoTool;
     #[async_trait::async_trait]
     impl crabber_extension::ToolExecutor for EchoTool {
@@ -1330,7 +2023,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let (mut stream, _) = listener.accept().unwrap();
                 requests.push(read_request(&mut stream));
                 std::io::Write::write_all(
@@ -1428,7 +2121,7 @@ mod tests {
                 .any(|m| m["metric"] == "crabber.run.count")
         );
         assert!(
-            requests[2]
+            requests[3]
                 .1
                 .as_array()
                 .unwrap()
@@ -1455,11 +2148,14 @@ mod tests {
             })],
         ];
         for deltas in cases {
+            let expected_first = deltas
+                .iter()
+                .any(|delta| matches!(delta,StreamDelta::TextDelta(text) if !text.is_empty()));
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let origin = format!("http://{}", listener.local_addr().unwrap());
             let server = std::thread::spawn(move || {
                 let mut requests = Vec::new();
-                for _ in 0..3 {
+                for _ in 0..4 {
                     let (mut stream, _) = listener.accept().unwrap();
                     requests.push(read_request(&mut stream));
                     std::io::Write::write_all(
@@ -1499,6 +2195,33 @@ mod tests {
             assert!(run.done().await.is_err());
             observer.flush().await.unwrap();
             let requests = server.join().unwrap();
+            let distributions = requests[2].1["series"].as_array().unwrap();
+            assert_eq!(
+                distributions
+                    .iter()
+                    .filter(|s| s["metric"] == "crabber.model.elapsed_ms")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                distributions
+                    .iter()
+                    .filter(|s| s["metric"] == "crabber.run.elapsed_ms")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                distributions
+                    .iter()
+                    .filter(|s| s["metric"] == "crabber.model.first_token_ms")
+                    .count(),
+                usize::from(expected_first)
+            );
+            assert!(distributions.iter().all(|s| {
+                s["points"][0][1][0]
+                    .as_f64()
+                    .is_some_and(|v| v.is_finite() && v >= 0.0)
+            }));
             let spans = span_payload(&requests[0].1);
             let workflow = spans
                 .iter()

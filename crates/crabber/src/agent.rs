@@ -374,6 +374,14 @@ impl Agent {
         Ok(())
     }
 
+    /// Returns local export health, or `None` when Datadog is disabled.
+    #[cfg(feature = "datadog")]
+    #[must_use]
+    pub fn export_health(&self) -> Option<crabber_obs::ExportHealth> {
+        self.datadog
+            .as_ref()
+            .map(crabber_obs::DatadogObserver::health)
+    }
     /// Waits for queued Datadog exports, if enabled.
     #[cfg(feature = "datadog")]
     /// # Errors
@@ -744,6 +752,72 @@ mod tests {
     use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, StreamDelta};
     use std::time::Duration;
 
+    #[cfg(feature = "datadog")]
+    #[tokio::test]
+    async fn configured_export_health_stays_local_during_provider_failure() {
+        struct Capture(std::sync::atomic::AtomicU64);
+        impl Observer for Capture {
+            fn emit(&self, _: &crabber_core::EventRecord) {}
+            fn operational_completed(&self, _: &crabber_runtime::OperationalObservation) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let mut config = crabber_obs::DatadogConfig::from_lookup(&|name| {
+            if name == "DD_API_KEY" {
+                Ok("credential-free-test".into())
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        })
+        .unwrap();
+        config.api_origin = Some(origin.clone());
+        config.logs_origin = Some(origin);
+        config.timeout = Duration::from_millis(40);
+        let capture = Arc::new(Capture(std::sync::atomic::AtomicU64::new(0)));
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(FakeProvider::scripted(vec![vec![
+                StreamDelta::Error(ProviderError {
+                    kind: ProviderErrorKind::Server,
+                    message: "PROMPT_SECRET".into(),
+                    retryable: false,
+                }),
+            ]])))
+            .observer(capture.clone())
+            .datadog(config)
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .build()
+            .unwrap();
+        assert_eq!(agent.export_health().unwrap().accepted, 0);
+        let run = agent.prompt(None, "PROMPT_SECRET").await.unwrap();
+        assert!(run.done().await.is_err());
+        assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(agent.export_health().unwrap().accepted >= 2);
+        assert_eq!(
+            agent.export_health().unwrap().last_success_unix_seconds,
+            None
+        );
+        assert!(agent.shutdown().await.is_err());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while agent.export_health().unwrap().worker_status != crabber_obs::WorkerStatus::Stopped
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let health = agent.export_health().unwrap();
+        assert_eq!(health.queue_depth, 0);
+        assert_eq!(health.pending_depth, 0);
+        assert!(health.dropped >= 2);
+    }
+
     #[tokio::test]
     async fn provider_failure_ends_events_and_done_returns_error() {
         let provider = FakeProvider::scripted(vec![vec![
@@ -763,6 +837,12 @@ mod tests {
             }))
             .build()
             .unwrap();
+        #[cfg(feature = "datadog")]
+        {
+            assert_eq!(agent.export_health(), None);
+            agent.flush().await.unwrap();
+            agent.shutdown().await.unwrap();
+        }
         let mut run = agent.prompt(None, "fail").await.unwrap();
         let mut events = run.events();
         let observed = tokio::time::timeout(Duration::from_secs(2), async {

@@ -3,7 +3,7 @@ use crabber::{
     TraceContext,
     obs::{DatadogConfig, DatadogObserver},
 };
-use flate2::read::GzDecoder;
+use flate2::read::{GzDecoder, ZlibDecoder};
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -43,7 +43,7 @@ impl ExportCapture {
                     .unwrap();
                 let mut all = Vec::new();
                 let mut buffer = [0; 8192];
-                let (end, length, gzip) = loop {
+                let (end, length, gzip, deflate) = loop {
                     let n = stream.read(&mut buffer).unwrap();
                     assert!(n > 0);
                     all.extend_from_slice(&buffer[..n]);
@@ -56,13 +56,22 @@ impl ExportCapture {
                             .parse()
                             .unwrap();
                         if all.len() >= pos + 4 + length {
-                            break (pos + 4, length, head.contains("content-encoding: gzip"));
+                            break (
+                                pos + 4,
+                                length,
+                                head.contains("content-encoding: gzip"),
+                                head.contains("content-encoding: deflate"),
+                            );
                         }
                     }
                 };
                 let mut body = String::new();
                 if gzip {
                     GzDecoder::new(&all[end..end + length])
+                        .read_to_string(&mut body)
+                        .unwrap();
+                } else if deflate {
+                    ZlibDecoder::new(&all[end..end + length])
                         .read_to_string(&mut body)
                         .unwrap();
                 } else {
