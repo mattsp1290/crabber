@@ -1,3 +1,6 @@
 [workspace]
 members = ["guest", "controls", "host"]
 resolver = "3"
+
+[patch.crates-io]
+ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "5cc34b11fb41c6f068c27410b5756dbebcb367dd" }

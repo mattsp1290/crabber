@@ -3,6 +3,7 @@ mod operational;
 mod admission_receipts;
 mod bounded_snapshots;
 mod trace_context;
+mod ag_ui;
 #[path = "../../../../examples/host-trace/src/export.rs"]
 mod export;
 #[path = "../../../../examples/host-trace/src/journey.rs"]
@@ -18,6 +19,7 @@ use std::{error::Error, path::PathBuf, sync::Arc};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    ag_ui::run().await?;
     operational::run().await;
     admission_receipts::run().await?;
     bounded_snapshots::run().await?;

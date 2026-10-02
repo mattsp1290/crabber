@@ -42,6 +42,10 @@ fn check() {
     run(workspace, &["test", "--workspace"]);
     run(
         workspace,
+        &["run", "--quiet", "-p", "agui-sse", "--", "--check"],
+    );
+    run(
+        workspace,
         &[
             "test",
             "-p",
@@ -52,6 +56,41 @@ fn check() {
             "trace_context",
         ],
     );
+    check_journeys(workspace);
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "wasm",
+            "--test",
+            "wasm_state",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "wasm",
+            "--test",
+            "wasm_roles",
+        ],
+    );
+    let external = workspace.join("testdata/external-consumer/check.sh");
+    let status = Command::new(&external)
+        .current_dir(workspace)
+        .status()
+        .expect("run external consumer check");
+    assert!(status.success(), "external consumer check failed");
+    check_glue(workspace);
+}
+
+fn check_journeys(workspace: &Path) {
     run(
         workspace,
         &["run", "--quiet", "-p", "host-trace", "--", "memory"],
@@ -90,37 +129,6 @@ fn check() {
             "--check",
         ],
     );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_state",
-        ],
-    );
-    run(
-        workspace,
-        &[
-            "test",
-            "-p",
-            "crabber",
-            "--features",
-            "wasm",
-            "--test",
-            "wasm_roles",
-        ],
-    );
-    let external = workspace.join("testdata/external-consumer/check.sh");
-    let status = Command::new(&external)
-        .current_dir(workspace)
-        .status()
-        .expect("run external consumer check");
-    assert!(status.success(), "external consumer check failed");
-    check_glue(workspace);
 }
 
 fn check_wit(workspace: &Path) {

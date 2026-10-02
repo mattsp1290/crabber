@@ -9,6 +9,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use crabber_core::TraceContext;
+use crabber_core::event_payload::{self, StreamOutcome};
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
     EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
@@ -711,6 +712,9 @@ impl Orchestrator {
                         &run.id,
                         plan,
                         PendingCall {
+                            message_id: Some(latest.id.clone()),
+                            turn_id: None,
+                            args_completed: true,
                             id: call_id.clone(),
                             name: name.clone(),
                             raw: String::new(),
@@ -744,7 +748,7 @@ impl Orchestrator {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunResult, RuntimeError> {
-        self.with_context(context).resume_attempt(run_id).await
+        Box::pin(self.with_context(context).resume_attempt(run_id)).await
     }
 
     #[allow(clippy::too_many_lines)]
@@ -829,12 +833,16 @@ impl Orchestrator {
                         run_id,
                         &plan,
                         &call,
+                        None,
                     )
                     .await?;
                     interrupted = true;
                     continue;
                 }
                 let pending = PendingCall {
+                    message_id: None,
+                    turn_id: None,
+                    args_completed: true,
                     id: call.id.clone(),
                     name: call.name.clone(),
                     raw: String::new(),
@@ -912,6 +920,7 @@ impl Orchestrator {
                         false,
                         usage,
                         lost.as_ref(),
+                        &std::sync::Mutex::new(None),
                     )
                     .await;
                 let result = match outcome {
@@ -942,6 +951,7 @@ impl Orchestrator {
                             run_id,
                             &plan,
                             true,
+                            None,
                         )
                         .await?;
                         let event = self.run_settled_event(
@@ -1047,16 +1057,18 @@ impl Orchestrator {
         run_id: &RunId,
         plan: &RunPlan,
         include_pending: bool,
+        turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
         for call in self.store.list_unfinished_tool_calls(run_id).await? {
             if call.status == ToolCallStatus::Pending && !include_pending {
                 continue;
             }
             if call.status == ToolCallStatus::Pending {
-                let running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+                let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+                running.turn_id = turn_id.cloned();
                 execution.claim_tool_call(&call.id, running).await?;
             }
-            self.settle_interrupted_call(execution, session_id, run_id, plan, &call)
+            self.settle_interrupted_call(execution, session_id, run_id, plan, &call, turn_id)
                 .await?;
         }
         Ok(())
@@ -1069,6 +1081,7 @@ impl Orchestrator {
         run_id: &RunId,
         plan: &RunPlan,
         call: &ToolCallRecord,
+        turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
         let content = vec![ContentBlock::Text {
             text: "interrupted".into(),
@@ -1094,7 +1107,8 @@ impl Orchestrator {
             created_at: self.clock.now(),
         };
         let mut event = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        event.payload = json!({"call_id": call.id, "name": call.name, "status": "interrupted", "is_error": true});
+        event.turn_id = turn_id.cloned();
+        event.payload = json!({"call_id": call.id, "name": call.name, "status": "interrupted", "is_error": true, "message_id": message.id, "content": content});
         event.correlation = Some(call.id.to_string());
         execution
             .settle_tool_call(
@@ -1378,6 +1392,7 @@ impl Orchestrator {
             session_id: session_id.clone(),
             lost: Arc::clone(&lost),
         });
+        let current_turn = std::sync::Mutex::new(None);
         let outcome = {
             let run_future = crabber_extension::with_state_sink(
                 state_sink,
@@ -1391,6 +1406,7 @@ impl Orchestrator {
                     true,
                     Usage::default(),
                     lost.as_ref(),
+                    &current_turn,
                 ),
             );
             tokio::pin!(run_future);
@@ -1433,12 +1449,14 @@ impl Orchestrator {
                     return Err(error);
                 }
                 if !matches!(error, RuntimeError::LeaseLost) {
+                    let turn_id = current_turn.lock().expect("turn context poisoned").clone();
                     self.settle_unfinished_calls(
                         execution.as_ref(),
                         &session_id,
                         &run_id,
                         &plan,
                         true,
+                        turn_id.as_ref(),
                     )
                     .await?;
                 }
@@ -1500,6 +1518,7 @@ impl Orchestrator {
         initial: bool,
         mut usage: Usage,
         lease_lost: &AtomicBool,
+        current_turn: &std::sync::Mutex<Option<TurnId>>,
     ) -> Result<Usage, RuntimeError> {
         let run_started_at = self.clock.now();
         if initial {
@@ -1525,9 +1544,16 @@ impl Orchestrator {
             if cancellation.is_cancelled() {
                 return Err(RuntimeError::Interrupted);
             }
-            self.emit_durable(execution, session_id, run_id, plan, EventKind::TurnStarted)
-                .await?;
+            let turn_id = TurnId::new();
+            *current_turn.lock().expect("turn context poisoned") = Some(turn_id.clone());
+            self.publish_event(
+                execution,
+                plan,
+                self.turn_event(session_id, run_id, &turn_id, EventKind::TurnStarted),
+            )
+            .await?;
             let mut snapshot = self.snapshot(run_id, session_id, request, plan).await?;
+            snapshot.identity.turn_id = turn_id.clone();
             let mut compacted = false;
             if let Some(provider) = plan
                 .providers
@@ -1568,19 +1594,18 @@ impl Orchestrator {
                 .hook::<TurnPrepare>(json!({"run_id":run_id.to_string()}))
                 .await
                 .map_err(|e| RuntimeError::Extension(e.to_string()))?;
-            let (calls, turn_usage) = self
-                .model_turn_with_retry(
-                    execution,
-                    run_id,
-                    session_id,
-                    &snapshot,
-                    plan,
-                    Arc::clone(&streamer),
-                    compacted,
-                    cancellation,
-                    lease_lost,
-                )
-                .await?;
+            let (calls, turn_usage) = Box::pin(self.model_turn_with_retry(
+                execution,
+                run_id,
+                session_id,
+                &snapshot,
+                plan,
+                Arc::clone(&streamer),
+                compacted,
+                cancellation,
+                lease_lost,
+            ))
+            .await?;
             if cancellation.is_cancelled() {
                 return Err(RuntimeError::Interrupted);
             }
@@ -1603,7 +1628,7 @@ impl Orchestrator {
                             == InterruptPolicy::Pause
                     })
             }) {
-                let event = self.event(session_id, run_id, EventKind::RunPaused);
+                let event = self.turn_event(session_id, run_id, &turn_id, EventKind::RunPaused);
                 execution.pause_run(json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
                     "request": {"workspace_id":request.workspace_id,"directory":request.directory,"title":request.title,
                         "text":request.text,"provider_id":request.selection.provider_id,"model_id":request.selection.model_id,
@@ -1614,7 +1639,8 @@ impl Orchestrator {
             match self.execution_mode {
                 ExecutionMode::Sequential => {
                     for record in staged {
-                        let call = PendingCall::from_record(&record);
+                        let mut call = PendingCall::from_record(&record);
+                        call.turn_id = Some(turn_id.clone());
                         self.execute_tool(
                             execution,
                             session_id,
@@ -1634,8 +1660,10 @@ impl Orchestrator {
                     futures::stream::iter(staged.into_iter().enumerate().map(|(index, record)| {
                         let receiver = receiver.clone();
                         let sender = sender.clone();
+                        let turn_id = turn_id.clone();
                         async move {
-                            let call = PendingCall::from_record(&record);
+                            let mut call = PendingCall::from_record(&record);
+                            call.turn_id = Some(turn_id);
                             self.execute_tool(
                                 execution,
                                 session_id,
@@ -1659,12 +1687,10 @@ impl Orchestrator {
             if !had_tools && claimed == 0 {
                 claimed += self.claim_input(execution, InboxKind::FollowUp).await?;
             }
-            self.emit_durable(
+            self.publish_event(
                 execution,
-                session_id,
-                run_id,
                 plan,
-                EventKind::TurnCompleted,
+                self.turn_event(session_id, run_id, &turn_id, EventKind::TurnCompleted),
             )
             .await?;
             if !had_tools && claimed == 0 {
@@ -2100,6 +2126,56 @@ impl Orchestrator {
         }
     }
 
+    fn turn_event(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        turn_id: &TurnId,
+        kind: EventKind,
+    ) -> EventRecord {
+        let mut event = self.event(session_id, run_id, kind);
+        event.turn_id = Some(turn_id.clone());
+        event
+    }
+
+    pub(crate) fn live_payload(
+        &self,
+        snapshot: &TurnSnapshot,
+        kind: EventKind,
+        payload: impl serde::Serialize,
+    ) {
+        let mut event = self.turn_event(
+            &snapshot.identity.session_id,
+            &snapshot.identity.run_id,
+            &snapshot.identity.turn_id,
+            kind,
+        );
+        event.live_only = true;
+        event.payload = serde_json::to_value(payload).expect("event payload serializes");
+        self.observer.emit(&event);
+    }
+
+    async fn committed_message(
+        &self,
+        execution: &dyn ExecutionStore,
+        plan: &RunPlan,
+        snapshot: &TurnSnapshot,
+        id: &MessageId,
+    ) -> Result<(), RuntimeError> {
+        let mut event = self.turn_event(
+            &snapshot.identity.session_id,
+            &snapshot.identity.run_id,
+            &snapshot.identity.turn_id,
+            EventKind::MessageCommitted,
+        );
+        event.payload = serde_json::to_value(event_payload::MessageCommitted {
+            message_id: id.clone(),
+            role: Role::Assistant,
+        })
+        .expect("event payload serializes");
+        self.publish_event(execution, plan, event).await
+    }
+
     fn run_settled_event(
         &self,
         session_id: &SessionId,
@@ -2126,7 +2202,16 @@ impl Orchestrator {
         plan: &RunPlan,
         kind: EventKind,
     ) -> Result<(), RuntimeError> {
-        let event = self.event(session_id, run_id, kind);
+        self.publish_event(execution, plan, self.event(session_id, run_id, kind))
+            .await
+    }
+
+    async fn publish_event(
+        &self,
+        execution: &dyn ExecutionStore,
+        plan: &RunPlan,
+        event: EventRecord,
+    ) -> Result<(), RuntimeError> {
         execution.append_event(event.clone()).await?;
         self.observer.emit(&event);
         let projection = serde_json::to_value(&event).unwrap_or(Value::Null);
@@ -2184,6 +2269,9 @@ fn request_from_checkpoint(session_id: &SessionId, checkpoint: &Value) -> Option
 }
 
 struct PendingCall {
+    message_id: Option<MessageId>,
+    turn_id: Option<TurnId>,
+    args_completed: bool,
     id: ToolCallId,
     name: String,
     raw: String,
@@ -2193,6 +2281,9 @@ struct PendingCall {
 impl PendingCall {
     fn from_record(record: &ToolCallRecord) -> Self {
         Self {
+            message_id: None,
+            turn_id: None,
+            args_completed: true,
             id: record.id.clone(),
             name: record.name.clone(),
             raw: String::new(),
@@ -2345,6 +2436,15 @@ impl Orchestrator {
             )
             .into());
         }
+        let id = MessageId::new();
+        self.live_payload(
+            snapshot,
+            EventKind::MessageStarted,
+            event_payload::MessageIdentity {
+                message_id: id.clone(),
+            },
+        );
+        let mut presentation = crate::event_payload::Presentation::new(self, snapshot, id.clone());
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut provider_state = Vec::new();
@@ -2364,96 +2464,178 @@ impl Orchestrator {
                 "latency_ms": self.monotonic_clock.now().saturating_sub(model_started).as_millis()});
             self.observer.model_completed(&event);
         };
-        let mut completed = false;
-        loop {
-            let delta = tokio::select! {
-                () = cancellation.cancelled() => {
-                    observe_model("error", &usage);
-                    drop(measurement);
-                    if !text.is_empty() || !reasoning.is_empty() {
-                        let id = MessageId::new();
-                        let mut parts = Vec::new();
-                        if !text.is_empty() { push_part(&mut parts, &id, PartKind::AssistantText, ContentBlock::Text { text }); }
-                        if !reasoning.is_empty() { push_part(&mut parts, &id, PartKind::Reasoning, ContentBlock::Reasoning { text: reasoning, provider_state: None }); }
-                        execution.append_message(Message { id, session_id: session_id.clone(), run_id: Some(run_id.clone()), role: Role::Assistant,
-                            parent_id: None, parts, created_at: self.clock.now() }).await?;
-                        self.emit_durable(execution, session_id, run_id, plan, EventKind::MessageCommitted).await?;
-                    }
-                    return Err(RuntimeError::Interrupted);
-                },
-                delta = stream.next() => delta,
-            };
-            let Some(delta) = delta else {
-                break;
-            };
-            match delta {
-                StreamDelta::TextDelta(fragment) => {
-                    measurement.first_text(&fragment);
-                    text.push_str(&fragment);
-                    let mut event = self.event(session_id, run_id, EventKind::TextDelta);
-                    event.live_only = true;
-                    event.payload = json!({"text": fragment});
-                    self.observer.emit(&event);
-                }
-                StreamDelta::ReasoningDelta(fragment) => {
-                    reasoning.push_str(&fragment);
-                    let mut event = self.event(session_id, run_id, EventKind::ReasoningDelta);
-                    event.live_only = true;
-                    self.observer.emit(&event);
-                }
-                StreamDelta::ToolCallStart { call_id, name } => calls.push(PendingCall {
-                    id: call_id,
-                    name,
-                    raw: String::new(),
-                    arguments: None,
-                }),
-                StreamDelta::ToolCallArgsDelta { call_id, text } => {
-                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
-                        observe_model("error", &usage);
-                        return Err(invalid_provider("tool arguments without call start").into());
-                    };
-                    call.raw.push_str(&text);
-                }
-                StreamDelta::ToolCallDone { call_id } => {
-                    let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else {
-                        observe_model("error", &usage);
-                        return Err(invalid_provider("tool completion without call start").into());
-                    };
-                    call.arguments = Some(
-                        serde_json::from_str(&call.raw)
-                            .unwrap_or_else(|_| Value::String(call.raw.clone())),
-                    );
-                }
-                StreamDelta::ProviderState { codec_id, payload } => {
-                    provider_state.push((codec_id, payload));
-                }
-                StreamDelta::Usage(delta) => {
-                    usage.input_tokens += delta.input_tokens;
-                    usage.output_tokens += delta.output_tokens;
-                }
-                StreamDelta::Completed => {
-                    completed = true;
+        let stream_result: Result<(), RuntimeError> = async {
+            let mut completed = false;
+            loop {
+                let delta = tokio::select! {
+                    () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
+                    delta = stream.next() => delta,
+                };
+                let Some(delta) = delta else {
                     break;
-                }
-                StreamDelta::Error(error) => {
-                    observe_model("error", &usage);
-                    return Err(error.into());
+                };
+                match delta {
+                    StreamDelta::TextDelta(fragment) => {
+                        measurement.first_text(&fragment);
+                        text.push_str(&fragment);
+                        self.live_payload(
+                            snapshot,
+                            EventKind::TextDelta,
+                            event_payload::MessageDelta {
+                                message_id: id.clone(),
+                                text: fragment,
+                            },
+                        );
+                    }
+                    StreamDelta::ReasoningDelta(fragment) => {
+                        reasoning.push_str(&fragment);
+                        self.live_payload(
+                            snapshot,
+                            EventKind::ReasoningDelta,
+                            event_payload::MessageDelta {
+                                message_id: id.clone(),
+                                text: fragment,
+                            },
+                        );
+                    }
+                    StreamDelta::ToolCallStart { call_id, name } => {
+                        if calls.iter().any(|call| call.id == call_id) {
+                            return Err(invalid_provider("duplicate tool call start").into());
+                        }
+                        self.live_payload(
+                            snapshot,
+                            EventKind::ToolCallStarted,
+                            event_payload::CallStarted {
+                                message_id: id.clone(),
+                                call_id: call_id.clone(),
+                                name: name.clone(),
+                            },
+                        );
+                        presentation.start_call(call_id.clone());
+                        calls.push(PendingCall {
+                            message_id: Some(id.clone()),
+                            turn_id: Some(snapshot.identity.turn_id.clone()),
+                            args_completed: false,
+                            id: call_id,
+                            name,
+                            raw: String::new(),
+                            arguments: None,
+                        });
+                    }
+                    StreamDelta::ToolCallArgsDelta { call_id, text } => {
+                        let Some(call) = calls
+                            .iter_mut()
+                            .find(|call| call.id == call_id && !call.args_completed)
+                        else {
+                            return Err(invalid_provider("tool arguments without open call").into());
+                        };
+                        call.raw.push_str(&text);
+                        self.live_payload(
+                            snapshot,
+                            EventKind::ToolCallArgsDelta,
+                            event_payload::CallDelta {
+                                message_id: id.clone(),
+                                call_id,
+                                text,
+                            },
+                        );
+                    }
+                    StreamDelta::ToolCallDone { call_id } => {
+                        let Some(call) = calls
+                            .iter_mut()
+                            .find(|call| call.id == call_id && !call.args_completed)
+                        else {
+                            return Err(
+                                invalid_provider("tool completion without open call").into()
+                            );
+                        };
+                        call.args_completed = true;
+                        call.arguments = Some(
+                            serde_json::from_str(&call.raw)
+                                .unwrap_or_else(|_| Value::String(call.raw.clone())),
+                        );
+                        presentation.complete_call(&call_id);
+                    }
+                    StreamDelta::ProviderState { codec_id, payload } => {
+                        provider_state.push((codec_id, payload));
+                    }
+                    StreamDelta::Usage(delta) => {
+                        usage.input_tokens += delta.input_tokens;
+                        usage.output_tokens += delta.output_tokens;
+                    }
+                    StreamDelta::Completed => {
+                        completed = true;
+                        break;
+                    }
+                    StreamDelta::Error(error) => {
+                        return Err(error.into());
+                    }
                 }
             }
+            if !completed {
+                return Err(invalid_provider("model stream ended without completion").into());
+            }
+            if text.is_empty()
+                && reasoning.is_empty()
+                && calls.is_empty()
+                && provider_state.is_empty()
+            {
+                return Err(invalid_provider("empty model response").into());
+            }
+            Ok(())
         }
-        if !completed {
-            observe_model("error", &usage);
-            return Err(invalid_provider("model stream ended without completion").into());
-        }
-        if text.is_empty() && reasoning.is_empty() && calls.is_empty() && provider_state.is_empty()
+        .await;
+        let outcome = match &stream_result {
+            Ok(()) => StreamOutcome::Completed,
+            Err(RuntimeError::Interrupted) => StreamOutcome::Interrupted,
+            Err(_) => StreamOutcome::Failed,
+        };
+        presentation.finish(outcome);
+        if matches!(&stream_result, Err(RuntimeError::Interrupted))
+            && (!text.is_empty() || !reasoning.is_empty())
         {
-            observe_model("error", &usage);
-            return Err(invalid_provider("empty model response").into());
+            let mut parts = Vec::new();
+            if !text.is_empty() {
+                push_part(
+                    &mut parts,
+                    &id,
+                    PartKind::AssistantText,
+                    ContentBlock::Text { text: text.clone() },
+                );
+            }
+            if !reasoning.is_empty() {
+                push_part(
+                    &mut parts,
+                    &id,
+                    PartKind::Reasoning,
+                    ContentBlock::Reasoning {
+                        text: reasoning.clone(),
+                        provider_state: None,
+                    },
+                );
+            }
+            ensure_lease(lease_lost)?;
+            execution
+                .append_message(Message {
+                    id: id.clone(),
+                    session_id: session_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    role: Role::Assistant,
+                    parent_id: None,
+                    parts,
+                    created_at: self.clock.now(),
+                })
+                .await?;
+            self.committed_message(execution, plan, snapshot, &id)
+                .await?;
         }
+        if stream_result.is_err() {
+            observe_model("error", &usage);
+        }
+        stream_result?;
         measurement.observation.reason = TerminalReason::Success;
         drop(measurement);
         observe_model("ok", &usage);
-        let id = MessageId::new();
         let mut parts = Vec::new();
         if !text.is_empty() {
             push_part(
@@ -2498,7 +2680,7 @@ impl Orchestrator {
             );
         }
         let message = Message {
-            id,
+            id: id.clone(),
             session_id: session_id.clone(),
             run_id: Some(run_id.clone()),
             role: Role::Assistant,
@@ -2508,14 +2690,8 @@ impl Orchestrator {
         };
         ensure_lease(lease_lost)?;
         execution.append_message(message).await?;
-        self.emit_durable(
-            execution,
-            session_id,
-            run_id,
-            plan,
-            EventKind::MessageCommitted,
-        )
-        .await?;
+        self.committed_message(execution, plan, snapshot, &id)
+            .await?;
         plan.dispatcher
             .notify::<ModelCompleted>(json!({"usage":usage}))
             .await;
@@ -2557,7 +2733,8 @@ impl Orchestrator {
         };
         ensure_lease(lease_lost)?;
         let mut event = self.event(session_id, run_id, EventKind::ToolCallPending);
-        event.payload = json!({"call_id":call.id,"name":call.name,"status":"pending"});
+        event.turn_id = call.turn_id.clone();
+        event.payload = json!({"call_id":call.id,"name":call.name,"status":"pending", "message_id":call.message_id});
         event.correlation = Some(call.id.to_string());
         let record = ToolCallRecord {
             id: call.id,
@@ -2621,6 +2798,7 @@ impl Orchestrator {
         );
         let tool_started_at = self.monotonic_clock.now();
         let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
+        running.turn_id = call.turn_id.clone();
         running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
         running.correlation = Some(call.id.to_string());
         execution
@@ -2734,7 +2912,8 @@ impl Orchestrator {
             created_at: self.clock.now(),
         };
         let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        settled.payload = json!({"call_id": call.id, "name": tool_name,
+        settled.turn_id = call.turn_id.clone();
+        settled.payload = json!({"call_id": call.id, "name": tool_name, "message_id": message.id, "content": result.content,
             "status": status, "is_error": is_error,
             "tool": tool_name, "tool_id": call.id.to_string(),
             "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()});

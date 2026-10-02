@@ -262,14 +262,16 @@ struct SafeEvent {
 impl SafeEvent {
     #[allow(clippy::too_many_lines)] // Construct the bounded allow-listed queue record together.
     fn from_event(e: &EventRecord, policy: &RedactionPolicy) -> Option<Self> {
-        if matches!(
-            e.kind,
-            EventKind::TextDelta
-                | EventKind::ReasoningDelta
-                | EventKind::MessageCommitted
-                | EventKind::TurnStarted
-                | EventKind::TurnCompleted
-        ) {
+        if e.kind.is_live_only()
+            || matches!(
+                e.kind,
+                EventKind::TextDelta
+                    | EventKind::ReasoningDelta
+                    | EventKind::MessageCommitted
+                    | EventKind::TurnStarted
+                    | EventKind::TurnCompleted
+            )
+        {
             return None;
         }
         let safe = |name: &str| {

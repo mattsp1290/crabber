@@ -1283,14 +1283,21 @@ async fn text_tool_text_has_exact_order_and_three_generated_messages() {
             EventKind::RunAdmitted,
             EventKind::RunStarted,
             EventKind::TurnStarted,
+            EventKind::MessageStarted,
             EventKind::TextDelta,
+            EventKind::ToolCallStarted,
+            EventKind::ToolCallArgsDelta,
+            EventKind::ToolCallArgsCompleted,
+            EventKind::MessageStreamEnded,
             EventKind::MessageCommitted,
             EventKind::ToolCallPending,
             EventKind::ToolCallRunning,
             EventKind::ToolCallSettled,
             EventKind::TurnCompleted,
             EventKind::TurnStarted,
+            EventKind::MessageStarted,
             EventKind::TextDelta,
+            EventKind::MessageStreamEnded,
             EventKind::MessageCommitted,
             EventKind::TurnCompleted,
             EventKind::RunSettled,
@@ -1868,6 +1875,7 @@ struct SettlementGate {
     tool_settlements: AtomicUsize,
     unfinished_reads: AtomicUsize,
     fail_claim: std::sync::atomic::AtomicBool,
+    fail_settle: std::sync::atomic::AtomicBool,
     fail_permission_event: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
@@ -2023,6 +2031,9 @@ impl ExecutionStore for DelayedTerminalExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.gate.tool_settlements.fetch_add(1, Ordering::SeqCst);
+        if self.gate.fail_settle.load(Ordering::SeqCst) {
+            return Err(StoreError::Conflict);
+        }
         self.inner
             .settle_tool_call(id, result, result_message, terminal_event)
             .await
@@ -2259,11 +2270,13 @@ async fn linked_expired_recovery_preserves_pending_and_running_interruption_poli
 
 #[derive(Default)]
 struct OperationalCapture {
+    records: Mutex<Vec<EventRecord>>,
     values: Mutex<Vec<crate::OperationalObservation>>,
     text: Notify,
 }
 impl Observer for OperationalCapture {
     fn emit(&self, event: &EventRecord) {
+        self.records.lock().unwrap().push(event.clone());
         if event.kind == EventKind::TextDelta {
             self.text.notify_one();
         }
@@ -2464,6 +2477,14 @@ async fn operational_lease_loss_is_local_once_and_does_not_settle_replacement() 
     let replacement = store.claim_expired_run(&run, "replacement").await.unwrap();
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
     assert!(matches!(handle.done().await, Err(RuntimeError::LeaseLost)));
+    assert!(
+        !capture
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::MessageCommitted | EventKind::RunSettled))
+    );
     let values = capture.values.lock().unwrap().clone();
     assert_eq!(values.len(), 2);
     assert!(
@@ -2689,6 +2710,14 @@ async fn operational_ordinary_store_conflict_keeps_runtime_error_and_settlement(
         handle.done().await,
         Err(RuntimeError::Store(StoreError::Conflict))
     ));
+    assert!(
+        !capture
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == EventKind::MessageCommitted)
+    );
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
     let values = capture.values.lock().unwrap();
     assert_eq!(
@@ -2813,3 +2842,5 @@ async fn operational_extension_setup_rejection_and_omission_are_runtime_errors()
         assert!(!format!("{values:?}").contains("SECRET"));
     }
 }
+
+mod source_contract;

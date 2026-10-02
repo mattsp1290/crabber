@@ -105,3 +105,19 @@ clock injection, and the host-local limits of lease-loss reporting.
 Run the complete operational host check with
 `cargo run -p operational-telemetry -- --check`; see
 [the example](examples/operational-telemetry/README.md) for offline fixtures and adoption.
+
+## Adoption examples
+
+The [embedding capability matrix](docs/embedding.md) links runnable memory,
+PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
+[native extensions](examples/native-extension/README.md),
+[WASM extensions](examples/wasm-extension/README.md),
+[manual Codex login](examples/codex-login/README.md), and
+[Datadog export](examples/datadog-export/README.md) explain their actual commands
+and credential requirements.
+
+For live HTTP streams, add the opt-in [crabber-agui adapter](crates/crabber-agui/README.md)
+and follow the [AG-UI contract](docs/ag-ui.md). Run
+`cargo run -p agui-sse -- --check` for the [credential-free SSE example](examples/agui-sse/README.md),
+including pinned Rust-client ASCII interoperability and independently decoded
+fragmented Unicode. The default facade remains independent of AG-UI/HTTP.

@@ -309,6 +309,17 @@ async fn error_result_is_redacted_and_lifecycle_points_fire() {
     assert_eq!(settled["correlation"], call_id);
     assert_eq!(settled["payload"]["status"], "failed");
     assert_eq!(settled["payload"]["is_error"], true);
+    let wire_payload = serde_json::to_string(&settled["payload"]).unwrap();
+    assert!(wire_payload.contains("[REDACTED]"));
+    assert!(!wire_payload.contains("secret-token"));
+    let tool_messages = store.list_messages(&session, None).await.unwrap();
+    let tool_message = tool_messages.iter().find(|m| m.role == Role::Tool).unwrap();
+    assert_eq!(settled["payload"]["message_id"], json!(tool_message.id));
+    let crabber_core::ContentBlock::ToolResult { content, .. } = &tool_message.parts[0].content
+    else {
+        panic!("tool result")
+    };
+    assert_eq!(settled["payload"]["content"], json!(content));
     assert_eq!(run_settled["payload"]["status"], "completed");
     assert_eq!(
         run_settled["payload"]["usage"],

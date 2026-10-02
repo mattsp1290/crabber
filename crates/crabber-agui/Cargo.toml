@@ -1,0 +1,21 @@
+[package]
+name = "crabber-agui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber-core = { path = "../crabber-core" }
+ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "5cc34b11fb41c6f068c27410b5756dbebcb367dd" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+crabber = { path = "../crabber" }
+crabber-session = { path = "../crabber-session" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+time = "0.3"

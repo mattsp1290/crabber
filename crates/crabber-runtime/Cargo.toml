@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = "1"
 crabber-core = { path = "../crabber-core" }
 crabber-extension = { path = "../crabber-extension" }
 tokio-util = { version = "0.7", features = ["rt"] }

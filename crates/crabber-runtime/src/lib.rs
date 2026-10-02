@@ -1,5 +1,6 @@
 //! Fresh-run agent orchestration.
 
+mod event_payload;
 mod observation;
 mod orchestrator;
 pub use observation::{

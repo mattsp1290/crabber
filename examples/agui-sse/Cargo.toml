@@ -1,0 +1,20 @@
+[package]
+name = "agui-sse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber = { path = "../../crates/crabber" }
+axum = "0.8.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+serde_json = "1"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+crabber-agui = { path = "../../crates/crabber-agui" }
+ag-ui-client = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "5cc34b11fb41c6f068c27410b5756dbebcb367dd" }
+
+[lints]
+workspace = true

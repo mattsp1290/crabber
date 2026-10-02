@@ -258,6 +258,11 @@ pub enum EventKind {
     RunStarted,
     TurnStarted,
     TurnCompleted,
+    MessageStarted,
+    MessageStreamEnded,
+    ToolCallStarted,
+    ToolCallArgsDelta,
+    ToolCallArgsCompleted,
     MessageCommitted,
     TextDelta,
     ReasoningDelta,
@@ -277,7 +282,16 @@ pub enum EventKind {
 impl EventKind {
     #[must_use]
     pub const fn is_live_only(&self) -> bool {
-        matches!(self, Self::TextDelta | Self::ReasoningDelta)
+        matches!(
+            self,
+            Self::TextDelta
+                | Self::ReasoningDelta
+                | Self::MessageStarted
+                | Self::MessageStreamEnded
+                | Self::ToolCallStarted
+                | Self::ToolCallArgsDelta
+                | Self::ToolCallArgsCompleted
+        )
     }
 }
 
@@ -378,5 +392,61 @@ mod tests {
     #[test]
     fn crate_name_is_stable() {
         assert_eq!(env!("CARGO_PKG_NAME"), "crabber-core");
+    }
+}
+
+/// Typed payloads for live model presentation; durable commit remains separate.
+pub mod event_payload {
+    use super::{MessageId, Role, ToolCallId};
+    use serde::{Deserialize, Serialize};
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct MessageIdentity {
+        pub message_id: MessageId,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct MessageDelta {
+        pub message_id: MessageId,
+        pub text: String,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct CallStarted {
+        pub message_id: MessageId,
+        pub call_id: ToolCallId,
+        pub name: String,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct CallDelta {
+        pub message_id: MessageId,
+        pub call_id: ToolCallId,
+        pub text: String,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct CallIdentity {
+        pub message_id: MessageId,
+        pub call_id: ToolCallId,
+    }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum StreamOutcome {
+        Completed,
+        Interrupted,
+        Failed,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct MessageEnded {
+        pub message_id: MessageId,
+        pub outcome: StreamOutcome,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct MessageCommitted {
+        pub message_id: MessageId,
+        pub role: Role,
     }
 }
