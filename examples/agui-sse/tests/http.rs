@@ -596,3 +596,132 @@ async fn interleaved_tool_then_text_stays_in_one_client_assistant_message() -> C
     }
     Ok(())
 }
+
+struct HeldInstall {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+#[async_trait]
+impl crabber::extension::Extension for HeldInstall {
+    fn id(&self) -> &'static str {
+        "held-install"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        "held".into()
+    }
+    async fn install(
+        &self,
+        _: &mut crabber::extension::Registrar,
+    ) -> Result<(), crabber::ExtensionError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(())
+    }
+}
+
+async fn owned_idle(host: &Host) -> CheckResult {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while host.ingress.load(Ordering::SeqCst) != 0 || host.active.load(Ordering::SeqCst) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_body_cannot_admit_after_successful_shutdown() -> CheckResult {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let store = Arc::new(MemoryStore::new());
+    let server = Server::start(Host::new(factory(store.clone(), vec![text("late")]))).await?;
+    let address = server
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .strip_suffix("/run")
+        .unwrap();
+    let mut socket = tokio::net::TcpStream::connect(address).await?;
+    let body = serde_json::to_vec(&input("slow-body"))?;
+    socket.write_all(format!("POST /run HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
+    socket.write_all(&body[..1]).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.host.ingress.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    server.host.shutdown().await?;
+    let _ = socket.write_all(&body[1..]).await;
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut response)).await??;
+    assert!(String::from_utf8(response)?.starts_with("HTTP/1.1 503"));
+    assert!(
+        store
+            .get_session(&SessionId::from("slow-body"))
+            .await?
+            .is_none()
+    );
+    assert!(store.list_unfinished_runs().await?.is_empty());
+    server.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn held_admission_times_out_or_shuts_down_without_losing_late_handle() -> CheckResult {
+    for shutdown in [false, true] {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let store = Arc::new(MemoryStore::new());
+        let admission_store = store.clone();
+        let gate = Arc::new(HeldInstall {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let mut host = Host::new(Arc::new(move || {
+            builder(
+                admission_store.clone(),
+                Arc::new(FakeProvider::scripted(vec![text("late")])),
+            )
+            .extension(gate.clone(), crabber::extension::Scope::Global)
+            .build()
+        }));
+        host.deadline = if shutdown {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(80)
+        };
+        host.cleanup = Duration::from_millis(20);
+        let server = Server::start(host).await?;
+        let url = server.url.clone();
+        let request = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(url)
+                .json(&input("held-admission"))
+                .send()
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.notified()).await?;
+        if shutdown {
+            assert!(server.host.shutdown().await.is_err());
+        }
+        let response = tokio::time::timeout(Duration::from_secs(2), request).await???;
+        assert_eq!(response.status().as_u16(), if shutdown { 503 } else { 408 });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while server.host.unresolved.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(server.host.ingress.load(Ordering::SeqCst), 1);
+        assert!(server.host.shutdown().await.is_err());
+        release.notify_one();
+        owned_idle(&server.host).await?;
+        assert!(store.list_unfinished_runs().await?.is_empty());
+        assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
+        server.stop().await?;
+    }
+    Ok(())
+}

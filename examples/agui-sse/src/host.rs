@@ -11,17 +11,19 @@ use crabber::{
     core::{RunStatus, SessionId},
 };
 use crabber_agui::ag_ui_core::{
-    event::Event,
+    event::{BaseEvent, Event, RunErrorEvent},
     types::{Message, RunAgentInput},
 };
-use crabber_agui::{Completion, ProjectionConfig, ProjectionError, Projector, encode_sse};
+use crabber_agui::{
+    Completion, ProjectionConfig, ProjectionError, Projector, encode_sse, sse_frame_len,
+};
 use futures::Stream;
 use serde_json::{Value, json};
 use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
@@ -39,6 +41,8 @@ pub struct Host {
     capacity: Arc<Semaphore>,
     shutdown: CancellationToken,
     tasks: TaskTracker,
+    ingress_gate: Arc<Mutex<()>>,
+    pub ingress: Arc<AtomicUsize>,
     pub active: Arc<AtomicUsize>,
     pub unresolved: Arc<AtomicUsize>,
     pub faults: Arc<AtomicUsize>,
@@ -54,6 +58,8 @@ impl Host {
             capacity: Arc::new(Semaphore::new(8)),
             shutdown: CancellationToken::new(),
             tasks: TaskTracker::new(),
+            ingress_gate: Arc::new(Mutex::new(())),
+            ingress: Arc::new(AtomicUsize::new(0)),
             active: Arc::new(AtomicUsize::new(0)),
             unresolved: Arc::new(AtomicUsize::new(0)),
             faults: Arc::new(AtomicUsize::new(0)),
@@ -73,8 +79,15 @@ impl Host {
     /// # Errors
     /// Returns an error while unresolved tasks remain registered and supervised.
     pub async fn shutdown(&self) -> Result<(), &'static str> {
-        self.shutdown.cancel();
-        self.tasks.close();
+        {
+            let _gate = self
+                .ingress_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.capacity.close();
+            self.shutdown.cancel();
+            self.tasks.close();
+        }
         tokio::time::timeout(self.cleanup, self.tasks.wait())
             .await
             .map_err(|_| "host workers remain unresolved")
@@ -133,37 +146,130 @@ fn validate(value: Value) -> Result<(RunAgentInput, String), ()> {
     Ok((input.clone(), text.to_owned()))
 }
 
+// Registration and shutdown share a synchronous gate. A handler cannot register
+// after shutdown's join observes an empty tracker. The owner survives HTTP drop.
 async fn run(State(host): State<Host>, request: Request) -> Response {
-    let request_started = tokio::time::Instant::now();
-    if host.shutdown.is_cancelled() {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown");
-    }
-    let bytes =
-        match tokio::time::timeout(host.deadline, to_bytes(request.into_body(), 131_072)).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(_)) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body_limit"),
-            Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "request_timeout"),
+    let expires = tokio::time::Instant::now() + host.deadline;
+    let (reply, response) = oneshot::channel();
+    {
+        let _gate = host
+            .ingress_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if host.shutdown.is_cancelled() {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown");
+        }
+        let Ok(permit) = host.capacity.clone().try_acquire_owned() else {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "host_capacity");
         };
+        host.ingress.fetch_add(1, Ordering::SeqCst);
+        let owner = host.clone();
+        host.tasks.spawn(async move {
+            let _ingress = CounterGuard(owner.ingress.clone());
+            run_owned(owner, request, expires, reply, permit).await;
+        });
+    }
+    response
+        .await
+        .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed"))
+}
+
+struct CounterGuard(Arc<AtomicUsize>);
+impl Drop for CounterGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn respond(reply: &mut Option<oneshot::Sender<Response>>, response: Response) {
+    if let Some(reply) = reply.take() {
+        let _ = reply.send(response);
+    }
+}
+
+async fn run_owned(
+    host: Host,
+    request: Request,
+    expires: tokio::time::Instant,
+    reply: oneshot::Sender<Response>,
+    permit: OwnedSemaphorePermit,
+) {
+    let mut reply = Some(reply);
+    let response = serve_owned(&host, request, expires, &mut reply, permit).await;
+    respond(&mut reply, response);
+}
+
+async fn serve_owned(
+    host: &Host,
+    request: Request,
+    expires: tokio::time::Instant,
+    reply: &mut Option<oneshot::Sender<Response>>,
+    permit: OwnedSemaphorePermit,
+) -> Response {
+    let bytes = tokio::select! {
+        biased;
+        () = host.shutdown.cancelled() => return error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"),
+        () = tokio::time::sleep_until(expires) => return error(StatusCode::REQUEST_TIMEOUT, "request_timeout"),
+        () = reply.as_mut().expect("response pending").closed() => return error(StatusCode::SERVICE_UNAVAILABLE, "client_closed"),
+        bytes = to_bytes(request.into_body(), 131_072) => match bytes {
+            Ok(bytes) => bytes,
+            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body_limit"),
+        },
+    };
     let Ok(value) = serde_json::from_slice(&bytes) else {
         return error(StatusCode::BAD_REQUEST, "invalid_json");
     };
     let Ok((input, text)) = validate(value) else {
         return error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_input");
     };
-    let Ok(permit) = host.capacity.clone().try_acquire_owned() else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "host_capacity");
-    };
+    if host.shutdown.is_cancelled() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown");
+    }
+    if tokio::time::Instant::now() >= expires {
+        return error(StatusCode::REQUEST_TIMEOUT, "request_timeout");
+    }
     let Ok(agent) = (host.factory)() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed");
     };
-    let handle = match agent
-        .prompt(Some(SessionId::from(input.thread_id.to_string())), text)
-        .await
-    {
+    let admission = agent.prompt(Some(SessionId::from(input.thread_id.to_string())), text);
+    tokio::pin!(admission);
+    let result = tokio::select! {
+        result = &mut admission => result,
+        () = host.shutdown.cancelled() => {
+            respond(reply, error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"));
+            late_admission(host, admission.as_mut()).await
+        },
+        () = tokio::time::sleep_until(expires) => {
+            respond(reply, error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
+            late_admission(host, admission.as_mut()).await
+        },
+        () = reply.as_mut().expect("response pending").closed() => {
+            reply.take();
+            late_admission(host, admission.as_mut()).await
+        },
+    };
+    let handle = match result {
         Ok(handle) => handle,
         Err(RuntimeError::SessionBusy) => return error(StatusCode::CONFLICT, "thread_busy"),
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed"),
     };
+    admitted_response(host, input, handle, expires, reply, permit).await
+}
+
+async fn admitted_response(
+    host: &Host,
+    input: RunAgentInput,
+    handle: RunHandle,
+    expires: tokio::time::Instant,
+    reply: &mut Option<oneshot::Sender<Response>>,
+    permit: OwnedSemaphorePermit,
+) -> Response {
+    if reply.is_none() || host.shutdown.is_cancelled() || tokio::time::Instant::now() >= expires {
+        handle.interrupt();
+        // Never drop a late handle, even when its HTTP response already timed out.
+        let _ = late_admission(host, Box::pin(handle.done()).as_mut()).await;
+        return error(StatusCode::REQUEST_TIMEOUT, "request_timeout");
+    }
     let Ok(projector) = Projector::new(
         handle.session_id().clone(),
         handle.run_id().clone(),
@@ -172,11 +278,16 @@ async fn run(State(host): State<Host>, request: Request) -> Response {
         host.config.clone(),
     ) else {
         handle.interrupt();
-        // Admission has happened: keep responsibility for completion even on host config error.
-        host.tasks.spawn(async move {
-            let _permit = permit;
-            let _ = handle.done().await;
-        });
+        // Admission has happened: retain tracked ownership and capacity while
+        // reporting the configuration error immediately to HTTP.
+        respond(
+            reply,
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "projection_configuration",
+            ),
+        );
+        let _ = late_admission(host, Box::pin(handle.done()).as_mut()).await;
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "projection_configuration",
@@ -195,7 +306,7 @@ async fn run(State(host): State<Host>, request: Request) -> Response {
     };
     host.active.fetch_add(1, Ordering::SeqCst);
     let mut worker_host = host.clone();
-    worker_host.deadline = host.deadline.saturating_sub(request_started.elapsed());
+    worker_host.deadline = expires.saturating_duration_since(tokio::time::Instant::now());
     host.tasks.spawn(worker(
         worker_host,
         handle,
@@ -215,14 +326,33 @@ async fn run(State(host): State<Host>, request: Request) -> Response {
         .into_response()
 }
 
+async fn late_admission<F: Future>(host: &Host, mut pending: Pin<&mut F>) -> F::Output {
+    if let Ok(result) = tokio::time::timeout(host.cleanup, pending.as_mut()).await {
+        return result;
+    }
+    host.unresolved.fetch_add(1, Ordering::SeqCst);
+    let _unresolved = CounterGuard(host.unresolved.clone());
+    pending.await
+}
+
+const OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const CONTROL_BYTES: usize = 8 * 1024;
+
 struct Frame {
     bytes: Vec<u8>,
-    _permit: OwnedSemaphorePermit,
+    permit: OwnedSemaphorePermit,
 }
+impl Frame {
+    fn into_bytes(self) -> Vec<u8> {
+        drop(self.permit);
+        self.bytes
+    }
+}
+
 struct Output {
     receiver: mpsc::Receiver<Frame>,
-    terminal: oneshot::Receiver<Vec<Vec<u8>>>,
-    terminal_frames: std::vec::IntoIter<Vec<u8>>,
+    terminal: oneshot::Receiver<Vec<Frame>>,
+    terminal_frames: std::vec::IntoIter<Frame>,
     disconnect: CancellationToken,
     data_closed: bool,
     terminal_closed: bool,
@@ -237,13 +367,15 @@ impl Stream for Output {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.data_closed {
             match self.receiver.poll_recv(cx) {
-                Poll::Ready(Some(frame)) => return Poll::Ready(Some(Ok(frame.bytes.into()))),
+                Poll::Ready(Some(frame)) => {
+                    return Poll::Ready(Some(Ok(frame.into_bytes().into())));
+                }
                 Poll::Ready(None) => self.data_closed = true,
                 Poll::Pending => return Poll::Pending,
             }
         }
         if let Some(frame) = self.terminal_frames.next() {
-            return Poll::Ready(Some(Ok(frame.into())));
+            return Poll::Ready(Some(Ok(frame.into_bytes().into())));
         }
         if self.terminal_closed {
             return Poll::Ready(None);
@@ -252,7 +384,11 @@ impl Stream for Output {
             Poll::Ready(Ok(frames)) => {
                 self.terminal_closed = true;
                 self.terminal_frames = frames.into_iter();
-                Poll::Ready(self.terminal_frames.next().map(|frame| Ok(frame.into())))
+                Poll::Ready(
+                    self.terminal_frames
+                        .next()
+                        .map(|frame| Ok(frame.into_bytes().into())),
+                )
             }
             Poll::Ready(Err(_)) => {
                 self.terminal_closed = true;
@@ -274,27 +410,26 @@ fn enqueue(
     budget: &Arc<Semaphore>,
     limit: usize,
 ) -> Result<(), ProjectionError> {
-    let mut candidate = projector.clone();
-    let batch = frames(&candidate.push(record)?, limit)?;
-    let slots = sender
-        .try_reserve_many(batch.len())
-        .map_err(|_| ProjectionError::Transport)?;
-    let mut reserved = Vec::with_capacity(batch.len());
-    for bytes in batch {
-        let count = u32::try_from(bytes.len()).map_err(|_| ProjectionError::Limit)?;
-        let permit = budget
-            .clone()
-            .try_acquire_many_owned(count)
+    projector.push_with_delivery(record, |events| {
+        let slots = sender
+            .try_reserve_many(events.len())
             .map_err(|_| ProjectionError::Transport)?;
-        reserved.push(Frame {
-            bytes,
-            _permit: permit,
-        });
-    }
-    for (slot, frame) in slots.zip(reserved) {
-        slot.send(frame);
-    }
-    *projector = candidate;
+        let mut reserved = Vec::with_capacity(events.len());
+        for event in events {
+            let count =
+                u32::try_from(sse_frame_len(event, limit)?).map_err(|_| ProjectionError::Limit)?;
+            let permit = budget
+                .clone()
+                .try_acquire_many_owned(count)
+                .map_err(|_| ProjectionError::Transport)?;
+            let bytes = encode_sse(event, limit)?;
+            reserved.push(Frame { bytes, permit });
+        }
+        for (slot, frame) in slots.zip(reserved) {
+            slot.send(frame);
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -304,12 +439,12 @@ async fn worker(
     mut handle: RunHandle,
     mut projector: Projector,
     sender: mpsc::Sender<Frame>,
-    terminal: oneshot::Sender<Vec<Vec<u8>>>,
+    terminal: oneshot::Sender<Vec<Frame>>,
     disconnect: CancellationToken,
     _capacity: OwnedSemaphorePermit,
 ) {
     let mut receiver = handle.events();
-    let budget = Arc::new(Semaphore::new(2 * 1024 * 1024));
+    let budget = Arc::new(Semaphore::new(OUTPUT_BYTES - CONTROL_BYTES));
     let deadline = tokio::time::sleep(host.deadline);
     tokio::pin!(deadline);
     let mut failed = false;
@@ -383,7 +518,7 @@ async fn worker(
     };
     let final_frames = projector
         .finish(completion)
-        .and_then(|batch| frames(&batch, host.config.max_event_bytes));
+        .and_then(|batch| control_frames(&batch, host.config.max_event_bytes));
     drop(sender);
     if let Ok(frames) = final_frames {
         let _ = terminal.send(frames);
@@ -392,4 +527,75 @@ async fn worker(
         host.unresolved.fetch_sub(1, Ordering::SeqCst);
     }
     host.active.fetch_sub(1, Ordering::SeqCst);
+}
+
+fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, ProjectionError> {
+    let fits = events.iter().try_fold(0usize, |sum, event| {
+        sum.checked_add(sse_frame_len(event, limit)?)
+            .filter(|total| *total <= CONTROL_BYTES)
+            .ok_or(ProjectionError::Limit)
+    });
+    let fallback = [Event::RunError(RunErrorEvent {
+        base: BaseEvent {
+            timestamp: None,
+            raw_event: None,
+            metadata: None,
+            subagent_run_id: None,
+        },
+        message: "The live run could not be projected.".into(),
+        code: Some(ProjectionError::Limit.code().into()),
+        usage: None,
+    })];
+    let events = if fits.is_ok() { events } else { &fallback };
+    let budget = Arc::new(Semaphore::new(CONTROL_BYTES));
+    frames(events, limit)?
+        .into_iter()
+        .map(|bytes| {
+            let count = u32::try_from(bytes.len()).map_err(|_| ProjectionError::Limit)?;
+            let permit = budget
+                .clone()
+                .try_acquire_many_owned(count)
+                .map_err(|_| ProjectionError::Limit)?;
+            Ok(Frame { bytes, permit })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_terminal_closures_use_bounded_control_error() {
+        let events: Vec<Event> = (0..3).map(|n| {
+            serde_json::from_value(json!({"type":"TOOL_CALL_END", "toolCallId":format!("{n}{}", "x".repeat(900_000))})).unwrap()
+        }).collect();
+        assert!(
+            events
+                .iter()
+                .map(|e| sse_frame_len(e, 1_048_576).unwrap())
+                .sum::<usize>()
+                > OUTPUT_BYTES
+        );
+        let control = control_frames(&events, 1_048_576).unwrap();
+        assert_eq!(control.len(), 1);
+        assert!(control[0].bytes.len() <= CONTROL_BYTES);
+        let event: Event =
+            serde_json::from_slice(&control[0].bytes[6..control[0].bytes.len() - 2]).unwrap();
+        assert!(matches!(event, Event::RunError(_)));
+        let data = Arc::new(Semaphore::new(OUTPUT_BYTES - CONTROL_BYTES));
+        let held = data
+            .clone()
+            .try_acquire_many_owned(u32::try_from(OUTPUT_BYTES - CONTROL_BYTES).unwrap())
+            .unwrap();
+        assert_eq!(data.available_permits(), 0);
+        assert_eq!(
+            held.num_permits()
+                + control
+                    .iter()
+                    .map(|frame| frame.permit.num_permits())
+                    .sum::<usize>(),
+            OUTPUT_BYTES - CONTROL_BYTES + control[0].bytes.len()
+        );
+    }
 }

@@ -298,6 +298,20 @@ impl Projector {
     /// # Errors
     /// Rejects cross-run, malformed, out-of-order, oversized or post-terminal records.
     pub fn push(&mut self, record: &EventRecord) -> Result<Vec<Event>, ProjectionError> {
+        self.push_with_delivery(record, |_| Ok(()))
+    }
+
+    /// Project and atomically deliver a batch without copying historical identities.
+    /// The callback must reserve the entire batch before sending any event. On
+    /// rejection presentation boundaries roll back and the stream permanently faults.
+    ///
+    /// # Errors
+    /// Returns source validation errors or the delivery callback's error.
+    pub fn push_with_delivery(
+        &mut self,
+        record: &EventRecord,
+        deliver: impl FnOnce(&[Event]) -> Result<(), ProjectionError>,
+    ) -> Result<Vec<Event>, ProjectionError> {
         if self.terminal {
             return Err(ProjectionError::Terminal);
         }
@@ -321,6 +335,7 @@ impl Projector {
         let call = call_id.as_ref().and_then(|id| self.calls.get(id)).cloned();
         let result = self.project(record).and_then(|events| {
             self.validate_batch(&events)?;
+            deliver(&events)?;
             Ok(events)
         });
         if let Err(error) = &result {

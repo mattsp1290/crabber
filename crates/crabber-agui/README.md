@@ -36,3 +36,9 @@ See the [full mapping and host contract](../../docs/ag-ui.md), the
 [tests/projection.rs](tests/projection.rs). `cargo test -p crabber-agui` runs
 without credentials. SSE encoding uses compact SDK JSON, no replay ID and no
 `[DONE]` marker. Reasoning display defaults off.
+
+Hosts can use `Projector::push_with_delivery` to reserve and send an entire batch
+atomically without cloning prior identities. A rejected delivery rolls back
+presentation boundaries and permanently faults the stream. `sse_frame_len`
+counts a frame before allocation so host data and control queues can share an
+explicit byte budget.

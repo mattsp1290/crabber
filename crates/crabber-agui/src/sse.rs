@@ -33,10 +33,20 @@ pub(crate) fn json_bytes(value: &impl Serialize, limit: usize) -> Result<usize, 
 /// # Errors
 /// Returns `Limit` before allocating a frame exceeding `max_json_bytes`.
 pub fn encode_sse(event: &Event, max_json_bytes: usize) -> Result<Vec<u8>, ProjectionError> {
-    let bytes = json_bytes(event, max_json_bytes)?;
-    let mut frame = Vec::with_capacity(bytes.checked_add(8).ok_or(ProjectionError::Limit)?);
+    let bytes = sse_frame_len(event, max_json_bytes)?;
+    let mut frame = Vec::with_capacity(bytes);
     frame.extend_from_slice(b"data: ");
     serde_json::to_writer(&mut frame, event).map_err(|_| ProjectionError::Malformed)?;
     frame.extend_from_slice(b"\n\n");
     Ok(frame)
+}
+
+/// Count an encoded frame before allocation, including its SSE delimiters.
+///
+/// # Errors
+/// Returns `Limit` if JSON exceeds the limit or the frame length overflows.
+pub fn sse_frame_len(event: &Event, max_json_bytes: usize) -> Result<usize, ProjectionError> {
+    json_bytes(event, max_json_bytes)?
+        .checked_add(8)
+        .ok_or(ProjectionError::Limit)
 }

@@ -493,3 +493,24 @@ fn argument_call_message_event_and_batch_limits_have_exact_edges() {
     assert!(encode_sse(&event, size).is_ok());
     assert_eq!(encode_sse(&event, size - 1), Err(ProjectionError::Limit));
 }
+
+#[test]
+fn delivery_rejection_rolls_back_unpublished_boundaries() {
+    let mut p = projector(ProjectionConfig::default());
+    start(&mut p);
+    message(&mut p);
+    let rejected = p.push_with_delivery(
+        &record(
+            EventKind::ToolCallStarted,
+            json!({"message_id":"assistant", "call_id":"rejected", "name":"echo"}),
+        ),
+        |events| {
+            assert!(types(events).contains(&"TOOL_CALL_START".into()));
+            Err(ProjectionError::Transport)
+        },
+    );
+    assert_eq!(rejected, Err(ProjectionError::Transport));
+    let terminal = p.finish(Completion::Failed).unwrap();
+    assert_eq!(types(&terminal), ["RUN_ERROR"]);
+    assert_eq!(wire(&terminal)[0]["code"], "crabber_transport");
+}

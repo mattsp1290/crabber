@@ -98,7 +98,7 @@ to 256 bytes, protocolVersion absent or 1.0, empty/absent tools/context, and
 null/empty/absent state/forwardedProps. It rejects unknown top-level properties,
 parentRunId/resume, transcript arrays, client tools and multimodal parts.
 The client message ID is not imported into storage. Malformed JSON -> 400;
-unsupported profile -> 422; body read deadline -> 408; body over 128 KiB -> 413; busy thread -> 409;
+unsupported profile -> 422; request/admission deadline -> 408; body over 128 KiB -> 413; busy thread -> 409;
 capacity/shutdown -> 503; startup failure -> generic 500. Admission occurs
 before successful SSE headers.
 
@@ -109,8 +109,13 @@ an existing session. It owns one workspace/directory and process-local history.
 POSTs are not idempotent; later repeated requests can start another turn.
 Production retries use [keyed admission](admission-receipts.md).
 
-The host caps active runs at 8, queued frames at 32/2 MiB, runs at 30 seconds and
-cleanup at 5 seconds. Queuing never blocks the runtime observer. Overflow/lag
+The host caps owned requests/runs at 8, data frames at 32, total pending
+SSE bytes at 2 MiB (8 KiB reserved for final control frames), and cleanup at
+5 seconds. One absolute 30-second deadline covers body reading, initialization,
+admission and execution. Shutdown closes the ingress gate and joins request
+owners as well as workers; admission that outlasts its HTTP response stays
+tracked until its result is known and any late handle is interrupted and joined.
+Oversized final closure batches become one finite limit RUN_ERROR. Queuing never blocks the runtime observer. Overflow/lag
 permanently faults projection, interrupts, drains and awaits completion. A
 reserved terminal path avoids relying on the full data queue. Dropping the
 response signals cancellation. Noncooperative work remains in the host task

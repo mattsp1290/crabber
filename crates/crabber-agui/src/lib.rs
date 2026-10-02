@@ -5,4 +5,4 @@ pub use ag_ui_core;
 pub use projector::{
     Completion, ProjectionConfig, ProjectionError, Projector, public_tool_content,
 };
-pub use sse::encode_sse;
+pub use sse::{encode_sse, sse_frame_len};
