@@ -87,12 +87,12 @@ async fn process_helper() {
         .collect();
     assert_eq!(durable_parts, message_parts);
 
-    assert!(
+    assert_eq!(
         store
             .list_unfinished_tool_calls(&expected.run.id)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
     assert_eq!(store.abandon_run(request).await.unwrap(), expected);
     assert_eq!(

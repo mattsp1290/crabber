@@ -489,6 +489,9 @@ async fn facade_each_memory_candidate_boundary_rolls_back_including_private_comm
         assert_eq!(outcome.interrupted_tools.len(), 1);
         assert_eq!(store.state.lock().unwrap().abandonments.len(), 1);
         assert_eq!(agent.abandon(request).await.unwrap(), outcome);
-        assert!(provider.requests().is_empty());
+        assert_eq!(
+            provider.requests(),
+            [] as [crabber::providers::ModelRequest; 0]
+        );
     }
 }

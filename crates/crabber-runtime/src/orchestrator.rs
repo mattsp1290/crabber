@@ -1108,7 +1108,15 @@ impl Orchestrator {
         };
         let mut event = self.event(session_id, run_id, EventKind::ToolCallSettled);
         event.turn_id = turn_id.cloned();
-        event.payload = json!({"call_id": call.id, "name": call.name, "status": "interrupted", "is_error": true, "message_id": message.id, "content": content});
+        event.payload = json!(crate::event_payload::Settlement {
+            result: event_payload::CallSettled {
+                call_id: call.id.clone(),
+                message_id: message.id.clone(),
+                content: std::borrow::Cow::Borrowed(&content),
+                is_error: true,
+            },
+            diagnostics: json!({"name": call.name, "status": "interrupted"}),
+        });
         event.correlation = Some(call.id.to_string());
         execution
             .settle_tool_call(
@@ -2924,10 +2932,17 @@ impl Orchestrator {
         };
         let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
         settled.turn_id = call.turn_id.clone();
-        settled.payload = json!({"call_id": call.id, "name": tool_name, "message_id": message.id, "content": result.content,
-            "status": status, "is_error": is_error,
-            "tool": tool_name, "tool_id": call.id.to_string(),
-            "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()});
+        settled.payload = json!(crate::event_payload::Settlement {
+            result: event_payload::CallSettled {
+                call_id: call.id.clone(),
+                message_id: message.id.clone(),
+                content: std::borrow::Cow::Borrowed(&result.content),
+                is_error,
+            },
+            diagnostics: json!({"name": tool_name, "status": status,
+                "tool": tool_name, "tool_id": call.id.to_string(),
+                "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()}),
+        });
         settled.correlation = Some(call.id.to_string());
         if let Some((index, receiver, _)) = &settlement {
             let mut receiver = receiver.clone();

@@ -5,6 +5,15 @@ use crabber_core::{
     event_payload::{CallIdentity, MessageEnded, StreamOutcome},
 };
 
+/// Keep public settlement fields typed while preserving existing flat diagnostics.
+#[derive(serde::Serialize)]
+pub(crate) struct Settlement<'a> {
+    #[serde(flatten)]
+    pub result: crabber_core::event_payload::CallSettled<'a>,
+    #[serde(flatten)]
+    pub diagnostics: serde_json::Value,
+}
+
 pub(crate) struct Presentation<'a> {
     runtime: &'a Orchestrator,
     snapshot: &'a TurnSnapshot,

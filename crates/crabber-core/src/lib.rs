@@ -397,10 +397,21 @@ mod tests {
     }
 }
 
-/// Typed payloads for live model presentation; durable commit remains separate.
+/// Typed source payloads; presentation and durable commit remain separate.
 pub mod event_payload {
-    use super::{MessageId, Role, ToolCallId};
+    use super::{ContentBlock, MessageId, Role, ToolCallId};
     use serde::{Deserialize, Serialize};
+    use std::borrow::Cow;
+
+    /// Persisted public result fields. Runtime diagnostics may accompany them.
+    /// Borrow content when publishing; deserialization owns the result blocks.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct CallSettled<'a> {
+        pub call_id: ToolCallId,
+        pub message_id: MessageId,
+        pub content: Cow<'a, [ContentBlock]>,
+        pub is_error: bool,
+    }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct MessageIdentity {

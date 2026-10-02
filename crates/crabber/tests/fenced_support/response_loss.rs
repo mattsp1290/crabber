@@ -136,12 +136,12 @@ pub(super) async fn verify_loss(store: Arc<dyn Store>) -> (AbandonRequest, Aband
         .unwrap();
     assert_eq!(outcome.run.status, RunStatus::Interrupted);
     assert_eq!(outcome.interrupted_tools.len(), 2);
-    assert!(
+    assert_eq!(
         store
             .list_unfinished_tool_calls(&admitted.run.id)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crabber_core::ToolCallRecord; 0]
     );
     assert_eq!(
         store

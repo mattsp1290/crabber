@@ -98,11 +98,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             store.get_run(&expected.run.id).await?,
             Some(expected.run.clone())
         );
-        assert!(
-            store
-                .list_unfinished_tool_calls(&expected.run.id)
-                .await?
-                .is_empty()
+        assert_eq!(
+            store.list_unfinished_tool_calls(&expected.run.id).await?,
+            [] as [crabber::core::ToolCallRecord; 0]
         );
         let messages = store.list_all_messages(&expected.run.session_id).await?;
         let events = store

@@ -8,8 +8,8 @@ use ag_ui_core::event::{
 };
 use ag_ui_core::types::{Interrupt, Role, RunFinishedOutcome};
 use crabber_core::event_payload::{
-    CallDelta, CallIdentity, CallStarted, MessageCommitted, MessageDelta, MessageEnded,
-    MessageIdentity, StreamOutcome,
+    CallDelta, CallIdentity, CallSettled, CallStarted, MessageCommitted, MessageDelta,
+    MessageEnded, MessageIdentity, StreamOutcome,
 };
 use crabber_core::{ContentBlock, EventKind, EventRecord, MessageId, RunId, SessionId, ToolCallId};
 use serde::de::DeserializeOwned;
@@ -631,14 +631,7 @@ impl Projector {
                 message.phase = MessagePhase::Committed;
             }
             EventKind::ToolCallSettled => {
-                #[derive(serde::Deserialize)]
-                struct Settled {
-                    call_id: ToolCallId,
-                    message_id: MessageId,
-                    content: Vec<ContentBlock>,
-                    is_error: bool,
-                }
-                let payload: Settled = self.payload(record)?;
+                let payload: CallSettled<'_> = self.payload(record)?;
                 let call = self
                     .calls
                     .get_mut(&payload.call_id)

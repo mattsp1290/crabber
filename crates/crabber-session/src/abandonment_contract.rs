@@ -410,12 +410,9 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
                 store.execution(admitted.fence.clone()).await.err().unwrap(),
                 StoreError::Conflict
             );
-            assert!(
-                store
-                    .list_unfinished_tool_calls(&run.id)
-                    .await
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                store.list_unfinished_tool_calls(&run.id).await.unwrap(),
+                [] as [crabber_core::ToolCallRecord; 0]
             );
             assert_eq!(store.unconsumed_inbox(&run.session_id).await, 2);
             assert_eq!(

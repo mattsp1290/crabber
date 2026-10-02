@@ -300,12 +300,12 @@ async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
             }
             assert_ne!(outcome.run.claim_token, admitted.fence.claim_token);
             assert_eq!(outcome.interrupted_tools.len(), 2);
-            assert!(
+            assert_eq!(
                 store
                     .list_unfinished_tool_calls(&admitted.run.id)
                     .await
-                    .unwrap()
-                    .is_empty()
+                    .unwrap(),
+                [] as [crabber_core::ToolCallRecord; 0]
             );
             assert_eq!(
                 store.lookup_admission(&session, &key).await.unwrap(),

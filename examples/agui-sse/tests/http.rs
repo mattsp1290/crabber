@@ -300,7 +300,10 @@ async fn busy_disconnect_and_shutdown_cancel_owned_run_without_restarting() -> C
     drop(response);
     idle(&server.host).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
-    assert!(store.list_unfinished_runs().await?.is_empty());
+    assert_eq!(
+        store.list_unfinished_runs().await?,
+        [] as [crabber::core::Run; 0]
+    );
     let events = store
         .list_events(&SessionId::from("busy"), None, 100)
         .await?;
@@ -403,7 +406,10 @@ async fn burst_lag_faults_and_slow_reader_does_not_block_runtime() -> CheckResul
     // larger than the facade broadcast capacity; this deterministically loses events.
     provider.release.notify_one();
     idle(&server.host).await;
-    assert!(store.list_unfinished_runs().await?.is_empty());
+    assert_eq!(
+        store.list_unfinished_runs().await?,
+        [] as [crabber::core::Run; 0]
+    );
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
     assert!(server.host.faults.load(Ordering::SeqCst) > 0);
     let mut decoder = check::Decoder::default();
@@ -664,7 +670,10 @@ async fn partial_body_cannot_admit_after_successful_shutdown() -> CheckResult {
             .await?
             .is_none()
     );
-    assert!(store.list_unfinished_runs().await?.is_empty());
+    assert_eq!(
+        store.list_unfinished_runs().await?,
+        [] as [crabber::core::Run; 0]
+    );
     server.stop().await?;
     Ok(())
 }
@@ -719,7 +728,10 @@ async fn held_admission_times_out_or_shuts_down_without_losing_late_handle() -> 
         assert!(server.host.shutdown().await.is_err());
         release.notify_one();
         owned_idle(&server.host).await?;
-        assert!(store.list_unfinished_runs().await?.is_empty());
+        assert_eq!(
+            store.list_unfinished_runs().await?,
+            [] as [crabber::core::Run; 0]
+        );
         assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
         server.stop().await?;
     }

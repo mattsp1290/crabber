@@ -82,7 +82,7 @@ fn wire_identity_optional_fields_and_framing() {
         json!({"type":"RUN_STARTED", "threadId":"thread", "runId":"alias", "protocolVersion":"1.0", "timestamp":0})
     );
     message(&mut p);
-    assert!(text(&mut p, "").is_empty());
+    assert_eq!(text(&mut p, ""), [] as [Event; 0]);
     let events = text(&mut p, "é😀\n\r\"中");
     assert_eq!(
         types(&events),
@@ -104,7 +104,7 @@ fn wire_identity_optional_fields_and_framing() {
     .unwrap();
     let terminal = p.finish(Completion::Completed).unwrap();
     assert_eq!(wire(&terminal)[0]["outcome"], json!({"type":"success"}));
-    assert!(p.finish(Completion::Failed).unwrap().is_empty());
+    assert_eq!(p.finish(Completion::Failed).unwrap(), [] as [Event; 0]);
     assert_eq!(
         p.push(&record(EventKind::TextDelta, Value::Null)),
         Err(ProjectionError::Terminal)
