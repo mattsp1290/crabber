@@ -5,8 +5,8 @@ use crabber::{
     Admission, AdmissionKey, AdmissionReceipt, Agent, FakeProvider, Observer, RuntimeError,
     StreamDelta, TraceContext,
     core::{
-        EpochId, EventCursor, EventRecord, Message, Role, Run, RunFence, RunId, RunStatus, Session,
-        SessionId, ToolCallId, ToolCallRecord,
+        ContextEpoch, EpochId, EventCursor, EventRecord, Message, Part, Role, Run, RunFence, RunId,
+        RunStatus, Session, SessionId, ToolCallId, ToolCallRecord, ToolResult, Usage,
     },
     providers::{DeltaStream, ModelRequest, ProviderError, Resolver, Selection, Streamer},
     session::{
@@ -71,6 +71,7 @@ mod provider;
 use provider::agent;
 
 mod child;
+mod recovery;
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -161,6 +162,45 @@ async fn evidence(url: &str, dir: &Path, session: &SessionId, executions: usize,
             .fetch_one(&pool)
             .await
             .unwrap();
+    let capsules: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM admission_executions WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(capsules, 1);
+    if dir.join("text-only").exists()
+        && store
+            .get_run(&receipt.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            == RunStatus::Completed
+    {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT snapshot_record FROM messages WHERE session_id=$1 ORDER BY seq",
+        )
+        .bind(&session.0)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let sql_history: Vec<Message> = rows
+            .iter()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect();
+        assert_eq!(sql_history, messages);
+        assert!(
+            sql_history
+                .iter()
+                .filter(|m| m.role == Role::Assistant)
+                .flat_map(|m| &m.parts)
+                .any(|p| p.content
+                    == crabber::core::ContentBlock::Text {
+                        text: "original recovered output".into()
+                    })
+        );
+    }
     let schema: i32 = sqlx::query_scalar("SELECT max(version) FROM schema_version")
         .fetch_one(&pool)
         .await
@@ -239,13 +279,6 @@ async fn postgres_public_facade_fault_restart_journey() {
     finish(second).await;
     finish(spawn(&dir.0, "reconcile")).await;
     evidence(&url, &dir.0, &session, 2, 1).await;
-    // Real commit succeeded, Store reply was lost before a handle could be spawned.
-    let (dir, session) = handoff();
-    finish(spawn(&dir.0, "commit-loss")).await;
-    finish(spawn(&dir.0, "reconcile")).await;
-    finish(spawn(&dir.0, "recover")).await;
-    finish(spawn(&dir.0, "reconcile")).await;
-    evidence(&url, &dir.0, &session, 0, 0).await;
     // Kill a genuine OS worker after its running tool effect is durable. Recovery
     // interrupts that running call rather than repeating an ambiguous effect.
     let (dir, session) = handoff();

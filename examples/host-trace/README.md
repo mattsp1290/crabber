@@ -13,7 +13,7 @@ CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features datadog,postgres --t
 ```
 
 Run these on a clean committed checkout. The parent and each fresh worker print
-that full source Git SHA, backend/schema (schema4 for PostgreSQL), fake provider,
+that full source Git SHA, backend/schema (schema5 for PostgreSQL), fake provider,
 session/run IDs, current and predecessor trace identities and callback counts.
 They omit the DSN, payload and private paths. Workers are separate OS processes;
 PostgreSQL retains the run and receipt. Missing PostgreSQL configuration fails
@@ -80,7 +80,7 @@ LLM link. Host span identity is APM correlation, never an internal LLM parent.
 The Datadog exporter maps the approved attempt UUID and unchanged session/run to
 internal LLM identity and links to that specifically observed prior root.
 
-Crabber Store remains at schema4. Correlation lives in host durable queue/journal
+Crabber Store remains at schema5. Correlation lives in host durable queue/journal
 records; there is no Store migration or persistence requirement for custom Stores.
 The example fsyncs its completed/paused attempt journal after execution supplies
 the winning observation UUID. Its controlled loss tool flushes telemetry and fsyncs
@@ -93,7 +93,7 @@ must not replace the journal's winning attempt. No recursive baggage or attempt
 history belongs in `TraceContext`; keep any required audit history in the host.
 
 Acceptance evidence maps to `trace_context` (Memory/PG paused resume, fresh process,
-validated bounded link, original schema4 rows/receipts and snapshot continuation),
+validated bounded link, original schema5 rows/receipts and snapshot continuation),
 `admission_receipts::process` (durable context, precommit loss, lost commit reply,
 contention, replay, genuine worker kill during a running tool, fencing), and runtime
 `recovery_selects_current_attempt_per_run_without_ambient_contamination` (two runs,
@@ -138,7 +138,7 @@ internal graphs and native lineage.
 The facade broadcaster forwards each callback once to host observers and the
 optional exporter. `crabber::obs` exposes direct exporter construction for hosts
 that initialize their own subscriber. No global subscriber is installed. No `Store` trait or storage migration is required for trace context; context-free
-records remain supported. PostgreSQL remains schema4. The host envelope and
+records remain supported. PostgreSQL remains schema5. The host envelope and
 attempt journal carry correlation metadata separately from execution storage.
 
 An attempt's closed `crabber.attempt.admission` agent and
@@ -173,7 +173,7 @@ policy; an absent predecessor cannot be claimed visible in Datadog.
 | 64/full128/None isolation | `concurrent_contexts_and_context_free_execution_are_isolated` checks generated intake bodies per session and host association |
 | Same/absent host identity across resume | `context_free_and_reused_host_context_resume_have_distinct_closed_graphs` proves fresh LLM IDs and no invented host links |
 | Invalid context before mutation and keyed replay | `malformed_transport_context_is_rejected_before_admission`, `replay_ignores_replacement_context_without_receipt_or_execution_mutation` |
-| Durable API handoff, fresh worker, retained schema4 data | `postgres_fresh_workers_preserve_schema4_receipts_sessions_and_cursors` with `CRABBER_REQUIRE_POSTGRES=1` |
+| Durable API handoff, fresh worker, retained schema5 data | `postgres_fresh_workers_preserve_schema5_receipts_sessions_and_cursors` with `CRABBER_REQUIRE_POSTGRES=1` |
 | Paused recovery with native predecessor link | `durable_memory_paused_resume_and_duplicate_delivery` and required PostgreSQL fresh-worker test compare link IDs with actual prior captured roots |
 | Process loss and valid lineage without reopening | `killed_worker_recovery_links_to_an_already_captured_closed_anchor` checks prior model/anchor presence, fresh trace/link, fencing and interrupted outcome |
 | Prompt, output, argument, path and credential sentinel redaction | Real journey's mock HTTP decoder checks every signal; `all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets` checks all intake diagnostics and transport Display/Debug |

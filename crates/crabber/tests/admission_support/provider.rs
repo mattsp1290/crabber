@@ -46,7 +46,7 @@ pub(super) fn agent(
     tool_loss: bool,
 ) -> Agent {
     let call = ToolCallId::new();
-    let fake = FakeProvider::scripted(vec![
+    let scripts = vec![
         vec![
             StreamDelta::ToolCallStart {
                 call_id: call.clone(),
@@ -63,7 +63,15 @@ pub(super) fn agent(
             StreamDelta::TextDelta("done".into()),
             StreamDelta::Completed,
         ],
-    ]);
+    ];
+    let fake = FakeProvider::scripted(if dir.join("text-only").exists() {
+        vec![vec![
+            StreamDelta::TextDelta("original recovered output".into()),
+            StreamDelta::Completed,
+        ]]
+    } else {
+        scripts
+    });
     Agent::builder()
         .store(store)
         .observer(capture)

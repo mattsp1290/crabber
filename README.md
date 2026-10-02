@@ -62,12 +62,16 @@ cargo run -p admission-receipt --features postgres -- --postgres
 ```
 
 Both modes assert one provider execution, one user message and identical receipts
-across concurrent and terminal retries. Output includes the full source SHA,
+across concurrent and terminal retries after an injected lost admission reply. Output includes the full source SHA,
 store/schema, fake-provider identity, correlation IDs and measured counts. Memory
 retains receipts only while that store lives; PostgreSQL retains them across restarts.
 An admission receipt proves acceptance, not completion. A committed turn whose host
-dies before spawning execution remains admitted; fenced recovery interrupts that
-non-paused run without repeating its provider request.
+dies before spawning execution can complete its original turn through
+`Agent::recover_admission(session, original_text, original_options)` after the
+original owner expires. Restore the original configuration and behavior version.
+The store requires durable Unstarted evidence and a one-shot fenced begin before
+execution effects; Started/legacy ambiguity remains conservative. PostgreSQL
+schema 5 requires a coordinated stop/backup/migrate/deploy, with no mixed writers.
 
 The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.

@@ -1903,6 +1903,22 @@ impl Store for DelayedTerminalStore {
     ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
         self.inner.admit_keyed_run(request).await
     }
+    async fn load_admission_execution(
+        &self,
+        session: &SessionId,
+        key: &crabber_core::AdmissionKey,
+    ) -> Result<
+        Option<crabber_session::AdmissionExecutionRecord>,
+        crabber_session::AdmissionExecutionError,
+    > {
+        self.inner.load_admission_execution(session, key).await
+    }
+    async fn claim_unstarted_admission(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<crabber_session::ClaimedAdmission, crabber_session::AdmissionExecutionError> {
+        self.inner.claim_unstarted_admission(request).await
+    }
     async fn lookup_admission(
         &self,
         session: &SessionId,
@@ -1979,6 +1995,11 @@ impl Store for DelayedTerminalStore {
 
 #[async_trait]
 impl ExecutionStore for DelayedTerminalExecution {
+    async fn begin_admission_execution(
+        &self,
+    ) -> Result<(), crabber_session::AdmissionExecutionError> {
+        self.inner.begin_admission_execution().await
+    }
     async fn renew_lease(&self, until: time::OffsetDateTime) -> Result<(), StoreError> {
         self.inner.renew_lease(until).await
     }
@@ -2844,3 +2865,41 @@ async fn operational_extension_setup_rejection_and_omission_are_runtime_errors()
 }
 
 mod source_contract;
+
+#[tokio::test]
+async fn admission_recovery_verifies_turn_limit_before_terminal_replay() {
+    let store = Arc::new(MemoryStore::new());
+    let provider = Arc::new(FakeProvider::scripted(vec![text_script("done")]));
+    let plan = Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new()));
+    let make = |max_turns| {
+        Orchestrator::builder()
+            .store(store.clone())
+            .resolver(provider.clone())
+            .plan_provider(plan.clone())
+            .max_turns(max_turns)
+            .build()
+            .unwrap()
+    };
+    let options = crabber_core::AdmissionOptions {
+        key: crabber_core::AdmissionKey::new("turn-limit").unwrap(),
+        fingerprint: crabber_core::InputFingerprint::new("a".repeat(64)).unwrap(),
+        behavior_fingerprint: crabber_core::InputFingerprint::new("b".repeat(64)).unwrap(),
+    };
+    let mut input = request();
+    input.session_id = Some(SessionId::new());
+    let crate::Admission::Started { handle, receipt } = make(64)
+        .start_keyed(input.clone(), options.clone())
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    handle.done().await.unwrap();
+    let before = store.get_run(&receipt.run_id).await.unwrap();
+    assert!(matches!(
+        make(2).recover_admission(input, options).await,
+        Err(RuntimeError::Store(StoreError::AdmissionConflict))
+    ));
+    assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
+    assert_eq!(provider.requests().len(), 1);
+}

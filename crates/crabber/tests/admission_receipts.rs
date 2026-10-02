@@ -290,3 +290,6 @@ impl crabber::extension::Extension for VersionedExtension {
 #[cfg(feature = "postgres")]
 #[path = "admission_support/process.rs"]
 mod process;
+
+#[path = "admission_support/memory_recovery.rs"]
+mod memory_recovery;

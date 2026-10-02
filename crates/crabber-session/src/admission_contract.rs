@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 fn request(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitRequest {
     let id = MessageId::new();
     KeyedAdmitRequest {
+        execution: None,
         request: AdmitRequest {
             session_id: Some(session.clone()),
             workspace_id: "workspace-secret".into(),

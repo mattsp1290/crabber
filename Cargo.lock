@@ -21,9 +21,11 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "admission-receipt"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "crabber",
  "sha2",
  "sqlx",
+ "time",
  "tokio",
 ]
 
@@ -445,6 +447,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "async-trait",
+ "crabber-agui",
  "crabber-auth",
  "crabber-core",
  "crabber-extension",
@@ -606,6 +609,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "thiserror",
  "time",
  "tokio",
  "uuid",

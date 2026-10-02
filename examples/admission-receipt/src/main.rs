@@ -1,3 +1,4 @@
+mod response_loss;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, FakeProvider, InputFingerprint,
     Selection, SessionId, StreamDelta,
@@ -15,14 +16,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         StreamDelta::TextDelta("Done.".into()),
         StreamDelta::Completed,
     ]]));
-    let agent = Agent::builder()
-        .store(store.clone())
-        .provider(provider.clone())
-        .config(AgentConfig::new(Selection {
-            provider_id: "fake".into(),
-            model_id: "scripted".into(),
-        }))
-        .build()?;
     // Persist these values in the host before sending the first request.
     let session = SessionId::new();
     let text = "Complete this one text turn";
@@ -34,19 +27,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Sha256::digest("demo-behavior-v1")
         ))?,
     };
-    let (first, concurrent) = tokio::join!(
-        agent.prompt_keyed(session.clone(), text, options.clone()),
-        agent.prompt_keyed(session.clone(), text, options.clone()),
-    );
-    let first = first?;
-    let concurrent = concurrent?;
-    let receipt = first.receipt().clone();
-    assert_eq!(receipt, *concurrent.receipt());
-    let ((Admission::Started { mut handle, .. }, Admission::Replayed(_))
-    | (Admission::Replayed(_), Admission::Started { mut handle, .. })) = (first, concurrent)
-    else {
-        return Err("expected one executor".into());
-    };
+    let (agent, receipt, mut handle) =
+        recover_initial(store.clone(), provider.clone(), &session, text, &options).await?;
     let mut events = handle.events();
     while events.recv().await?.is_some() {}
     let result = handle.done().await?;
@@ -55,6 +37,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     assert!(matches!(replay, Admission::Replayed(_)));
     assert_eq!(replay.receipt(), &receipt);
+    let recovered = agent
+        .recover_admission(session.clone(), text, options.clone())
+        .await?;
+    assert!(matches!(recovered, Admission::Replayed(_)));
+    assert_eq!(recovered.receipt(), &receipt);
     let looked_up = agent.lookup_admission(&session, &options.key).await?;
     assert_eq!(looked_up, Some(receipt.clone()));
     let receipt_count = looked_up.iter().count();
@@ -66,6 +53,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .count(),
         1
     );
+    assert!(
+        messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .flat_map(|m| &m.parts)
+            .any(|p| p.content
+                == crabber::core::ContentBlock::Text {
+                    text: "Done.".into()
+                })
+    );
+    assert_eq!(result.status, crabber::core::RunStatus::Completed);
     let provider_count = provider.requests().len();
     let user_count = messages
         .iter()
@@ -91,11 +89,84 @@ async fn main() -> Result<(), Box<dyn Error>> {
         receipt.run_id, receipt.run_id, receipt.session_id, receipt.user_message_id
     );
     println!(
-        "retry_receipt={} provider_executions={provider_count} user_messages={user_count} runs={persisted_runs} message_run_ids={run_count} receipts={receipt_count} assertions=10 status={:?}",
+        "retry_receipt={} provider_executions={provider_count} user_messages={user_count} runs={persisted_runs} message_run_ids={run_count} receipts={receipt_count} assertions=15 status={:?}",
         replay.receipt().run_id,
         result.status
     );
     Ok(())
+}
+
+// Demo-only loss is isolated from the bounded host reconciliation algorithm.
+async fn recover_initial(
+    store: Arc<dyn Store>,
+    provider: Arc<FakeProvider>,
+    session: &SessionId,
+    text: &str,
+    options: &AdmissionOptions,
+) -> Result<(Agent, crabber::AdmissionReceipt, crabber::RunHandle), Box<dyn Error>> {
+    let original = Agent::builder()
+        .store(Arc::new(response_loss::LostAdmissionReply {
+            inner: store.clone(),
+        }))
+        .provider(provider.clone())
+        .config(AgentConfig::new(Selection {
+            provider_id: "fake".into(),
+            model_id: "scripted".into(),
+        }))
+        .build()?;
+    assert!(
+        original
+            .prompt_keyed(session.clone(), text, options.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.requests().len(), 0);
+    // A restarted host restores exactly the same semantic configuration.
+    let agent = Agent::builder()
+        .store(store.clone())
+        .provider(provider.clone())
+        .config(AgentConfig::new(Selection {
+            provider_id: "fake".into(),
+            model_id: "scripted".into(),
+        }))
+        .build()?;
+    let receipt = agent
+        .lookup_admission(session, &options.key)
+        .await?
+        .ok_or("receipt missing")?;
+    let (first, concurrent) = tokio::join!(
+        agent.prompt_keyed(session.clone(), text, options.clone()),
+        agent.prompt_keyed(session.clone(), text, options.clone()),
+    );
+    for replay in [first?, concurrent?] {
+        assert!(matches!(replay, Admission::Replayed(_)));
+        assert_eq!(replay.receipt(), &receipt);
+    }
+    // Wait for the persisted positive lease to expire; never edit ownership.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while store
+        .get_run(&receipt.run_id)
+        .await?
+        .ok_or("run missing")?
+        .lease_until
+        > time::OffsetDateTime::now_utc()
+    {
+        if std::time::Instant::now() >= deadline {
+            return Err("lease wait timed out".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let Admission::Started {
+        handle,
+        receipt: recovered,
+    } = agent
+        .recover_admission(session.clone(), text, options.clone())
+        .await?
+    else {
+        return Err("expected unstarted execution authority".into());
+    };
+    assert_eq!(recovered, receipt);
+    Ok((agent, receipt, handle))
 }
 
 // PostgreSQL performs asynchronous migration/connect when that mode is enabled.
@@ -133,7 +204,7 @@ fn print_source(mode: &str) -> Result<(), Box<dyn Error>> {
         sha.trim(),
         mode.trim_start_matches("--"),
         if mode == "--postgres" {
-            "4"
+            "5"
         } else {
             "admission-v1"
         }

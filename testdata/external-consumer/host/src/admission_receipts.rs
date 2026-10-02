@@ -129,8 +129,11 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             replay_agent
                 .lookup_admission(&session, &options().key)
                 .await?,
-            Some(receipt)
+            Some(receipt.clone())
         );
+        let recovered = replay_agent.recover_admission(session.clone(), "hello", options()).await?;
+        assert!(matches!(recovered, Admission::Replayed(_)));
+        assert_eq!(recovered.receipt(), &receipt);
         // Canonicalization must preserve changed scalar values and ordered arrays.
         for changed in [
             SCHEMA.replace("string", "number"),

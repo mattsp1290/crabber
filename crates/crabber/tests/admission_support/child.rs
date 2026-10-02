@@ -23,10 +23,14 @@ async fn facade_child() {
     let agent = agent(
         wrapped,
         &dir,
-        mode == "execution-loss",
+        mode == "execution-loss" || mode == "unstarted-provider-loss",
         capture.clone(),
         mode == "tool-loss",
     );
+    if dir.join("text-only").exists() {
+        super::recovery::child(&mode, &dir, &session, &agent, &store, &context).await;
+        return;
+    }
     if mode.starts_with("race-") {
         fs::write(dir.join(&mode), "ready").unwrap();
         wait(&dir.join("go")).await;

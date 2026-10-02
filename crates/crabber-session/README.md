@@ -158,3 +158,35 @@ next admission and exact replay. PostgreSQL `abandon_tests` adds independent-poo
 renewal/recovery/abandonment races, transaction rollback before commit, unknown
 committed-response reconciliation, fresh-process readback/retry and a subprocess
 assertion that required-service tests reject a missing database URL.
+
+
+## Durable unstarted admission execution
+
+Keyed runtime admission atomically retains a version-1, redacted-Debug execution
+capsule with the receipt, run, original user message and epoch. It includes original
+request/configuration/plan and opaque behavior identity, never credentials or
+transport context. Receipt JSON/Debug and public lookup remain prompt-free.
+
+`Agent::recover_admission` restores an expired, provably Unstarted admission using
+exact original semantics. `load_admission_execution` is a sensitive adapter read;
+`claim_unstarted_admission` validates observed owner/fence and immutable evidence
+under the run lock, rotates the token and leaves Unstarted intact. One-shot
+`begin_admission_execution` checks the live fence and commits Started before
+execution effects. Unknown claim/begin acknowledgements never authorize work.
+All effect-bearing ExecutionStore writes deny Unstarted, while lease maintenance
+remains allowed. Generic `claim_expired_run` returns `AdmissionRecoveryRequired`;
+explicit abandonment can terminally settle it. Started and missing evidence retain
+conservative recovery semantics. A replay never creates or upgrades evidence.
+
+Custom adapters default to typed Unsupported until they implement the complete
+load/claim/begin contract. `KeyedAdmitRequest::execution = None` supports legacy
+safety-only direct admissions; Some is validated before any write or replay. Store
+trait source changes require updating struct literals and forwarding wrappers.
+Memory state survives host recreation only while the shared store exists.
+
+Schema 5 adds retained private execution records without backfilling legacy runs.
+Stop writers, back up, migrate explicitly and deploy the matching binary. Connect
+is read-only and rejects other schemas; mixed v4/v5 writers are unsupported.
+Rollback requires backup restore or forward repair. No receipt/capsule pruning,
+TTL or retained-key reuse is introduced. See the [full host contract](../../docs/admission-receipts.md)
+for eligibility classifications, original behavior restoration and process proofs.

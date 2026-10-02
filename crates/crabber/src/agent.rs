@@ -449,18 +449,7 @@ impl Agent {
         let receiver = self.events.subscribe();
         let inner = self
             .runtime
-            .start_with_context(
-                Request {
-                    session_id,
-                    workspace_id: self.config.workspace_id.clone(),
-                    directory: self.config.directory.clone(),
-                    title: self.config.title.clone(),
-                    text: text.into(),
-                    selection: self.config.selection.clone(),
-                    system_prompt: self.config.system_prompt.clone(),
-                },
-                context,
-            )
+            .start_with_context(self.request(session_id, text.into()), context)
             .await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
@@ -499,34 +488,60 @@ impl Agent {
         let admission = self
             .runtime
             .start_keyed_with_context(
-                Request {
-                    session_id: Some(session_id),
-                    workspace_id: self.config.workspace_id.clone(),
-                    directory: self.config.directory.clone(),
-                    title: self.config.title.clone(),
-                    text: text.into(),
-                    selection: self.config.selection.clone(),
-                    system_prompt: self.config.system_prompt.clone(),
-                },
+                self.request(Some(session_id), text.into()),
                 options,
                 context,
             )
             .await?;
-        Ok(match admission {
-            crabber_runtime::Admission::Started {
-                receipt,
-                handle: inner,
-            } => Admission::Started {
-                receipt,
-                handle: RunHandle {
-                    run_id: inner.run_id().clone(),
-                    completion: inner.completion_signal(),
-                    inner,
-                    events: Some(receiver),
-                },
-            },
-            crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
-        })
+        Ok(Admission::from_runtime(admission, receiver))
+    }
+
+    /// Complete a retained Unstarted admission after its owner expires. Restore
+    /// the original request/config/behavior first; a replay grants no authority.
+    /// # Errors
+    /// Returns typed eligibility denials, semantic conflicts and runtime errors.
+    pub async fn recover_admission(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+        options: AdmissionOptions,
+    ) -> Result<Admission, RuntimeError> {
+        self.recover_admission_with_context(session_id, text, options, None)
+            .await
+    }
+    /// Recover using fresh transport metadata.
+    /// # Errors
+    /// Returns the same errors as `recover_admission`.
+    pub async fn recover_admission_with_context(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        self.initialize_extensions().await?;
+        let receiver = self.events.subscribe();
+        let admission = self
+            .runtime
+            .recover_admission_with_context(
+                self.request(Some(session_id), text.into()),
+                options,
+                context,
+            )
+            .await?;
+        Ok(Admission::from_runtime(admission, receiver))
+    }
+
+    fn request(&self, session_id: Option<SessionId>, text: String) -> Request {
+        Request {
+            session_id,
+            text,
+            workspace_id: self.config.workspace_id.clone(),
+            directory: self.config.directory.clone(),
+            title: self.config.title.clone(),
+            selection: self.config.selection.clone(),
+            system_prompt: self.config.system_prompt.clone(),
+        }
     }
 
     /// Looks up a receipt without executing or claiming a run.
@@ -611,6 +626,27 @@ pub enum Admission {
     Replayed(AdmissionReceipt),
 }
 impl Admission {
+    fn from_runtime(
+        admission: crabber_runtime::Admission,
+        receiver: broadcast::Receiver<Arc<EventRecord>>,
+    ) -> Self {
+        match admission {
+            crabber_runtime::Admission::Started {
+                receipt,
+                handle: inner,
+            } => Admission::Started {
+                receipt,
+                handle: RunHandle {
+                    run_id: inner.run_id().clone(),
+                    completion: inner.completion_signal(),
+                    inner,
+                    events: Some(receiver),
+                },
+            },
+            crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
+        }
+    }
+
     #[must_use]
     pub fn receipt(&self) -> &AdmissionReceipt {
         match self {

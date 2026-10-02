@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 crabber-core = { path = "../crabber-core" }
 async-trait = "0.1"
+thiserror = "2"
 # Canonical records must deserialize to the same finite f64 bits and byte size.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"

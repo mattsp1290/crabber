@@ -1,7 +1,8 @@
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
-    AdmitOutcome, SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome,
-    SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError,
+    AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
+    ClaimUnstartedAdmissionRequest, ClaimedAdmission, SnapshotContinuation, SnapshotLimit,
+    SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
@@ -156,6 +157,7 @@ async fn facade_matrix<S: abandonment_contract::FixtureStore + 'static>(
             };
             let KeyedAdmitOutcome::Started { receipt, admitted } = store
                 .admit_keyed_run(KeyedAdmitRequest {
+                    execution: None,
                     request: request.clone(),
                     options,
                 })

@@ -1,5 +1,7 @@
 #[path = "memory/abandon.rs"]
 mod abandon;
+#[path = "memory/admission_execution.rs"]
+mod admission_execution;
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -36,6 +38,7 @@ struct State {
     #[cfg(test)]
     abandon_fault_boundary: u8,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
+    admission_executions: BTreeMap<RunId, crate::AdmissionExecutionRecord>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
     runs: BTreeMap<RunId, Run>,
@@ -100,7 +103,7 @@ impl MemoryStore {
         Ok(output)
     }
 
-    fn fenced<T>(
+    fn ownership_fenced<T>(
         &self,
         fence: &RunFence,
         operation: impl FnOnce(&mut State, &Run) -> Result<T, StoreError>,
@@ -119,6 +122,22 @@ impl MemoryStore {
                 return Err(StoreError::Conflict);
             }
             operation(state, &run)
+        })
+    }
+    fn fenced<T>(
+        &self,
+        fence: &RunFence,
+        operation: impl FnOnce(&mut State, &Run) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.ownership_fenced(fence, |state, run| {
+            if state
+                .admission_executions
+                .get(&run.id)
+                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+            {
+                return Err(StoreError::AdmissionRecoveryRequired);
+            }
+            operation(state, run)
         })
     }
 }
@@ -391,6 +410,9 @@ impl Store for MemoryStore {
             ));
         }
         let digest = keyed.semantic_digest()?;
+        if let Some(capsule) = &keyed.execution {
+            capsule.validate(&keyed)?;
+        }
         self.transact(|state| {
             if let Some(session) = state.sessions.get(session_id)
                 && (session.workspace_id != request.workspace_id
@@ -416,6 +438,17 @@ impl Store for MemoryStore {
                 semantic_digest_version: 1,
                 semantic_digest: digest,
             };
+            if let Some(capsule) = keyed.execution.clone() {
+                state.admission_executions.insert(
+                    admitted.run.id.clone(),
+                    crate::AdmissionExecutionRecord {
+                        receipt: receipt.clone(),
+                        key: keyed.options.key.clone(),
+                        capsule,
+                        state: crate::AdmissionExecutionState::Unstarted,
+                    },
+                );
+            }
             state.receipts.insert(key, receipt.clone());
             Ok(KeyedAdmitOutcome::Started {
                 receipt,
@@ -438,6 +471,19 @@ impl Store for MemoryStore {
             .cloned())
     }
 
+    async fn load_admission_execution(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
+        Ok(self.load_execution_record(session, key))
+    }
+    async fn claim_unstarted_admission(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        self.claim_admission(request)
+    }
     async fn abandon_run(
         &self,
         request: crabber_core::AbandonRequest,
@@ -447,7 +493,7 @@ impl Store for MemoryStore {
     }
 
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        self.fenced(&fence, |_, _| Ok(()))?;
+        self.ownership_fenced(&fence, |_, _| Ok(()))?;
         Ok(Box::new(MemoryExecution {
             store: self.clone(),
             fence,
@@ -553,6 +599,13 @@ impl Store for MemoryStore {
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.transact(|state| {
             let now = self.clock.now();
+            if state
+                .admission_executions
+                .get(id)
+                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+            {
+                return Err(StoreError::AdmissionRecoveryRequired);
+            }
             let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
             if run.status.is_terminal() || run.lease_until > now {
                 return Err(StoreError::Conflict);
@@ -611,9 +664,12 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
+        self.begin_admission()
+    }
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
         let now = self.store.clock.now();
-        self.store.fenced(&self.fence, |state, run| {
+        self.store.ownership_fenced(&self.fence, |state, run| {
             if until <= now {
                 return Err(StoreError::Validation(
                     "lease must extend into the future".into(),

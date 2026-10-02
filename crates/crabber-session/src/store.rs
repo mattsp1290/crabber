@@ -39,6 +39,7 @@ pub struct AdmitOutcome {
 pub struct KeyedAdmitRequest {
     pub request: AdmitRequest,
     pub options: AdmissionOptions,
+    pub execution: Option<crate::AdmissionExecutionCapsule>,
 }
 
 impl std::fmt::Debug for KeyedAdmitRequest {
@@ -129,6 +130,21 @@ pub trait Store: Send + Sync {
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
         Err(StoreError::AdmissionUnsupported)
     }
+    /// Loads sensitive adapter evidence; never expose it through metadata lookup.
+    async fn load_admission_execution(
+        &self,
+        _session: &SessionId,
+        _key: &AdmissionKey,
+    ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
+        Err(crate::AdmissionExecutionError::Unsupported)
+    }
+    /// Claims only retained Unstarted evidence under the run ownership lock.
+    async fn claim_unstarted_admission(
+        &self,
+        _request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        Err(crate::AdmissionExecutionError::Unsupported)
+    }
     /// Atomically revoke the expected fence and interrupt every unfinished tool
     /// and the run, retaining history, usage, receipts and unrelated inbox rows.
     /// Expiry must be checked under the transaction lock using the store clock.
@@ -196,6 +212,11 @@ pub trait Store: Send + Sync {
 
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// One-shot fenced start, committed before any execution effects. An unknown
+    /// response must never be retried as permission to execute.
+    async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
+        Err(crate::AdmissionExecutionError::Unsupported)
+    }
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError>;
     async fn append_message(&self, message: Message) -> Result<(), StoreError>;
     async fn append_part(&self, part: Part) -> Result<(), StoreError>;

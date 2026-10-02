@@ -3,7 +3,11 @@
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
 mod abandonment;
+mod admission_execution;
+pub use admission_execution::*;
 pub mod admission_contract;
+#[cfg(test)]
+mod admission_execution_contract;
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -39,3 +43,9 @@ mod tests {
 
 #[cfg(test)]
 mod abandonment_contract;
+
+#[cfg(test)]
+#[tokio::test]
+async fn memory_admission_execution_contract() {
+    admission_execution_contract::run_contract(|clock| MemoryStore::with_clock(clock)).await;
+}

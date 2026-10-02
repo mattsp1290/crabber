@@ -28,12 +28,12 @@ use crabber_providers::{
     Streamer,
 };
 use crabber_session::{
-    AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
-    Store, StoreError,
+    AdmissionExecutionCapsule, AdmissionExecutionError, AdmissionExecutionState,
+    AdmissionRequestData, AdmitRequest, ClaimUnstartedAdmissionRequest, ExecutionStore, InboxKind,
+    KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError, admission_config_hash,
 };
 use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{
@@ -63,6 +63,45 @@ pub struct Request {
     pub text: String,
     pub selection: Selection,
     pub system_prompt: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum InitialEntry {
+    Unkeyed,
+    Keyed,
+}
+struct InitialRequest {
+    request: Request,
+    entry: InitialEntry,
+}
+
+impl Request {
+    fn admission_data(&self) -> Result<AdmissionRequestData, StoreError> {
+        Ok(AdmissionRequestData {
+            session_id: self.session_id.clone().ok_or(StoreError::NotFound)?,
+            workspace_id: self.workspace_id.clone(),
+            directory: self.directory.clone(),
+            title: self.title.clone(),
+            text: self.text.clone(),
+            provider_id: self.selection.provider_id.clone(),
+            model_id: self.selection.model_id.clone(),
+            system_prompt: self.system_prompt.clone(),
+        })
+    }
+    fn from_admission(data: AdmissionRequestData) -> Self {
+        Self {
+            session_id: Some(data.session_id),
+            workspace_id: data.workspace_id,
+            directory: data.directory,
+            title: data.title,
+            text: data.text,
+            selection: Selection {
+                provider_id: data.provider_id,
+                model_id: data.model_id,
+            },
+            system_prompt: data.system_prompt,
+        }
+    }
 }
 
 /// A replay has no execution handle and grants no lease authority.
@@ -106,6 +145,8 @@ pub enum RuntimeError {
     SessionBusy,
     #[error("store: {0}")]
     Store(#[from] StoreError),
+    #[error("admission execution: {0}")]
+    AdmissionExecution(#[from] AdmissionExecutionError),
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
     #[error("extension: {0}")]
@@ -1043,7 +1084,9 @@ impl Orchestrator {
             }
             match self.resume_with_context(&run.id, context_for(&run)).await {
                 Ok(result) => recovered.push(result),
-                Err(RuntimeError::Store(StoreError::Conflict)) => {}
+                Err(RuntimeError::Store(
+                    StoreError::Conflict | StoreError::AdmissionRecoveryRequired,
+                )) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -1154,13 +1197,19 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
         let runtime = self.with_context(context);
-        let (plan, admission) = runtime.prepare_admission(&request).await?;
+        let (plan, admission, _) = runtime.prepare_admission(&request).await?;
         let admitted = self
             .store
             .admit_run(admission)
             .await
             .map_err(admission_error)?;
-        Ok(runtime.spawn_admitted(request, plan, admitted))
+        Ok(runtime.spawn_admitted(
+            request,
+            plan,
+            admitted.fence,
+            admitted.session.id,
+            InitialEntry::Unkeyed,
+        ))
     }
 
     /// Admit with a host-selected stable session ID, or reconcile its original receipt.
@@ -1191,24 +1240,144 @@ impl Orchestrator {
             )
             .into());
         }
-        let (plan, admission) = self.prepare_admission(&request).await?;
+        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
         match self
             .store
-            .admit_keyed_run(KeyedAdmitRequest {
-                request: admission,
-                options,
-            })
+            .admit_keyed_run(keyed)
             .await
             .map_err(admission_error)?
         {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
                 receipt,
-                handle: self
-                    .with_context(context)
-                    .spawn_admitted(request, plan, *admitted),
+                handle: self.with_context(context).spawn_admitted(
+                    request,
+                    plan,
+                    admitted.fence,
+                    admitted.session.id,
+                    InitialEntry::Keyed,
+                ),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
         }
+    }
+
+    /// Completes an expired, durably Unstarted keyed admission with the original
+    /// semantics. Exact retries and Started/terminal evidence remain metadata-only.
+    /// # Errors
+    /// Missing evidence, semantic drift, live/stale owners, unsupported adapters,
+    /// and unknown claim responses grant no execution authority.
+    pub async fn recover_admission(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+    ) -> Result<Admission, RuntimeError> {
+        self.recover_admission_with_context(request, options, None)
+            .await
+    }
+
+    /// Recovers with fresh transport metadata, excluded from retained authority.
+    /// # Errors
+    /// Returns the same failures as `recover_admission`.
+    pub async fn recover_admission_with_context(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
+        let receipt = self
+            .store
+            .lookup_admission(session, &options.key)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let record = self
+            .store
+            .load_admission_execution(session, &options.key)
+            .await?
+            .ok_or(AdmissionExecutionError::MissingEvidence)?;
+        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
+        let capsule = keyed
+            .execution
+            .as_ref()
+            .ok_or(AdmissionExecutionError::MissingEvidence)?;
+        // Compare the entire capsule, including independently recomputed semantics,
+        // before terminal/Started replay or any ownership operation.
+        record.capsule.validate(&keyed)?;
+        if receipt.semantic_digest_version != 1
+            || record.receipt != receipt
+            || record.key != keyed.options.key
+            || record.capsule != *capsule
+        {
+            return Err(StoreError::AdmissionConflict.into());
+        }
+        let run = self
+            .store
+            .get_run(&receipt.run_id)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        if run.session_id != *session
+            || run.config_hash != capsule.config_hash
+            || run.plan_fingerprint != capsule.plan_fingerprint
+        {
+            return Err(StoreError::AdmissionConflict.into());
+        }
+        if run.status.is_terminal() || record.state == AdmissionExecutionState::Started {
+            return Ok(Admission::Replayed(receipt));
+        }
+        let claimed = self
+            .store
+            .claim_unstarted_admission(ClaimUnstartedAdmissionRequest {
+                session_id: session.clone(),
+                key: keyed.options.key,
+                expected_fence: RunFence {
+                    run_id: run.id,
+                    claim_token: run.claim_token,
+                },
+                expected_owner: run.owner,
+                fingerprint: capsule.fingerprint.clone(),
+                behavior_fingerprint: capsule.behavior_fingerprint.clone(),
+                semantic_digest: capsule.semantic_digest.clone(),
+                capsule_digest: capsule.digest()?,
+                owner: keyed.request.owner,
+                lease: keyed.request.lease,
+            })
+            .await?;
+        Ok(Admission::Started {
+            receipt: claimed.record.receipt,
+            handle: self.with_context(context).spawn_admitted(
+                Request::from_admission(claimed.record.capsule.request),
+                plan,
+                claimed.fence,
+                claimed.run.session_id,
+                InitialEntry::Keyed,
+            ),
+        })
+    }
+
+    async fn prepare_keyed_admission(
+        &self,
+        request: &Request,
+        options: AdmissionOptions,
+    ) -> Result<(RunPlan, KeyedAdmitRequest), RuntimeError> {
+        let (plan, admission, runtime_semantics) = self.prepare_admission(request).await?;
+        let mut keyed = KeyedAdmitRequest {
+            request: admission,
+            options,
+            execution: None,
+        };
+        let capsule = AdmissionExecutionCapsule {
+            version: 1,
+            request: request.admission_data()?,
+            runtime_semantics,
+            config_hash: keyed.request.config_hash.clone(),
+            plan_fingerprint: keyed.request.plan_fingerprint.clone(),
+            fingerprint: keyed.options.fingerprint.clone(),
+            behavior_fingerprint: keyed.options.behavior_fingerprint.clone(),
+            semantic_digest: keyed.semantic_digest()?,
+        };
+        capsule.validate(&keyed)?;
+        keyed.execution = Some(capsule);
+        Ok((plan, keyed))
     }
 
     // A generic store Conflict is not evidence of lease loss. Verify retained
@@ -1262,7 +1431,7 @@ impl Orchestrator {
     async fn prepare_admission(
         &self,
         request: &Request,
-    ) -> Result<(RunPlan, AdmitRequest), RuntimeError> {
+    ) -> Result<(RunPlan, AdmitRequest, Value), RuntimeError> {
         let now = self.clock.now();
         let session_id = request.session_id.clone().unwrap_or_default();
         let plan = self
@@ -1300,7 +1469,7 @@ impl Orchestrator {
                 .collect::<Vec<_>>()
         ]);
         config.sort_all_objects();
-        let config_hash = format!("{:x}", Sha256::digest(config.to_string().as_bytes()));
+        let config_hash = admission_config_hash(&config);
         let admission = AdmitRequest {
             session_id: request.session_id.clone(),
             workspace_id: request.workspace_id.clone(),
@@ -1312,15 +1481,22 @@ impl Orchestrator {
             owner: RunId::new().to_string(),
             lease: Duration::from_secs(30),
         };
-        Ok((plan, admission))
+        Ok((plan, admission, config))
     }
 
-    fn spawn_admitted(&self, request: Request, plan: RunPlan, admitted: AdmitOutcome) -> RunHandle {
+    fn spawn_admitted(
+        &self,
+        request: Request,
+        plan: RunPlan,
+        fence: RunFence,
+        session_id: SessionId,
+        entry: InitialEntry,
+    ) -> RunHandle {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let handle = RunHandle {
-            session_id: admitted.session.id.clone(),
-            run_id: admitted.run.id.clone(),
+            session_id: session_id.clone(),
+            run_id: fence.run_id.clone(),
             store: Arc::clone(&self.store),
             clock: Arc::clone(&self.clock),
             done,
@@ -1331,13 +1507,7 @@ impl Orchestrator {
         let runtime = self.clone();
         tokio::spawn(async move {
             let result = runtime
-                .run(
-                    admitted.fence,
-                    admitted.session.id,
-                    request,
-                    plan,
-                    cancellation,
-                )
+                .run(fence, session_id, request, plan, cancellation, entry)
                 .await;
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
@@ -1352,6 +1522,7 @@ impl Orchestrator {
         request: Request,
         plan: RunPlan,
         cancellation: CancellationToken,
+        entry: InitialEntry,
     ) -> Result<RunResult, RuntimeError> {
         let lost = AtomicBool::new(false);
         let mut measurement = Measurement::new(
@@ -1367,7 +1538,7 @@ impl Orchestrator {
             .run_inner(
                 fence.clone(),
                 session_id,
-                request,
+                InitialRequest { request, entry },
                 plan,
                 cancellation.clone(),
                 &lost,
@@ -1385,12 +1556,16 @@ impl Orchestrator {
         &self,
         fence: RunFence,
         session_id: SessionId,
-        request: Request,
+        initial: InitialRequest,
         plan: RunPlan,
         cancellation: CancellationToken,
         observed_lost: &AtomicBool,
     ) -> Result<RunResult, RuntimeError> {
+        let InitialRequest { request, entry } = initial;
         let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
+        if matches!(entry, InitialEntry::Keyed) {
+            execution.begin_admission_execution().await?;
+        }
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;

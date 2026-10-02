@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 crabber = { path = "../../crates/crabber" }
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 sha2 = "0.10"
+async-trait = "0.1"
+time = "0.3"
 sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
 
 [lints]

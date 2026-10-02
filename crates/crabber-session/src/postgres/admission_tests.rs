@@ -13,6 +13,7 @@ fn keyed(session: &SessionId, key: &str) -> KeyedAdmitRequest {
     let mut request = request(session);
     request.session_id = Some(session.clone());
     KeyedAdmitRequest {
+        execution: None,
         request,
         options: AdmissionOptions {
             key: AdmissionKey::new(key).unwrap(),
@@ -221,9 +222,13 @@ async fn process_helper() {
     let store = PostgresStore::connect(&test_url().expect("child database required"))
         .await
         .unwrap();
-    let request = keyed(&session, "process");
+    let mut request = keyed(&session, "process");
     let mode = std::env::var("CRABBER_RECEIPT_CHILD_MODE").unwrap();
-    if mode == "start" {
+    if mode == "start-recoverable" {
+        request = crate::admission_execution_contract::keyed(&session, store.clock.now());
+        request.options.key = AdmissionKey::new("process").unwrap();
+    }
+    if mode == "start" || mode == "start-recoverable" {
         let key = request.options.key.clone();
         let returned = receipt(store.admit_keyed_run(request).await.unwrap());
         assert_eq!(
@@ -530,7 +535,7 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
     assert_eq!(
         migrated.get_session(&session).await.unwrap(),
         Some(admitted.session.clone())
@@ -613,10 +618,10 @@ async fn process_crash_before_commit_rolls_back_every_record() {
     let session = SessionId::new();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let function = format!("receipt_barrier_{suffix}");
-    // Test-only server trigger blocks after run/message writes and before receipt commit.
+    // Test-only server trigger blocks after run/message writes and before execution-evidence commit.
     // UUID session IDs and generated SQL identifiers contain no caller-controlled text.
     sqlx::query(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.session_id = '{}' THEN PERFORM pg_advisory_xact_lock(751302920); END IF; RETURN NEW; END $$", session.0)).execute(&store.pool).await.unwrap();
-    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON admission_receipts FOR EACH ROW EXECUTE FUNCTION {function}()" )).execute(&store.pool).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} AFTER INSERT ON admission_executions FOR EACH ROW EXECUTE FUNCTION {function}()" )).execute(&store.pool).await.unwrap();
     let mut held = store.pool.begin().await.unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302920)")
         .execute(&mut *held)
@@ -626,10 +631,10 @@ async fn process_crash_before_commit_rolls_back_every_record() {
         .fetch_one(&mut *held)
         .await
         .unwrap();
-    let mut process = child(&session, "start", None);
+    let mut process = child(&session, "start-recoverable", None);
     let waiter = tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO admission_receipts%'")
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO admission_executions%'")
                 .bind(blocker).fetch_optional(&store.pool).await.unwrap();
             if let Some(pid) = pid { break pid; }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -653,7 +658,7 @@ async fn process_crash_before_commit_rolls_back_every_record() {
         .await
         .unwrap();
     held.rollback().await.unwrap();
-    sqlx::query(&format!("DROP TRIGGER {function} ON admission_receipts"))
+    sqlx::query(&format!("DROP TRIGGER {function} ON admission_executions"))
         .execute(&store.pool)
         .await
         .unwrap();
@@ -669,10 +674,26 @@ async fn process_crash_before_commit_rolls_back_every_record() {
         .await
         .unwrap();
     assert_eq!(epochs, 0);
+    let capsules: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM admission_executions WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(capsules, 0);
+
     store.pool.close().await;
-    wait_child(&mut child(&session, "start", None)).await;
+    wait_child(&mut child(&session, "start-recoverable", None)).await;
     let reopened = PostgresStore::connect(&url).await.unwrap();
     assert_eq!(counts(&reopened, &session).await, (1, 1, 1));
+
+    assert!(
+        reopened
+            .load_admission_execution(&session, &AdmissionKey::new("process").unwrap())
+            .await
+            .unwrap()
+            .is_some()
+    );
     reopened.pool.close().await;
 }
 
@@ -891,5 +912,153 @@ async fn v2_migration_preserves_receipts_and_never_authenticates_old_markers() {
         .execute(&admin)
         .await
         .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+async fn postgres_admission_execution_contract() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::admission_execution_contract::run_contract(|clock| store.clone().with_clock(clock))
+        .await;
+    store.pool.close().await;
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // Full retained-table comparison for both schema fixtures.
+async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evidence() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    for baseline in [3, 4] {
+        let schema = format!("execution_migration_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let isolated_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+        PostgresStore::migrate(&isolated_url).await.unwrap();
+        let store = PostgresStore::connect(&isolated_url).await.unwrap();
+        let session = SessionId::new();
+        let original = keyed(&session, "legacy");
+        let key = original.options.key.clone();
+        let KeyedAdmitOutcome::Started { receipt, admitted } =
+            store.admit_keyed_run(original.clone()).await.unwrap()
+        else {
+            panic!()
+        };
+        let execution = store.execution(admitted.fence.clone()).await.unwrap();
+        execution
+            .put_extension_state("legacy", vec![("key".into(), Some("value".into()))])
+            .await
+            .unwrap();
+        store
+            .enqueue_inbox(&session, InboxKind::Steer, request(&session).user_message)
+            .await
+            .unwrap();
+        store
+            .abandon_run(crate::abandonment_contract::abandon_request(
+                &admitted,
+                crabber_core::AbandonAuthority::HostStoppedOwner,
+            ))
+            .await
+            .unwrap();
+        // Build exact v3/v4 table fixtures from the legacy None admission path.
+        sqlx::query("DROP TABLE admission_executions")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_version WHERE version>$1")
+            .bind(baseline)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        if baseline == 3 {
+            sqlx::query("DROP TABLE abandonment_commits")
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        let tables = if baseline == 4 {
+            vec![
+                "sessions",
+                "runs",
+                "messages",
+                "parts",
+                "events",
+                "epochs",
+                "inbox",
+                "extension_state",
+                "abandonment_commits",
+            ]
+        } else {
+            vec![
+                "sessions",
+                "runs",
+                "messages",
+                "parts",
+                "events",
+                "epochs",
+                "inbox",
+                "extension_state",
+            ]
+        };
+        let mut before = Vec::new();
+        for table in &tables {
+            let value: serde_json::Value = sqlx::query_scalar(&format!(
+                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
+            ))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            before.push(value);
+        }
+        assert!(PostgresStore::connect(&isolated_url).await.is_err());
+        PostgresStore::migrate(&isolated_url).await.unwrap();
+        PostgresStore::migrate(&isolated_url).await.unwrap();
+        let reopened = PostgresStore::connect(&isolated_url).await.unwrap();
+        for (table, expected) in tables.iter().zip(before) {
+            let value: serde_json::Value = sqlx::query_scalar(&format!(
+                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
+            ))
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap();
+            assert_eq!(value, expected, "v{baseline} retained {table}");
+        }
+        assert_eq!(
+            reopened.lookup_admission(&session, &key).await.unwrap(),
+            Some(receipt)
+        );
+        assert!(
+            reopened
+                .load_admission_execution(&session, &key)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            reopened.admit_keyed_run(original).await.unwrap(),
+            KeyedAdmitOutcome::Replayed(_)
+        ));
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM admission_executions")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        store.pool.close().await;
+        reopened.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
     admin.close().await;
 }

@@ -4,8 +4,9 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v4.
+//! connect remains read-only and requires explicit migration to schema v5.
 mod abandon;
+mod admission_execution;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -321,7 +322,7 @@ impl PostgresStore {
                 .ok_or(StoreError::Validation(
                     "unsupported PostgreSQL schema version".into(),
                 ))?;
-        if version != 4 {
+        if version != 5 {
             return Err(StoreError::Validation(
                 "unsupported PostgreSQL schema version".into(),
             ));
@@ -361,6 +362,10 @@ impl PostgresStore {
         }
         snapshot::migrate(&mut tx).await?;
         sqlx::raw_sql(include_str!("../migrations/0004_abandonment_commits.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0005_admission_execution.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -529,7 +534,7 @@ impl PostgresStore {
             prior_history,
         })
     }
-    async fn fenced(
+    async fn ownership_fenced(
         &self,
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
@@ -540,6 +545,19 @@ impl PostgresStore {
             || run.lease_until <= self.clock.now()
         {
             return Err(StoreError::Conflict);
+        }
+        Ok((tx, run))
+    }
+    async fn fenced(
+        &self,
+        fence: &RunFence,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let (mut tx, run) = self.ownership_fenced(fence).await?;
+        if admission_execution::load_record(&mut tx, &run.id)
+            .await?
+            .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+        {
+            return Err(StoreError::AdmissionRecoveryRequired);
         }
         Ok((tx, run))
     }
@@ -580,6 +598,9 @@ impl Store for PostgresStore {
             ));
         }
         let digest = keyed.semantic_digest()?;
+        if let Some(capsule) = &keyed.execution {
+            capsule.validate(&keyed)?;
+        }
         let mut tx = self.admission_transaction(session).await?;
         if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
             .bind(&session.0)
@@ -616,6 +637,17 @@ impl Store for PostgresStore {
         sqlx::query("INSERT INTO admission_receipts(session_id,admission_key,run_id,user_message_id,data) VALUES($1,$2,$3,$4,$5)")
             .bind(&receipt.session_id.0).bind(keyed.options.key.as_str()).bind(&receipt.run_id.0).bind(&receipt.user_message_id.0).bind(json(&receipt)?)
             .execute(&mut *tx).await.map_err(db)?;
+        if let Some(capsule) = keyed.execution {
+            let record = crate::AdmissionExecutionRecord {
+                receipt: receipt.clone(),
+                key: keyed.options.key.clone(),
+                capsule,
+                state: crate::AdmissionExecutionState::Unstarted,
+            };
+            sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) VALUES($1,$2,$3,1,'Unstarted',$4)")
+                .bind(&receipt.run_id.0).bind(&receipt.session_id.0).bind(keyed.options.key.as_str())
+                .bind(json(&record)?).execute(&mut *tx).await.map_err(db)?;
+        }
         tx.commit().await.map_err(db)?;
         Ok(KeyedAdmitOutcome::Started {
             receipt,
@@ -630,6 +662,37 @@ impl Store for PostgresStore {
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
         lookup_receipt(&mut *self.pool.acquire().await.map_err(db)?, session, key).await
     }
+    async fn load_admission_execution(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        let receipt = lookup_receipt(&mut tx, session, key)
+            .await
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        let record = if let Some(receipt) = receipt {
+            admission_execution::load_record(&mut tx, &receipt.run_id)
+                .await
+                .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?
+        } else {
+            None
+        };
+        tx.commit()
+            .await
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
+        Ok(record)
+    }
+    async fn claim_unstarted_admission(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        admission_execution::claim(self, request).await
+    }
     async fn abandon_run(
         &self,
         request: crabber_core::AbandonRequest,
@@ -637,7 +700,7 @@ impl Store for PostgresStore {
         abandon::abandon(self, request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        let (tx, _) = self.fenced(&fence).await?;
+        let (tx, _) = self.ownership_fenced(&fence).await?;
         tx.rollback().await.map_err(db)?;
         Ok(Box::new(PostgresExecution {
             store: self.clone(),
@@ -725,6 +788,12 @@ impl Store for PostgresStore {
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let mut run = load_run(&mut tx, id, true).await?;
+        if admission_execution::load_record(&mut tx, id)
+            .await?
+            .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+        {
+            return Err(StoreError::AdmissionRecoveryRequired);
+        }
         let now = self.clock.now();
         if run.status.is_terminal() || run.lease_until > now {
             return Err(StoreError::Conflict);
@@ -792,8 +861,11 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
+        admission_execution::begin(self).await
+    }
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
-        let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
+        let (mut tx, mut run) = self.store.ownership_fenced(&self.fence).await?;
         let now = self.store.clock.now();
         if until <= now {
             return Err(StoreError::Validation(

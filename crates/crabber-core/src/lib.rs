@@ -342,6 +342,8 @@ pub enum CoreError {
     AdmissionConflict,
     #[error("keyed admission is unsupported by this store")]
     AdmissionUnsupported,
+    #[error("unstarted admission requires original semantics and recover_admission")]
+    AdmissionRecoveryRequired,
     #[error("bounded snapshots are unsupported by this store")]
     SnapshotUnsupported,
     #[error("session identity does not match")]

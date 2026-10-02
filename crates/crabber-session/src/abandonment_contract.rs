@@ -170,6 +170,7 @@ pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClo
             keyed_request.session_id = Some(keyed_request.user_message.session_id.clone());
             let KeyedAdmitOutcome::Started { admitted, receipt } = store
                 .admit_keyed_run(KeyedAdmitRequest {
+                    execution: None,
                     request: keyed_request,
                     options: options.clone(),
                 })
