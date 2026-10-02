@@ -113,6 +113,12 @@ impl Store for FaultStore {
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
         self.inner.list_unfinished_tool_calls(run).await
     }
+    async fn admission_execution_state(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::AdmissionExecutionState>, StoreError> {
+        self.inner.admission_execution_state(run).await
+    }
     async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.inner.claim_expired_run(run, owner).await
     }
@@ -728,5 +734,137 @@ async fn missing_and_legacy_evidence_never_invent_an_initial_executor() {
             AdmissionExecutionError::MissingEvidence
         ))
     ));
+    assert_eq!(provider.requests().len(), 0);
+}
+
+#[tokio::test]
+async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_work() {
+    use crabber::extension::{RunPlanProvider, StaticPlanProvider};
+    let (clock, store, provider, session) = fixture();
+    let receipt = lost(store.clone(), provider.clone(), &session).await;
+    let before = store.get_run(&receipt.run_id).await.unwrap();
+    let evidence = serde_json::to_value(
+        store
+            .load_admission_execution(&session, &options().key)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let messages = store.list_all_messages(&session).await.unwrap();
+    let section = Arc::new(PromptSection {
+        name: "plan-b".into(),
+        order: 0,
+        text: "changed plan".into(),
+    });
+    let ordinary_session = SessionId::new();
+    let plan = StaticPlanProvider::new(Vec::new(), vec![section.clone()])
+        .acquire_plan(&ordinary_session)
+        .await
+        .unwrap();
+    let mut user = messages[0].clone();
+    user.id = MessageId::new();
+    user.session_id = ordinary_session;
+    user.run_id = None;
+    for part in &mut user.parts {
+        part.id = PartId::new();
+        part.message_id = user.id.clone();
+    }
+    let ordinary = store
+        .admit_run(AdmitRequest {
+            session_id: None,
+            workspace_id: "test".into(),
+            directory: "/tmp".into(),
+            title: "ordinary".into(),
+            user_message: user,
+            config_hash: "ordinary".into(),
+            plan_fingerprint: plan.fingerprint().to_string(),
+            owner: "ordinary-host".into(),
+            lease: Duration::from_secs(30),
+        })
+        .await
+        .unwrap();
+    plan.release();
+    clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
+    // The public facade wrapper must forward classification as well as claim.
+    let agent = Agent::builder()
+        .store(fault(store.clone(), Fault::BeginRejected))
+        .provider(provider.clone())
+        .config(config())
+        .prompt_section(section)
+        .build()
+        .unwrap();
+    assert!(matches!(
+        agent.resume(&receipt.run_id).await,
+        Err(RuntimeError::Store(CoreError::AdmissionRecoveryRequired))
+    ));
+    let recovered = agent.recover().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].run_id, ordinary.run.id);
+    assert_eq!(recovered[0].status, RunStatus::Interrupted);
+    assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
+    assert_eq!(
+        store
+            .lookup_admission(&session, &options().key)
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+    assert_eq!(
+        serde_json::to_value(
+            store
+                .load_admission_execution(&session, &options().key)
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
+        evidence
+    );
+    assert_eq!(store.list_all_messages(&session).await.unwrap(), messages);
+    assert_eq!(
+        store.list_events(&session, None, 100).await.unwrap(),
+        Vec::new()
+    );
+    assert_eq!(provider.requests().len(), 0);
+}
+
+struct UnavailablePlan(Arc<std::sync::atomic::AtomicUsize>);
+#[async_trait]
+impl crabber::extension::RunPlanProvider for UnavailablePlan {
+    async fn acquire_plan(
+        &self,
+        _: &SessionId,
+    ) -> Result<crabber::extension::RunPlan, crabber::extension::ExtensionError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(crabber::extension::ExtensionError::Plan(
+            "unavailable".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn generic_unstarted_classification_does_not_acquire_an_unavailable_plan() {
+    let (clock, store, provider, session) = fixture();
+    let receipt = lost(store.clone(), provider.clone(), &session).await;
+    let before = store.get_run(&receipt.run_id).await.unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
+    let runtime = crabber::runtime::Orchestrator::builder()
+        .store(store.clone())
+        .resolver(provider.clone())
+        .clock(clock)
+        .plan_provider(Arc::new(UnavailablePlan(calls.clone())))
+        .build()
+        .unwrap();
+    assert!(matches!(
+        runtime.resume(&receipt.run_id).await,
+        Err(RuntimeError::Store(CoreError::AdmissionRecoveryRequired))
+    ));
+    assert_eq!(runtime.recover().await.unwrap(), Vec::new());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
+    assert_eq!(
+        store.list_events(&session, None, 100).await.unwrap(),
+        Vec::new()
+    );
     assert_eq!(provider.requests().len(), 0);
 }

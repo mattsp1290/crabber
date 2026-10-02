@@ -256,6 +256,13 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
         .unwrap()
         .unwrap();
     assert_eq!(record.state, AdmissionExecutionState::Unstarted);
+    assert_eq!(
+        store
+            .admission_execution_state(&receipt.run_id)
+            .await
+            .unwrap(),
+        Some(AdmissionExecutionState::Unstarted)
+    );
     assert_eq!(record.receipt, receipt);
     assert_eq!(record.capsule, original.execution.clone().unwrap());
     for secret in [
@@ -400,11 +407,32 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .state,
         AdmissionExecutionState::Started
     );
+    assert_eq!(
+        store
+            .admission_execution_state(&admitted.run.id)
+            .await
+            .unwrap(),
+        Some(AdmissionExecutionState::Started)
+    );
     malformed_capsules(&store, &original).await;
     let mut legacy = keyed(&SessionId::new(), now);
     legacy.execution = None;
     let legacy_session = legacy.request.session_id.clone().unwrap();
-    store.admit_keyed_run(legacy.clone()).await.unwrap();
+    let legacy_outcome = store.admit_keyed_run(legacy.clone()).await.unwrap();
+    let KeyedAdmitOutcome::Started {
+        admitted: legacy_run,
+        ..
+    } = legacy_outcome
+    else {
+        panic!("new legacy admission must start")
+    };
+    assert_eq!(
+        store
+            .admission_execution_state(&legacy_run.run.id)
+            .await
+            .unwrap(),
+        None
+    );
     let upgraded = keyed(&legacy_session, now);
     assert!(matches!(
         store.admit_keyed_run(upgraded).await.unwrap(),

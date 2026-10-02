@@ -596,6 +596,19 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    async fn admission_execution_state(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("memory store poisoned")
+            .admission_executions
+            .get(run)
+            .map(|record| record.state))
+    }
+
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.transact(|state| {
             let now = self.clock.now();

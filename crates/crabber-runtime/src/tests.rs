@@ -1973,6 +1973,12 @@ impl Store for DelayedTerminalStore {
         self.gate.unfinished_reads.fetch_add(1, Ordering::SeqCst);
         self.inner.list_unfinished_tool_calls(run).await
     }
+    async fn admission_execution_state(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::AdmissionExecutionState>, StoreError> {
+        self.inner.admission_execution_state(run).await
+    }
     async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.inner.claim_expired_run(run, owner).await
     }

@@ -799,6 +799,11 @@ impl Orchestrator {
             .get_run(run_id)
             .await?
             .ok_or(StoreError::NotFound)?;
+        if self.store.admission_execution_state(run_id).await?
+            == Some(crabber_session::AdmissionExecutionState::Unstarted)
+        {
+            return Err(StoreError::AdmissionRecoveryRequired.into());
+        }
         let plan = self
             .plan_provider
             .acquire_plan(&run.session_id)

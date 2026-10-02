@@ -553,6 +553,8 @@ impl PostgresStore {
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
         let (mut tx, run) = self.ownership_fenced(fence).await?;
+        // Full decoding deliberately fails closed on malformed retained evidence.
+        // Compact state reads can be optimized separately with equivalent validation.
         if admission_execution::load_record(&mut tx, &run.id)
             .await?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
@@ -785,6 +787,18 @@ impl Store for PostgresStore {
         sqlx::query("SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id")
             .bind(&run.0).fetch_all(&self.pool).await.map_err(db)?.into_iter().map(|row| decode_record(&row.get::<String, _>("snapshot_record"))).collect()
     }
+    async fn admission_execution_state(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let state = admission_execution::load_record(&mut tx, run)
+            .await?
+            .map(|record| record.state);
+        tx.commit().await.map_err(db)?;
+        Ok(state)
+    }
+
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let mut run = load_run(&mut tx, id, true).await?;

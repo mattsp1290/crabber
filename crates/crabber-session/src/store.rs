@@ -138,6 +138,15 @@ pub trait Store: Send + Sync {
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
         Err(crate::AdmissionExecutionError::Unsupported)
     }
+    /// Reads retained execution state without granting ownership. Adapters retaining
+    /// admission evidence and wrappers around them must implement/forward this
+    /// classification so generic recovery can skip Unstarted before acquiring a plan.
+    async fn admission_execution_state(
+        &self,
+        _run: &RunId,
+    ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
+        Ok(None)
+    }
     /// Claims only retained Unstarted evidence under the run ownership lock.
     async fn claim_unstarted_admission(
         &self,
