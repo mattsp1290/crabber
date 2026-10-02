@@ -521,7 +521,7 @@ mod durable_process {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
-    async fn postgres_fresh_workers_preserve_schema3_receipts_sessions_and_cursors() {
+    async fn postgres_fresh_workers_preserve_schema4_receipts_sessions_and_cursors() {
         let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
             assert!(
                 std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
@@ -557,7 +557,7 @@ mod durable_process {
             .unwrap();
         let session = store.get_session(&envelope.session).await.unwrap().unwrap();
         spawn(&path, "resume").await;
-        // An already issued schema3 continuation survives a completely fresh
+        // An already issued schema4 continuation survives a completely fresh
         // worker pool and keyed replay, with its original inclusive event cursor.
         let mut request = crabber::SnapshotRequest {
             session_id: envelope.session.clone(),
@@ -622,7 +622,7 @@ mod durable_process {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         pool.close().await;
         std::fs::remove_dir_all(dir).unwrap();
     }

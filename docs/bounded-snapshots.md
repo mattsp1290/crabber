@@ -116,7 +116,7 @@ and strict event continuation using public exports with consumer feature unifica
 
 ## PostgreSQL maintenance
 
-`PostgresStore::connect` checks schema version 3 and performs no migration writes.
+`PostgresStore::connect` checks schema version 4 and performs no migration writes.
 Call `PostgresStore::migrate` explicitly during a maintenance window before opening
 application traffic. The upgrade takes exclusive table locks and adds canonical
 record storage alongside existing JSONB columns, increasing storage usage. It

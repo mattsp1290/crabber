@@ -133,7 +133,7 @@ fn print_source(mode: &str) -> Result<(), Box<dyn Error>> {
         sha.trim(),
         mode.trim_start_matches("--"),
         if mode == "--postgres" {
-            "2"
+            "4"
         } else {
             "admission-v1"
         }

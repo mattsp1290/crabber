@@ -22,6 +22,7 @@ postgres = ["dep:sqlx", "dep:hmac"]
 
 [dev-dependencies]
 allocation-counter = "0.8.1"
+crabber = { path = "../crabber" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [lints]

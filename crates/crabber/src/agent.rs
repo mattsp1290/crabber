@@ -104,7 +104,7 @@ impl AgentBuilder {
         self
     }
     /// Registers the real providers compiled into this binary, using their
-    /// environment variables and the local ChatGPT credential store.
+    /// environment variables and the local `ChatGPT` credential store.
     #[cfg(any(
         feature = "anthropic",
         feature = "openai",
@@ -538,6 +538,19 @@ impl Agent {
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, RuntimeError> {
         self.runtime.lookup_admission(session, key).await
+    }
+
+    /// Durably interrupts abandoned work without mounting extensions or executing
+    /// providers, tools or hooks. The host must verify process/coordinator death
+    /// before asserting `HostStoppedOwner`; a fence alone is not that evidence.
+    /// # Errors
+    /// Returns typed eligibility, ownership or durable settlement failures.
+    /// Retry an identical request to reconcile an unknown response.
+    pub async fn abandon(
+        &self,
+        request: crabber_core::AbandonRequest,
+    ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
+        self.runtime.abandon(request).await
     }
 
     pub fn interrupt(&self, run: &RunHandle) {

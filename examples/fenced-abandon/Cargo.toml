@@ -1,0 +1,19 @@
+[package]
+name = "fenced-abandon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+crabber = { path = "../../crates/crabber" }
+tokio = { version = "1", features = ["macros", "rt"] }
+async-trait = "0.1"
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+postgres = ["crabber/postgres"]

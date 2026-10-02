@@ -89,7 +89,7 @@ cargo run -p bounded-snapshot --features postgres -- --postgres
 Run from a clean, committed checkout. Both fake-data modes verify bounded allocation,
 settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
 process. See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
-for ordering, token durability, errors and schema-3 maintenance requirements.
+for ordering, token durability, errors and schema-4 maintenance requirements.
 
 The [host tracing embedding](examples/host-trace/README.md) demonstrates explicit
 validated 64/128-bit context, composed callbacks and broadcasts, real Datadog
@@ -105,6 +105,19 @@ clock injection, and the host-local limits of lease-loss reporting.
 Run the complete operational host check with
 `cargo run -p operational-telemetry -- --check`; see
 [the example](examples/operational-telemetry/README.md) for offline fixtures and adoption.
+
+Hosts can settle stopped or expired work through `Agent::abandon` without running
+persisted providers, tools or extensions. See the [Memory/PostgreSQL abandonment and
+administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
+for ownership checks, the host's process-stop duty and retry semantics.
+
+The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
+cover unknown-response retry, authoritative worker stop, retained session/inbox
+behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
+with `CRABBER_POSTGRES_URL` configured, run
+`cargo run --quiet -p fenced-abandon --features postgres -- --postgres` for durable
+fresh-process readback. Both print matching compilation/runtime Git SHAs, durable
+run/event IDs and measured zero provider/tool/mount counters.
 
 ## Adoption examples
 
