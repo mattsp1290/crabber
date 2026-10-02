@@ -5,7 +5,7 @@ use crabber::{
     core::{ToolCallId, ToolInfo},
     extension::{
         Callback, EventPublished, Extension, GuardDecision, Point, PromptSection, Registrar, Scope,
-        ToolGuard, ToolResultTransform,
+        ToolContext, ToolGuard, ToolResultTransform,
     },
 };
 use serde_json::{Value, json};
@@ -23,6 +23,22 @@ impl ToolExecutor for Shell {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         println!("runtime tool executed: {}", input["command"]);
         Ok(json!({"output":"ok","secret":"private-value"}))
+    }
+    async fn execute_with_context(
+        &self,
+        context: ToolContext,
+        input: Value,
+    ) -> Result<Value, ExtensionError> {
+        // The session's persisted workspace identity: routing data, never
+        // authorization. `None` means the session has none; do not substitute
+        // a default or a value from the model's arguments.
+        let workspace = context.workspace();
+        println!(
+            "tool workspace: {} at {}",
+            workspace.workspace_id().unwrap_or("unavailable"),
+            workspace.directory().unwrap_or("unavailable")
+        );
+        self.execute(input).await
     }
 }
 struct DenyDelete;

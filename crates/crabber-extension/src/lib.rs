@@ -6,7 +6,8 @@ mod registry;
 mod state;
 mod tool;
 pub use tool::{
-    ApprovalFacade, HostServices, ProgressSink, Subprocess, ToolContext, UserPrompter, WorkspaceFs,
+    ApprovalFacade, HostServices, ProgressSink, Subprocess, ToolContext, UserPrompter,
+    WorkspaceContext, WorkspaceFs,
 };
 
 pub use dispatch::{AroundCallback, Callback, Dispatcher, Handler, Mode, Next, Point};

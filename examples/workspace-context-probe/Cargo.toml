@@ -1,0 +1,18 @@
+[package]
+name = "workspace-context-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+crabber = { path = "../../crates/crabber" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+postgres = ["crabber/postgres"]

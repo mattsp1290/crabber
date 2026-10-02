@@ -298,6 +298,11 @@ fn admit_transaction(
         .clone()
         .unwrap_or_else(|| request.user_message.session_id.clone());
     let session = if let Some(existing) = state.sessions.get(&session_id) {
+        // Workspace identity is immutable: exact comparison, empty is a value.
+        if existing.workspace_id != request.workspace_id || existing.directory != request.directory
+        {
+            return Err(StoreError::SessionIdentityMismatch);
+        }
         existing.clone()
     } else if request.session_id.is_some() && !allow_create {
         return Err(StoreError::NotFound);

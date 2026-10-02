@@ -2871,6 +2871,7 @@ async fn operational_extension_setup_rejection_and_omission_are_runtime_errors()
 }
 
 mod source_contract;
+mod workspace_context;
 
 #[tokio::test]
 async fn admission_recovery_verifies_turn_limit_before_terminal_replay() {

@@ -259,6 +259,38 @@ mod tests {
         );
     }
 
+    /// Pinned at 5e3046a, before workspace context existed: the fingerprint
+    /// covers component identities only, and workspace values are not inputs.
+    #[test]
+    fn fingerprint_of_fixed_components_is_pinned() {
+        let components = [
+            ComponentIdentity {
+                id: "example/native".into(),
+                version: "1".into(),
+            },
+            ComponentIdentity {
+                id: "example/other".into(),
+                version: "2.0.0".into(),
+            },
+        ];
+        assert_eq!(
+            compute_fingerprint(&components).to_string(),
+            "1e222d9fe7d42269a9ea72f566067c18aa24519cd84e0d5cff70ea0c5d8b4d5f"
+        );
+        let provider = StaticPlanProvider::new(
+            Vec::new(),
+            vec![Arc::new(PromptSection {
+                name: "system".into(),
+                order: 0,
+                text: "pinned".into(),
+            })],
+        );
+        assert_eq!(
+            provider.plan.fingerprint.to_string(),
+            "3defff035c398394569228ee35ebd9eb5a2d5d251d6e5b0bb0ef25084c603fbe"
+        );
+    }
+
     #[test]
     fn static_plan_fingerprint_tracks_prompt_text() {
         let first = StaticPlanProvider::new(

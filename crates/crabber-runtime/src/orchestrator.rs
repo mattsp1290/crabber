@@ -13,15 +13,15 @@ use crabber_core::event_payload::{self, StreamOutcome};
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
     EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
-    RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolInfo,
-    ToolResult, ToolResultStatus, TurnId, Usage,
+    RunStatus, Session, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus,
+    ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
     ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
     HostServices, ModelCompleted, ModelRequestError, ModelRequested,
     ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
     RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolPrepare,
-    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted,
+    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -344,6 +344,9 @@ pub struct Orchestrator {
     heartbeat_interval: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
+    /// Workspace identity of the run this clone executes, read from the
+    /// persisted session. `None` outside a run: nothing else may fill it.
+    workspace: Option<WorkspaceContext>,
 }
 
 #[derive(Default)]
@@ -509,6 +512,7 @@ impl OrchestratorBuilder {
             heartbeat_interval,
             execution_mode: self.execution_mode.unwrap_or_default(),
             compaction,
+            workspace: None,
         })
     }
 }
@@ -792,13 +796,29 @@ impl Orchestrator {
         Box::pin(self.with_context(context).resume_attempt(run_id)).await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn resume_attempt(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
         let run = self
             .store
             .get_run(run_id)
             .await?
             .ok_or(StoreError::NotFound)?;
+        // Stored-record identity check, before plan acquisition, the claim and
+        // any pending tool execution: a rejection leaves the run untouched.
+        let session = self
+            .store
+            .get_session(&run.session_id)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        ensure_checkpoint_identity(&session, run.checkpoint.as_ref())?;
+        Box::pin(self.with_workspace(&session).resume_validated(run_id, run)).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn resume_validated(
+        &self,
+        run_id: &RunId,
+        run: crabber_core::Run,
+    ) -> Result<RunResult, RuntimeError> {
         if self.store.admission_execution_state(run_id).await?
             == Some(crabber_session::AdmissionExecutionState::Unstarted)
         {
@@ -1089,8 +1109,12 @@ impl Orchestrator {
             }
             match self.resume_with_context(&run.id, context_for(&run)).await {
                 Ok(result) => recovered.push(result),
+                // A run whose stored identity drifted stays unfinished for the
+                // host to inspect with `resume`; it must not stop the sweep.
                 Err(RuntimeError::Store(
-                    StoreError::Conflict | StoreError::AdmissionRecoveryRequired,
+                    StoreError::Conflict
+                    | StoreError::AdmissionRecoveryRequired
+                    | StoreError::SessionIdentityMismatch,
                 )) => {}
                 Err(error) => return Err(error),
             }
@@ -1208,7 +1232,7 @@ impl Orchestrator {
             .admit_run(admission)
             .await
             .map_err(admission_error)?;
-        Ok(runtime.spawn_admitted(
+        Ok(runtime.with_workspace(&admitted.session).spawn_admitted(
             request,
             plan,
             admitted.fence,
@@ -1254,13 +1278,16 @@ impl Orchestrator {
         {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
                 receipt,
-                handle: self.with_context(context).spawn_admitted(
-                    request,
-                    plan,
-                    admitted.fence,
-                    admitted.session.id,
-                    InitialEntry::Keyed,
-                ),
+                handle: self
+                    .with_context(context)
+                    .with_workspace(&admitted.session)
+                    .spawn_admitted(
+                        request,
+                        plan,
+                        admitted.fence,
+                        admitted.session.id,
+                        InitialEntry::Keyed,
+                    ),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
         }
@@ -1290,6 +1317,14 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
         let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
+        // Host-presented identity check, before the receipt lookup and before
+        // any replay: a drifted request never receives a replayed result.
+        let persisted = self
+            .store
+            .get_session(session)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        ensure_session_identity(&persisted, &request.workspace_id, &request.directory)?;
         let receipt = self
             .store
             .lookup_admission(session, &options.key)
@@ -1349,13 +1384,16 @@ impl Orchestrator {
             .await?;
         Ok(Admission::Started {
             receipt: claimed.record.receipt,
-            handle: self.with_context(context).spawn_admitted(
-                Request::from_admission(claimed.record.capsule.request),
-                plan,
-                claimed.fence,
-                claimed.run.session_id,
-                InitialEntry::Keyed,
-            ),
+            handle: self
+                .with_context(context)
+                .with_workspace(&persisted)
+                .spawn_admitted(
+                    Request::from_admission(claimed.record.capsule.request),
+                    plan,
+                    claimed.fence,
+                    claimed.run.session_id,
+                    InitialEntry::Keyed,
+                ),
         })
     }
 
@@ -1399,6 +1437,23 @@ impl Orchestrator {
                         && !run.status.is_terminal()
                         && run.lease_until <= self.clock.now())
             })
+    }
+
+    /// Binds a run to the workspace identity of its persisted session, the
+    /// only source extension context is ever populated from.
+    fn with_workspace(&self, session: &Session) -> Self {
+        let mut runtime = self.clone();
+        runtime.workspace = Some(WorkspaceContext::from_persisted(
+            &session.workspace_id,
+            &session.directory,
+        ));
+        runtime
+    }
+
+    fn workspace(&self) -> Result<&WorkspaceContext, RuntimeError> {
+        self.workspace
+            .as_ref()
+            .ok_or(RuntimeError::Missing("workspace context"))
     }
 
     fn with_context(&self, context: Option<TraceContext>) -> Self {
@@ -1948,15 +2003,30 @@ impl Orchestrator {
             .iter()
             .filter(|message| message.role == Role::Assistant)
             .count();
+        // Workspace keys are runtime-owned: pinned so no handler can change
+        // them for a later handler. An unavailable field is JSON null.
+        let workspace = self.workspace()?;
         let contributions = plan
             .dispatcher
-            .transform::<ContextAssemble>(json!({
-                "system_prelude":[], "user_suffix":[], "prompt_sections":[],
-                "run_id":run_id.to_string(), "session_id":session_id.to_string(),
-                "provider_id":request.selection.provider_id, "model_id":request.selection.model_id,
-                "turn_index":turn_index, "message_count":messages.len(),
-                "has_system_prompt":request.system_prompt.is_some()
-            }))
+            .transform_pinned::<ContextAssemble>(
+                json!({
+                    "system_prelude":[], "user_suffix":[], "prompt_sections":[],
+                    "run_id":run_id.to_string(), "session_id":session_id.to_string(),
+                    "provider_id":request.selection.provider_id, "model_id":request.selection.model_id,
+                    "turn_index":turn_index, "message_count":messages.len(),
+                    "has_system_prompt":request.system_prompt.is_some()
+                }),
+                &[
+                    (
+                        WorkspaceContext::WORKSPACE_ID_KEY,
+                        json!(workspace.workspace_id()),
+                    ),
+                    (
+                        WorkspaceContext::DIRECTORY_KEY,
+                        json!(workspace.directory()),
+                    ),
+                ],
+            )
             .await
             .map_err(|e| RuntimeError::Extension(e.to_string()))?;
         if let Some(sections) = contributions
@@ -2445,6 +2515,41 @@ fn user_message(session_id: SessionId, text: String, now: OffsetDateTime) -> Mes
             content: ContentBlock::Text { text },
         }],
         created_at: now,
+    }
+}
+
+/// Exact, per-field comparison of presented workspace identity with the
+/// persisted session. An empty string is a value like any other; nothing is
+/// normalized or resolved against the filesystem.
+fn ensure_session_identity(
+    session: &Session,
+    workspace_id: &str,
+    directory: &str,
+) -> Result<(), StoreError> {
+    if session.workspace_id == workspace_id && session.directory == directory {
+        Ok(())
+    } else {
+        Err(StoreError::SessionIdentityMismatch)
+    }
+}
+
+/// Compares the request saved in a run checkpoint, when there is one, with the
+/// persisted session. A checkpoint without a request has nothing to compare.
+fn ensure_checkpoint_identity(
+    session: &Session,
+    checkpoint: Option<&Value>,
+) -> Result<(), StoreError> {
+    let Some(request) = checkpoint.and_then(|checkpoint| checkpoint.get("request")) else {
+        return Ok(());
+    };
+    match (
+        request.get("workspace_id").and_then(Value::as_str),
+        request.get("directory").and_then(Value::as_str),
+    ) {
+        (Some(workspace_id), Some(directory)) => {
+            ensure_session_identity(session, workspace_id, directory)
+        }
+        _ => Err(StoreError::SessionIdentityMismatch),
     }
 }
 
@@ -3163,6 +3268,7 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<Result<Value, String>, RuntimeError> {
+        let workspace = self.workspace()?.clone();
         let guard_decisions: Vec<_> = plan
             .guards
             .iter()
@@ -3251,6 +3357,7 @@ impl Orchestrator {
             call_id.clone(),
             cancellation.clone(),
             self.host_services.clone(),
+            workspace,
             progress,
             Some(Arc::new(HostApproval {
                 approver: Arc::clone(&self.approver),

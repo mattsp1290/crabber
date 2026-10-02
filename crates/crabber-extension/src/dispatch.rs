@@ -131,6 +131,30 @@ impl Dispatcher {
         }
         Ok(value)
     }
+    /// A transform waterfall whose `pinned` keys are owned by the caller: they
+    /// are re-asserted after every handler, so no handler can change, add or
+    /// remove them for a later handler or for the caller.
+    pub async fn transform_pinned<P: Point>(
+        &self,
+        mut value: Value,
+        pinned: &[(&str, Value)],
+    ) -> Result<Value, ExtensionError> {
+        let assert = |value: &mut Value| {
+            if let Value::Object(object) = value {
+                for (key, pinned) in pinned {
+                    object.insert((*key).to_owned(), pinned.clone());
+                }
+            }
+        };
+        assert(&mut value);
+        for handler in self.matching(P::ID, Mode::Transform) {
+            if let HandlerFn::Ordinary(callback) = &handler.callback {
+                value = with_mount(handler.mount_id, callback(value)).await?;
+                assert(&mut value);
+            }
+        }
+        Ok(value)
+    }
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Gate) {
@@ -497,5 +521,51 @@ mod tests {
             Err(ExtensionError::NextNotCalled)
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn pinned_keys_survive_every_transform_handler() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = |seen: &Arc<Mutex<Vec<Value>>>| {
+            let seen = Arc::clone(seen);
+            callback(move |mut v| {
+                seen.lock().unwrap().push(v.clone());
+                v["pinned"] = serde_json::json!("forged");
+                v.as_object_mut().unwrap().remove("absent");
+                v["free"] = serde_json::json!("changed");
+                Ok(v)
+            })
+        };
+        let dispatcher = Dispatcher::new(vec![
+            handler(
+                ContextAssemble::ID,
+                Mode::Transform,
+                0,
+                "first",
+                HandlerFn::Ordinary(observe(&seen)),
+            ),
+            handler(
+                ContextAssemble::ID,
+                Mode::Transform,
+                1,
+                "second",
+                HandlerFn::Ordinary(observe(&seen)),
+            ),
+        ]);
+        let pinned = [
+            ("pinned", serde_json::json!("real")),
+            ("absent", Value::Null),
+        ];
+        let out = dispatcher
+            .transform_pinned::<ContextAssemble>(
+                serde_json::json!({"free":"original","pinned":"caller"}),
+                &pinned,
+            )
+            .await
+            .unwrap();
+        for value in seen.lock().unwrap().iter().chain([&out]) {
+            assert_eq!(value["pinned"], "real");
+            assert_eq!(value.get("absent"), Some(&Value::Null));
+        }
+        assert_eq!(out["free"], "changed");
     }
 }
