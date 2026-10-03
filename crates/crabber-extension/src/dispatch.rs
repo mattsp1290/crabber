@@ -1,8 +1,8 @@
 //! Ordered, bounded extension callback dispatch.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 use crate::{
-    CleanupTracker, ExtensionError, ResultTransformCallback, ToolResultContext, ToolResultOutcome,
-    TransformOutput, TransformPhase, json_result_transform,
+    CleanupTracker, ExtensionError, FINAL_REDACTION_DEADLINE, ResultTransformCallback,
+    ToolResultContext, ToolResultOutcome, TransformOutput, TransformPhase, json_result_transform,
 };
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -177,49 +177,135 @@ impl Dispatcher {
     /// Runs the `crabber/tool/result-transform` chain: every ordinary handler,
     /// then every final redactor (the handler order is the sort order).
     ///
-    /// The driver owns the accepted value, so no callback future holds it.
-    /// Cancellation (entry check, selecting around a handler, the mount close
-    /// signal, final-redaction fallback) is not handled yet: crabber-ctj9 wraps
-    /// `invoke_result_handler` and uses `accepted` for fallback acceptance.
+    /// The driver owns the accepted value, so no callback future holds it and
+    /// dropping an in-flight future never loses or corrupts it.
+    ///
+    /// Commit point: a handler's valid output becomes the accepted value only
+    /// when the driver, having received it, finds the token not cancelled. The
+    /// select polls cancellation first and the token is read again right before
+    /// the commit, so a completion that races a cancellation resolves as
+    /// cancelled. After the last commit the driver returns `Completed` without
+    /// looking at the token again: cancellation that arrives later was not
+    /// observed (settlement precedence).
+    ///
+    /// The mount close signal arm belongs to crabber-b4zy; only the
+    /// `is_closing()` pre-check is here.
     pub async fn transform_tool_result(
         &self,
         context: ToolResultContext,
         seed: TransformOutput,
     ) -> ToolResultOutcome {
+        let token = context.cancellation().clone();
+        if token.is_cancelled() {
+            return ToolResultOutcome::Interrupted { redacted: None };
+        }
+        let interrupted = || ToolResultOutcome::Interrupted { redacted: None };
         let mut is_error = context.class().is_error() || seed.mark_error;
         // The seed is never an accepted value (D6); only a handler's valid
         // output is committed here.
         let mut accepted: Option<Value> = None;
-        let handlers = self
+        let handlers: Vec<&Handler> = self
             .matching(ToolResultTransform::ID, Mode::Transform)
             .filter(|h| {
                 matches!(
                     h.callback,
                     HandlerFn::Ordinary(_) | HandlerFn::ResultTransform(_)
                 )
-            });
-        for handler in handlers {
-            let failed = || ToolResultOutcome::Failed {
-                handler: handler.id.clone(),
+            })
+            .collect();
+        let has_final = handlers
+            .iter()
+            .any(|h| h.phase == TransformPhase::FinalRedaction);
+        // `Some` once cancellation has been observed: the end of the single
+        // final-redaction budget, measured from that instant.
+        let mut deadline: Option<tokio::time::Instant> = None;
+        // Observing cancellation with nothing accepted or no final redactor
+        // ends the call at once; otherwise it starts the final-redaction budget.
+        macro_rules! observe_cancellation {
+            () => {
+                if accepted.is_none() || !has_final {
+                    return interrupted();
+                }
+                deadline = Some(tokio::time::Instant::now() + FINAL_REDACTION_DEADLINE);
             };
+        }
+        for handler in handlers {
+            let ordinary = handler.phase == TransformPhase::Ordinary;
+            if deadline.is_some() && ordinary {
+                continue;
+            }
+            if deadline.is_none() && token.is_cancelled() {
+                // Observed between handlers: the next one never started.
+                observe_cancellation!();
+                if ordinary {
+                    continue;
+                }
+            }
             if handler.cleanup.is_closing() {
-                return failed();
+                return if deadline.is_some() {
+                    interrupted()
+                } else {
+                    ToolResultOutcome::Failed {
+                        handler: handler.id.clone(),
+                    }
+                };
             }
             let mut handler_context = context.clone().with_cleanup(handler.cleanup.clone());
             handler_context.set_phase(handler.phase);
             handler_context.set_is_error(is_error);
             let current = accepted.as_ref().unwrap_or(&seed.result).clone();
-            match invoke_result_handler(handler, handler_context, current).await {
+            let mut future = Box::pin(invoke_result_handler(handler, handler_context, current));
+            let mut result = None;
+            if deadline.is_none() {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => {}
+                    output = &mut future => result = Some(output),
+                }
+                // Also true when the handler completed while cancellation
+                // arrived: that resolves as cancelled and the output is not
+                // committed unless it is a final redactor's, run on an
+                // accepted value, which then counts as finished in time.
+                if token.is_cancelled() {
+                    observe_cancellation!();
+                    if ordinary {
+                        // Drops only this handler's future; the driver goes on.
+                        continue;
+                    }
+                }
+            }
+            let output = if let Some(output) = result {
+                output
+            } else {
+                // An in-flight final redactor on an accepted value is not
+                // dropped by cancellation, only by the deadline.
+                let deadline = deadline.expect("a pending handler implies observed cancellation");
+                match finish_before(deadline, &mut future).await {
+                    Some(output) => output,
+                    None => return interrupted(),
+                }
+            };
+            match output {
                 Some(output) => {
                     is_error |= output.mark_error;
                     accepted = Some(output.result);
                 }
-                None => return failed(),
+                None if deadline.is_some() => return interrupted(),
+                None => {
+                    return ToolResultOutcome::Failed {
+                        handler: handler.id.clone(),
+                    };
+                }
             }
         }
-        ToolResultOutcome::Completed {
-            result: accepted.unwrap_or(seed.result),
-            is_error,
+        match (deadline, accepted) {
+            (Some(_), Some(redacted)) => ToolResultOutcome::Interrupted {
+                redacted: Some(redacted),
+            },
+            (_, accepted) => ToolResultOutcome::Completed {
+                result: accepted.unwrap_or(seed.result),
+                is_error,
+            },
         }
     }
     /// Gate callbacks reject on the first false result.
@@ -245,6 +331,18 @@ impl Dispatcher {
             .collect::<Vec<_>>();
         around_at(Arc::new(handlers), 0, value, terminal).await
     }
+}
+
+/// Drives `future` to completion unless `deadline` passes first; the future is
+/// then left to the caller to drop. A deadline already past admits nothing.
+async fn finish_before<T>(
+    deadline: tokio::time::Instant,
+    future: &mut (impl Future<Output = T> + Unpin),
+) -> Option<T> {
+    if tokio::time::Instant::now() >= deadline {
+        return None;
+    }
+    tokio::time::timeout_at(deadline, future).await.ok()
 }
 
 /// Runs one result handler under its mount with panics contained. `None` is a
@@ -1013,6 +1111,32 @@ mod driver_tests {
                 "json non-bool mark_error",
                 envelope_with(|e| e["mark_error"] = json!("true")),
             ),
+            (
+                "json missing context",
+                envelope_with(|e| {
+                    e.as_object_mut().unwrap().remove("context");
+                }),
+            ),
+            (
+                "json missing mark_error",
+                envelope_with(|e| {
+                    e.as_object_mut().unwrap().remove("mark_error");
+                }),
+            ),
+            (
+                "json extra top-level key",
+                envelope_with(|e| e["extra"] = json!(ERROR_SECRET)),
+            ),
+            (
+                "native panic at poll time",
+                HandlerFn::ResultTransform(Arc::new(|_, _| {
+                    Box::pin(async { panic!("{ERROR_SECRET}") })
+                })),
+            ),
+            (
+                "json panic at poll time",
+                HandlerFn::Ordinary(Arc::new(|_| Box::pin(async { panic!("{ERROR_SECRET}") }))),
+            ),
         ]
     }
 
@@ -1331,5 +1455,595 @@ mod driver_tests {
             }
         );
         assert_eq!(observed.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- cancellation, fallback acceptance and final redaction (crabber-ctj9) ----
+
+    use std::{sync::atomic::AtomicBool, time::Duration};
+    use tokio::sync::Notify;
+    use tokio::time::Instant;
+
+    const ACCEPTED: &str = "ACCEPTED-UNREDACTED-55d1";
+    fn short() -> Duration {
+        FINAL_REDACTION_DEADLINE / 5
+    }
+    fn long() -> Duration {
+        FINAL_REDACTION_DEADLINE * 2
+    }
+    fn three_fifths() -> Duration {
+        FINAL_REDACTION_DEADLINE * 3 / 5
+    }
+    fn interrupted(redacted: Option<Value>) -> ToolResultOutcome {
+        ToolResultOutcome::Interrupted { redacted }
+    }
+    fn async_typed<Fut>(
+        f: impl Fn(ToolResultContext, Value) -> Fut + Send + Sync + 'static,
+    ) -> HandlerFn
+    where
+        Fut: Future<Output = Result<TransformOutput, ExtensionError>> + Send + 'static,
+    {
+        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(f(c, v))))
+    }
+    /// Replaces the value with the (unredacted) accepted marker.
+    fn accept() -> HandlerFn {
+        typed(|_, _| Ok(TransformOutput::new(json!(ACCEPTED))))
+    }
+    /// Redacts the accepted marker and appends `tag`.
+    fn redact(tag: &'static str) -> HandlerFn {
+        typed(move |_, v| {
+            Ok(TransformOutput::new(json!(format!(
+                "{}{tag}",
+                v.as_str().unwrap().replace(ACCEPTED, "[red]")
+            ))))
+        })
+    }
+    struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    /// Signals `started`, then never finishes. `dropped` is set when its future is dropped.
+    fn hang(started: &Arc<Notify>, dropped: &Arc<AtomicBool>) -> HandlerFn {
+        let (started, dropped) = (Arc::clone(started), Arc::clone(dropped));
+        async_typed(move |_, _| {
+            let (started, guard) = (Arc::clone(&started), DropFlag(Arc::clone(&dropped)));
+            async move {
+                let _guard = guard;
+                started.notify_one();
+                std::future::pending::<Result<TransformOutput, ExtensionError>>().await
+            }
+        })
+    }
+    /// Signals `started`, sleeps `delay`, then appends `tag`.
+    fn slow_append(
+        tag: &'static str,
+        delay: Duration,
+        started: &Arc<Notify>,
+        dropped: &Arc<AtomicBool>,
+    ) -> HandlerFn {
+        let (started, dropped) = (Arc::clone(started), Arc::clone(dropped));
+        async_typed(move |_, v| {
+            let (started, guard) = (Arc::clone(&started), DropFlag(Arc::clone(&dropped)));
+            async move {
+                let _guard = guard;
+                started.notify_one();
+                tokio::time::sleep(delay).await;
+                Ok(TransformOutput::new(json!(format!(
+                    "{}{tag}",
+                    v.as_str().unwrap().replace(ACCEPTED, "[red]")
+                ))))
+            }
+        })
+    }
+    /// Records whether the handler saw a cancelled token.
+    fn observing(seen: &Arc<Mutex<Vec<bool>>>) -> HandlerFn {
+        let seen = Arc::clone(seen);
+        typed(move |c, v| {
+            seen.lock().unwrap().push(c.cancellation().is_cancelled());
+            Ok(TransformOutput::new(v))
+        })
+    }
+    /// Cancels the per-call token and returns immediately in the same poll.
+    fn cancel_and_return(tag: &'static str) -> HandlerFn {
+        typed(move |c, v| {
+            c.cancellation().cancel();
+            Ok(TransformOutput::new(json!(format!(
+                "{}{tag}",
+                v.as_str().unwrap_or("")
+            ))))
+        })
+    }
+    fn assert_no_leak(outcome: &ToolResultOutcome) {
+        let text = format!("{outcome:?}");
+        for secret in [SEED_SECRET, ACCEPTED, ERROR_SECRET, "INTERMEDIATE-SECRET"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+    }
+    fn real_tracker() -> CleanupTracker {
+        CleanupTracker::from_parts(
+            tokio_util::task::TaskTracker::new(),
+            CancellationToken::new(),
+        )
+    }
+    /// Runs the driver and cancels the token once `started` fires.
+    async fn run_cancelled_after(
+        d: &Dispatcher,
+        seed_value: Value,
+        started: &Notify,
+    ) -> ToolResultOutcome {
+        let token = CancellationToken::new();
+        let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
+        let driver = d.transform_tool_result(ctx, seed(seed_value));
+        tokio::pin!(driver);
+        tokio::select! {
+            biased;
+            out = &mut driver => return out,
+            () = started.notified() => {}
+        }
+        token.cancel();
+        driver.await
+    }
+    fn flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_during_ordinary_handler_drops_its_future_but_cleanup_survives() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let tracker = real_tracker();
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let gate = Arc::new(Mutex::new(Some(gate)));
+        let cleanup_task = Arc::new(Mutex::new(None));
+        let slow = {
+            let (started, dropped) = (Arc::clone(&started), Arc::clone(&dropped));
+            let (gate, cleanup_task) = (Arc::clone(&gate), Arc::clone(&cleanup_task));
+            async_typed(move |c, _| {
+                let gate = gate.lock().unwrap().take();
+                let task = c.cleanup().spawn(async move {
+                    if let Some(gate) = gate {
+                        let _ = gate.await;
+                    }
+                });
+                *cleanup_task.lock().unwrap() = Some(task);
+                let (started, guard) = (Arc::clone(&started), DropFlag(Arc::clone(&dropped)));
+                async move {
+                    let _guard = guard;
+                    started.notify_one();
+                    std::future::pending::<Result<TransformOutput, ExtensionError>>().await
+                }
+            })
+        };
+        let mut slow = make(1, "slow", O, slow);
+        slow.cleanup = tracker.clone();
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            slow,
+            make(0, "final", F, redact("+F")),
+        ]);
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
+        assert!(dropped.load(Ordering::SeqCst), "handler future not dropped");
+        assert_eq!(tracker.pending(), 1, "cleanup must outlive the future");
+        release.send(()).unwrap();
+        let task = cleanup_task.lock().unwrap().take().unwrap();
+        task.await.unwrap();
+        assert_eq!(tracker.pending(), 0);
+    }
+
+    // The driver is single-threaded between one handler's commit and the next
+    // handler's start (no await point), so "cancelled between handlers" can only
+    // come from another thread. The tests below drive the same state through the
+    // simultaneous-completion path: the handler cancels as it completes and its
+    // output is not committed (commit point).
+    #[tokio::test(start_paused = true)]
+    async fn cancel_between_ordinary_handlers_skips_the_rest() {
+        let later = Arc::new(AtomicUsize::new(0));
+        let d = Dispatcher::new(vec![
+            make(0, "first", O, accept()),
+            make(1, "second", O, cancel_and_return("+h2")),
+            make(2, "third", O, counting(&later)),
+            make(3, "fourth", O, counting(&later)),
+            make(0, "final", F, redact("+F")),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_while_a_final_redactor_completes_keeps_its_output_and_runs_the_rest() {
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(0, "f1", F, cancel_and_return("+F1")),
+            make(1, "f2", F, redact("+F2")),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(
+            outcome,
+            interrupted(Some(json!(
+                format!("{ACCEPTED}+F1").replace(ACCEPTED, "[red]") + "+F2"
+            )))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_driver_that_returned_is_not_retroactively_interrupted() {
+        let d = Dispatcher::new(vec![make(0, "last", F, append("+last"))]);
+        let ctx = context(ToolOutcomeClass::Succeeded);
+        let token = ctx.cancellation().clone();
+        let outcome = d.transform_tool_result(ctx, seed(json!("s"))).await;
+        token.cancel();
+        assert_eq!(outcome, completed(json!("s+last"), false));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn simultaneous_completion_and_cancellation_resolves_as_cancelled() {
+        // The output of a handler that cancels while completing is not committed.
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(1, "racer", O, cancel_and_return("+LOST")),
+            make(0, "final", F, redact("+F")),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
+        // Nothing accepted before the racer: nothing to fall back to.
+        let d = Dispatcher::new(vec![
+            make(0, "racer", O, cancel_and_return("+LOST")),
+            make(0, "final", F, redact("+F")),
+        ]);
+        let outcome = d
+            .transform_tool_result(
+                context(ToolOutcomeClass::Succeeded),
+                seed(json!(SEED_SECRET)),
+            )
+            .await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactor_in_flight_on_an_accepted_value_may_finish_in_time() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(0, "f1", F, slow_append("+F1", short(), &started, &dropped)),
+            make(1, "f2", F, redact("+F2")),
+        ]);
+        // Cancellation arrives while f1 is in flight; f1 finishes, f2 runs after.
+        let start = Instant::now();
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F1+F2"))));
+        assert!(start.elapsed() < FINAL_REDACTION_DEADLINE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactor_in_flight_past_the_deadline_is_dropped() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let later = Arc::new(AtomicUsize::new(0));
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(0, "f1", F, slow_append("+F1", long(), &started, &dropped)),
+            make(1, "f2", F, counting(&later)),
+        ]);
+        let start = Instant::now();
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+        let elapsed = start.elapsed();
+        assert!(elapsed >= FINAL_REDACTION_DEADLINE, "{elapsed:?}");
+        assert!(elapsed < FINAL_REDACTION_DEADLINE + short(), "{elapsed:?}");
+    }
+
+    /// Cancellation observed while an ordinary handler runs; `finals` then run.
+    async fn cancel_in_ordinary_then(finals: Vec<Handler>) -> ToolResultOutcome {
+        let started = Arc::new(Notify::new());
+        let mut handlers = vec![
+            make(0, "accept", O, accept()),
+            make(1, "trigger", O, hang(&started, &flag())),
+        ];
+        handlers.extend(finals);
+        run_cancelled_after(&Dispatcher::new(handlers), json!(SEED_SECRET), &started).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failing_final_redactor_after_cancellation_is_interrupted_not_failed() {
+        for (name, failing) in failing_handlers() {
+            let outcome = cancel_in_ordinary_then(vec![make(0, "bad", F, failing)]).await;
+            assert_eq!(outcome, interrupted(None), "{name}");
+            assert_no_leak(&outcome);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactor_failing_while_in_flight_at_cancellation_is_interrupted() {
+        for panics in [false, true] {
+            let started = Arc::new(Notify::new());
+            let failing = {
+                let started = Arc::clone(&started);
+                async_typed(move |_, _| {
+                    let started = Arc::clone(&started);
+                    async move {
+                        started.notify_one();
+                        tokio::task::yield_now().await;
+                        assert!(!panics, "{ERROR_SECRET}");
+                        Err(ExtensionError::Tool(ERROR_SECRET.into()))
+                    }
+                })
+            };
+            let d = Dispatcher::new(vec![
+                make(0, "accept", O, accept()),
+                make(0, "bad", F, failing),
+            ]);
+            let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+            assert_eq!(outcome, interrupted(None), "panics: {panics}");
+            assert_no_leak(&outcome);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactor_timing_out_after_cancellation_is_interrupted() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let outcome = cancel_in_ordinary_then(vec![make(
+            0,
+            "slow",
+            F,
+            slow_append("+F", long(), &started, &dropped),
+        )])
+        .await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_with_accepted_value_and_no_final_redactor_persists_nothing() {
+        let later = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(1, "trigger", O, hang(&started, &flag())),
+            make(2, "later", O, counting(&later)),
+        ]);
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_before_any_value_is_accepted_never_runs_final_redactors_on_the_seed() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let finals = Arc::new(AtomicUsize::new(0));
+        let d = Dispatcher::new(vec![
+            make(0, "trigger", O, hang(&started, &dropped)),
+            make(0, "final", F, counting(&finals)),
+        ]);
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(finals.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sole_final_redactor_in_flight_on_the_seed_is_dropped_with_no_payload() {
+        let started = Arc::new(Notify::new());
+        let dropped = flag();
+        let later = Arc::new(AtomicUsize::new(0));
+        let d = Dispatcher::new(vec![
+            make(0, "final", F, hang(&started, &dropped)),
+            make(1, "final-2", F, counting(&later)),
+        ]);
+        let start = Instant::now();
+        let outcome = run_cancelled_after(&d, json!(SEED_SECRET), &started).await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+        // At once: no deadline wait.
+        assert!(start.elapsed() < FINAL_REDACTION_DEADLINE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_final_redactors_after_cancellation_compose_in_order() {
+        let outcome = cancel_in_ordinary_then(vec![
+            make(0, "f1", F, redact("+F1")),
+            make(1, "f2", F, redact("+F2")),
+        ])
+        .await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F1+F2"))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_final_redaction_deadline_is_one_budget_across_redactors() {
+        let (started, dropped) = (Arc::new(Notify::new()), flag());
+        let sleeping = |tag| slow_append(tag, three_fifths(), &started, &dropped);
+        // Each fits the deadline alone; together they exceed it.
+        let start = Instant::now();
+        let outcome = cancel_in_ordinary_then(vec![
+            make(0, "f1", F, sleeping("+F1")),
+            make(1, "f2", F, sleeping("+F2")),
+        ])
+        .await;
+        assert_eq!(outcome, interrupted(None));
+        assert_no_leak(&outcome);
+        let elapsed = start.elapsed();
+        assert!(elapsed >= FINAL_REDACTION_DEADLINE, "{elapsed:?}");
+        assert!(elapsed < FINAL_REDACTION_DEADLINE + short(), "{elapsed:?}");
+        // Within the budget, both pass.
+        let outcome = cancel_in_ordinary_then(vec![
+            make(0, "f1", F, slow_append("+F1", short(), &started, &dropped)),
+            make(1, "f2", F, slow_append("+F2", short(), &started, &dropped)),
+        ])
+        .await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F1+F2"))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactors_see_the_cancelled_token() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let outcome = cancel_in_ordinary_then(vec![
+            make(0, "f1", F, observing(&seen)),
+            make(1, "f2", F, observing(&seen)),
+        ])
+        .await;
+        assert_eq!(outcome, interrupted(Some(json!(ACCEPTED))));
+        assert_eq!(*seen.lock().unwrap(), [true, true]);
+        // Without cancellation the same handlers see a live token.
+        seen.lock().unwrap().clear();
+        let d = Dispatcher::new(vec![make(0, "f", F, observing(&seen))]);
+        d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(*seen.lock().unwrap(), [false]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn token_cancelled_on_entry_is_interrupted_and_runs_nothing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        for handlers in [
+            Vec::new(),
+            vec![
+                make(0, "o", O, counting(&calls)),
+                make(0, "f", F, counting(&calls)),
+            ],
+        ] {
+            let token = CancellationToken::new();
+            token.cancel();
+            let outcome = Dispatcher::new(handlers)
+                .transform_tool_result(
+                    context(ToolOutcomeClass::Succeeded).with_cancellation(token),
+                    seed(json!(SEED_SECRET)),
+                )
+                .await;
+            assert_eq!(outcome, interrupted(None));
+            assert_no_leak(&outcome);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_handler_cancelling_its_own_call_token_is_observed_cancellation() {
+        let parent = CancellationToken::new();
+        let hangs_after_cancel = async_typed(|c, _| async move {
+            c.cancellation().cancel();
+            std::future::pending::<Result<TransformOutput, ExtensionError>>().await
+        });
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(1, "canceller", O, hangs_after_cancel),
+            make(0, "final", F, redact("+F")),
+        ]);
+        let outcome = d
+            .transform_tool_result(
+                context(ToolOutcomeClass::Succeeded).with_cancellation(parent.child_token()),
+                seed(json!(SEED_SECRET)),
+            )
+            .await;
+        assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
+        assert!(
+            !parent.is_cancelled(),
+            "child cancel must not reach the parent"
+        );
+        // No accepted value: nothing tool-authored is persisted.
+        let d = Dispatcher::new(vec![make(
+            0,
+            "canceller",
+            O,
+            async_typed(|c, _| async move {
+                c.cancellation().cancel();
+                std::future::pending::<Result<TransformOutput, ExtensionError>>().await
+            }),
+        )]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, interrupted(None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_final_redactor_after_cancellation_is_interrupted_not_failed() {
+        let closing = CancellationToken::new();
+        closing.cancel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut f = make(0, "closing", F, counting(&calls));
+        f.cleanup = CleanupTracker::from_parts(tokio_util::task::TaskTracker::new(), closing);
+        let outcome = cancel_in_ordinary_then(vec![f]).await;
+        assert_eq!(outcome, interrupted(None));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_cancellation_final_redactors_are_the_unbounded_last_step() {
+        let (started, dropped) = (Arc::new(Notify::new()), flag());
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(0, "slow", F, slow_append("+F", long(), &started, &dropped)),
+        ]);
+        let outcome = d
+            .transform_tool_result(
+                context(ToolOutcomeClass::Succeeded).with_cancellation(CancellationToken::new()),
+                seed(json!("s")),
+            )
+            .await;
+        assert_eq!(outcome, completed(json!("[red]+F"), false));
+        // D2 still applies to a failing final redactor.
+        let d = Dispatcher::new(vec![
+            make(0, "accept", O, accept()),
+            make(
+                0,
+                "bad",
+                F,
+                typed(|_, _| Err(ExtensionError::Tool(ERROR_SECRET.into()))),
+            ),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(
+            outcome,
+            ToolResultOutcome::Failed {
+                handler: "bad".into()
+            }
+        );
+        assert_no_leak(&outcome);
+    }
+
+    #[tokio::test]
+    async fn final_redaction_json_handler_sees_its_phase_in_the_envelope() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        // What `Registrar::on_final_redaction_json` stores.
+        let cb: Callback = Arc::new(move |e| {
+            recorder.lock().unwrap().push(e["context"]["phase"].clone());
+            Box::pin(std::future::ready(Ok(e)))
+        });
+        let d = Dispatcher::new(vec![
+            make(0, "o", O, json_cb(Ok)),
+            make(
+                0,
+                "f",
+                F,
+                HandlerFn::ResultTransform(json_result_transform(cb)),
+            ),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(*seen.lock().unwrap(), [json!("final_redaction")]);
     }
 }
