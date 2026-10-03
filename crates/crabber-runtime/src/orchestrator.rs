@@ -1357,15 +1357,25 @@ impl Orchestrator {
         // Notification callbacks cannot delay sibling settlement. Keep the plan lease
         // until delivery finishes so mount shutdown still waits for these callbacks.
         let plan = plan.clone();
+        let state_sink = crabber_extension::current_state_sink();
         let projection = serde_json::to_value(event).unwrap_or(Value::Null);
         tokio::spawn(async move {
-            plan.dispatcher
-                .notify::<EventPublished>(projection.clone())
-                .await;
-            if protected {
+            let delivery = async {
                 plan.dispatcher
-                    .notify::<crabber_extension::ToolSettled>(projection)
+                    .notify::<EventPublished>(projection.clone())
                     .await;
+                if protected {
+                    plan.dispatcher
+                        .notify::<crabber_extension::ToolSettled>(projection)
+                        .await;
+                }
+            };
+            // Preserve state reads and best-effort writes; the original sink still
+            // rejects writes after terminal settlement through its execution fence.
+            if let Some(sink) = state_sink {
+                crabber_extension::with_state_sink(sink, delivery).await;
+            } else {
+                delivery.await;
             }
             plan.release();
         });

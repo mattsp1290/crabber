@@ -373,3 +373,97 @@ async fn interrupted_notifications_cannot_block_sibling_settlement_and_retain_pl
         );
     }
 }
+
+#[tokio::test]
+async fn delayed_protected_notifications_read_seeded_state_and_reject_terminal_writes() {
+    const EXTENSION: &str = "delayed-state-notifier";
+    let call = ScriptedCall::text(ECHO, "secret");
+    let gate = Gate::all();
+    let entered = gate.clone();
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let observed = observations.clone();
+    let ready = Arc::new(Semaphore::new(0));
+    let delivered = ready.clone();
+    let notifier = ClosureExtension::new(EXTENSION, move |r| {
+        for point in [EventPublished::ID, ToolSettled::ID] {
+            let gate = gate.clone();
+            let observed = observed.clone();
+            let delivered = delivered.clone();
+            r.on_notify(
+                point,
+                0,
+                point,
+                Arc::new(move |value| {
+                    let gate = gate.clone();
+                    let observed = observed.clone();
+                    let delivered = delivered.clone();
+                    Box::pin(async move {
+                        if value["kind"] == "run_started" {
+                            crabber_extension::current_state_sink()
+                                .unwrap()
+                                .apply(EXTENSION, vec![("seed".into(), Some("before".into()))])
+                                .await
+                                .unwrap();
+                        } else if value["kind"] == "tool_call_settled" {
+                            gate.pass(&value).await;
+                            let sink = crabber_extension::current_state_sink()
+                                .expect("detached protected notifications retain the state sink");
+                            let snapshot = sink.snapshot(EXTENSION).await.unwrap();
+                            let applied = sink
+                                .apply(EXTENSION, vec![("seed".into(), Some("after".into()))])
+                                .await;
+                            observed
+                                .lock()
+                                .unwrap()
+                                .push((point, snapshot, applied.clone()));
+                            delivered.add_permits(1);
+                            return applied.map(|()| value).map_err(ExtensionError::Tool);
+                        }
+                        Ok(value)
+                    })
+                }),
+            );
+        }
+    });
+    let started = Arc::new(Semaphore::new(0));
+    let harness = Harness::builder(one_turn(&[&call]))
+        .mount(notifier, Scope::Global)
+        .mount(
+            cancellation_redactor(call.id.clone(), started.clone()),
+            Scope::Global,
+        )
+        .build()
+        .await;
+    let handle = harness.start().await;
+    started.acquire().await.unwrap().forget();
+    let done = interrupt_and_finish(&harness, handle).await;
+    assert_interrupted(&done, &call.id, r#""protected""#).await;
+    for _ in 0..2 {
+        timeout(INTERRUPT_SETTLEMENT_BOUND, entered.entered())
+            .await
+            .unwrap();
+        entered.release_all();
+        timeout(INTERRUPT_SETTLEMENT_BOUND, ready.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+    }
+    let persisted = harness
+        .store
+        .get_extension_state(EXTENSION, &done.session_id)
+        .await
+        .unwrap();
+    let observations = observations.lock().unwrap();
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0].0, EventPublished::ID);
+    assert_eq!(observations[1].0, ToolSettled::ID);
+    for (_, snapshot, applied) in observations.iter() {
+        assert_eq!(snapshot.get("seed").map(String::as_str), Some("before"));
+        assert_eq!(snapshot, &persisted);
+        assert_eq!(
+            applied,
+            &Err(crabber_session::StoreError::Conflict.to_string())
+        );
+    }
+}
