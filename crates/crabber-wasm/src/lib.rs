@@ -1241,7 +1241,7 @@ mod tests {
     }
     #[async_trait]
     impl Extension for InterruptMiddleware {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "interrupt-middleware"
         }
         fn version(&self) -> &'static str {
@@ -1277,17 +1277,79 @@ mod tests {
         }
     }
 
+    async fn assert_wasm_interrupted_settlement(
+        store: &crabber_session::MemoryStore,
+        session_id: &crabber_core::SessionId,
+        run_id: &crabber_core::RunId,
+        call_id: &crabber_core::ToolCallId,
+        expected: &str,
+    ) {
+        use crabber_core::{ContentBlock, ToolCallStatus, ToolResultStatus};
+        use crabber_session::{SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
+        let SnapshotOutcome::Page(page) = store
+            .snapshot(SnapshotRequest {
+                session_id: session_id.clone(),
+                limits: SnapshotLimits {
+                    messages: 100,
+                    tool_calls: 100,
+                    parts: 1000,
+                    text_bytes: 1 << 20,
+                    encoded_bytes: 1 << 22,
+                },
+                continuation: None,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("snapshot page");
+        };
+        let record = page
+            .tool_calls
+            .iter()
+            .find(|record| &record.id == call_id)
+            .unwrap();
+        assert_eq!(record.status, ToolCallStatus::Interrupted);
+        let result = record.result.as_ref().unwrap();
+        assert_eq!(result.status, ToolResultStatus::Interrupted);
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::Text {
+                text: expected.into()
+            }]
+        );
+        assert_eq!(
+            store.list_unfinished_tool_calls(run_id).await.unwrap(),
+            [] as [crabber_core::ToolCallRecord; 0]
+        );
+        for message in &page.messages {
+            for part in &message.parts {
+                if let ContentBlock::ToolResult {
+                    content, is_error, ..
+                } = &part.content
+                {
+                    assert!(*is_error);
+                    assert_eq!(*content, result.content);
+                }
+            }
+        }
+        let events = store.list_events(session_id, None, 1000).await.unwrap();
+        let settled = events
+            .iter()
+            .find(|event| event.kind == crabber_core::EventKind::ToolCallSettled)
+            .unwrap();
+        assert_eq!(settled.payload["content"][0]["text"], expected);
+        assert_eq!(settled.payload["is_error"], true);
+    }
+
     #[tokio::test]
     async fn orchestrator_interrupts_active_wasm_with_fixed_or_final_redacted_settlement() {
-        use crabber_core::{ContentBlock, RunStatus, ToolCallId, ToolCallStatus, ToolResultStatus};
+        use crabber_core::{RunStatus, ToolCallId};
         use crabber_extension::{Registry, Scope};
         use crabber_providers::{FakeProvider, Selection, StreamDelta};
         use crabber_runtime::{
             INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, Orchestrator, Request,
         };
-        use crabber_session::{
-            MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store,
-        };
+        use crabber_session::MemoryStore;
         for protected in [false, true] {
             let (loader, module, ready) = spinning_module().await;
             let registry = Arc::new(Registry::new());
@@ -1364,67 +1426,13 @@ mod tests {
                 RunStatus::Interrupted
             );
             assert!(started.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
-            let SnapshotOutcome::Page(page) = store
-                .snapshot(SnapshotRequest {
-                    session_id: session_id.clone(),
-                    limits: SnapshotLimits {
-                        messages: 100,
-                        tool_calls: 100,
-                        parts: 1000,
-                        text_bytes: 1 << 20,
-                        encoded_bytes: 1 << 22,
-                    },
-                    continuation: None,
-                })
-                .await
-                .unwrap()
-            else {
-                panic!("snapshot page");
-            };
-            let record = page
-                .tool_calls
-                .iter()
-                .find(|record| record.id == call_id)
-                .unwrap();
-            assert_eq!(record.status, ToolCallStatus::Interrupted);
-            let result = record.result.as_ref().unwrap();
-            assert_eq!(result.status, ToolResultStatus::Interrupted);
             let expected = if protected {
                 r#""protected""#
             } else {
                 INTERRUPTED_RESULT_TEXT
             };
-            assert_eq!(
-                result.content,
-                vec![ContentBlock::Text {
-                    text: expected.into()
-                }]
-            );
-            assert!(
-                store
-                    .list_unfinished_tool_calls(&run_id)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
-            for message in &page.messages {
-                for part in &message.parts {
-                    if let ContentBlock::ToolResult {
-                        content, is_error, ..
-                    } = &part.content
-                    {
-                        assert!(*is_error);
-                        assert_eq!(*content, result.content);
-                    }
-                }
-            }
-            let events = store.list_events(&session_id, None, 1000).await.unwrap();
-            let settled = events
-                .iter()
-                .find(|event| event.kind == crabber_core::EventKind::ToolCallSettled)
-                .unwrap();
-            assert_eq!(settled.payload["content"][0]["text"], expected);
-            assert_eq!(settled.payload["is_error"], true);
+            assert_wasm_interrupted_settlement(&store, &session_id, &run_id, &call_id, expected)
+                .await;
             assert_eq!(module.active.load(Ordering::Acquire), 0);
             assert!(module.serial.try_lock().is_ok());
             registry.close_all().await.unwrap();
@@ -1493,7 +1501,7 @@ mod tests {
 
     #[async_trait]
     impl Extension for BlockedHostMiddleware {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "blocked-host"
         }
         fn version(&self) -> &'static str {
