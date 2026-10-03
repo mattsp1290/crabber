@@ -1,3 +1,4 @@
+use crate::RESULT_TRANSFORM_CONTRACT_VERSION;
 use crate::ToolContext;
 use crate::dispatch::Dispatcher;
 use crate::registry::ToolGuard;
@@ -27,7 +28,14 @@ impl fmt::Display for PlanFingerprint {
     }
 }
 
-/// Computes a stable digest of the sorted component identities.
+/// Id of the synthetic component that carries the result-transform contract
+/// version into every fingerprint (D9).
+const RESULT_TRANSFORM_CONTRACT_COMPONENT_ID: &str = "contract:crabber/tool/result-transform";
+
+/// Computes a stable digest of the sorted component identities plus the
+/// result-transform contract version, so plans frozen under another contract
+/// version never match (D9). A caller component with the contract id is kept
+/// beside the contract component, never merged into it.
 ///
 /// # Panics
 ///
@@ -35,6 +43,10 @@ impl fmt::Display for PlanFingerprint {
 #[must_use]
 pub fn compute_fingerprint(components: &[ComponentIdentity]) -> PlanFingerprint {
     let mut canonical = components.to_vec();
+    canonical.push(ComponentIdentity {
+        id: RESULT_TRANSFORM_CONTRACT_COMPONENT_ID.into(),
+        version: RESULT_TRANSFORM_CONTRACT_VERSION.to_string(),
+    });
     canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
     let bytes = serde_json::to_vec(&canonical).expect("component identities serialize");
     PlanFingerprint(Sha256::digest(bytes).into())
@@ -259,8 +271,10 @@ mod tests {
         );
     }
 
-    /// Pinned at 5e3046a, before workspace context existed: the fingerprint
-    /// covers component identities only, and workspace values are not inputs.
+    /// Re-pinned for D9 (epic crabber-miia): the fingerprint covers component
+    /// identities plus the result-transform contract component at version 2,
+    /// so both hashes differ from the pre-contract values (1e222d9f..., 3defff03...,
+    /// pinned at 5e3046a). Workspace values are not inputs.
     #[test]
     fn fingerprint_of_fixed_components_is_pinned() {
         let components = [
@@ -275,7 +289,7 @@ mod tests {
         ];
         assert_eq!(
             compute_fingerprint(&components).to_string(),
-            "1e222d9fe7d42269a9ea72f566067c18aa24519cd84e0d5cff70ea0c5d8b4d5f"
+            "77ef3495189564ce7fadd89fa4b63e88b3dec1b1a92dbad900d4dc81a4cf5025"
         );
         let provider = StaticPlanProvider::new(
             Vec::new(),
@@ -287,7 +301,53 @@ mod tests {
         );
         assert_eq!(
             provider.plan.fingerprint.to_string(),
-            "3defff035c398394569228ee35ebd9eb5a2d5d251d6e5b0bb0ef25084c603fbe"
+            "25d4c815b08bdb22373d9e9c93fe71a140279d68feacd4f92c56c43d40e5efce"
+        );
+    }
+
+    fn pre_contract_fingerprint(components: &[ComponentIdentity]) -> String {
+        let mut canonical = components.to_vec();
+        canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
+        let bytes = serde_json::to_vec(&canonical).unwrap();
+        PlanFingerprint(Sha256::digest(bytes).into()).to_string()
+    }
+
+    #[test]
+    fn contract_component_participates_in_fingerprint() {
+        let components = [ComponentIdentity {
+            id: "example/native".into(),
+            version: "1".into(),
+        }];
+        let old = pre_contract_fingerprint(&components);
+        assert_ne!(compute_fingerprint(&components).to_string(), old);
+        assert_ne!(
+            compute_fingerprint(&[]).to_string(),
+            pre_contract_fingerprint(&[])
+        );
+    }
+
+    /// A caller component with the contract's id and version is appended
+    /// beside the contract component, not deduplicated, so it cannot
+    /// reproduce a pre-contract fingerprint or the contract-free digest.
+    #[test]
+    fn caller_component_cannot_shadow_contract_component() {
+        let contract = ComponentIdentity {
+            id: RESULT_TRANSFORM_CONTRACT_COMPONENT_ID.into(),
+            version: RESULT_TRANSFORM_CONTRACT_VERSION.to_string(),
+        };
+        let spoofed = [contract.clone()];
+        assert_ne!(
+            compute_fingerprint(&spoofed).to_string(),
+            pre_contract_fingerprint(&spoofed)
+        );
+        assert_ne!(compute_fingerprint(&spoofed), compute_fingerprint(&[]));
+        let other_version = [ComponentIdentity {
+            version: "1".into(),
+            ..contract
+        }];
+        assert_ne!(
+            compute_fingerprint(&other_version).to_string(),
+            pre_contract_fingerprint(&other_version)
         );
     }
 

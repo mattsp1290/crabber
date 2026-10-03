@@ -946,6 +946,16 @@ async fn crashed_run_with_observer(
     running: bool,
     observer: Arc<dyn Observer>,
 ) -> (Orchestrator, Arc<MemoryStore>, Arc<AtomicUsize>, RunId) {
+    crashed_run_admitted_under(running, observer, None).await
+}
+
+/// `admitted_fingerprint` replaces the plan fingerprint stored with the run.
+#[allow(clippy::too_many_lines)]
+async fn crashed_run_admitted_under(
+    running: bool,
+    observer: Arc<dyn Observer>,
+    admitted_fingerprint: Option<fn(&crabber_extension::RunPlan) -> String>,
+) -> (Orchestrator, Arc<MemoryStore>, Arc<AtomicUsize>, RunId) {
     let now = time::OffsetDateTime::now_utc();
     let clock = Arc::new(ManualClock::new(now));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
@@ -956,7 +966,8 @@ async fn crashed_run_with_observer(
     ));
     let session = SessionId::new();
     let plan = plan_provider.acquire_plan(&session).await.unwrap();
-    let fingerprint = plan.fingerprint().to_string();
+    let fingerprint =
+        admitted_fingerprint.map_or_else(|| plan.fingerprint().to_string(), |stale| stale(&plan));
     plan.release();
     let message_id = crabber_core::MessageId::new();
     let admitted = store
@@ -1044,6 +1055,46 @@ async fn crashed_run_with_observer(
         .build()
         .unwrap();
     (runtime, store, executed, admitted.run.id)
+}
+
+/// The digest `compute_fingerprint` produced before the result-transform
+/// contract component (D9): SHA-256 of the sorted component identities.
+fn pre_contract_fingerprint(plan: &crabber_extension::RunPlan) -> String {
+    use sha2::{Digest, Sha256};
+    let mut components = plan.components.clone();
+    components.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
+    crabber_extension::PlanFingerprint(
+        Sha256::digest(serde_json::to_vec(&components).unwrap()).into(),
+    )
+    .to_string()
+}
+
+#[tokio::test]
+async fn resume_refuses_run_admitted_under_pre_contract_fingerprint() {
+    let (runtime, store, executed, run_id) = crashed_run_admitted_under(
+        false,
+        Arc::new(crate::NoopObserver),
+        Some(pre_contract_fingerprint),
+    )
+    .await;
+    let stored = store
+        .get_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_fingerprint;
+    assert_eq!(stored.len(), 64);
+    let error = runtime.resume(&run_id).await.unwrap_err();
+    assert!(matches!(error, RuntimeError::PlanChanged), "{error:?}");
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
