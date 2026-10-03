@@ -298,9 +298,7 @@ fn admit_transaction(
         .clone()
         .unwrap_or_else(|| request.user_message.session_id.clone());
     let session = if let Some(existing) = state.sessions.get(&session_id) {
-        // Workspace identity is immutable: exact comparison, empty is a value.
-        if existing.workspace_id != request.workspace_id || existing.directory != request.directory
-        {
+        if !existing.identity_matches(&request.workspace_id, &request.directory) {
             return Err(StoreError::SessionIdentityMismatch);
         }
         existing.clone()
@@ -420,8 +418,7 @@ impl Store for MemoryStore {
         }
         self.transact(|state| {
             if let Some(session) = state.sessions.get(session_id)
-                && (session.workspace_id != request.workspace_id
-                    || session.directory != request.directory)
+                && !session.identity_matches(&request.workspace_id, &request.directory)
             {
                 return Err(StoreError::SessionIdentityMismatch);
             }

@@ -131,26 +131,29 @@ impl Dispatcher {
         }
         Ok(value)
     }
-    /// A transform waterfall whose `pinned` keys are owned by the caller: they
-    /// are re-asserted after every handler, so no handler can change, add or
-    /// remove them for a later handler or for the caller.
+    /// A transform waterfall over a JSON object whose `pinned` keys are owned
+    /// by the caller: they are re-asserted after every handler, so no handler
+    /// can change, add or remove them for a later handler or for the caller.
+    /// A value that is not an object, initially or from a handler, is rejected.
     pub async fn transform_pinned<P: Point>(
         &self,
         mut value: Value,
         pinned: &[(&str, Value)],
     ) -> Result<Value, ExtensionError> {
         let assert = |value: &mut Value| {
-            if let Value::Object(object) = value {
-                for (key, pinned) in pinned {
-                    object.insert((*key).to_owned(), pinned.clone());
-                }
+            let Value::Object(object) = value else {
+                return Err(ExtensionError::Rejected(P::ID));
+            };
+            for (key, pinned) in pinned {
+                object.insert((*key).to_owned(), pinned.clone());
             }
+            Ok(())
         };
-        assert(&mut value);
+        assert(&mut value)?;
         for handler in self.matching(P::ID, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
                 value = with_mount(handler.mount_id, callback(value)).await?;
-                assert(&mut value);
+                assert(&mut value)?;
             }
         }
         Ok(value)
@@ -567,5 +570,48 @@ mod tests {
             assert_eq!(value.get("absent"), Some(&Value::Null));
         }
         assert_eq!(out["free"], "changed");
+    }
+    #[tokio::test]
+    async fn pinned_transform_rejects_a_handler_that_returns_a_non_object() {
+        let later = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&later);
+        for replacement in [Value::Null, serde_json::json!([]), serde_json::json!("x")] {
+            let seen = Arc::clone(&seen);
+            let dispatcher = Dispatcher::new(vec![
+                handler(
+                    ContextAssemble::ID,
+                    Mode::Transform,
+                    0,
+                    "replace",
+                    HandlerFn::Ordinary(callback(move |_| Ok(replacement.clone()))),
+                ),
+                handler(
+                    ContextAssemble::ID,
+                    Mode::Transform,
+                    1,
+                    "later",
+                    HandlerFn::Ordinary(callback(move |v| {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        Ok(v)
+                    })),
+                ),
+            ]);
+            assert_eq!(
+                dispatcher
+                    .transform_pinned::<ContextAssemble>(
+                        serde_json::json!({}),
+                        &[("pinned", serde_json::json!("real"))],
+                    )
+                    .await,
+                Err(ExtensionError::Rejected(ContextAssemble::ID))
+            );
+        }
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            Dispatcher::new(Vec::new())
+                .transform_pinned::<ContextAssemble>(Value::Null, &[])
+                .await,
+            Err(ExtensionError::Rejected(ContextAssemble::ID))
+        );
     }
 }

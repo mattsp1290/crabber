@@ -427,10 +427,7 @@ impl PostgresStore {
         let had_session = existing.is_some();
         let session: Session = if let Some(row) = existing {
             let existing: Session = decode(row.get("data"))?;
-            // Workspace identity is immutable: exact comparison, empty is a value.
-            if existing.workspace_id != request.workspace_id
-                || existing.directory != request.directory
-            {
+            if !existing.identity_matches(&request.workspace_id, &request.directory) {
                 return Err(StoreError::SessionIdentityMismatch);
             }
             existing
@@ -618,9 +615,7 @@ impl Store for PostgresStore {
             .map_err(db)?
         {
             let existing: Session = decode(row.get("data"))?;
-            if existing.workspace_id != request.workspace_id
-                || existing.directory != request.directory
-            {
+            if !existing.identity_matches(&request.workspace_id, &request.directory) {
                 return Err(StoreError::SessionIdentityMismatch);
             }
         }

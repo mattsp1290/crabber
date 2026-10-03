@@ -46,6 +46,9 @@ impl WorkspaceContext {
     pub const DIRECTORY_KEY: &'static str = "workspace_directory";
 
     /// Builds the context from persisted session fields. Empty means unavailable.
+    ///
+    /// Anyone can construct a value, for example in tests. Only the instance the
+    /// runtime places in a `ToolContext` is read from the stored session.
     #[must_use]
     pub fn from_persisted(workspace_id: &str, directory: &str) -> Self {
         let available = |value: &str| (!value.is_empty()).then(|| value.to_owned());

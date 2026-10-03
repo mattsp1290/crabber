@@ -951,6 +951,8 @@ mod tests {
     /// WASM guests do not receive workspace context: the guest-visible record
     /// is pinned field for field, and `workspace-id` stays the empty string
     /// whatever the native `ToolContext` or `ContextAssemble` payload carries.
+    /// The expected strings follow wasmtime's `Val` `Debug` format (wasmtime is
+    /// pinned at `=49.0.1`); regenerate them, keeping every value, on a bump.
     #[test]
     fn guest_turn_metadata_record_is_pinned() {
         fn record(run: &str, session: &str, provider: &str, turn: u32, system: bool) -> String {

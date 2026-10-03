@@ -50,7 +50,12 @@ fn fresh_host(dir: &Path, mode: &str) {
 }
 
 fn observed(dir: &Path, name: &str) -> (Vec<Identity>, Vec<Identity>) {
-    serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap()
+    // libtest exits successfully when `--exact fresh_host_child` matches no
+    // test, so a missing handoff file means the child never ran.
+    let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|error| {
+        panic!("fresh host wrote no {name} ({error}); does `--exact fresh_host_child` still match?")
+    });
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]

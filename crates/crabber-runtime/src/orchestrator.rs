@@ -139,6 +139,23 @@ pub struct RunResult {
     pub usage: Usage,
 }
 
+/// Outcome of a recovery sweep: the runs it recovered and the expired runs it
+/// left unfinished. A skipped run keeps its status and fence; the host can
+/// inspect it with `resume` and dispose of it with fenced abandonment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoverReport {
+    pub recovered: Vec<RunResult>,
+    pub skipped: Vec<SkippedRun>,
+}
+
+/// An expired run a recovery sweep did not resume, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedRun {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub reason: StoreError,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("session is busy")]
@@ -804,13 +821,20 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         // Stored-record identity check, before plan acquisition, the claim and
         // any pending tool execution: a rejection leaves the run untouched.
+        let session = self.validated_session(&run).await?;
+        Box::pin(self.with_workspace(&session).resume_validated(run_id, run)).await
+    }
+
+    /// Loads the run's persisted session and compares it with the request saved
+    /// in the run checkpoint, when there is one.
+    async fn validated_session(&self, run: &crabber_core::Run) -> Result<Session, StoreError> {
         let session = self
             .store
             .get_session(&run.session_id)
             .await?
             .ok_or(StoreError::NotFound)?;
         ensure_checkpoint_identity(&session, run.checkpoint.as_ref())?;
-        Box::pin(self.with_workspace(&session).resume_validated(run_id, run)).await
+        Ok(session)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1083,6 +1107,7 @@ impl Orchestrator {
     }
 
     /// Reclaims expired unfinished runs. Live leases are left to their owners.
+    /// Use `recover_report` to also learn which expired runs were skipped.
     ///
     /// # Errors
     ///
@@ -1091,35 +1116,79 @@ impl Orchestrator {
         self.recover_with_context(|_| None).await
     }
 
+    /// Like `recover`, and also reports each expired run it left unfinished.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `recover`.
+    pub async fn recover_report(&self) -> Result<RecoverReport, RuntimeError> {
+        self.recover_report_with_context(|_| None).await
+    }
+
     /// Selects fresh correlation independently for each eligible run.
     /// The selector cannot grant a lease; live leases and competing claims stay fenced.
     /// # Errors
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
         &self,
-        mut context_for: F,
+        context_for: F,
     ) -> Result<Vec<RunResult>, RuntimeError>
     where
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
-        let mut recovered = Vec::new();
+        Ok(self
+            .recover_report_with_context(context_for)
+            .await?
+            .recovered)
+    }
+
+    /// Recovery sweep with per-run correlation that reports skipped runs.
+    /// # Errors
+    /// Returns the same store and execution errors as `recover`.
+    pub async fn recover_report_with_context<F>(
+        &self,
+        mut context_for: F,
+    ) -> Result<RecoverReport, RuntimeError>
+    where
+        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
+    {
+        let mut report = RecoverReport::default();
         for run in self.store.list_unfinished_runs().await? {
             if run.lease_until > self.clock.now() {
                 continue;
             }
+            let mut skip = |reason: StoreError| {
+                report.skipped.push(SkippedRun {
+                    session_id: run.session_id.clone(),
+                    run_id: run.id.clone(),
+                    reason,
+                });
+            };
+            // One run whose session is missing, undecodable or drifted must not
+            // stop the sweep; it stays unfinished and is reported instead.
+            match self.validated_session(&run).await {
+                Err(
+                    reason @ (StoreError::NotFound
+                    | StoreError::Validation(_)
+                    | StoreError::SessionIdentityMismatch),
+                ) => {
+                    skip(reason);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
             match self.resume_with_context(&run.id, context_for(&run)).await {
-                Ok(result) => recovered.push(result),
-                // A run whose stored identity drifted stays unfinished for the
-                // host to inspect with `resume`; it must not stop the sweep.
+                Ok(result) => report.recovered.push(result),
                 Err(RuntimeError::Store(
-                    StoreError::Conflict
+                    reason @ (StoreError::Conflict
                     | StoreError::AdmissionRecoveryRequired
-                    | StoreError::SessionIdentityMismatch,
-                )) => {}
+                    | StoreError::SessionIdentityMismatch),
+                )) => skip(reason),
                 Err(error) => return Err(error),
             }
         }
-        Ok(recovered)
+        Ok(report)
     }
 
     async fn settle_unfinished_calls(
@@ -1232,11 +1301,11 @@ impl Orchestrator {
             .admit_run(admission)
             .await
             .map_err(admission_error)?;
-        Ok(runtime.with_workspace(&admitted.session).spawn_admitted(
+        Ok(runtime.spawn_admitted(
             request,
             plan,
             admitted.fence,
-            admitted.session.id,
+            &admitted.session,
             InitialEntry::Unkeyed,
         ))
     }
@@ -1278,16 +1347,13 @@ impl Orchestrator {
         {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
                 receipt,
-                handle: self
-                    .with_context(context)
-                    .with_workspace(&admitted.session)
-                    .spawn_admitted(
-                        request,
-                        plan,
-                        admitted.fence,
-                        admitted.session.id,
-                        InitialEntry::Keyed,
-                    ),
+                handle: self.with_context(context).spawn_admitted(
+                    request,
+                    plan,
+                    admitted.fence,
+                    &admitted.session,
+                    InitialEntry::Keyed,
+                ),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
         }
@@ -1384,16 +1450,13 @@ impl Orchestrator {
             .await?;
         Ok(Admission::Started {
             receipt: claimed.record.receipt,
-            handle: self
-                .with_context(context)
-                .with_workspace(&persisted)
-                .spawn_admitted(
-                    Request::from_admission(claimed.record.capsule.request),
-                    plan,
-                    claimed.fence,
-                    claimed.run.session_id,
-                    InitialEntry::Keyed,
-                ),
+            handle: self.with_context(context).spawn_admitted(
+                Request::from_admission(claimed.record.capsule.request),
+                plan,
+                claimed.fence,
+                &persisted,
+                InitialEntry::Keyed,
+            ),
         })
     }
 
@@ -1544,14 +1607,17 @@ impl Orchestrator {
         Ok((plan, admission, config))
     }
 
+    /// Every admitted run is bound to the workspace identity of the persisted
+    /// `session` it was admitted into; there is no other way to start one.
     fn spawn_admitted(
         &self,
         request: Request,
         plan: RunPlan,
         fence: RunFence,
-        session_id: SessionId,
+        session: &Session,
         entry: InitialEntry,
     ) -> RunHandle {
+        let session_id = session.id.clone();
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let handle = RunHandle {
@@ -1564,7 +1630,7 @@ impl Orchestrator {
             cancellation: CancellationToken::new(),
         };
         let cancellation = handle.cancellation.clone();
-        let runtime = self.clone();
+        let runtime = self.with_workspace(session);
         tokio::spawn(async move {
             let result = runtime
                 .run(fence, session_id, request, plan, cancellation, entry)
@@ -2526,7 +2592,7 @@ fn ensure_session_identity(
     workspace_id: &str,
     directory: &str,
 ) -> Result<(), StoreError> {
-    if session.workspace_id == workspace_id && session.directory == directory {
+    if session.identity_matches(workspace_id, directory) {
         Ok(())
     } else {
         Err(StoreError::SessionIdentityMismatch)
@@ -2534,7 +2600,8 @@ fn ensure_session_identity(
 }
 
 /// Compares the request saved in a run checkpoint, when there is one, with the
-/// persisted session. A checkpoint without a request has nothing to compare.
+/// persisted session. A checkpoint without a request has nothing to compare; a
+/// request without string identity fields is corrupt, not drift.
 fn ensure_checkpoint_identity(
     session: &Session,
     checkpoint: Option<&Value>,
@@ -2549,7 +2616,9 @@ fn ensure_checkpoint_identity(
         (Some(workspace_id), Some(directory)) => {
             ensure_session_identity(session, workspace_id, directory)
         }
-        _ => Err(StoreError::SessionIdentityMismatch),
+        _ => Err(StoreError::Validation(
+            "checkpoint request has no workspace identity".into(),
+        )),
     }
 }
 

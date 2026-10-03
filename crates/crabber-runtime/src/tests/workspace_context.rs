@@ -22,7 +22,7 @@ use crabber_session::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, MemoryStore, Store, StoreError,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -169,6 +169,10 @@ impl RunPlanProvider for CountingPlans {
 struct DriftStore {
     inner: Arc<MemoryStore>,
     drift: Mutex<HashMap<SessionId, (String, String)>>,
+    /// Session reads that fail with the error, or find nothing when `None`.
+    broken: Mutex<HashMap<SessionId, Option<StoreError>>>,
+    /// Runs whose checkpoint request loses its workspace identity on read.
+    corrupt: Mutex<HashSet<RunId>>,
     lose_admission: AtomicBool,
 }
 impl DriftStore {
@@ -176,6 +180,8 @@ impl DriftStore {
         Arc::new(Self {
             inner,
             drift: Mutex::new(HashMap::new()),
+            broken: Mutex::new(HashMap::new()),
+            corrupt: Mutex::new(HashSet::new()),
             lose_admission: AtomicBool::new(false),
         })
     }
@@ -187,6 +193,19 @@ impl DriftStore {
     }
     fn restore(&self, session: &SessionId) {
         self.drift.lock().unwrap().remove(session);
+    }
+    /// Every read of a corrupt run sees a checkpoint request without identity.
+    fn view(&self, mut run: Run) -> Run {
+        if self.corrupt.lock().unwrap().contains(&run.id)
+            && let Some(request) = run
+                .checkpoint
+                .as_mut()
+                .and_then(|checkpoint| checkpoint.get_mut("request"))
+                .and_then(Value::as_object_mut)
+        {
+            request.remove("workspace_id");
+        }
+        run
     }
 }
 #[async_trait]
@@ -231,6 +250,9 @@ impl Store for DriftStore {
         self.inner.execution(fence).await
     }
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError> {
+        if let Some(broken) = self.broken.lock().unwrap().get(id) {
+            return broken.clone().map_or(Ok(None), Err);
+        }
         let mut session = self.inner.get_session(id).await?;
         if let (Some(session), Some((workspace_id, directory))) =
             (session.as_mut(), self.drift.lock().unwrap().get(id))
@@ -241,7 +263,7 @@ impl Store for DriftStore {
         Ok(session)
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        self.inner.get_run(id).await
+        Ok(self.inner.get_run(id).await?.map(|run| self.view(run)))
     }
     async fn list_messages(
         &self,
@@ -262,7 +284,8 @@ impl Store for DriftStore {
         self.inner.list_events(id, after, limit).await
     }
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        self.inner.list_unfinished_runs().await
+        let runs = self.inner.list_unfinished_runs().await?;
+        Ok(runs.into_iter().map(|run| self.view(run)).collect())
     }
     async fn list_unfinished_tool_calls(
         &self,
@@ -470,8 +493,14 @@ async fn row3_same_session_later_run_sees_identical_identity_and_rejects_drift()
         );
     }
     assert_eq!(
-        h.memory.list_unfinished_runs().await.unwrap(),
-        [] as [Run; 0]
+        h.memory
+            .list_unfinished_runs()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.session_id == session)
+            .count(),
+        0
     );
     assert_eq!(h.seen.tools().len(), 1);
     assert_eq!(h.seen.handler_calls(), 2);
@@ -733,20 +762,13 @@ async fn stored_record_conflict_rejects_resume_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn recover_sweep_skips_one_mismatching_run_and_recovers_the_rest() {
-    let h = harness(
-        vec![
-            call_script(),
-            call_script(),
-            call_script(),
-            text_script("one"),
-            text_script("two"),
-        ],
-        Arc::new(PausePolicy),
-    )
-    .await;
+async fn recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest() {
+    let names = ["first", "drifted", "invalid", "missing", "corrupt", "last"];
+    let mut scripts: Vec<_> = names.iter().map(|_| call_script()).collect();
+    scripts.extend([text_script("one"), text_script("two")]);
+    let h = harness(scripts, Arc::new(PausePolicy)).await;
     let mut runs = Vec::new();
-    for name in ["first", "middle", "last"] {
+    for name in names {
         let handle = h
             .runtime
             .start(request(None, name, &format!("/{name}")))
@@ -756,27 +778,92 @@ async fn recover_sweep_skips_one_mismatching_run_and_recovers_the_rest() {
         assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     }
     expire(&h.clock);
-    // Drift every run but one in turn would hide ordering; drift exactly one.
-    let (drifted_session, drifted_run) = runs[1].clone();
-    h.store.alter(&drifted_session, "middle", "/replacement");
-    let recovered = h.runtime.recover().await.unwrap();
-    assert_eq!(recovered.len(), 2);
-    assert!(recovered.iter().all(|result| result.run_id != drifted_run));
-    assert_eq!(
-        h.memory
-            .get_run(&drifted_run)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        RunStatus::Paused
-    );
+    let invalid = StoreError::Validation("stored record is invalid".into());
+    h.store.alter(&runs[1].0, "drifted", "/replacement");
+    h.store
+        .broken
+        .lock()
+        .unwrap()
+        .insert(runs[2].0.clone(), Some(invalid.clone()));
+    h.store
+        .broken
+        .lock()
+        .unwrap()
+        .insert(runs[3].0.clone(), None);
+    h.store.corrupt.lock().unwrap().insert(runs[4].1.clone());
+
+    // The corrupt checkpoint is reported as invalid, not as host drift.
+    let corrupt = StoreError::Validation("checkpoint request has no workspace identity".into());
+    assert!(matches!(
+        h.runtime.resume(&runs[4].1).await,
+        Err(RuntimeError::Store(ref error)) if *error == corrupt
+    ));
+
+    let report = h.runtime.recover_report().await.unwrap();
+    let mut recovered: Vec<_> = report.recovered.iter().map(|r| r.run_id.clone()).collect();
+    recovered.sort();
+    let mut expected = vec![runs[0].1.clone(), runs[5].1.clone()];
+    expected.sort();
+    assert_eq!(recovered, expected);
+    let mut skipped: Vec<_> = report
+        .skipped
+        .iter()
+        .map(|skipped| (skipped.run_id.clone(), skipped.reason.clone()))
+        .collect();
+    skipped.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected = vec![
+        (runs[1].1.clone(), StoreError::SessionIdentityMismatch),
+        (runs[2].1.clone(), invalid),
+        (runs[3].1.clone(), StoreError::NotFound),
+        (runs[4].1.clone(), corrupt),
+    ];
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(skipped, expected);
+    for (_, run_id) in &runs[1..5] {
+        assert_eq!(
+            h.memory.get_run(run_id).await.unwrap().unwrap().status,
+            RunStatus::Paused
+        );
+    }
     let mut tools = h.seen.tools();
     tools.sort();
     assert_eq!(
         tools,
         [identity("first", "/first"), identity("last", "/last")]
     );
+}
+
+#[tokio::test]
+async fn parallel_tool_calls_share_the_persisted_identity() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::now_utc()));
+    let store = DriftStore::new(Arc::new(MemoryStore::with_clock(clock.clone())));
+    let seen = Arc::new(Seen::default());
+    let registry = Registry::new();
+    registry
+        .mount(Arc::new(ProbeExtension(Arc::clone(&seen))), Scope::Global)
+        .await
+        .unwrap();
+    let mut both = call_script();
+    both.pop();
+    both.extend(call_script());
+    let runtime = Orchestrator::builder()
+        .store(store as Arc<dyn Store>)
+        .clock(clock)
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            both,
+            text_script("done"),
+        ])))
+        .plan_provider(Arc::new(registry))
+        .policy(allow())
+        .execution_mode(crate::ExecutionMode::Parallel { max: 2 })
+        .build()
+        .unwrap();
+    let handle = runtime
+        .start(request(None, "ws-par", "/par"))
+        .await
+        .unwrap();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(seen.tools(), vec![identity("ws-par", "/par"); 2]);
 }
 
 #[tokio::test]

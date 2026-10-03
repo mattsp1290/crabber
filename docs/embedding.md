@@ -53,6 +53,12 @@ credentials in the host.
 `None` / `null` is the explicit unavailable value. An extension must handle it
 and cannot read a default.
 
+Values are exposed verbatim. A directory may be relative, in which case it
+resolves against the working directory of whichever process runs the tool.
+`AgentConfig::new` defaults to workspace ID `"default"` and directory `"."`;
+those are persisted with the session and exposed as available values. Hosts
+that route on workspace identity should set both explicitly.
+
 ### Source and guarantees
 
 The persisted `Session` record (`workspace_id`, `directory`) is the only source,
@@ -77,7 +83,9 @@ are only compared with the session.
   direction. Availability is decided only after every comparison passes.
 - **Handlers cannot change the values.** The runtime re-asserts both keys
   after every `ContextAssemble` handler, so a handler that overwrites or
-  removes them affects neither later handlers nor the tool context.
+  removes them affects neither later handlers nor the tool context. A handler
+  that returns anything other than a JSON object fails the turn with
+  `ExtensionError::Rejected`.
 - **Same turn, same values.** The tool context and the `ContextAssemble`
   payload of a run come from one read of the session. `ContextAssemble` runs
   once per turn, including turns after resume or recovery; contributions are
@@ -98,13 +106,17 @@ are only compared with the session.
 | `prompt_keyed` | host-presented, inside the admission transaction, before the receipt lookup | `SessionIdentityMismatch`; no run, no replay |
 | `resume`, `resume_with_context` of a paused run | stored-record: the checkpoint request against the session, before plan acquisition, the claim and any pending tool | `SessionIdentityMismatch`; no plan, fence or lease is taken and the run keeps its status |
 | `resume` of a reclaimed `Running` run with no checkpoint request | none | n/a |
-| `recover`, `recover_with_context` | as `resume`, per run | the run is skipped and the sweep continues |
+| `recover`, `recover_with_context`, `recover_report` | as `resume`, per run | the run is skipped, reported by `recover_report`, and the sweep continues |
 | `recover_admission` | host-presented, before the receipt lookup and before any replay | `SessionIdentityMismatch`; no claim, no replayed receipt |
 
 A run rejected on `resume` stays unfinished and is rejected again on every
-later attempt; it does not heal itself. `recover` returns only the runs it
-recovered, so a host finds a skipped run by calling `resume` on it, and
-disposes of it through [fenced abandonment](fenced-abandon.md).
+later attempt; it does not heal itself, and its session stays busy. `recover`
+returns only the runs it recovered. `recover_report` (and
+`recover_report_with_context`) also returns a `SkippedRun` with the reason for
+each expired run it left unfinished: an identity mismatch, a session that is
+missing or cannot be decoded, a checkpoint request without identity
+(`Validation`), a live competing claim or an unstarted keyed admission. Dispose
+of a skipped run through [fenced abandonment](fenced-abandon.md).
 
 ### Unsupported context
 
@@ -118,7 +130,14 @@ is a separate change with its own WIT version decision.
 There is no schema change and no migration: sessions already store both fields,
 and the schema version stays 5. Adopt by upgrading the crate and, only if you
 construct `ToolContext` yourself, passing the new argument. Roll back by
-reverting to the previous revision. Neither direction needs a data step.
+reverting to the previous revision. Neither direction needs a data migration.
+
+Upgrade hazard: earlier revisions let an unkeyed `prompt` into an existing
+session present a different workspace ID or directory, and a run admitted that
+way saved the different values in its pause checkpoint. After the upgrade such a
+paused run is rejected on `resume`, skipped by `recover` and keeps its session
+busy. Before upgrading, let paused runs finish or settle them; after upgrading,
+find any with `recover_report` and `abandon` them once their lease expires.
 
 One behavior change comes with adoption: an unkeyed `prompt` into an existing
 session now rejects a different workspace ID or directory, as keyed admission

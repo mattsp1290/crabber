@@ -554,8 +554,14 @@ where
             );
             // A rejection creates no run and leaves the stored identity alone.
             assert_eq!(
-                store.list_unfinished_runs().await.unwrap(),
-                [] as [crabber_core::Run; 0]
+                store
+                    .list_unfinished_runs()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|run| run.session_id == session)
+                    .count(),
+                0
             );
             let stored = store.get_session(&session).await.unwrap().unwrap();
             assert_eq!(stored.workspace_id, persisted.0);

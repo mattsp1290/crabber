@@ -137,6 +137,7 @@ or arbitrary custom Store implementations.
 request no longer matches its persisted session, and `recover` skips such a
 run. The rejection happens before the plan is acquired and before the run is
 claimed, so the run stays unfinished with its existing fence and is rejected on
-every later attempt. It is not recovered automatically: once its lease has
-expired, settle it with `abandon` under this protocol. See
+every later attempt. It is not recovered automatically: `recover_report` lists
+it as a `SkippedRun`, and once its lease has expired, settle it with `abandon`
+under this protocol. See
 [workspace context](embedding.md#workspace-context).

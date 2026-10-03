@@ -187,6 +187,16 @@ pub struct Session {
     pub updated_at: OffsetDateTime,
 }
 
+impl Session {
+    /// Whether presented workspace identity equals this session's. Workspace
+    /// identity is immutable: the comparison is exact and per field, an empty
+    /// string is a value like any other, and nothing is normalized or resolved.
+    #[must_use]
+    pub fn identity_matches(&self, workspace_id: &str, directory: &str) -> bool {
+        self.workspace_id == workspace_id && self.directory == directory
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {

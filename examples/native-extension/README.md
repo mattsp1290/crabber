@@ -16,6 +16,8 @@ assistant text `Done`.
 The shell tool implements `execute_with_context` and prints the session's
 persisted workspace ID and directory from `ToolContext::workspace()`. Both are
 `Option`s: a session without one reports `unavailable` instead of a default.
+This example keeps `AgentConfig::new`'s defaults, so it prints `default` and
+`.`; those are real persisted values, not placeholders.
 
 No shell command is executed: the demo executor returns fake JSON. Registration,
 guards, transforms and notifications use the real extension pipeline. See
