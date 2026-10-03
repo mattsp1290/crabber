@@ -426,7 +426,9 @@ impl PostgresStore {
             .map_err(db)?;
         let had_session = existing.is_some();
         let session: Session = if let Some(row) = existing {
-            decode(row.get("data"))?
+            let existing: Session = decode(row.get("data"))?;
+            existing.ensure_identity(&request.workspace_id, &request.directory)?;
+            existing
         } else if request.session_id.is_some() && !allow_create {
             return Err(StoreError::NotFound);
         } else {
@@ -611,11 +613,7 @@ impl Store for PostgresStore {
             .map_err(db)?
         {
             let existing: Session = decode(row.get("data"))?;
-            if existing.workspace_id != request.workspace_id
-                || existing.directory != request.directory
-            {
-                return Err(StoreError::SessionIdentityMismatch);
-            }
+            existing.ensure_identity(&request.workspace_id, &request.directory)?;
         }
         if let Some(receipt) = lookup_receipt(&mut tx, session, &keyed.options.key).await? {
             if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest
@@ -1257,6 +1255,47 @@ mod tests {
             .unwrap();
         crate::storetest::run_contract(|clock: Arc<ManualClock>| store.clone().with_clock(clock))
             .await;
+    }
+    #[tokio::test]
+    async fn postgres_workspace_identity_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_workspace_identity_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
+
+        // A second pool reads the identity the first one persisted, and a
+        // stored row that no longer decodes fails closed with a typed error.
+        let session = SessionId::new();
+        let admitted = store.admit_run(request(&session)).await.unwrap();
+        let fresh = PostgresStore::connect(&url).await.unwrap();
+        let stored = fresh.get_session(&session).await.unwrap().unwrap();
+        assert_eq!(
+            (stored.workspace_id.as_str(), stored.directory.as_str()),
+            ("test", "/tmp")
+        );
+        assert_eq!(stored, admitted.session);
+        sqlx::query("UPDATE sessions SET data = data - 'workspace_id' WHERE id=$1")
+            .bind(&session.0)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let invalid = StoreError::Validation("stored record is invalid".into());
+        assert_eq!(fresh.get_session(&session).await.unwrap_err(), invalid);
+        let mut again = request(&session);
+        again.session_id = Some(session.clone());
+        assert_eq!(fresh.admit_run(again).await.unwrap_err(), invalid);
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
     }
     #[tokio::test]
     async fn migrate_reopen_and_concurrent_sessions() {

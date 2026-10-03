@@ -123,13 +123,45 @@ impl Dispatcher {
         Ok(())
     }
     /// Transform callbacks form an ordered waterfall.
-    pub async fn transform<P: Point>(&self, mut value: Value) -> Result<Value, ExtensionError> {
-        for handler in self.matching(P::ID, Mode::Transform) {
+    pub async fn transform<P: Point>(&self, value: Value) -> Result<Value, ExtensionError> {
+        self.waterfall(P::ID, value, |_| Ok(())).await
+    }
+    /// Runs the transform handlers of `point` in order, applying `after` to the
+    /// initial value and to every handler's result.
+    async fn waterfall(
+        &self,
+        point: &'static str,
+        mut value: Value,
+        after: impl Fn(&mut Value) -> Result<(), ExtensionError>,
+    ) -> Result<Value, ExtensionError> {
+        after(&mut value)?;
+        for handler in self.matching(point, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
                 value = with_mount(handler.mount_id, callback(value)).await?;
+                after(&mut value)?;
             }
         }
         Ok(value)
+    }
+    /// A transform waterfall over a JSON object whose `pinned` keys are owned
+    /// by the caller: they are re-asserted after every handler, so no handler
+    /// can change, add or remove them for a later handler or for the caller.
+    /// A value that is not an object, initially or from a handler, is rejected.
+    pub async fn transform_pinned<P: Point>(
+        &self,
+        value: Value,
+        pinned: &[(&str, Value)],
+    ) -> Result<Value, ExtensionError> {
+        let reassert_pinned = |value: &mut Value| {
+            let Value::Object(object) = value else {
+                return Err(ExtensionError::Rejected(P::ID));
+            };
+            for (key, pinned) in pinned {
+                object.insert((*key).to_owned(), pinned.clone());
+            }
+            Ok(())
+        };
+        self.waterfall(P::ID, value, reassert_pinned).await
     }
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
@@ -497,5 +529,94 @@ mod tests {
             Err(ExtensionError::NextNotCalled)
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn pinned_keys_survive_every_transform_handler() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = |seen: &Arc<Mutex<Vec<Value>>>| {
+            let seen = Arc::clone(seen);
+            callback(move |mut v| {
+                seen.lock().unwrap().push(v.clone());
+                v["pinned"] = serde_json::json!("forged");
+                v.as_object_mut().unwrap().remove("absent");
+                v["free"] = serde_json::json!("changed");
+                Ok(v)
+            })
+        };
+        let dispatcher = Dispatcher::new(vec![
+            handler(
+                ContextAssemble::ID,
+                Mode::Transform,
+                0,
+                "first",
+                HandlerFn::Ordinary(observe(&seen)),
+            ),
+            handler(
+                ContextAssemble::ID,
+                Mode::Transform,
+                1,
+                "second",
+                HandlerFn::Ordinary(observe(&seen)),
+            ),
+        ]);
+        let pinned = [
+            ("pinned", serde_json::json!("real")),
+            ("absent", Value::Null),
+        ];
+        let out = dispatcher
+            .transform_pinned::<ContextAssemble>(
+                serde_json::json!({"free":"original","pinned":"caller"}),
+                &pinned,
+            )
+            .await
+            .unwrap();
+        for value in seen.lock().unwrap().iter().chain([&out]) {
+            assert_eq!(value["pinned"], "real");
+            assert_eq!(value.get("absent"), Some(&Value::Null));
+        }
+        assert_eq!(out["free"], "changed");
+    }
+    #[tokio::test]
+    async fn pinned_transform_rejects_a_handler_that_returns_a_non_object() {
+        let later = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&later);
+        for replacement in [Value::Null, serde_json::json!([]), serde_json::json!("x")] {
+            let seen = Arc::clone(&seen);
+            let dispatcher = Dispatcher::new(vec![
+                handler(
+                    ContextAssemble::ID,
+                    Mode::Transform,
+                    0,
+                    "replace",
+                    HandlerFn::Ordinary(callback(move |_| Ok(replacement.clone()))),
+                ),
+                handler(
+                    ContextAssemble::ID,
+                    Mode::Transform,
+                    1,
+                    "later",
+                    HandlerFn::Ordinary(callback(move |v| {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        Ok(v)
+                    })),
+                ),
+            ]);
+            assert_eq!(
+                dispatcher
+                    .transform_pinned::<ContextAssemble>(
+                        serde_json::json!({}),
+                        &[("pinned", serde_json::json!("real"))],
+                    )
+                    .await,
+                Err(ExtensionError::Rejected(ContextAssemble::ID))
+            );
+        }
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            Dispatcher::new(Vec::new())
+                .transform_pinned::<ContextAssemble>(Value::Null, &[])
+                .await,
+            Err(ExtensionError::Rejected(ContextAssemble::ID))
+        );
     }
 }

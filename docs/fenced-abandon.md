@@ -130,3 +130,14 @@ are allowed; persisted rows and terminal event identity must not change. Fault
 triggers are scoped to unique run IDs and removed by the tests. These proofs cover
 Crabber's atomic store contract and host protocol, not external worker termination
 or arbitrary custom Store implementations.
+
+## Runs rejected for workspace identity drift
+
+`resume` returns `SessionIdentityMismatch` when a paused run's checkpoint
+request no longer matches its persisted session, and `recover` skips such a
+run. The rejection happens before the plan is acquired and before the run is
+claimed, so the run stays unfinished with its existing fence and is rejected on
+every later attempt. It is not recovered automatically: `recover` lists it as a
+`SkippedRun` in its report, and once its lease has expired, settle it with `abandon`
+under this protocol. See
+[workspace context](embedding.md#workspace-context).

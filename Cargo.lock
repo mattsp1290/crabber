@@ -628,6 +628,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
@@ -4493,6 +4494,16 @@ dependencies = [
  "serde_json",
  "unicode-ident",
  "wasmparser 0.259.0",
+]
+
+[[package]]
+name = "workspace-context-probe"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

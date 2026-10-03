@@ -187,6 +187,24 @@ pub struct Session {
     pub updated_at: OffsetDateTime,
 }
 
+impl Session {
+    /// Rejects presented workspace identity that differs from this session's.
+    /// Workspace identity is immutable: the comparison is exact and per field,
+    /// an empty string is a value like any other, and nothing is normalized or
+    /// resolved against the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SessionIdentityMismatch` when either field differs.
+    pub fn ensure_identity(&self, workspace_id: &str, directory: &str) -> Result<(), CoreError> {
+        if self.workspace_id == workspace_id && self.directory == directory {
+            Ok(())
+        } else {
+            Err(CoreError::SessionIdentityMismatch)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {

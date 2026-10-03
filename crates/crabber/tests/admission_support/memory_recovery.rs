@@ -340,7 +340,7 @@ async fn lost_admission_reply_completes_original_turn_and_replays_only_metadata(
         agent.resume(&receipt.run_id).await,
         Err(RuntimeError::Store(CoreError::AdmissionRecoveryRequired))
     ));
-    assert_eq!(agent.recover().await.unwrap(), Vec::new());
+    assert_eq!(agent.recover().await.unwrap().recovered, Vec::new());
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     let replacement = host(store.clone(), provider.clone());
     let (a, b) = tokio::join!(
@@ -797,7 +797,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         agent.resume(&receipt.run_id).await,
         Err(RuntimeError::Store(CoreError::AdmissionRecoveryRequired))
     ));
-    let recovered = agent.recover().await.unwrap();
+    let recovered = agent.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].run_id, ordinary.run.id);
     assert_eq!(recovered[0].status, RunStatus::Interrupted);
@@ -859,7 +859,7 @@ async fn generic_unstarted_classification_does_not_acquire_an_unavailable_plan()
         runtime.resume(&receipt.run_id).await,
         Err(RuntimeError::Store(CoreError::AdmissionRecoveryRequired))
     ));
-    assert_eq!(runtime.recover().await.unwrap(), Vec::new());
+    assert_eq!(runtime.recover().await.unwrap().recovered, Vec::new());
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(

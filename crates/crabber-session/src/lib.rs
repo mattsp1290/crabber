@@ -39,6 +39,14 @@ mod tests {
     async fn memory_contract() {
         crate::storetest::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
     }
+
+    #[tokio::test]
+    async fn memory_workspace_identity_contract() {
+        crate::storetest::run_workspace_identity_contract(|clock| {
+            crate::MemoryStore::with_clock(clock)
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]

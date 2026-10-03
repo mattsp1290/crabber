@@ -186,3 +186,13 @@ Run from a clean committed checkout to bind printed full source SHA to the teste
 source; save the command logs with that revision. Normal/default library builds do
 not include a PostgreSQL driver; the facade tests use SQLx as a dev dependency to
 measure durable run/receipt counts independently of receipt lookup.
+
+## Workspace identity on every admission path
+
+`SessionIdentityMismatch` is no longer specific to keyed admission. Unkeyed
+`prompt` into an existing session and `recover_admission` compare the presented
+workspace ID and directory with the persisted session too, by exact string
+equality. `recover_admission` compares before the receipt lookup, so a drifted
+request never receives a replayed receipt or a claim. The receipt format, the
+semantic digest and the plan fingerprint are unchanged. See
+[workspace context](embedding.md#workspace-context).

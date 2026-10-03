@@ -12,6 +12,7 @@ fn demonstrates_native_extension() {
     for expected in [
         "runtime tool registered",
         "guard denied rm -rf",
+        "tool workspace: default at .",
         "redacted result in request",
         "prompt section in request",
         "observed event",

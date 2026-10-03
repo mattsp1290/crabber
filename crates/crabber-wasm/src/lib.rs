@@ -948,6 +948,60 @@ mod tests {
         }
     }
 
+    /// WASM guests do not receive workspace context: the guest-visible record
+    /// is pinned field for field, and `workspace-id` stays the empty string
+    /// whatever the native `ToolContext` or `ContextAssemble` payload carries.
+    /// The expected strings follow wasmtime's `Val` `Debug` format (wasmtime is
+    /// pinned at `=49.0.1`); regenerate them, keeping every value, on a bump.
+    #[test]
+    fn guest_turn_metadata_record_is_pinned() {
+        fn record(run: &str, session: &str, provider: &str, turn: u32, system: bool) -> String {
+            format!(
+                "Record([(\"run-id\", String({run:?})), (\"session-id\", String({session:?})), \
+                 (\"epoch-id\", String(\"\")), (\"turn-index\", U32({turn})), \
+                 (\"agent-name\", String(\"\")), (\"agent-mode\", String(\"\")), \
+                 (\"provider-id\", String({provider:?})), (\"model-id\", String({provider:?})), \
+                 (\"tool-names\", List([])), (\"message-count\", U32({turn})), \
+                 (\"role-counts\", Record([(\"system\", U32(0)), (\"user\", U32(0)), \
+                 (\"assistant\", U32(0)), (\"tool\", U32(0))])), \
+                 (\"has-system-prompt\", Bool({system})), (\"workspace-id\", String(\"\"))])"
+            )
+        }
+        assert_eq!(
+            format!("{:?}", turn_metadata(None)),
+            record("", "", "", 0, false)
+        );
+        let context = ToolContext::new(
+            crabber_core::SessionId::new(),
+            crabber_core::RunId::new(),
+            crabber_core::ToolCallId::new(),
+            tokio_util::sync::CancellationToken::new(),
+            crabber_extension::HostServices::default(),
+            crabber_extension::WorkspaceContext::from_persisted("native-ws", "/native/root"),
+            Arc::new(|_| {}),
+            None,
+        );
+        assert_eq!(
+            format!("{:?}", turn_metadata(Some(&context))),
+            record(
+                &context.run_id.to_string(),
+                &context.session_id.to_string(),
+                "",
+                0,
+                false
+            )
+        );
+        let projection = serde_json::json!({
+            "run_id": "run", "session_id": "session", "provider_id": "p", "model_id": "p",
+            "turn_index": 3, "message_count": 3, "has_system_prompt": true,
+            "workspace_id": "native-ws", "workspace_directory": "/native/root",
+        });
+        assert_eq!(
+            format!("{:?}", turn_metadata_from_projection(&projection)),
+            record("run", "session", "p", 3, true)
+        );
+    }
+
     #[tokio::test]
     async fn loads_and_calls_echo() {
         let loader = Loader::new().unwrap();

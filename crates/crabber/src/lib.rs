@@ -13,8 +13,8 @@ pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
     ModelPurpose, MonotonicClock, Observer, OperationKind, OperationalObservation,
-    PermissionDecision, RunResult, RuntimeError, StaticPolicy, SystemMonotonicClock,
-    TerminalReason,
+    PermissionDecision, RecoverReport, RunResult, RuntimeError, SkippedRun, StaticPolicy,
+    SystemMonotonicClock, TerminalReason,
 };
 
 #[cfg(feature = "codex")]

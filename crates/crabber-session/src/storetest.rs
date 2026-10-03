@@ -456,3 +456,116 @@ where
         }));
     }
 }
+
+/// Proves that workspace identity is immutable on unkeyed admission.
+///
+/// Comparison is exact and per field; an empty string is a value like any other.
+///
+/// # Panics
+///
+/// Panics when a backend admits a run under a drifted workspace identity.
+pub async fn run_workspace_identity_contract<S, F>(factory: F)
+where
+    S: Store,
+    F: Fn(Arc<ManualClock>) -> S,
+{
+    let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid test timestamp");
+    let clock = Arc::new(ManualClock::new(now));
+    let store = factory(Arc::clone(&clock));
+    let admit = |session: &SessionId, existing: bool, workspace: &str, directory: &str| {
+        let request = AdmitRequest {
+            session_id: existing.then(|| session.clone()),
+            workspace_id: workspace.into(),
+            directory: directory.into(),
+            title: "identity".into(),
+            user_message: message(
+                session,
+                None,
+                Role::User,
+                PartKind::UserInputText,
+                "hello",
+                now,
+            ),
+            config_hash: "config".into(),
+            plan_fingerprint: "plan".into(),
+            owner: "worker".into(),
+            lease: Duration::from_secs(1),
+        };
+        store.admit_run(request)
+    };
+    // (persisted, presented, accepted)
+    let cases = [
+        (("ws", "/root"), ("ws", "/root"), true),
+        (("ws", "/root"), ("other", "/root"), false),
+        (("ws", "/root"), ("ws", "/other"), false),
+        (("ws", "/root"), ("ws", "/root/"), false),
+        (("", ""), ("", ""), true),
+        (("", ""), ("ws", "/root"), false),
+        (("ws", "/root"), ("", ""), false),
+        (("ws", ""), ("ws", ""), true),
+        (("", "/root"), ("", "/root"), true),
+        (("ws", ""), ("other", ""), false),
+        (("", "/root"), ("", "/other"), false),
+    ];
+    for (persisted, presented, accepted) in cases {
+        let session = SessionId::new();
+        let first = admit(&session, false, persisted.0, persisted.1)
+            .await
+            .expect("first admission");
+        assert_eq!(first.session.workspace_id, persisted.0);
+        assert_eq!(first.session.directory, persisted.1);
+        let execution = store.execution(first.fence.clone()).await.unwrap();
+        execution
+            .settle_run(
+                RunStatus::Completed,
+                None,
+                Usage::default(),
+                event(&session, &first.run.id, EventKind::RunSettled, now),
+            )
+            .await
+            .expect("settle first run");
+        let second = admit(&session, true, presented.0, presented.1).await;
+        if accepted {
+            let second = second.expect("matching identity is admitted");
+            assert_eq!(second.session.workspace_id, persisted.0);
+            assert_eq!(second.session.directory, persisted.1);
+            // Mismatch is reported before Busy, so an active run never masks drift.
+            assert_eq!(
+                admit(&session, true, "drift", persisted.1)
+                    .await
+                    .unwrap_err(),
+                StoreError::SessionIdentityMismatch
+            );
+            let execution = store.execution(second.fence.clone()).await.unwrap();
+            execution
+                .settle_run(
+                    RunStatus::Completed,
+                    None,
+                    Usage::default(),
+                    event(&session, &second.run.id, EventKind::RunSettled, now),
+                )
+                .await
+                .expect("settle second run");
+        } else {
+            assert_eq!(
+                second.unwrap_err(),
+                StoreError::SessionIdentityMismatch,
+                "{persisted:?} vs {presented:?}"
+            );
+            // A rejection creates no run and leaves the stored identity alone.
+            assert_eq!(
+                store
+                    .list_unfinished_runs()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|run| run.session_id == session)
+                    .count(),
+                0
+            );
+            let stored = store.get_session(&session).await.unwrap().unwrap();
+            assert_eq!(stored.workspace_id, persisted.0);
+            assert_eq!(stored.directory, persisted.1);
+        }
+    }
+}

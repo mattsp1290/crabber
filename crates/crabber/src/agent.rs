@@ -593,12 +593,14 @@ impl Agent {
         self.runtime.resume_with_context(run_id, context).await
     }
 
-    /// Reclaims all expired unfinished runs.
+    /// Reclaims all expired unfinished runs and reports each expired run it
+    /// left unfinished, for example one whose session no longer matches its
+    /// checkpoint.
     ///
     /// # Errors
     ///
     /// Returns a store or execution error for a claimed run.
-    pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+    pub async fn recover(&self) -> Result<crabber_runtime::RecoverReport, RuntimeError> {
         self.recover_with_context(|_| None).await
     }
 
@@ -608,7 +610,7 @@ impl Agent {
     pub async fn recover_with_context<F>(
         &self,
         context_for: F,
-    ) -> Result<Vec<RunResult>, RuntimeError>
+    ) -> Result<crabber_runtime::RecoverReport, RuntimeError>
     where
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {

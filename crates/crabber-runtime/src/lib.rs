@@ -13,8 +13,8 @@ mod policy;
 
 pub use orchestrator::{
     Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode, ModelStream,
-    NoopObserver, Observer, Orchestrator, OrchestratorBuilder, Request, RunHandle, RunResult,
-    RuntimeError, TurnSnapshot,
+    NoopObserver, Observer, Orchestrator, OrchestratorBuilder, RecoverReport, Request, RunHandle,
+    RunResult, RuntimeError, SkippedRun, TurnSnapshot,
 };
 pub use policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
