@@ -1,9 +1,13 @@
 //! Atomic native extension mounting and immutable plan acquisition.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-use crate::dispatch::{self, AroundCallback, Callback, Dispatcher, Handler, HandlerFn, Mode};
+use crate::dispatch::{
+    self, AroundCallback, Callback, Dispatcher, Handler, HandlerFn, Mode, Point,
+    ToolResultTransform,
+};
 use crate::{
-    ComponentIdentity, ExtensionError, PromptSection, RunPlan, RunPlanProvider, ToolDefinition,
-    compute_fingerprint,
+    CleanupTracker, ComponentIdentity, ExtensionError, PromptSection, ResultTransformCallback,
+    RunPlan, RunPlanProvider, ToolDefinition, TransformPhase, compute_fingerprint,
+    json_result_transform,
 };
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
@@ -88,6 +92,17 @@ impl Registrar {
         id: impl Into<String>,
         callback: HandlerFn,
     ) {
+        self.handler_in_phase(point, mode, order, id, TransformPhase::Ordinary, callback);
+    }
+    fn handler_in_phase(
+        &mut self,
+        point: &'static str,
+        mode: Mode,
+        order: i32,
+        id: impl Into<String>,
+        phase: TransformPhase,
+        callback: HandlerFn,
+    ) {
         self.handlers.push(Handler {
             point,
             mode,
@@ -97,6 +112,8 @@ impl Registrar {
             mount_seq: 0,
             registration_seq: self.handlers.len(),
             mount_id: 0,
+            phase,
+            cleanup: CleanupTracker::detached(),
             callback,
         });
     }
@@ -126,6 +143,42 @@ impl Registrar {
         cb: Callback,
     ) {
         self.handler(point, Mode::Transform, order, id, HandlerFn::Ordinary(cb));
+    }
+    /// Typed result-transform handler in the ordinary phase.
+    pub fn on_result_transform(
+        &mut self,
+        order: i32,
+        id: impl Into<String>,
+        cb: ResultTransformCallback,
+    ) {
+        self.handler_in_phase(
+            ToolResultTransform::ID,
+            Mode::Transform,
+            order,
+            id,
+            TransformPhase::Ordinary,
+            HandlerFn::ResultTransform(cb),
+        );
+    }
+    /// Typed result-transform handler in the final-redaction phase.
+    pub fn on_final_redaction(
+        &mut self,
+        order: i32,
+        id: impl Into<String>,
+        cb: ResultTransformCallback,
+    ) {
+        self.handler_in_phase(
+            ToolResultTransform::ID,
+            Mode::Transform,
+            order,
+            id,
+            TransformPhase::FinalRedaction,
+            HandlerFn::ResultTransform(cb),
+        );
+    }
+    /// JSON envelope handler in the final-redaction phase.
+    pub fn on_final_redaction_json(&mut self, order: i32, id: impl Into<String>, cb: Callback) {
+        self.on_final_redaction(order, id, json_result_transform(cb));
     }
     pub fn on_gate(
         &mut self,
@@ -171,6 +224,16 @@ pub trait ToolGuard: Send + Sync {
     fn check_with_context(&self, context: GuardContext<'_>) -> GuardDecision {
         self.check(&context.tool.name, context.arguments)
     }
+}
+fn handler_version(h: &Handler, mount_seq: u64) -> String {
+    if h.point != ToolResultTransform::ID {
+        return format!("{}:{mount_seq}", h.order);
+    }
+    let phase = match h.phase {
+        TransformPhase::Ordinary => "ordinary",
+        TransformPhase::FinalRedaction => "final_redaction",
+    };
+    format!("{}:{mount_seq}:{phase}", h.order)
 }
 struct Mount {
     id: u64,
@@ -336,7 +399,7 @@ impl Registry {
             for h in &r.handlers {
                 components.push(ComponentIdentity {
                     id: format!("handler:{}:{}", h.point, h.id),
-                    version: format!("{}:{}", h.order, mount.seq),
+                    version: handler_version(h, mount.seq),
                 });
             }
             for provider in &r.providers {
@@ -642,6 +705,96 @@ mod tests {
             first.acquire(&SessionId::new()).fingerprint,
             second.acquire(&SessionId::new()).fingerprint
         );
+    }
+    struct RedactorExtension {
+        phase: TransformPhase,
+        json: bool,
+    }
+    #[async_trait]
+    impl Extension for RedactorExtension {
+        fn id(&self) -> &'static str {
+            "redactor"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let typed: ResultTransformCallback = Arc::new(|_, result| {
+                Box::pin(std::future::ready(Ok(crate::TransformOutput::new(result))))
+            });
+            let json_cb: Callback = Arc::new(|v| Box::pin(std::future::ready(Ok(v))));
+            match (self.phase, self.json) {
+                (TransformPhase::Ordinary, false) => r.on_result_transform(3, "red", typed),
+                (TransformPhase::FinalRedaction, false) => r.on_final_redaction(3, "red", typed),
+                (TransformPhase::Ordinary, true) => {
+                    r.on_transform(ToolResultTransform::ID, 3, "red", json_cb);
+                }
+                (TransformPhase::FinalRedaction, true) => {
+                    r.on_final_redaction_json(3, "red", json_cb);
+                }
+            }
+            Ok(())
+        }
+    }
+    async fn redactor_registry(phase: TransformPhase, json: bool) -> (Registry, MountHandle) {
+        let registry = Registry::new();
+        let handle = registry
+            .mount(Arc::new(RedactorExtension { phase, json }), Scope::Global)
+            .await
+            .unwrap();
+        (registry, handle)
+    }
+    #[tokio::test]
+    async fn result_transform_registrations_carry_phase_and_callback_kind() {
+        for (phase, json) in [
+            (TransformPhase::Ordinary, false),
+            (TransformPhase::FinalRedaction, false),
+            (TransformPhase::Ordinary, true),
+            (TransformPhase::FinalRedaction, true),
+        ] {
+            let (_registry, handle) = redactor_registry(phase, json).await;
+            let r = handle.mount.registrar.lock().unwrap();
+            let h = &r.handlers[0];
+            assert_eq!(h.point, ToolResultTransform::ID);
+            assert_eq!(h.mode, Mode::Transform);
+            assert_eq!(h.order, 3);
+            assert_eq!(h.phase, phase);
+            // on_transform stays an untyped callback; every other path is typed.
+            assert_eq!(
+                matches!(h.callback, HandlerFn::Ordinary(_)),
+                json && phase == TransformPhase::Ordinary
+            );
+            assert_eq!(
+                matches!(h.callback, HandlerFn::ResultTransform(_)),
+                !(json && phase == TransformPhase::Ordinary)
+            );
+        }
+    }
+    #[tokio::test]
+    async fn phase_participates_in_the_plan_fingerprint() {
+        let fp = |phase, json| async move {
+            let (registry, _handle) = redactor_registry(phase, json).await;
+            registry.acquire(&SessionId::new()).fingerprint
+        };
+        let ordinary = fp(TransformPhase::Ordinary, false).await;
+        let final_phase = fp(TransformPhase::FinalRedaction, false).await;
+        assert_ne!(ordinary, final_phase);
+        assert_eq!(final_phase, fp(TransformPhase::FinalRedaction, false).await);
+        // The callback kind is not identity; the phase is.
+        assert_eq!(final_phase, fp(TransformPhase::FinalRedaction, true).await);
+        assert_eq!(ordinary, fp(TransformPhase::Ordinary, true).await);
+    }
+    #[test]
+    fn only_the_result_transform_handler_version_carries_a_phase() {
+        let mut registrar = Registrar::new();
+        let cb: Callback = Arc::new(|v| Box::pin(std::future::ready(Ok(v))));
+        registrar.on_hook(crate::TurnPrepare::ID, 4, "h", Arc::clone(&cb));
+        registrar.on_transform(ToolResultTransform::ID, 4, "t", cb);
+        assert_eq!(handler_version(&registrar.handlers[0], 7), "4:7");
+        assert_eq!(handler_version(&registrar.handlers[1], 7), "4:7:ordinary");
     }
     struct SelfClosing {
         handle: Arc<std::sync::OnceLock<MountHandle>>,

@@ -1,6 +1,6 @@
 //! Ordered, bounded extension callback dispatch.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-use crate::ExtensionError;
+use crate::{CleanupTracker, ExtensionError, ResultTransformCallback, TransformPhase};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{
@@ -57,6 +57,10 @@ points! {
 pub enum HandlerFn {
     Ordinary(Callback),
     Around(AroundCallback),
+    /// Typed result-transform callback; run by the chain driver, not by the
+    /// generic waterfall.
+    #[allow(dead_code)] // read by the chain driver (crabber-slgt)
+    ResultTransform(ResultTransformCallback),
 }
 #[derive(Clone)]
 pub struct Handler {
@@ -68,11 +72,17 @@ pub struct Handler {
     pub(crate) mount_seq: u64,
     pub(crate) registration_seq: usize,
     pub(crate) mount_id: u64,
+    pub(crate) phase: TransformPhase,
+    #[allow(dead_code)] // read by the chain driver (crabber-slgt)
+    pub(crate) cleanup: CleanupTracker,
     pub(crate) callback: HandlerFn,
 }
 impl Handler {
-    pub(crate) fn sort_key(&self) -> (i32, u8, u64, usize) {
+    /// Phase dominates `order`: every final redactor sorts after every ordinary
+    /// handler. Only the result-transform point registers final redactors.
+    pub(crate) fn sort_key(&self) -> (u8, i32, u8, u64, usize) {
         (
+            u8::from(matches!(self.phase, TransformPhase::FinalRedaction)),
             self.order,
             self.scope_rank,
             self.mount_seq,
@@ -353,6 +363,8 @@ mod tests {
             mount_seq: 0,
             registration_seq: 0,
             mount_id: 1,
+            phase: TransformPhase::Ordinary,
+            cleanup: CleanupTracker::detached(),
             callback,
         }
     }
@@ -436,6 +448,82 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "first;r0m1s0;r0m1s1;r0m2s0;r1m1s0;last;");
+    }
+    fn typed_handler(order: i32, id: &str, phase: TransformPhase) -> Handler {
+        let mut h = handler(
+            ToolResultTransform::ID,
+            Mode::Transform,
+            order,
+            id,
+            HandlerFn::ResultTransform(Arc::new(|_, result| {
+                Box::pin(std::future::ready(Ok(crate::TransformOutput::new(result))))
+            })),
+        );
+        h.phase = phase;
+        h
+    }
+    #[test]
+    fn final_redaction_sorts_after_ordinary_across_mounts_and_orders() {
+        use TransformPhase::{FinalRedaction as F, Ordinary as O};
+        // (id, order, phase, scope_rank, mount_seq, registration_seq), shuffled.
+        let specs: [(&str, i32, TransformPhase, u8, u64, usize); 8] = [
+            ("f-m2", 0, F, 0, 2, 0),
+            ("o-m2", 0, O, 0, 2, 0),
+            ("f-low", -100, F, 0, 1, 1),
+            ("o-high", 100, O, 0, 1, 2),
+            ("f-m1", 0, F, 0, 1, 0),
+            ("o-m1", 0, O, 0, 1, 0),
+            ("f-session", 0, F, 1, 1, 0),
+            ("o-low", -5, O, 1, 2, 0),
+        ];
+        let handlers = specs
+            .into_iter()
+            .map(
+                |(id, order, phase, scope_rank, mount_seq, registration_seq)| {
+                    let mut h = typed_handler(order, id, phase);
+                    h.scope_rank = scope_rank;
+                    h.mount_seq = mount_seq;
+                    h.registration_seq = registration_seq;
+                    h
+                },
+            )
+            .collect();
+        let ids = Dispatcher::new(handlers)
+            .handlers
+            .iter()
+            .map(|h| h.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                "o-low",
+                "o-m1",
+                "o-m2",
+                "o-high",
+                "f-low",
+                "f-m1",
+                "f-m2",
+                "f-session"
+            ]
+        );
+    }
+    #[tokio::test]
+    async fn generic_waterfall_skips_typed_result_transform_handlers() {
+        let d = Dispatcher::new(vec![
+            typed_handler(0, "typed", TransformPhase::Ordinary),
+            handler(
+                ToolResultTransform::ID,
+                Mode::Transform,
+                1,
+                "json",
+                HandlerFn::Ordinary(callback(|_| Ok(Value::String("json".into())))),
+            ),
+        ]);
+        let out = d
+            .transform::<ToolResultTransform>(Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(out, "json");
     }
     // Expected to change with crabber-gl4i (D2: handler error settles Failed naming the handler id).
     #[tokio::test]
