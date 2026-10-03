@@ -3,11 +3,19 @@
 mod dispatch;
 mod plan;
 mod registry;
+mod result_transform;
 mod state;
 mod tool;
 pub use tool::{
     ApprovalFacade, HostServices, ProgressSink, Subprocess, ToolContext, UserPrompter,
     WorkspaceContext, WorkspaceFs,
+};
+
+pub use result_transform::{
+    CleanupTracker, DEFAULT_MOUNT_CLOSE_TIMEOUT, EnvelopeError, FINAL_REDACTION_DEADLINE,
+    InputUnavailable, RESULT_TRANSFORM_CONTRACT_VERSION, ResultTransformCallback, ToolInput,
+    ToolOutcomeClass, ToolResultContext, ToolResultOutcome, TransformOutput, TransformPhase,
+    json_result_transform, parse_result_envelope, result_envelope, result_transform_failed_message,
 };
 
 pub use dispatch::{AroundCallback, Callback, Dispatcher, Handler, Mode, Next, Point};
