@@ -147,7 +147,6 @@ impl CleanupTracker {
     /// Builds a tracker from its owner's task tracker and close token.
     ///
     /// Used by `CleanupOwner` (crabber-2xrl), which keeps the other halves.
-    #[allow(dead_code)]
     pub(crate) fn from_parts(tasks: TaskTracker, closing: CancellationToken) -> Self {
         Self { tasks, closing }
     }

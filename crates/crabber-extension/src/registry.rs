@@ -18,8 +18,10 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::Notify;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -247,6 +249,49 @@ struct Mount {
     leases: AtomicUsize,
     released: Notify,
     closed_notify: Notify,
+    /// Close and join belong to crabber-b4zy's bounded close.
+    #[allow(dead_code)]
+    cleanup: CleanupOwner,
+}
+/// Owner side of a [`CleanupTracker`]. A mount holds one; a host with a
+/// `ToolPipeline` may hold one.
+#[derive(Debug, Default)]
+pub struct CleanupOwner {
+    tasks: TaskTracker,
+    closing: CancellationToken,
+}
+impl CleanupOwner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// A handle on this owner's tasks and close signal. Every call returns a
+    /// handle to the same tracker.
+    #[must_use]
+    pub fn tracker(&self) -> CleanupTracker {
+        CleanupTracker::from_parts(self.tasks.clone(), self.closing.clone())
+    }
+    /// Sends the close signal. Idempotent. Never aborts a task.
+    pub fn close(&self) {
+        self.closing.cancel();
+    }
+    /// `close()`, then waits for every tracked task, at most `bound`. Tasks
+    /// keep running after a timeout and a later call can still succeed.
+    pub async fn join(&self, bound: Duration) -> Result<(), CleanupJoinTimeout> {
+        self.close();
+        // `wait` resolves only once the tracker is closed and empty. Closing
+        // the tracker does not stop `spawn`: late cleanup still runs and counts.
+        self.tasks.close();
+        tokio::time::timeout(bound, self.tasks.wait())
+            .await
+            .map_err(|_| CleanupJoinTimeout {
+                pending: self.tasks.len(),
+            })
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupJoinTimeout {
+    pub pending: usize,
 }
 #[derive(Default)]
 struct RegistryInner {
@@ -299,7 +344,9 @@ impl Registry {
         }
         inner.next_id += 1;
         let id = inner.next_id;
+        let cleanup = CleanupOwner::new();
         for handler in &mut registrar.handlers {
+            handler.cleanup = cleanup.tracker();
             handler.mount_id = id;
             handler.mount_seq = id;
             handler.scope_rank = scope.rank();
@@ -316,6 +363,7 @@ impl Registry {
             leases: AtomicUsize::new(0),
             released: Notify::new(),
             closed_notify: Notify::new(),
+            cleanup,
         });
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
@@ -1144,5 +1192,325 @@ mod tests {
         gate.notify_one();
         assert_eq!(receive.await.unwrap(), Err(ExtensionError::NextExpired));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    mod cleanup {
+        use super::*;
+        use crate::{
+            ToolInput, ToolOutcomeClass, ToolResultContext, ToolResultOutcome, TransformOutput,
+        };
+        use tokio::sync::oneshot;
+
+        const BOUND: Duration = Duration::from_secs(5);
+
+        fn context() -> ToolResultContext {
+            ToolResultContext::new(
+                "echo".into(),
+                true,
+                ToolInput::Normalized(json!({})),
+                ToolCallId::from("call-1"),
+                SessionId::from("session-1"),
+                RunId::from("run-1"),
+                ToolOutcomeClass::Succeeded,
+            )
+        }
+        fn seed() -> TransformOutput {
+            TransformOutput::new(json!("s"))
+        }
+
+        /// Registers two ordinary result handlers that record the tracker they see.
+        struct Capture {
+            id: &'static str,
+            seen: Arc<Mutex<Vec<CleanupTracker>>>,
+        }
+        #[async_trait]
+        impl Extension for Capture {
+            fn id(&self) -> &'static str {
+                self.id
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                for (order, name) in [(0, "first"), (1, "second")] {
+                    let seen = Arc::clone(&self.seen);
+                    r.on_result_transform(
+                        order,
+                        format!("{}-{name}", self.id),
+                        Arc::new(move |context, value| {
+                            let seen = Arc::clone(&seen);
+                            Box::pin(async move {
+                                seen.lock().unwrap().push(context.cleanup().clone());
+                                Ok(TransformOutput::new(value))
+                            })
+                        }),
+                    );
+                }
+                Ok(())
+            }
+        }
+        struct Spawner {
+            registered: Arc<tokio::sync::Notify>,
+            gate: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+            finished: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl Extension for Spawner {
+            fn id(&self) -> &'static str {
+                "spawner"
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                let (registered, gate, finished) = (
+                    Arc::clone(&self.registered),
+                    Arc::clone(&self.gate),
+                    Arc::clone(&self.finished),
+                );
+                r.on_result_transform(
+                    0,
+                    "spawner",
+                    Arc::new(move |context, _| {
+                        let (registered, gate, finished) = (
+                            Arc::clone(&registered),
+                            Arc::clone(&gate),
+                            Arc::clone(&finished),
+                        );
+                        Box::pin(async move {
+                            let gate = gate.lock().unwrap().take().unwrap();
+                            context.cleanup().spawn(async move {
+                                gate.await.ok();
+                                finished.fetch_add(1, Ordering::SeqCst);
+                            });
+                            registered.notify_one();
+                            std::future::pending().await
+                        })
+                    }),
+                );
+                Ok(())
+            }
+        }
+
+        async fn mount_capture(
+            registry: &Registry,
+            id: &'static str,
+        ) -> (MountHandle, Arc<Mutex<Vec<CleanupTracker>>>) {
+            let seen = Arc::new(Mutex::new(vec![]));
+            let handle = registry
+                .mount(
+                    Arc::new(Capture {
+                        id,
+                        seen: Arc::clone(&seen),
+                    }),
+                    Scope::Global,
+                )
+                .await
+                .unwrap();
+            (handle, seen)
+        }
+
+        #[tokio::test]
+        async fn spawned_task_is_tracked_and_survives_a_dropped_handle() {
+            let owner = CleanupOwner::new();
+            let tracker = owner.tracker();
+            let (release, gate) = oneshot::channel::<()>();
+            let (done_tx, done_rx) = oneshot::channel::<()>();
+            drop(tracker.spawn(async move {
+                gate.await.ok();
+                done_tx.send(()).ok();
+            }));
+            assert_eq!(tracker.pending(), 1);
+            release.send(()).unwrap();
+            done_rx.await.unwrap();
+            assert_eq!(owner.join(BOUND).await, Ok(()));
+            assert_eq!(tracker.pending(), 0);
+        }
+
+        #[tokio::test]
+        async fn handler_cleanup_completes_after_its_future_is_dropped() {
+            let registry = Registry::new();
+            let registered = Arc::new(tokio::sync::Notify::new());
+            let (release, gate) = oneshot::channel::<()>();
+            let gate = Arc::new(Mutex::new(Some(gate)));
+            let finished = Arc::new(AtomicUsize::new(0));
+            let handle = registry
+                .mount(
+                    Arc::new(Spawner {
+                        registered: Arc::clone(&registered),
+                        gate,
+                        finished: Arc::clone(&finished),
+                    }),
+                    Scope::Global,
+                )
+                .await
+                .unwrap();
+            let plan = registry.acquire(&SessionId::new());
+            tokio::select! {
+                _ = plan.dispatcher.transform_tool_result(context(), seed()) => unreachable!(),
+                () = registered.notified() => {}
+            }
+            // The driver future, and with it the callback future, is dropped.
+            assert_eq!(handle.mount.cleanup.tracker().pending(), 1);
+            assert_eq!(finished.load(Ordering::SeqCst), 0);
+            release.send(()).unwrap();
+            assert_eq!(handle.mount.cleanup.join(BOUND).await, Ok(()));
+            assert_eq!(finished.load(Ordering::SeqCst), 1);
+            plan.release();
+            handle.close().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn mounts_get_distinct_trackers_and_handlers_of_a_mount_share_one() {
+            let registry = Registry::new();
+            let (a, seen_a) = mount_capture(&registry, "a").await;
+            let (b, seen_b) = mount_capture(&registry, "b").await;
+            let plan = registry.acquire(&SessionId::new());
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context(), seed())
+                .await;
+            assert!(matches!(outcome, ToolResultOutcome::Completed { .. }));
+            let (seen_a, seen_b) = (
+                seen_a.lock().unwrap().clone(),
+                seen_b.lock().unwrap().clone(),
+            );
+            assert_eq!((seen_a.len(), seen_b.len()), (2, 2));
+
+            // A task spawned through A's handler context is pending on A only.
+            let (release, gate) = oneshot::channel::<()>();
+            let task = seen_a[0].spawn(async move {
+                gate.await.ok();
+            });
+            assert_eq!(a.mount.cleanup.tracker().pending(), 1);
+            assert_eq!(b.mount.cleanup.tracker().pending(), 0);
+            assert_eq!(seen_a[1].pending(), 1, "same mount shares one tracker");
+            assert_eq!(seen_b[0].pending(), 0);
+            assert_eq!(seen_b[1].pending(), 0);
+
+            // Closing A's owner signals A's handlers' closing() and not B's.
+            assert!(!seen_a[1].is_closing());
+            a.mount.cleanup.close();
+            assert!(seen_a.iter().all(CleanupTracker::is_closing));
+            assert!(seen_b.iter().all(|t| !t.is_closing()));
+            tokio::time::timeout(BOUND, seen_a[0].closing())
+                .await
+                .unwrap();
+
+            release.send(()).unwrap();
+            task.await.unwrap();
+            plan.release();
+            a.close().await.unwrap();
+            b.close().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn closing_a_mount_owner_fails_only_that_mounts_handlers() {
+            let registry = Registry::new();
+            let (a, seen_a) = mount_capture(&registry, "a").await;
+            let (b, seen_b) = mount_capture(&registry, "b").await;
+            let plan = registry.acquire(&SessionId::new());
+            // Order is a-first, b-first, a-second, b-second: B's owner closed
+            // fails B's first handler after A's first one ran.
+            b.mount.cleanup.close();
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context(), seed())
+                .await;
+            assert!(
+                matches!(&outcome, ToolResultOutcome::Failed { handler } if handler.contains("b-first")),
+                "{outcome:?}"
+            );
+            assert_eq!(seen_a.lock().unwrap().len(), 1);
+            assert!(seen_b.lock().unwrap().is_empty());
+            seen_a.lock().unwrap().clear();
+            a.mount.cleanup.close();
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context(), seed())
+                .await;
+            assert!(
+                matches!(&outcome, ToolResultOutcome::Failed { handler } if handler.contains("a-first")),
+                "{outcome:?}"
+            );
+            assert!(seen_a.lock().unwrap().is_empty());
+            plan.release();
+            a.close().await.unwrap();
+            b.close().await.unwrap();
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn join_times_out_then_succeeds_once_the_task_finishes() {
+            let owner = CleanupOwner::new();
+            let (release, gate) = oneshot::channel::<()>();
+            let finished = Arc::new(AtomicUsize::new(0));
+            let task = owner.tracker().spawn({
+                let finished = Arc::clone(&finished);
+                async move {
+                    gate.await.ok();
+                    finished.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            assert_eq!(
+                owner.join(Duration::from_secs(1)).await,
+                Err(CleanupJoinTimeout { pending: 1 })
+            );
+            assert!(owner.tracker().is_closing());
+            assert!(!task.is_finished());
+            assert_eq!(finished.load(Ordering::SeqCst), 0);
+            release.send(()).unwrap();
+            task.await.unwrap();
+            assert_eq!(finished.load(Ordering::SeqCst), 1);
+            assert_eq!(owner.join(Duration::from_secs(1)).await, Ok(()));
+        }
+
+        #[tokio::test]
+        async fn join_with_no_tasks_is_ok_and_close_is_idempotent() {
+            let owner = CleanupOwner::default();
+            let tracker = owner.tracker();
+            assert!(!tracker.is_closing());
+            owner.close();
+            owner.close();
+            assert!(tracker.is_closing());
+            assert_eq!(owner.join(BOUND).await, Ok(()));
+            assert_eq!(owner.join(BOUND).await, Ok(()));
+        }
+
+        #[tokio::test]
+        async fn spawn_after_close_still_runs_and_is_tracked() {
+            let owner = CleanupOwner::new();
+            let tracker = owner.tracker();
+            assert_eq!(owner.join(BOUND).await, Ok(()));
+            let (release, gate) = oneshot::channel::<()>();
+            let ran = Arc::new(AtomicUsize::new(0));
+            let task = tracker.spawn({
+                let ran = Arc::clone(&ran);
+                async move {
+                    gate.await.ok();
+                    ran.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            assert_eq!(tracker.pending(), 1);
+            release.send(()).unwrap();
+            assert_eq!(owner.join(BOUND).await, Ok(()));
+            task.await.unwrap();
+            assert_eq!(ran.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn existing_close_path_does_not_touch_the_owner() {
+            let registry = Registry::new();
+            let (a, seen) = mount_capture(&registry, "a").await;
+            let tracker = a.mount.cleanup.tracker();
+            a.close().await.unwrap();
+            assert!(!tracker.is_closing());
+            assert!(seen.lock().unwrap().is_empty());
+        }
     }
 }
