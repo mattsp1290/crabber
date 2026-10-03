@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::orchestrator::{RecordedCall, read_recorded_call, unknown_tool_arguments};
-use crabber_extension::{InputUnavailable, ToolInput, ToolOutcomeClass};
+use crabber_extension::{InputUnavailable, ToolInput, ToolOutcomeClass, TransformOutput};
 
 const RESERVED_TEXT: &str = "reserved argument key";
 
@@ -81,7 +81,9 @@ async fn input_is_the_post_tool_prepare_arguments() {
             }),
         );
     });
+    let pipeline = Arc::new(CaptureResult::default());
     let harness = Harness::builder(one_turn(&[&call]))
+        .tool_pipeline(pipeline.clone())
         .mount(rewrite, Scope::Global)
         .build()
         .await;
@@ -96,6 +98,23 @@ async fn input_is_the_post_tool_prepare_arguments() {
         true,
         &normalized(json!({"text": "rewritten"})),
     );
+    let arguments = done.record(&call.id).await.arguments;
+    let captured = pipeline.contexts.lock().unwrap();
+    let context = &captured[0];
+    assert_eq!(captured.len(), 1);
+    assert_eq!(context.tool_name(), call.name);
+    assert_eq!(context.call_id(), &call.id);
+    assert_eq!(context.session_id(), &done.session_id);
+    assert_eq!(context.run_id(), &done.run_id);
+    assert_context(
+        context,
+        ToolOutcomeClass::Succeeded,
+        true,
+        &normalized(arguments),
+    );
+    assert_eq!(context.phase(), crabber_extension::TransformPhase::Ordinary);
+    assert!(!context.is_error());
+    assert!(!context.cancellation().is_cancelled());
 }
 
 #[tokio::test]
@@ -185,8 +204,13 @@ impl ToolPipeline for RejectPrepare {
     async fn prepare(&self, _tool: &ToolInfo, _arguments: Value) -> Result<Value, String> {
         Err("pipeline refused".into())
     }
-    async fn transform_result(&self, _tool: &ToolInfo, result: Value) -> Result<Value, String> {
-        Ok(result)
+    async fn transform_result(
+        &self,
+        _context: &ToolResultContext,
+        _tool: &ToolInfo,
+        result: Value,
+    ) -> Result<TransformOutput, String> {
+        Ok(TransformOutput::new(result))
     }
 }
 
@@ -591,35 +615,50 @@ async fn around_handler_error_and_changed_input_are_execution_failed() {
     assert!(record_text(&record).contains("around handler changed immutable tool input"));
 }
 
-struct FailResult;
+struct FailResult {
+    panic: bool,
+}
 #[async_trait]
 impl ToolPipeline for FailResult {
     async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String> {
         Ok(arguments)
     }
-    async fn transform_result(&self, _tool: &ToolInfo, _result: Value) -> Result<Value, String> {
+    async fn transform_result(
+        &self,
+        _context: &ToolResultContext,
+        _tool: &ToolInfo,
+        _result: Value,
+    ) -> Result<TransformOutput, String> {
+        assert!(!self.panic, "private panic text and original output");
         Err("pre-stage failed".into())
     }
 }
 
 #[tokio::test]
-async fn pre_stage_error_is_execution_failed() {
-    let call = ScriptedCall::text(ECHO, "hi");
-    let harness = Harness::builder(one_turn(&[&call]))
-        .tool_pipeline(Arc::new(FailResult))
-        .build()
+async fn pre_stage_error_is_sanitized_and_skips_result_chain() {
+    for panic in [false, true] {
+        let call = ScriptedCall::text(ECHO, "private original output");
+        let harness = Harness::builder(one_turn(&[&call]))
+            .tool_pipeline(Arc::new(FailResult { panic }))
+            .build()
+            .await;
+        let done = harness.run().await;
+        assert_context(
+            &context_for(&done, &call),
+            ToolOutcomeClass::Succeeded,
+            true,
+            &normalized(json!({"text": "private original output"})),
+        );
+        assert!(harness.probe.results().is_empty());
+        assert_settled(
+            &done,
+            &call.id,
+            ToolCallStatus::Failed,
+            r#""result transform failed: crabber/tool-pipeline""#,
+            true,
+        )
         .await;
-    let done = harness.run().await;
-    assert_context(
-        &context_for(&done, &call),
-        ToolOutcomeClass::ExecutionFailed,
-        true,
-        &normalized(json!({"text": "hi"})),
-    );
-    assert_eq!(
-        record_text(&done.record(&call.id).await),
-        r#""pre-stage failed""#
-    );
+    }
 }
 
 struct AskEcho;
@@ -708,4 +747,164 @@ async fn deeply_nested_unknown_tool_call_settles_with_the_usual_result() {
         context_for(&done, &call).input(),
         ToolInput::Raw(Value::String(_))
     ));
+}
+
+#[derive(Default)]
+struct CaptureResult {
+    contexts: Mutex<Vec<ToolResultContext>>,
+    mark_error: bool,
+}
+#[async_trait]
+impl ToolPipeline for CaptureResult {
+    async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        context: &ToolResultContext,
+        tool: &ToolInfo,
+        _result: Value,
+    ) -> Result<TransformOutput, String> {
+        assert_eq!(context.tool_name(), tool.name);
+        self.contexts.lock().unwrap().push(context.clone());
+        Ok(TransformOutput {
+            result: json!("pipeline output"),
+            mark_error: self.mark_error,
+        })
+    }
+}
+
+#[tokio::test]
+async fn pre_stage_only_runs_on_success_and_cannot_clear_errors() {
+    let success = ScriptedCall::text(ECHO, "ok");
+    let failed = ScriptedCall::text(FAIL, "failure");
+    let denied = ScriptedCall::text(FORBIDDEN, "denied");
+    let unknown = ScriptedCall::text(MISSING, "unknown");
+    let prepare = ScriptedCall::text(ECHO, PREPARE_REJECTED);
+    let pipeline = Arc::new(CaptureResult::default());
+    let harness = Harness::builder(one_turn(&[&success, &failed, &denied, &unknown, &prepare]))
+        .tool_pipeline(pipeline.clone())
+        .build()
+        .await;
+    let done = harness.run().await;
+    let contexts = pipeline.contexts.lock().unwrap().clone();
+    assert_eq!(contexts.len(), 1);
+    assert_eq!(contexts[0].call_id(), &success.id);
+    assert_settled(
+        &done,
+        &success.id,
+        ToolCallStatus::Completed,
+        r#""pipeline output""#,
+        false,
+    )
+    .await;
+    for call in [&failed, &denied, &unknown, &prepare] {
+        assert_eq!(done.record(&call.id).await.status, ToolCallStatus::Failed);
+        assert!(done.tool_message(&call.id).await.2);
+    }
+}
+
+#[tokio::test]
+async fn pre_stage_mark_error_is_monotonic_through_extension_chain() {
+    let call = ScriptedCall::text(ECHO, "ok");
+    let pipeline = Arc::new(CaptureResult {
+        mark_error: true,
+        ..CaptureResult::default()
+    });
+    let reset_error = ClosureExtension::new("reset-error", |r| {
+        r.on_transform(
+            ToolResultTransform::ID,
+            1,
+            "reset-error",
+            Arc::new(|mut value| {
+                Box::pin(async move {
+                    value["is_error"] = json!(false);
+                    Ok(value)
+                })
+            }),
+        );
+    });
+    let harness = Harness::builder(one_turn(&[&call]))
+        .tool_pipeline(pipeline.clone())
+        .mount(reset_error, Scope::Global)
+        .build()
+        .await;
+    let done = harness.run().await;
+    assert_eq!(
+        pipeline.contexts.lock().unwrap()[0].class(),
+        ToolOutcomeClass::Succeeded
+    );
+    assert_eq!(harness.probe.results()[0]["is_error"], true);
+    assert_settled(
+        &done,
+        &call.id,
+        ToolCallStatus::Failed,
+        r#""pipeline output""#,
+        true,
+    )
+    .await;
+}
+
+struct ParkResult {
+    gate: Arc<Gate>,
+    context: Mutex<Option<ToolResultContext>>,
+}
+#[async_trait]
+impl ToolPipeline for ParkResult {
+    async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        context: &ToolResultContext,
+        _tool: &ToolInfo,
+        result: Value,
+    ) -> Result<TransformOutput, String> {
+        *self.context.lock().unwrap() = Some(context.clone());
+        self.gate.pass(&result).await;
+        Ok(TransformOutput::new(result))
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_pre_stage_discards_output_and_skips_chain() {
+    let call = ScriptedCall::text(ECHO, "private output");
+    let pipeline = Arc::new(ParkResult {
+        gate: Gate::all(),
+        context: Mutex::new(None),
+    });
+    let harness = Harness::builder(one_turn(&[&call]))
+        .tool_pipeline(pipeline.clone())
+        .build()
+        .await;
+    let handle = harness.start().await;
+    let session_id = handle.session_id().clone();
+    let run_id = handle.run_id().clone();
+    pipeline.gate.entered().await;
+    handle.interrupt();
+    assert_eq!(
+        handle.done().await.unwrap().status,
+        crabber_core::RunStatus::Interrupted
+    );
+    assert!(
+        pipeline
+            .context
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cancellation()
+            .is_cancelled()
+    );
+    assert!(harness.probe.results().is_empty());
+    let done = Finished {
+        harness: &harness,
+        session_id,
+        run_id,
+    };
+    assert_eq!(
+        done.record(&call.id).await.status,
+        ToolCallStatus::Interrupted
+    );
+    assert_eq!(record_text(&done.record(&call.id).await), "interrupted");
 }

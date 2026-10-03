@@ -66,10 +66,11 @@ impl ToolPipeline for CountingPipeline {
     }
     async fn transform_result(
         &self,
+        _context: &crabber_extension::ToolResultContext,
         _tool: &crabber_core::ToolInfo,
         result: Value,
-    ) -> Result<Value, String> {
-        Ok(result)
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        Ok(crabber_extension::TransformOutput::new(result))
     }
 }
 
@@ -2962,4 +2963,67 @@ async fn admission_recovery_verifies_turn_limit_before_terminal_replay() {
     ));
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(provider.requests().len(), 1);
+}
+
+struct PipelineCleanup(Arc<Notify>);
+#[async_trait]
+impl ToolPipeline for PipelineCleanup {
+    async fn prepare(
+        &self,
+        _tool: &crabber_core::ToolInfo,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        context: &crabber_extension::ToolResultContext,
+        _tool: &crabber_core::ToolInfo,
+        result: Value,
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        let closing = context.cleanup().closing();
+        let reaped = self.0.clone();
+        context.cleanup().spawn(async move {
+            closing.await;
+            reaped.notify_one();
+        });
+        Ok(crabber_extension::TransformOutput::new(result))
+    }
+}
+
+#[tokio::test]
+async fn pipeline_cleanup_is_joined_by_the_host_owner() {
+    let store = Arc::new(MemoryStore::new());
+    let owner = crabber_extension::CleanupOwner::new();
+    let completed = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .store(store)
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+            text_script("done"),
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .tool_pipeline(Arc::new(PipelineCleanup(completed.clone())))
+        .pipeline_cleanup(owner.tracker())
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    assert_eq!(owner.tracker().pending(), 1);
+    owner.join(std::time::Duration::from_secs(1)).await.unwrap();
+    completed.notified().await;
+    assert_eq!(owner.tracker().pending(), 0);
 }

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use crabber_core::ToolInfo;
+use crabber_extension::{ToolResultContext, TransformOutput};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +87,12 @@ impl ApprovalRequester for DefaultDenyApprover {
 #[async_trait]
 pub trait ToolPipeline: Send + Sync {
     async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String>;
-    async fn transform_result(&self, _tool: &ToolInfo, result: Value) -> Result<Value, String>;
+    async fn transform_result(
+        &self,
+        context: &ToolResultContext,
+        tool: &ToolInfo,
+        result: Value,
+    ) -> Result<TransformOutput, String>;
 }
 
 pub struct IdentityToolPipeline;
@@ -96,8 +102,13 @@ impl ToolPipeline for IdentityToolPipeline {
     async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String> {
         Ok(arguments)
     }
-    async fn transform_result(&self, _tool: &ToolInfo, result: Value) -> Result<Value, String> {
-        Ok(result)
+    async fn transform_result(
+        &self,
+        _context: &ToolResultContext,
+        _tool: &ToolInfo,
+        result: Value,
+    ) -> Result<TransformOutput, String> {
+        Ok(TransformOutput::new(result))
     }
 }
 

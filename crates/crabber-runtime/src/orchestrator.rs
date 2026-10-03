@@ -17,12 +17,13 @@ use crabber_core::{
     ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
-    HostServices, InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
-    ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
-    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput,
-    ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultTransform, TurnCompleted,
-    TurnPrepare, TurnStarted, WorkspaceContext,
+    ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
+    GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
+    ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan,
+    RunPlanProvider, RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute,
+    ToolInput, ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultTransform,
+    TransformOutput, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
+    result_transform_failed_message,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -33,7 +34,7 @@ use crabber_session::{
     AdmissionRequestData, AdmitRequest, ClaimUnstartedAdmissionRequest, ExecutionStore, InboxKind,
     KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError, admission_config_hash,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -357,6 +358,7 @@ pub struct Orchestrator {
     policy: Arc<dyn PermissionPolicy>,
     approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
+    pipeline_cleanup: CleanupTracker,
     host_services: HostServices,
     max_turns: usize,
     heartbeat_interval: Duration,
@@ -448,6 +450,7 @@ pub struct OrchestratorBuilder {
     policy: Option<Arc<dyn PermissionPolicy>>,
     approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
+    pipeline_cleanup: Option<CleanupTracker>,
     host_services: Option<HostServices>,
     max_turns: Option<usize>,
     heartbeat_interval: Option<Duration>,
@@ -513,6 +516,12 @@ impl OrchestratorBuilder {
     #[must_use]
     pub fn tool_pipeline(mut self, value: Arc<dyn ToolPipeline>) -> Self {
         self.tool_pipeline = Some(value);
+        self
+    }
+    /// Tracker handed to the pre-stage. Default: a detached tracker.
+    #[must_use]
+    pub fn pipeline_cleanup(mut self, tracker: CleanupTracker) -> Self {
+        self.pipeline_cleanup = Some(tracker);
         self
     }
     #[must_use]
@@ -602,6 +611,9 @@ impl OrchestratorBuilder {
             tool_pipeline: self
                 .tool_pipeline
                 .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
+            pipeline_cleanup: self
+                .pipeline_cleanup
+                .unwrap_or_else(CleanupTracker::detached),
             host_services: self.host_services.unwrap_or_default(),
             max_turns: self.max_turns.unwrap_or(64),
             heartbeat_interval,
@@ -3184,10 +3196,24 @@ impl Orchestrator {
                 measurement.observation.reason = TerminalReason::RuntimeError;
             })?;
         ensure_lease(lease_lost)?;
+        let child_cancellation = cancellation.child_token();
+        let mut mark_error = false;
+        let mut pipeline_failed = false;
         let (class, input, resolved, outcome): (_, _, _, Result<Value, String>) = match recorded {
             RecordedCall::Execute(arguments) => {
                 let tool = definition.expect("the record reader executes only calls that resolve");
                 let input = ToolInput::Normalized(arguments.clone());
+                let pipeline_context = ToolResultContext::new(
+                    call.name.clone(),
+                    true,
+                    input.clone(),
+                    record.id.clone(),
+                    session_id.clone(),
+                    run_id.clone(),
+                    ToolOutcomeClass::Succeeded,
+                )
+                .with_cancellation(child_cancellation.clone())
+                .with_cleanup(self.pipeline_cleanup.clone());
                 let run = tokio::select! {
                     () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
                     result = self.permit_and_execute(
@@ -3200,6 +3226,7 @@ impl Orchestrator {
                     arguments,
                     cancellation,
                     lease_lost,
+                    &pipeline_context,
                     ) => result.inspect_err(|error| {
                         measurement.observation.reason = match error {
                             RuntimeError::LeaseLost => TerminalReason::LeaseLost,
@@ -3210,7 +3237,21 @@ impl Orchestrator {
                     })?,
                 };
                 match run {
-                    ToolRun::Output(value) => (ToolOutcomeClass::Succeeded, input, true, Ok(value)),
+                    ToolRun::Output(value) => {
+                        mark_error = value.mark_error;
+                        (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
+                    }
+                    ToolRun::PipelineFailed => {
+                        pipeline_failed = true;
+                        (
+                            ToolOutcomeClass::Succeeded,
+                            input,
+                            true,
+                            Ok(Value::String(result_transform_failed_message(
+                                TOOL_PIPELINE_HANDLER_ID,
+                            ))),
+                        )
+                    }
                     ToolRun::PermissionDenied => (
                         ToolOutcomeClass::PermissionDenied,
                         input,
@@ -3239,36 +3280,43 @@ impl Orchestrator {
             session_id.clone(),
             run_id.clone(),
             class,
-        );
+        )
+        .with_cancellation(child_cancellation);
         debug_assert_eq!(result_context.class().is_error(), outcome.is_err());
         #[cfg(test)]
         if let Some(observer) = &self.context_observer {
             observer(&result_context);
         }
-        let original_error = outcome.is_err();
+        let original_error = outcome.is_err() || mark_error;
         let seed = match outcome {
             Ok(value) => value,
             Err(error) => Value::String(error),
         };
-        let outcome = match plan
-            .dispatcher
-            .transform::<ToolResultTransform>(json!({"result":seed,"is_error":original_error}))
-            .await
-        {
-            Ok(output) => {
-                let result = output
-                    .get("result")
-                    .cloned()
-                    .unwrap_or_else(|| output.clone());
-                if original_error || output.get("is_error").and_then(Value::as_bool) == Some(true) {
-                    Err(result
-                        .as_str()
-                        .map_or_else(|| result.to_string(), str::to_owned))
-                } else {
-                    Ok(result)
+        let outcome = if pipeline_failed {
+            Err(result_transform_failed_message(TOOL_PIPELINE_HANDLER_ID))
+        } else {
+            match plan
+                .dispatcher
+                .transform::<ToolResultTransform>(json!({"result":seed,"is_error":original_error}))
+                .await
+            {
+                Ok(output) => {
+                    let result = output
+                        .get("result")
+                        .cloned()
+                        .unwrap_or_else(|| output.clone());
+                    if original_error
+                        || output.get("is_error").and_then(Value::as_bool) == Some(true)
+                    {
+                        Err(result
+                            .as_str()
+                            .map_or_else(|| result.to_string(), str::to_owned))
+                    } else {
+                        Ok(result)
+                    }
                 }
+                Err(error) => Err(error.to_string()),
             }
-            Err(error) => Err(error.to_string()),
         };
         let (status, output, is_error) = match outcome {
             Ok(value) => (ToolResultStatus::Completed, value, false),
@@ -3358,6 +3406,7 @@ impl Orchestrator {
         arguments: Value,
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
+        pipeline_context: &ToolResultContext,
     ) -> Result<ToolRun, RuntimeError> {
         let (session_id, workspace) = (&session.id, session.workspace.clone());
         let guard_decisions: Vec<_> = plan
@@ -3482,20 +3531,22 @@ impl Orchestrator {
             Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
         };
         ensure_lease(lease_lost)?;
-        // Until crabber-klyf gives the pre-stage its own D2 outcome, its `Err` persists as it does
-        // today, as an execution failure.
-        Ok(
-            match self
-                .tool_pipeline
-                .transform_result(&tool.info, output)
+        let transformed = std::panic::AssertUnwindSafe(async {
+            self.tool_pipeline
+                .transform_result(pipeline_context, &tool.info, output)
                 .await
-            {
-                Ok(value) => ToolRun::Output(value),
-                Err(error) => ToolRun::ExecutionFailed(error),
-            },
-        )
+        })
+        .catch_unwind()
+        .await;
+        Ok(match transformed {
+            Ok(Ok(value)) => ToolRun::Output(value),
+            Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
+        })
     }
 }
+
+/// Handler id used for sanitized host pre-stage failures.
+pub const TOOL_PIPELINE_HANDLER_ID: &str = "crabber/tool-pipeline";
 
 const PREPARE_ERROR_KEY: &str = "$crabber_prepare_error";
 const UNKNOWN_TOOL_KEY: &str = "$crabber_unknown_tool";
@@ -3532,7 +3583,8 @@ pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
 
 /// Typed result of running a resolved call, so the class never depends on error text.
 enum ToolRun {
-    Output(Value),
+    Output(TransformOutput),
+    PipelineFailed,
     PermissionDenied,
     ExecutionFailed(String),
 }
