@@ -251,6 +251,7 @@ pub(super) async fn mount(
         );
         let module_after = Arc::clone(module);
         let loader_after = Arc::clone(loader);
+        // WASM stays ordinary; protection under cancellation needs a native or JSON final redactor.
         registrar.on_result_transform(
             0,
             format!("wasm-after-tool:{}", module.config.name),
@@ -260,7 +261,7 @@ pub(super) async fn mount(
                 Box::pin(async move {
                     let envelope = result_envelope(&context, value.clone());
                     let result = module
-                        .call(
+                        .call_cancellable(
                             "tool-middleware-api",
                             "after-tool-call",
                             &[
@@ -271,6 +272,7 @@ pub(super) async fn mount(
                                 Val::Bool(context.is_error()),
                                 turn_metadata(None),
                             ],
+                            context.cancellation(),
                         )
                         .await
                         .map_err(error)?;
