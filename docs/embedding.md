@@ -677,6 +677,11 @@ The chain's seed text for the two reserved-key rows (a sole other
   sole `$crabber_*` key only when the runtime wrote it. The same hole exists
   today for `$crabber_prepare_error` (`orchestrator.rs:3123-3128`) and closes
   with it.
+- *Nesting depth.* Stores decode records with `serde_json::from_str`, which
+  stops at 128 levels, and the sentinel adds levels. When the provider
+  arguments cannot be stored inside the sentinel in decodable form, `raw` holds
+  their JSON text as a string, the same representation as unparseable provider
+  text. Consumers must treat `Raw` as unvalidated.
 - *Persistence exposure.* Raw provider arguments for unknown tools become
   durable in the tool-call record. They are unvalidated and unnormalized. The
   assistant message already persists exactly the same value in its `ToolCall`

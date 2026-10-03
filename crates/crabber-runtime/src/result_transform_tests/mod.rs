@@ -45,6 +45,8 @@ pub(super) const FAIL: &str = "fail";
 pub(super) const FORBIDDEN: &str = "forbidden";
 /// Tool whose schema accepts any object, so a sentinel-shaped argument object passes validation.
 pub(super) const OPEN: &str = "open";
+/// Tool whose executor fails with the text `permission denied`.
+pub(super) const SAYS_DENIED: &str = "says-denied";
 /// Tool name the plan does not contain.
 pub(super) const MISSING: &str = "missing";
 /// `text` value a `ToolPrepare` handler rejects.
@@ -66,6 +68,7 @@ impl ToolExecutor for TextTool {
             .push((self.name.to_owned(), input.clone()));
         match self.name {
             FAIL => Err(ExtensionError::Tool(EXECUTOR_ERROR.into())),
+            SAYS_DENIED => Err(ExtensionError::Tool("permission denied".into())),
             SHOUT => {
                 Ok(json!({"shouted": input["text"].as_str().unwrap_or_default().to_uppercase()}))
             }
@@ -196,7 +199,7 @@ impl Extension for RecordingExtension {
         String::new()
     }
     async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
-        for name in [ECHO, SHOUT, FAIL, FORBIDDEN, OPEN] {
+        for name in [ECHO, SHOUT, FAIL, FORBIDDEN, OPEN, SAYS_DENIED] {
             r.tool(Arc::new(ToolDefinition {
                 info: ToolInfo {
                     name: name.into(),

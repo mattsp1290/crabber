@@ -5,7 +5,7 @@
 //! every runtime it builds.
 
 use super::*;
-use crate::orchestrator::{RecordedCall, read_recorded_call};
+use crate::orchestrator::{RecordedCall, read_recorded_call, unknown_tool_arguments};
 use crabber_extension::{InputUnavailable, ToolInput, ToolOutcomeClass};
 
 const RESERVED_TEXT: &str = "reserved argument key";
@@ -372,6 +372,15 @@ async fn resume_from_the_stored_record_derives_the_same_context() {
         json!({"$crabber_unknown_tool": {"raw": "{broken"}})
     );
 
+    // MemoryStore never encodes, so prove the stored arguments survive the encoding a real store
+    // uses before the fresh runtime derives the context from them.
+    for record in &unfinished {
+        let text = serde_json::to_string(&record.arguments).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            record.arguments
+        );
+    }
     let fresh = harness.fresh_runtime();
     assert_eq!(
         fresh.resume(&run_id).await.unwrap().status,
@@ -525,4 +534,178 @@ fn reader_anything_else_rows() {
             )
         );
     }
+}
+
+// Typed classification: the class comes from where the failure happened, never from its text.
+
+#[tokio::test]
+async fn executor_error_text_permission_denied_is_still_execution_failed() {
+    let call = ScriptedCall::text(SAYS_DENIED, "hi");
+    let harness = Harness::new(one_turn(&[&call])).await;
+    let done = harness.run().await;
+    assert_eq!(harness.probe.executed().len(), 1);
+    assert_context(
+        &context_for(&done, &call),
+        ToolOutcomeClass::ExecutionFailed,
+        true,
+        &normalized(json!({"text": "hi"})),
+    );
+}
+
+#[tokio::test]
+async fn around_handler_error_and_changed_input_are_execution_failed() {
+    let failing = ScriptedCall::text(ECHO, "a");
+    let changing = ScriptedCall::text(SHOUT, "b");
+    let around = ClosureExtension::new("around-tool", |r| {
+        r.on_around(
+            crabber_extension::ToolExecute::ID,
+            0,
+            "around",
+            Arc::new(|input, next| {
+                Box::pin(async move {
+                    if input["text"] == "a" {
+                        return Err(ExtensionError::Tool("around exploded".into()));
+                    }
+                    let mut changed = input;
+                    changed["text"] = json!("changed");
+                    next.call(changed).await
+                })
+            }),
+        );
+    });
+    let harness = Harness::builder(one_turn(&[&failing, &changing]))
+        .mount(around, Scope::Global)
+        .build()
+        .await;
+    let done = harness.run().await;
+    assert_eq!(harness.probe.executed(), []);
+    for (call, text) in [(&failing, "a"), (&changing, "b")] {
+        assert_context(
+            &context_for(&done, call),
+            ToolOutcomeClass::ExecutionFailed,
+            true,
+            &normalized(json!({"text": text})),
+        );
+    }
+    let record = done.record(&changing.id).await;
+    assert!(record_text(&record).contains("around handler changed immutable tool input"));
+}
+
+struct FailResult;
+#[async_trait]
+impl ToolPipeline for FailResult {
+    async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(&self, _tool: &ToolInfo, _result: Value) -> Result<Value, String> {
+        Err("pre-stage failed".into())
+    }
+}
+
+#[tokio::test]
+async fn pre_stage_error_is_execution_failed() {
+    let call = ScriptedCall::text(ECHO, "hi");
+    let harness = Harness::builder(one_turn(&[&call]))
+        .tool_pipeline(Arc::new(FailResult))
+        .build()
+        .await;
+    let done = harness.run().await;
+    assert_context(
+        &context_for(&done, &call),
+        ToolOutcomeClass::ExecutionFailed,
+        true,
+        &normalized(json!({"text": "hi"})),
+    );
+    assert_eq!(
+        record_text(&done.record(&call.id).await),
+        r#""pre-stage failed""#
+    );
+}
+
+struct AskEcho;
+impl ToolGuard for AskEcho {
+    fn id(&self) -> &'static str {
+        "ask-echo"
+    }
+    fn check(&self, name: &str, _input: &Value) -> crabber_extension::GuardDecision {
+        if name == ECHO {
+            crabber_extension::GuardDecision::Ask
+        } else {
+            crabber_extension::GuardDecision::Abstain
+        }
+    }
+}
+
+#[tokio::test]
+async fn guard_ask_refused_by_the_approver_is_permission_denied() {
+    let call = ScriptedCall::text(ECHO, "hi");
+    let harness = Harness::builder(one_turn(&[&call]))
+        .mount(
+            ClosureExtension::guard("ask-echo-guard", Arc::new(AskEcho)),
+            Scope::Global,
+        )
+        .approver(Arc::new(Refuse))
+        .build()
+        .await;
+    let done = harness.run().await;
+    assert_eq!(harness.probe.executed(), []);
+    assert_context(
+        &context_for(&done, &call),
+        ToolOutcomeClass::PermissionDenied,
+        true,
+        &normalized(json!({"text": "hi"})),
+    );
+}
+
+// Nesting depth (stores decode records with a 128-level limit).
+
+fn nested_value(depth: usize) -> Value {
+    serde_json::from_str(&("[".repeat(depth) + &"]".repeat(depth))).unwrap()
+}
+
+#[test]
+fn unknown_tool_record_always_decodes_and_reads_back_as_raw() {
+    for depth in [3, 124, 125, 126, 127] {
+        let raw = nested_value(depth);
+        let stored = unknown_tool_arguments(&raw);
+        let text = serde_json::to_string(&stored).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            stored,
+            "depth {depth} must decode"
+        );
+        let expected = if depth <= 124 {
+            raw.clone()
+        } else {
+            Value::String(serde_json::to_string(&raw).unwrap())
+        };
+        assert_eq!(
+            read(stored, false),
+            settled(
+                ToolOutcomeClass::UnknownTool,
+                ToolInput::Raw(expected),
+                false,
+                "unknown tool: tool"
+            ),
+            "depth {depth}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn deeply_nested_unknown_tool_call_settles_with_the_usual_result() {
+    let call = ScriptedCall {
+        id: ToolCallId::new(),
+        name: MISSING,
+        arguments: "[".repeat(125) + &"]".repeat(125),
+    };
+    let harness = Harness::new(one_turn(&[&call])).await;
+    let done = harness.run().await;
+    let record = done.record(&call.id).await;
+    assert_eq!(record.status, ToolCallStatus::Failed);
+    assert_eq!(record_text(&record), r#""unknown tool: missing""#);
+    assert!(matches!(
+        context_for(&done, &call).input(),
+        ToolInput::Raw(Value::String(_))
+    ));
 }

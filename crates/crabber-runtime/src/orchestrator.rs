@@ -3098,7 +3098,7 @@ impl Orchestrator {
                 Err(error) => json!({PREPARE_ERROR_KEY: error}),
             }
         } else {
-            json!({UNKNOWN_TOOL_KEY: {"raw": raw}})
+            unknown_tool_arguments(&raw)
         };
         ensure_lease(lease_lost)?;
         let mut event = self.event(session_id, run_id, EventKind::ToolCallPending);
@@ -3502,6 +3502,33 @@ const UNKNOWN_TOOL_KEY: &str = "$crabber_unknown_tool";
 const RESERVED_KEY_PREFIX: &str = "$crabber_";
 /// Recorded (and seeded) when prepared arguments would be read back as a runtime sentinel.
 const RESERVED_ARGUMENT_KEY_TEXT: &str = "reserved argument key";
+
+/// The record arguments for an unknown tool. Stores write records without a depth limit but decode
+/// them with `serde_json::from_str` (128 levels), and both the sentinel and the enclosing
+/// `ToolCallRecord` add levels. When the whole record would not decode back unchanged, `raw` holds
+/// the arguments' JSON text instead, as for unparseable provider text. That form is a fixed depth
+/// (a string is a scalar), so it always decodes.
+pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
+    let arguments = json!({UNKNOWN_TOOL_KEY: {"raw": raw}});
+    let probe = ToolCallRecord {
+        id: ToolCallId::new(),
+        run_id: RunId::new(),
+        name: String::new(),
+        arguments: arguments.clone(),
+        status: ToolCallStatus::Pending,
+        retry_safe: false,
+        result: None,
+    };
+    let decodes = serde_json::to_string(&probe)
+        .ok()
+        .and_then(|text| serde_json::from_str::<ToolCallRecord>(&text).ok())
+        .is_some_and(|decoded| decoded.arguments == arguments);
+    if decodes {
+        return arguments;
+    }
+    let text = serde_json::to_string(raw).unwrap_or_default();
+    json!({UNKNOWN_TOOL_KEY: {"raw": text}})
+}
 
 /// Typed result of running a resolved call, so the class never depends on error text.
 enum ToolRun {

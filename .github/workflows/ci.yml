@@ -66,5 +66,7 @@ jobs:
         run: cargo test -p crabber --features postgres --test fenced_abandon -- --nocapture
       - name: Noninteractive PostgreSQL fenced abandonment demo
         run: cargo run --quiet -p fenced-abandon --features postgres -- --postgres
+      - name: Deeply nested unknown-tool record stays decodable
+        run: cargo test -p crabber --features postgres --test unknown_tool_depth -- --nocapture
       - name: Public workspace context probe and fresh-process resume
         run: cargo test -p workspace-context-probe --features postgres -- --nocapture
