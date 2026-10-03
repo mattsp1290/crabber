@@ -260,7 +260,7 @@ pub(super) async fn mount(
                 let _loader = Arc::clone(&loader_after);
                 Box::pin(async move {
                     let output = value["result"].to_string();
-                    let is_error = value["is_error"].as_bool().unwrap_or(false);
+                    let is_error = value["context"]["is_error"].as_bool().unwrap_or(false);
                     let result = module
                         .call(
                             "tool-middleware-api",

@@ -487,26 +487,26 @@ impl crabber::extension::Extension for HeldResult {
 }
 
 #[tokio::test]
-async fn unresolved_work_stays_registered_until_noncooperative_transform_finishes() -> CheckResult {
+async fn disconnect_interrupts_noncooperative_result_transform() -> CheckResult {
+    // The old unresolved-work characterization required result callbacks to ignore
+    // cancellation. The result-chain driver now drops that future on disconnect.
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let store = Arc::new(MemoryStore::new());
-    let count = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(HeldResult {
-        count: count.clone(),
+        count: Arc::new(AtomicUsize::new(0)),
         entered: entered.clone(),
-        release: release.clone(),
+        release,
     });
-    let mut host = Host::new(Arc::new(move || {
+    let server = Server::start(Host::new(Arc::new(move || {
         builder(
             store.clone(),
             Arc::new(FakeProvider::scripted(journey(false))),
         )
         .extension(gate.clone(), crabber::extension::Scope::Global)
         .build()
-    }));
-    host.cleanup = Duration::from_millis(20);
-    let server = Server::start(host).await?;
+    })))
+    .await?;
     let response = reqwest::Client::new()
         .post(&server.url)
         .json(&input("held"))
@@ -514,23 +514,7 @@ async fn unresolved_work_stays_registered_until_noncooperative_transform_finishe
         .await?;
     entered.notified().await;
     drop(response);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while server.host.unresolved.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    assert_eq!(server.host.active.load(Ordering::SeqCst), 1);
-    assert!(server.host.shutdown().await.is_err());
-    // Both parallel tool transforms may hold the run. Notify the gates as they enter.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while count.load(Ordering::SeqCst) < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    release.notify_waiters();
-    idle(&server.host).await;
+    tokio::time::timeout(Duration::from_secs(2), idle(&server.host)).await?;
     assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
     server.stop().await?;
     Ok(())

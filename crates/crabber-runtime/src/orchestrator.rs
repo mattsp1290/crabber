@@ -21,7 +21,7 @@ use crabber_extension::{
     GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
     ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan,
     RunPlanProvider, RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute,
-    ToolInput, ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultTransform,
+    ToolInput, ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultOutcome,
     TransformOutput, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
     result_transform_failed_message,
 };
@@ -3287,40 +3287,44 @@ impl Orchestrator {
         if let Some(observer) = &self.context_observer {
             observer(&result_context);
         }
-        let original_error = outcome.is_err() || mark_error;
-        let seed = match outcome {
-            Ok(value) => value,
-            Err(error) => Value::String(error),
+        let seed = TransformOutput {
+            result: match outcome {
+                Ok(value) => value,
+                Err(error) => Value::String(error),
+            },
+            mark_error,
         };
         let outcome = if pipeline_failed {
-            Err(result_transform_failed_message(TOOL_PIPELINE_HANDLER_ID))
-        } else {
-            match plan
-                .dispatcher
-                .transform::<ToolResultTransform>(json!({"result":seed,"is_error":original_error}))
-                .await
-            {
-                Ok(output) => {
-                    let result = output
-                        .get("result")
-                        .cloned()
-                        .unwrap_or_else(|| output.clone());
-                    if original_error
-                        || output.get("is_error").and_then(Value::as_bool) == Some(true)
-                    {
-                        Err(result
-                            .as_str()
-                            .map_or_else(|| result.to_string(), str::to_owned))
-                    } else {
-                        Ok(result)
-                    }
-                }
-                Err(error) => Err(error.to_string()),
+            ToolResultOutcome::Failed {
+                handler: TOOL_PIPELINE_HANDLER_ID.into(),
             }
+        } else {
+            plan.dispatcher
+                .transform_tool_result(result_context, seed)
+                .await
         };
         let (status, output, is_error) = match outcome {
-            Ok(value) => (ToolResultStatus::Completed, value, false),
-            Err(error) => (ToolResultStatus::Failed, Value::String(error), true),
+            ToolResultOutcome::Completed { result, is_error } => (
+                if is_error {
+                    ToolResultStatus::Failed
+                } else {
+                    ToolResultStatus::Completed
+                },
+                result,
+                is_error,
+            ),
+            ToolResultOutcome::Failed { handler } => (
+                ToolResultStatus::Failed,
+                Value::String(result_transform_failed_message(&handler)),
+                true,
+            ),
+            // Until the payload-carrying interruption path lands, use the fixed
+            // unfinished-call settlement and never persist a callback value.
+            ToolResultOutcome::Interrupted { .. } => {
+                ensure_lease(lease_lost)?;
+                measurement.observation.reason = TerminalReason::Cancelled;
+                return Err(RuntimeError::Interrupted);
+            }
         };
         measurement.observation.reason = if is_error {
             TerminalReason::ToolError

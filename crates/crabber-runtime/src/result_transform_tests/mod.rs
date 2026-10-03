@@ -1,4 +1,4 @@
-//! Shared harness for the tool-result-transform tests, plus characterization of today's contract.
+//! Shared harness and runtime integration checks for the tool-result-transform contract.
 //!
 //! Each later slice fills exactly one submodule so the slices never share a file. The harness
 //! records the raw `Value` every handler receives, so switching it to the typed context API is a
@@ -84,9 +84,8 @@ impl ToolExecutor for TextTool {
 /// describing what it is processing. Only keys the gate's selector accepts park, so one call can
 /// be held while others go through, and a specific parked call can be released on its own.
 ///
-/// Today the key is the payload the handler sees, which carries no call ID or tool name, so
-/// selectors look at the value. crabber-orgu adds the typed context; selecting by call ID is then
-/// a change to the selector closure only. Arrivals are counted by a semaphore and handed out in
+/// JSON handlers can select by the authoritative context or the current result. Arrivals are
+/// counted by a semaphore and handed out in
 /// order, so several handlers parking at once never coalesce, and release is by per-entry
 /// channel, so no wakeup is lost. Release only affects entries that have already parked, so
 /// await [`Gate::entered`] first.
@@ -711,10 +710,9 @@ pub(super) fn record_text(record: &ToolCallRecord) -> String {
     tool_text(&record.result.as_ref().expect("settled result").content)
 }
 
-// Characterization of today's contract. The result transform receives only
-// `{"result": <seed>, "is_error": <bool>}`: no tool name, input, or IDs. These tests pin that
-// and the persisted outcome for each of the five paths. They are superseded by crabber-orgu,
-// which replaces the payload with the typed context.
+// The old characterize_* tests required a result/is_error-only payload and are
+// retired by crabber-orgu (D9). Their outcome and persistence coverage below now
+// checks the authoritative envelope; context.rs covers durable input and IDs.
 
 /// Assert one settled call end to end: record, tool message, event and next provider request
 /// all agree, and the settled content is the JSON-encoded `text`.
@@ -737,13 +735,27 @@ async fn assert_settled(
     assert_eq!((next_text.as_str(), next_error), (text, is_error));
 }
 
+fn observed_results(harness: &Harness) -> Vec<Value> {
+    harness
+        .probe
+        .results()
+        .into_iter()
+        .map(|envelope| {
+            assert_eq!(envelope.as_object().unwrap().len(), 3);
+            assert_eq!(envelope["mark_error"], false);
+            assert!(envelope["context"]["call_id"].is_string());
+            json!({"result": envelope["result"], "is_error": envelope["context"]["is_error"]})
+        })
+        .collect()
+}
+
 #[tokio::test]
-async fn characterize_success_path() {
+async fn success_path_uses_authoritative_envelope() {
     let call = ScriptedCall::text(ECHO, "hi");
     let harness = Harness::new(one_turn(&[&call])).await;
     let done = harness.run().await;
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [json!({"result": {"text": "hi"}, "is_error": false})]
     );
     assert_eq!(
@@ -762,12 +774,12 @@ async fn characterize_success_path() {
 }
 
 #[tokio::test]
-async fn characterize_execution_error_path() {
+async fn execution_error_path_uses_authoritative_envelope() {
     let call = ScriptedCall::text(FAIL, "hi");
     let harness = Harness::new(one_turn(&[&call])).await;
     let done = harness.run().await;
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [json!({"result": "tool execution failed: executor exploded", "is_error": true})]
     );
     assert_eq!(
@@ -785,13 +797,13 @@ async fn characterize_execution_error_path() {
 }
 
 #[tokio::test]
-async fn characterize_permission_denial_path() {
+async fn permission_denial_path_uses_authoritative_envelope() {
     for denial in [Denial::Policy, Denial::RefusedApproval] {
         let call = ScriptedCall::text(FORBIDDEN, "hi");
         let harness = Harness::with_denial(one_turn(&[&call]), denial).await;
         let done = harness.run().await;
         assert_eq!(
-            harness.probe.results(),
+            observed_results(&harness),
             [json!({"result": "permission denied", "is_error": true})]
         );
         assert_eq!(harness.probe.executed(), []);
@@ -807,12 +819,12 @@ async fn characterize_permission_denial_path() {
 }
 
 #[tokio::test]
-async fn characterize_unknown_tool_path() {
+async fn unknown_tool_path_uses_authoritative_envelope() {
     let call = ScriptedCall::text(MISSING, "hi");
     let harness = Harness::new(one_turn(&[&call])).await;
     let done = harness.run().await;
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [json!({"result": "unknown tool: missing", "is_error": true})]
     );
     assert_eq!(harness.probe.executed(), []);
@@ -834,7 +846,7 @@ async fn characterize_unknown_tool_path() {
 }
 
 #[tokio::test]
-async fn characterize_preparation_error_path() {
+async fn preparation_error_path_uses_authoritative_envelope() {
     // A `ToolPrepare` handler failure.
     let handler = ScriptedCall::text(ECHO, PREPARE_REJECTED);
     let harness = Harness::new(one_turn(&[&handler])).await;
@@ -842,7 +854,7 @@ async fn characterize_preparation_error_path() {
     assert_eq!(harness.probe.prepares().len(), 1);
     assert_eq!(harness.probe.executed(), []);
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [json!({"result": "tool execution failed: prepare handler rejected", "is_error": true})]
     );
     assert_settled(
@@ -862,7 +874,7 @@ async fn characterize_preparation_error_path() {
     assert_eq!(harness.probe.executed(), []);
     let results = harness.probe.results();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["is_error"], true);
+    assert_eq!(results[0]["context"]["is_error"], true);
     let message = results[0]["result"].as_str().unwrap().to_owned();
     assert_eq!(
         done.record(&invalid.id).await.arguments,
@@ -879,16 +891,20 @@ async fn characterize_preparation_error_path() {
 }
 
 #[tokio::test]
-async fn characterize_two_calls_one_turn_each_see_only_result_and_flag() {
+async fn two_calls_one_turn_keep_distinct_authoritative_ids() {
     let first = ScriptedCall::text(ECHO, "a");
     let second = ScriptedCall::text(ECHO, "b");
     let other = ScriptedCall::text(SHOUT, "c");
     let harness = Harness::new(one_turn(&[&first, &second, &other])).await;
     harness.run().await;
-    // Sequential execution settles in call order; the payloads carry nothing to tell the two
-    // `echo` calls apart except the tool output itself.
+    // Sequential execution settles in call order, with a distinct durable ID per call.
+    let envelopes = harness.probe.results();
+    for (envelope, call) in envelopes.iter().zip([&first, &second, &other]) {
+        assert_eq!(envelope["context"]["call_id"], call.id.to_string());
+        assert_eq!(envelope["context"]["tool_name"], call.name);
+    }
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [
             json!({"result": {"text": "a"}, "is_error": false}),
             json!({"result": {"text": "b"}, "is_error": false}),
@@ -912,7 +928,8 @@ async fn harness_gate_parks_the_result_handler_until_released() {
     let gate = harness.block_results();
     let handle = harness.start().await;
     let key = gate.entered().await;
-    assert_eq!(key, json!({"result": {"text": "hi"}, "is_error": false}));
+    assert_eq!(key["result"], json!({"text": "hi"}));
+    assert_eq!(key["context"]["call_id"], call.id.to_string());
     assert_eq!(gate.parked(), 1);
     assert_eq!(harness.probe.results().len(), 1);
     assert_eq!(harness.fake.requests().len(), 1);
@@ -925,7 +942,7 @@ async fn harness_gate_parks_the_result_handler_until_released() {
 async fn harness_gate_parks_only_the_selected_call_and_releases_it_alone() {
     let held = ScriptedCall::text(ECHO, "held");
     let free = ScriptedCall::text(SHOUT, "free");
-    // Selected by what the handler can see today; crabber-orgu will select by call ID instead.
+    // Select this call by its current output while the other call completes freely.
     let gate = Gate::when(|value| value["result"]["text"] == "held");
     let harness = Harness::builder(one_turn(&[&held, &free]))
         .execution_mode(ExecutionMode::Parallel { max: 2 })
@@ -1011,10 +1028,92 @@ async fn harness_builder_installs_guard_and_restriction_denials() {
     harness.run().await;
     assert_eq!(harness.probe.executed(), []);
     assert_eq!(
-        harness.probe.results(),
+        observed_results(&harness),
         [
             json!({"result": "permission denied", "is_error": true}),
             json!({"result": "permission denied", "is_error": true}),
         ]
     );
+}
+
+#[tokio::test]
+async fn typed_result_chain_preserves_structured_output_and_error_classes() {
+    for name in [ECHO, FAIL, FORBIDDEN, MISSING] {
+        let call = ScriptedCall::text(name, "secret-input");
+        let id = call.id.clone();
+        let transform = ClosureExtension::new("typed-result", move |r| {
+            let id = id.clone();
+            r.on_result_transform(
+                1,
+                "structured",
+                Arc::new(move |context, _| {
+                    assert_eq!(context.call_id(), &id);
+                    Box::pin(async move {
+                        Ok(crabber_extension::TransformOutput::marked_error(
+                            json!({"safe": true}),
+                        ))
+                    })
+                }),
+            );
+        });
+        let harness = Harness::builder(one_turn(&[&call]))
+            .mount(transform, Scope::Global)
+            .build()
+            .await;
+        let done = harness.run().await;
+        assert_settled(
+            &done,
+            &call.id,
+            ToolCallStatus::Failed,
+            r#"{"safe":true}"#,
+            true,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn result_chain_failures_persist_only_fixed_handler_message() {
+    for mode in ["error", "panic", "context", "non-envelope"] {
+        let call = ScriptedCall::text(ECHO, "SECRET-ORIGINAL");
+        let transform = ClosureExtension::new("failing-result", move |r| {
+            r.on_transform(
+                ToolResultTransform::ID,
+                1,
+                "sanitize-failure",
+                Arc::new(move |mut value| {
+                    Box::pin(async move {
+                        match mode {
+                            "error" => return Err(ExtensionError::Tool("SECRET-ERROR".into())),
+                            "panic" => panic!("SECRET-PANIC"),
+                            "context" => value["context"]["tool_name"] = json!("SECRET-CONTEXT"),
+                            _ => return Ok(json!("SECRET-MALFORMED")),
+                        }
+                        value["result"] = json!("SECRET-INTERMEDIATE");
+                        Ok(value)
+                    })
+                }),
+            );
+            r.on_final_redaction(
+                2,
+                "must-not-run",
+                Arc::new(|_, _| panic!("final redactor ran after a D2 failure")),
+            );
+        });
+        let harness = Harness::builder(one_turn(&[&call]))
+            .mount(transform, Scope::Global)
+            .build()
+            .await;
+        let done = harness.run().await;
+        let text = serde_json::to_string(&crabber_extension::result_transform_failed_message(
+            "sanitize-failure",
+        ))
+        .unwrap();
+        assert_settled(&done, &call.id, ToolCallStatus::Failed, &text, true).await;
+        assert!(
+            !serde_json::to_string(&done.settled_event(&call.id).await)
+                .unwrap()
+                .contains("SECRET")
+        );
+    }
 }

@@ -818,7 +818,7 @@ async fn pre_stage_mark_error_is_monotonic_through_extension_chain() {
             "reset-error",
             Arc::new(|mut value| {
                 Box::pin(async move {
-                    value["is_error"] = json!(false);
+                    value["mark_error"] = json!(false);
                     Ok(value)
                 })
             }),
@@ -834,7 +834,7 @@ async fn pre_stage_mark_error_is_monotonic_through_extension_chain() {
         pipeline.contexts.lock().unwrap()[0].class(),
         ToolOutcomeClass::Succeeded
     );
-    assert_eq!(harness.probe.results()[0]["is_error"], true);
+    assert_eq!(harness.probe.results()[0]["context"]["is_error"], true);
     assert_settled(
         &done,
         &call.id,

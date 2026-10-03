@@ -1282,7 +1282,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_adapters_dispatch_guest_roles() {
-        use crabber_extension::{ContextAssemble, Registry, Scope, ToolResultTransform};
+        use crabber_extension::{ContextAssemble, Registry, Scope};
         let registry = Registry::new();
         let _deny = registry
             .mount(
@@ -1331,11 +1331,22 @@ mod tests {
         );
         let result = plan
             .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":{"secret":"secret"},"is_error":false}),
+            .transform_tool_result(
+                crabber_extension::ToolResultContext::new(
+                    "test".into(),
+                    true,
+                    crabber_extension::ToolInput::Normalized(Value::Null),
+                    crabber_core::ToolCallId::new(),
+                    crabber_core::SessionId::new(),
+                    crabber_core::RunId::new(),
+                    crabber_extension::ToolOutcomeClass::Succeeded,
+                ),
+                crabber_extension::TransformOutput::new(serde_json::json!({"secret":"secret"})),
             )
-            .await
-            .unwrap();
+            .await;
+        let crabber_extension::ToolResultOutcome::Completed { result, .. } = result else {
+            panic!("WASM redactor failed");
+        };
         assert!(result.to_string().contains("[REDACTED]"));
     }
 
@@ -1367,12 +1378,12 @@ mod tests {
         let out = plan
             .dispatcher
             .transform::<ToolResultTransform>(
-                serde_json::json!({"result":{"a":1},"is_error":true,"other":"kept"}),
+                serde_json::json!({"result":{"a":1},"context":{"is_error":true},"other":"kept"}),
             )
             .await
             .unwrap();
         // Only `result` is replaced; sibling fields are untouched.
-        assert_eq!(out["is_error"], true);
+        assert_eq!(out["context"]["is_error"], true);
         assert_eq!(out["other"], "kept");
         let echoed: Value = out["result"].clone();
         assert_eq!(echoed["tool_name"], "");
@@ -1382,7 +1393,9 @@ mod tests {
         assert_eq!(echoed["is_error"], true);
         let out = plan
             .dispatcher
-            .transform::<ToolResultTransform>(serde_json::json!({"result":"text","is_error":false}))
+            .transform::<ToolResultTransform>(
+                serde_json::json!({"result":"text","context":{"is_error":false}}),
+            )
             .await
             .unwrap();
         assert_eq!(out["result"]["output_json"], "\"text\"");
@@ -1394,7 +1407,7 @@ mod tests {
     async fn characterize_wasm_after_tool_unchanged_keeps_value() {
         use crabber_extension::ToolResultTransform;
         let (_registry, _mount, plan) = echo_middleware_plan().await;
-        let input = serde_json::json!({"result":"__unchanged__","is_error":true});
+        let input = serde_json::json!({"result":"__unchanged__","context":{"is_error":true}});
         let out = plan
             .dispatcher
             .transform::<ToolResultTransform>(input.clone())
@@ -1410,13 +1423,15 @@ mod tests {
         // The guest cannot write `is_error`: the host only assigns `value["result"]`.
         let out = plan
             .dispatcher
-            .transform::<ToolResultTransform>(serde_json::json!({"result":"x","is_error":true}))
+            .transform::<ToolResultTransform>(
+                serde_json::json!({"result":"x","context":{"is_error":true}}),
+            )
             .await
             .unwrap();
         let mut keys: Vec<_> = out.as_object().unwrap().keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, ["is_error", "result"]);
-        assert_eq!(out["is_error"], true);
+        assert_eq!(keys, ["context", "result"]);
+        assert_eq!(out["context"]["is_error"], true);
         assert!(out["result"].is_object());
     }
 
@@ -1427,7 +1442,7 @@ mod tests {
         let err = plan
             .dispatcher
             .transform::<ToolResultTransform>(
-                serde_json::json!({"result":"__error__","is_error":false}),
+                serde_json::json!({"result":"__error__","context":{"is_error":false}}),
             )
             .await
             .unwrap_err();
