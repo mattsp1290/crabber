@@ -168,10 +168,10 @@ flag.
 | D3 Input availability | Input is the tagged `ToolInput`. Success, execution error and permission denial: `Normalized`, the post-`ToolPrepare` `record.arguments` exactly as given to guards and policy. Unknown tool: `Raw`, the provider arguments, not normalized and not validated. Preparation error: `Unavailable { reason: PrepareFailed }`. Input is never reconstructed, reparsed or inferred from result text, and `ToolPrepare` is never rerun. The tool name is the provider-requested `call.name` with `resolved: bool`, false only for class `UnknownTool`. | confirmed | TBD (coverage audit) |
 | D4 Status | The class is the immutable `ToolOutcomeClass`. A handler returns `TransformOutput { result, mark_error }`. `mark_error` is the only way to escalate success to error; nothing turns an error into success and nothing changes the class. Persisted `is_error` is `class != Succeeded` or any handler (or the pre-stage) set `mark_error`. Native context is read-only by type; in the JSON and WASM envelopes a changed context is a D2 failure. The same rules apply to native, JSON, WASM and `ToolPipeline`. | confirmed | TBD (coverage audit) |
 | D5 Cancellation plumbing | `execute_tool` creates one child token of the run `cancellation` per call and puts it in the typed context. It is never in a JSON payload. The driver selects on it around every handler, with the cancellation arm polled first, and the call settles `Interrupted`. The existing `select!` around `permit_and_execute` (`orchestrator.rs:3173`) becomes `biased` with cancellation first. Cancellation must be observed and durably settled within `INTERRUPT_SETTLEMENT_BOUND` (1s), asserted by tests against the named constant. WASM guests in the ordinary phase are interrupted by epoch interruption tied to the token; no opt-out is taken. `resume` and `recover` gain no caller-visible cancellation source (see Recorded answers). | confirmed | TBD (coverage audit) |
-| D6 Fallback acceptance and final redaction | A value is accepted once a handler of either phase returns a valid output and the driver commits it before it observes cancellation. The seed is never an accepted value. Final redactors are registered with an explicit phase and always run after every ordinary handler, whatever their `order`. After cancellation, ordinary handlers are skipped; final redactors still run on the accepted value under one deadline and can see the cancelled token. With no accepted value, or when a final redactor fails or the deadline expires, the call settles `Interrupted` with the fixed runtime text. | confirmed | TBD (coverage audit) |
-| D5/D6 control flow | One chain driver iterates the handlers and keeps the latest accepted value in its own state, outside every callback future. It is implemented as a `Dispatcher` method in `crabber-extension` (handler mount data is crate-private there) and called by the runtime. On cancellation it drops only an in-flight ordinary handler's future; that handler's cleanup survives through D7. An in-flight final redactor is not dropped. The driver keeps running and drives the remaining final redactors under `FINAL_REDACTION_DEADLINE` (500ms), one deadline measured from the instant cancellation was observed. Cancellation to durable settlement stays within the D5 bound. | confirmed | TBD (coverage audit) |
+| D6 Fallback acceptance and final redaction | A value is accepted once a handler of either phase returns a valid output and the driver commits it before it observes cancellation. The seed is never an accepted value. Final redactors are registered with an explicit phase and always run after every ordinary handler, whatever their `order`. After cancellation, ordinary handlers are skipped; final redactors still run on the accepted value under one deadline and can see the cancelled token. With no accepted value, or when a final redactor fails or the deadline expires, the call settles `Interrupted` with the fixed runtime text. Because ordinary handlers are skipped after cancellation, an ordinary-phase redactor protects nothing once cancellation is observed: a redactor relied on for protection must be registered as a final redactor. | confirmed | TBD (coverage audit) |
+| D5/D6 control flow | One chain driver iterates the handlers and keeps the latest accepted value in its own state, outside every callback future. It is implemented as a `Dispatcher` method in `crabber-extension` (handler mount data is crate-private there) and called by the runtime. On cancellation it drops only an in-flight ordinary handler's future; that handler's cleanup survives through D7. An in-flight final redactor is not dropped merely because cancellation was observed, provided a value had been accepted before it started. It is dropped when nothing was accepted (it was running on the seed), when the deadline expires, when its mount starts closing, or when a `Parallel` sibling's error drops the whole call; each of those ends in the fixed text. The driver keeps running and drives the remaining final redactors under `FINAL_REDACTION_DEADLINE` (500ms), one deadline measured from the instant cancellation was observed. Cancellation to durable settlement stays within the D5 bound. | confirmed | TBD (coverage audit) |
 | Settlement precedence | Once the driver has observed cancellation the outcome is always `Interrupted` with the fixed runtime text, unless an accepted value then passes every remaining final redactor, at least one of which ran after cancellation or was in flight when it was observed; then only that redacted value is persisted, still with status `Interrupted`. With no final redactor mounted nothing tool-authored is persisted after cancellation. A failure, panic, malformed envelope, context mismatch, mount close or deadline expiry after cancellation also yields `Interrupted` with the fixed text; D2 `Failed` applies only when cancellation was not observed. A driver that returned before cancellation was not interrupted: its result is persisted normally and the run is interrupted at its next check. Race tests cover cancellation during an ordinary handler, between handlers, during a final redactor, and a final redactor failing, panicking or timing out after cancellation, plus cancellation with no final redactor mounted. | confirmed | TBD (coverage audit) |
-| D7 Cleanup and mount close | Each mount owns a cleanup tracker, exposed through the context, so cleanup survives a dropped callback future. `MountHandle::close` deactivates the mount, sends the close signal (which also fails that mount's in-flight and later result-transform invocations per D2), then waits for plan leases and the tracker under one bound (default 5s, configurable). On expiry it returns `ExtensionError::MountCloseTimeout` naming the extension and calls the close observer. It never aborts a task. Cleanup that owns a child reacts to the close signal by killing it (`start_kill`, `kill_on_drop` as backstop) and keeps its permit until `wait()` returns. After a timeout the mount's detached close task remains as the process-lifetime reaper: it keeps waiting, so permits are held until children are reaped, then runs rollback and `shutdown`. | overridden: the default text made the reaper "owned by the runtime". `crabber-extension` cannot depend on `crabber-runtime`, and `MountHandle::close` already runs its work in a detached task (`registry.rs:415`), so that task is the reaper and `crabber-extension` owns it. The observation is delivered through a registry-level observer, not the runtime `OperationalObservation`, which requires a session and run. Everything else is confirmed. | TBD (coverage audit) |
+| D7 Cleanup and mount close | Each mount owns a cleanup tracker, exposed through the context, so cleanup survives a dropped callback future. `MountHandle::close` deactivates the mount, sends the close signal (which also fails that mount's in-flight and later result-transform invocations per D2), then waits for plan leases and the tracker under one bound (default 5s, configurable). On expiry it returns `ExtensionError::MountCloseTimeout` naming the extension and calls the close observer. It never aborts a task. Cleanup that owns a child reacts to the close signal by killing it (`start_kill`, `kill_on_drop` as backstop) and keeps its permit until `wait()` returns. After a timeout the mount's detached close task remains as the process-lifetime reaper: it keeps waiting, so permits are held until children are reaped, then runs rollback and `shutdown`. `Registry::close_all` makes the registry terminal before it deactivates any mount (Mount close, below). | overridden: the default text made the reaper "owned by the runtime". `crabber-extension` cannot depend on `crabber-runtime`, and `MountHandle::close` already runs its work in a detached task (`registry.rs:415`), so that task is the reaper and `crabber-extension` owns it. The observation is delivered through a registry-level observer and a defaulted `Observer` method, not the runtime `OperationalObservation`, which requires a session and run. Everything else is confirmed. | TBD (coverage audit) |
 | D8 Interruption test infrastructure | The real interruption test runs the real `Orchestrator` through the `crabber` facade in `crates/crabber/tests/`, with `MemoryStore`, in the `check` job. The fixture reduction child is source only, built at test time, modeled on `crates/crabber/tests/admission_support/{child,process}.rs`. The child writes a ready line on its pipe before the test interrupts. "Permit" is a reducer-owned semaphore permit per child, held by the cleanup task until `wait()` reaps it. The test asserts the permit count recovers only after reaping, the PID is gone, pipes are closed, both bounds hold against the named constants, mount close through `Agent::close_extensions` joins the cleanup, and the durable status is `Interrupted` with no unredacted output. | confirmed | TBD (coverage audit) |
 | D9 ABI, schema and fingerprint | Clean break, no shims. The point ID stays `crabber/tool/result-transform`. `RESULT_TRANSFORM_CONTRACT_VERSION` enters `compute_fingerprint`, so every plan frozen under the old contract fails the strict check (`RuntimeError::PlanChanged`) instead of resuming. WASM guests get the new envelope through `crates/crabber-wasm/src/adapters.rs` with no WIT change; only guest fixture sources change and generated `fixtures/wasm/` binaries stay uncommitted. There is no durable schema change; one record-content change is recorded (unknown-tool arguments, Recorded answer 1). | confirmed | TBD (coverage audit) |
 | D10 Recovery and replay | On `resume` and `recover`, an unfinished call takes one of two paths, decided from the stored record. **Fixed settlement:** a call found `Running`, and a `Pending` call that is not `retry_safe` on a run that is not `Paused`, is settled by `settle_interrupted_call` with status `Interrupted` and the fixed runtime text. No pre-stage, no transform, no final redactor runs, and nothing tool-authored is persisted. **Re-execution:** every other `Pending` call (`retry_safe`, or any `Pending` call of a `Paused` run) is re-claimed and run through `execute_tool`: executor, pre-stage and the full result chain, with the same durable call, session and run IDs and with class and input derived from the stored record only, never from in-memory substitutes. `ToolPrepare` is not rerun. | overridden: the default text said "transforms never run during recovery", which does not match the code. `resume_loaded` re-executes `Pending` calls through `execute_tool` and its whole chain (`orchestrator.rs:984-1024`). The decision is restated as the split above; the fixed path is unchanged. | TBD (coverage audit) |
@@ -296,6 +296,8 @@ back from a native handler, and the driver replaces the phase, the effective
 #[derive(Debug, Clone)]
 pub struct CleanupTracker { /* private */ }
 impl CleanupTracker {
+    /// A tracker with no owner: its close signal never fires and nothing joins it.
+    pub fn detached() -> Self;
     /// Spawns on the current Tokio runtime. The task is tracked until it
     /// finishes, whether or not the returned handle or the caller is dropped.
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
@@ -325,9 +327,12 @@ pub struct CleanupJoinTimeout { pub pending: usize }
 ```
 
 A callback cannot close or join a tracker. `spawn` after the close signal still
-runs and tracks the task, so cleanup started late is not lost. The detached
-tracker of `ToolResultContext::new` has no owner: its close signal never fires
-and nothing joins it.
+runs and tracks the task, so cleanup started late is not lost.
+`ToolResultContext::new` and a `Handler` that has not been mounted hold
+`CleanupTracker::detached()`. `CleanupTracker` lives in `result_transform.rs`
+and has a crate-private constructor from a `TaskTracker` and a close token;
+`CleanupOwner` and `CleanupJoinTimeout` live in `registry.rs` and are built on
+it.
 
 #### Registration (`crabber-extension`, `Registrar`)
 
@@ -345,17 +350,26 @@ pub fn json_result_transform(cb: Callback) -> ResultTransformCallback;
 ```
 
 - JSON `on_transform(ToolResultTransform::ID, order, id, cb)` **stays** and is
-  an envelope adapter: it registers `json_result_transform(cb)` with phase
-  `Ordinary`. It is not rejected at mount. A JSON handler becomes a final
-  redactor through `on_final_redaction_json`. JSON handlers receive neither the
-  token nor the tracker; they are interrupted only by their future being
-  dropped.
+  not rejected at mount. It keeps storing an ordinary JSON callback; the driver
+  applies `json_result_transform` to it and treats it as phase `Ordinary`. A
+  JSON handler becomes a final redactor through `on_final_redaction_json`,
+  which stores `json_result_transform(cb)` with phase `FinalRedaction`. JSON
+  handlers receive neither the token nor the tracker; they are interrupted
+  only by their future being dropped.
+- **A redactor relied on for protection must be a final redactor**
+  (`on_final_redaction` or `on_final_redaction_json`). Ordinary handlers are
+  skipped once cancellation is observed, so when any final redactor is mounted
+  the accepted value can be persisted without an ordinary-phase redactor having
+  run. That covers every `on_transform` and `on_result_transform` handler and
+  every WASM guest. The example redactors in `examples/native-extension` and
+  `examples/agui-sse` are registered with `on_final_redaction`.
 - `Handler` gains `pub(crate) phase: TransformPhase` and
-  `pub(crate) cleanup: CleanupTracker`, and `HandlerFn` gains
-  `ResultTransform(ResultTransformCallback)`. `Registry::mount` stamps the
-  mount's tracker onto each handler where it already stamps `mount_id`
-  (`registry.rs:239-243`); that is how the driver obtains each handler's mount
-  tracker and close signal.
+  `pub(crate) cleanup: CleanupTracker` (default `CleanupTracker::detached()`),
+  and `HandlerFn` gains `ResultTransform(ResultTransformCallback)`.
+  `Registry::mount` stamps the mount's tracker onto each handler where it
+  already stamps `mount_id` (`registry.rs:239-243`); the driver reads
+  `handler.cleanup` for both the tracker it puts in the context and the mount's
+  close signal.
 - Chain order: every `Ordinary` handler in the existing sort order
   `(order, scope_rank, mount_seq, registration_seq)`, then every
   `FinalRedaction` handler in that same order. Phase dominates `order`.
@@ -363,9 +377,12 @@ pub fn json_result_transform(cb: Callback) -> ResultTransformCallback;
   `"{order}:{mount_seq}:{phase}"` with phase `ordinary` or `final_redaction`,
   so moving a redactor between phases changes the plan fingerprint.
 - `Dispatcher::transform::<ToolResultTransform>` and
-  `transform_pinned::<ToolResultTransform>` return
-  `Err(ExtensionError::Rejected(ToolResultTransform::ID))`. The driver is the
-  only way to run this point, so no caller can bypass it silently.
+  `transform_pinned::<ToolResultTransform>` end up returning
+  `Err(ExtensionError::Rejected(ToolResultTransform::ID))`, so the driver is
+  the only way to run this point and no caller can bypass it silently. The
+  rejection lands last (`crabber-8q7h`), after every in-tree caller has moved
+  to the driver; until then the generic waterfall keeps its old behaviour so
+  each intermediate slice passes the workspace tests.
 
 #### Driver (`crabber-extension`, `Dispatcher`)
 
@@ -382,24 +399,40 @@ impl Dispatcher {
 `context` carries the per-call child token (`with_cancellation`); the driver
 selects on `context.cancellation()`. `seed` is the path's seed value with the
 pre-stage's `mark_error` (false on the four paths that have no pre-stage). The
-driver never returns `Err` and never panics. Per handler it:
+driver never returns `Err` and never panics.
+
+On entry it checks the token once: if it is already cancelled it returns
+`Interrupted { redacted: None }` without invoking anything, whether or not
+handlers are mounted. Then, per handler, it:
 
 1. Fails with `Failed { handler }` if the handler's mount is closing.
-2. Clones the context with that handler's phase, tracker and the effective
-   `is_error`, and invokes the callback inside `with_mount` and
+2. Clones the context with that handler's phase, `handler.cleanup` and the
+   effective `is_error`, and invokes the callback inside `with_mount` and
    `catch_unwind`, in a `biased` select: cancellation first, then the mount
    close signal, then the callback.
 3. Commits a valid `Ok(output)` as the accepted value and ORs `mark_error`.
 4. On `Err`, panic or mount close: `Failed { handler }` if cancellation was not
    observed, otherwise `Interrupted { redacted: None }`.
-5. On cancellation: drops an in-flight ordinary handler; returns
-   `Interrupted { redacted: None }` at once if nothing is accepted or no final
-   redactor is mounted; otherwise finishes an in-flight final redactor and runs
-   the remaining final redactors on the accepted value under
-   `FINAL_REDACTION_DEADLINE`, returning `Interrupted { redacted: Some(value) }`
-   only if all of them return valid output in time.
+5. On cancellation:
+   - nothing accepted yet (the in-flight handler was running on the seed), or
+     no final redactor mounted: drops the in-flight handler, of either phase,
+     and returns `Interrupted { redacted: None }` at once. A sole final
+     redactor in flight on the seed is this case;
+   - a value was accepted and the in-flight handler is ordinary: drops it and
+     runs every final redactor on the accepted value;
+   - a value was accepted and the in-flight handler is a final redactor: lets
+     it finish, then runs the final redactors after it.
 
-With no handlers and no cancellation it returns
+   The final redactors run under `FINAL_REDACTION_DEADLINE`, measured from the
+   instant cancellation was observed. The driver returns
+   `Interrupted { redacted: Some(value) }` only if all of them return valid
+   output in time; on deadline expiry it drops the one in flight and returns
+   `Interrupted { redacted: None }`.
+
+After the last handler's output is committed the driver returns `Completed`
+without checking the token again; cancellation that arrives later was not
+observed (settlement precedence). With no handlers and a token that is not
+cancelled it returns
 `Completed { result: seed.result, is_error: class.is_error() || seed.mark_error }`.
 
 #### JSON envelope
@@ -536,6 +569,8 @@ pub enum ExtensionError {
     // ...existing variants...
     #[error("mount close timed out: {extension}")]
     MountCloseTimeout { extension: String },
+    #[error("extension registry is closed")]
+    RegistryClosed,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountCloseTimeout {
@@ -548,6 +583,8 @@ pub type MountCloseObserver = Arc<dyn Fn(&MountCloseTimeout) + Send + Sync>;
 impl Registry {
     pub fn with_close_timeout(self, bound: Duration) -> Self;
     pub fn with_close_observer(self, observer: MountCloseObserver) -> Self;
+    /// `Err(ExtensionError::RegistryClosed)` once `close_all` has started.
+    pub fn try_acquire(&self, session: &SessionId) -> Result<RunPlan, ExtensionError>;
 }
 
 // crabber-runtime
@@ -567,10 +604,39 @@ impl Agent {
 
 `MountHandle::close` and `Registry::close_all` keep their signatures. Both
 `Registry` settings are shared by clones and are set before the first mount.
-`close_all` attempts every mount in reverse mount order, each under its own
-bound, and returns the first error after attempting all of them (today it
-stops at the first). A later `close` on a mount that timed out waits again
-under the bound and returns `Ok` once the reaper has finished.
+A later `close` on a mount that timed out waits again under the bound and
+returns `Ok` once the reaper has finished.
+
+**`close_all` is terminal, and the terminal state comes first.**
+
+1. Under the registry mutex that `acquire` takes, in one critical section,
+   `close_all` sets a `closed` flag in `RegistryInner` and deactivates every
+   mount. No plan can be acquired between the flag and any deactivation, so
+   no run ever gets a plan that contains some mounts but not a closed one.
+2. It sends the close signal to every mount.
+3. It joins each mount in reverse mount order, each under its own bound, and
+   returns the first error after attempting all of them (today it stops at the
+   first).
+
+From step 1 on, for every clone of the registry, `try_acquire` and
+`RunPlanProvider::acquire_plan` return `Err(ExtensionError::RegistryClosed)`
+and `mount` returns the same error. The runtime already maps an
+`acquire_plan` error to `RuntimeError::Extension` on `prompt`, `resume` and
+`recover` (`orchestrator.rs:923-927`, `:1588-1592`). `Registry::acquire` keeps
+its signature and panics on a closed registry; it is `try_acquire` unwrapped.
+The registry stays terminal when `close_all` returns `MountCloseTimeout`, and
+there is no reopen.
+
+For a host that calls `Registry::close_all` directly this means: the registry
+is unusable afterwards and every later run attempt through an `Orchestrator`
+using it fails with `RuntimeError::Extension`; build a new registry to
+continue. Closing one mount with `MountHandle::close` is **not** terminal: new
+plans simply omit that mount, so a host must not close a redactor's mount that
+way while it still admits runs.
+
+`Agent::close_extensions` calls `close_all` and adds no flag of its own. An
+agent built without extensions has no registry: the call returns `Ok(())` and
+the agent keeps working, since there is nothing to lose.
 
 ### Recorded answers
 
@@ -586,6 +652,7 @@ from the record alone:
 | object whose only key is `$crabber_unknown_tool`, holding an object with `raw` | either | `UnknownTool` | `Raw(raw)` |
 | object whose only key is `$crabber_unknown_tool`, any other shape | either | `UnknownTool` | `Unavailable { Unresolved }` |
 | object whose only key is `$crabber_prepare_error` | either | `PrepareFailed` | `Unavailable { PrepareFailed }` |
+| object whose only key is any other key starting with `$crabber_` | either | `PrepareFailed` | `Unavailable { PrepareFailed }` |
 | anything else | yes | from execution | `Normalized(arguments)` |
 | anything else | no (the defensive `(None, Ok(_))` arm) | `UnknownTool`, `resolved` false, seed `"unknown tool: <name>"` | `Unavailable { Unresolved }` |
 
@@ -596,12 +663,24 @@ from the record alone:
   `"unknown tool: "` text, which a preparation error can also produce; and a
   re-executed unknown call on a paused run has no other source for `Raw`
   (`PendingCall` is rebuilt from the record).
+- *Reserved keys.* The model controls a resolvable tool's arguments, so
+  prepared arguments could themselves be `{"$crabber_unknown_tool": …}` and be
+  read back as an unknown tool. `stage_tool` closes this: when the prepared
+  arguments of a resolved tool are an object whose only key starts with
+  `$crabber_`, it records a preparation failure
+  (`$crabber_prepare_error` with the fixed text `reserved argument key`) and
+  the tool is not run. A record staged under this contract therefore carries a
+  sole `$crabber_*` key only when the runtime wrote it. The same hole exists
+  today for `$crabber_prepare_error` (`orchestrator.rs:3123-3128`) and closes
+  with it.
 - *Persistence exposure.* Raw provider arguments for unknown tools become
-  durable in the tool-call record. They are unvalidated and unnormalized. When
-  they parsed, the assistant message already persists the same value in its
-  `ToolCall` block, so the record adds a second copy, not a new class of data.
-  Hosts that treat tool-call records differently from messages must account
-  for it, and bounded-snapshot sizes for such calls grow by the argument size.
+  durable in the tool-call record. They are unvalidated and unnormalized. The
+  assistant message already persists exactly the same value in its `ToolCall`
+  block, parsed arguments as JSON and unparseable ones as a JSON string of the
+  raw text (`orchestrator.rs:3017-3023`). The record therefore adds a second
+  copy in both cases, not a new class of data. Hosts that treat tool-call
+  records differently from messages must account for it, and bounded-snapshot
+  sizes for such calls grow by the argument size.
 - *Defensive arm.* The stored arguments there are normalized for a tool that no
   longer resolves. They are exposed neither as `Raw` (they are not provider
   arguments) nor as `Normalized` (a binding must never match an unresolved
@@ -640,22 +719,45 @@ failures, and guest-authored error text is never persisted.
 
 - *Reason.* D9 limits the WASM change to the adapter and guest fixture
   sources; the envelope already carries class, input tag and `mark_error`.
-- *Interruption.* Token-driven epoch interruption, no opt-out. The adapter
-  passes `context.cancellation()` into the call; the per-store
-  `epoch_deadline_callback` (`crates/crabber-wasm/src/lib.rs:700`) also traps
-  when the token is cancelled, within one 10ms epoch tick plus the time to
-  reach a safepoint. The driver additionally drops the call future. A guest
-  blocked inside a host import is released by the dropped future, not by the
-  epoch.
-- *Exclusion.* WASM handlers are always phase `Ordinary`. A WASM guest cannot
-  be a final redactor in this change, so a value only a WASM guest redacted is
-  never persisted after cancellation.
+- *Interruption.* Token-driven epoch interruption, no opt-out. A new method
+  carries the token; `LoadedModule::call` keeps its signature and behaviour
+  and is the same call with a token that is never cancelled:
+
+  ```rust
+  impl LoadedModule {
+      pub async fn call_cancellable(
+          &self,
+          interface: &str,
+          function: &str,
+          args: &[Val],
+          cancellation: &CancellationToken,
+      ) -> Result<Val, WasmError>;
+  }
+  ```
+
+  The adapter calls it with `context.cancellation()`. The token is captured
+  by the per-store `epoch_deadline_callback`
+  (`crates/crabber-wasm/src/lib.rs:700`), which also traps when the token is
+  cancelled, within one 10ms epoch tick plus the time to reach a safepoint.
+  The driver additionally drops the call future, which also releases a caller
+  waiting on the module's `serial` mutex and a guest blocked inside a host
+  import.
+- *Exclusion.* WASM handlers are always phase `Ordinary`; a WASM guest cannot
+  be a final redactor in this change. Like every ordinary handler it is
+  skipped once cancellation is observed, so **a WASM redactor cannot provide
+  the protection guarantee**: with a native or JSON final redactor mounted,
+  the accepted value is persisted after cancellation without the WASM guest
+  having run on it, and with none mounted nothing tool-authored is persisted.
+  A host that needs redaction to hold under cancellation mounts a native or
+  JSON final redactor.
 - *Consequences.* This is an ABI break without a WIT diff: a guest built for
   the old contract returns a bare result and every call it handles settles
   `Failed`. `all-in-one` and `redact-middleware` are rewritten to parse and
   return the envelope. The input appears in two arguments, so large inputs
   reach `max_input_bytes` sooner. The test at
-  `crates/crabber-wasm/src/lib.rs:1334` moves to the driver.
+  `crates/crabber-wasm/src/lib.rs:1334` moves to the driver. `crabber-rmjd`
+  moves the adapter to `on_result_transform` using `call`; `crabber-nzy3` adds
+  `call_cancellable` and switches the adapter to it.
 
 **3. D7 ownership and reachability.**
 - *Observation.* `Registry` takes an optional `MountCloseObserver`
@@ -672,17 +774,24 @@ failures, and guest-authored error text is never persisted.
   extension's own cleanup tasks. It lives until those tasks finish or the Tokio
   runtime shuts down, where `kill_on_drop` is the backstop.
 - *Reaching close.* `Agent::close_extensions` calls `Registry::close_all` and
-  returns `Ok(())` when the agent has no registry. It is terminal: afterwards
-  `prompt`, `resume` and `recover` on that agent fail with
-  `RuntimeError::Extension`, because a deactivated mount would otherwise drop
-  out of new plans and a redactor would silently stop applying. The name avoids
-  the existing `datadog`-only `Agent::shutdown`. It does not interrupt runs;
-  the host interrupts them first, and a run still holding a plan lease counts
-  against the bound.
-- *Consequences.* `crabber-b4zy` spans three crates for this. The D8 test
-  calls `close_extensions` after the interrupt, and a second test forces the
-  timeout and asserts the error, the observer call, the killed child, and the
-  permit released only after reaping.
+  returns `Ok(())` when the agent has no registry. It is terminal from the
+  moment it starts, not from when it returns: `close_all` closes the registry
+  before deactivating any mount (Mount close, above), so a `prompt`, `resume`
+  or `recover` that races with it fails with `RuntimeError::Extension` instead
+  of getting a plan without the redactor, and it stays terminal when the call
+  returns `MountCloseTimeout`. The name avoids the existing `datadog`-only
+  `Agent::shutdown`. It does not interrupt runs; the host interrupts them
+  first, and a run still holding a plan lease counts against the bound.
+- *Consequences.* The registry half is `crabber-b4zy`; the `Observer` method
+  and the facade are `crabber-eig3`, which is ordered after it and owns
+  `orchestrator.rs` at that point. Required tests: in `crabber-b4zy`, with two
+  mounts and a lease held on the first, a `close_all` in progress makes a
+  concurrent `acquire_plan` return `Err(RegistryClosed)`, and it still does
+  after `close_all` returned `MountCloseTimeout`; in `crabber-eig3`, through
+  the facade, `prompt` during an in-progress `close_extensions` returns
+  `RuntimeError::Extension`. The D8 test calls `close_extensions` after the
+  interrupt, and a second test forces the timeout and asserts the error, the
+  observer call, the killed child, and the permit released only after reaping.
 
 **4. D6 persistence of an accepted, redacted value.**
 - *Path.* `execute_tool` settles it through its ordinary settlement code with
@@ -735,8 +844,13 @@ dependencies and is run by `cargo xtask check`; the new probe is **not** run by
 depends on `crabber` by git URL and a full 40-hex `rev`, uses no WASM, and
 passes with `cargo test` and no environment variables. The `rev` is the last
 implementation commit of the feature branch (the commit before the one that
-adds the pin). The pull request must be merged with a merge commit, not
-squashed or rebased, so that revision stays reachable from `main`. The reply
+sets the pin). Any later commit, including a review fix, makes the pin stale,
+so the pin is re-set as the final commit of the branch immediately before
+merge, and that commit changes nothing but the `rev` and the probe's lockfile.
+The pull request must be merged with a merge commit, not squashed or rebased,
+so that revision stays reachable from `main`. If a squash merge is ever
+needed, a tag on the pinned revision keeps it fetchable and is pushed first
+(a human gate). The reply
 on the request reports both the `main` merge commit and the probe's `rev`.
 `crabber-8sxd` runs the probe from a clean clone after publication.
 
@@ -755,29 +869,71 @@ lease reports `LeaseLost`, which takes precedence. A D2 failure reports
 ### Implementation order and file ownership
 
 No slice is added. Work that no slice named is assigned below and marked
-*(assigned here)*.
+*(assigned here)*. The table follows the `blocked_by` chain: each slice
+compiles and keeps the workspace tests passing using only items owned by
+itself or by a slice it is ordered after, and no file is touched by two
+slices that are not ordered by a dependency. Files a slice touches beyond its
+own `Reserves` line are marked *(extra file)*.
 
-| Slice | Owns |
-| --- | --- |
-| `crabber-cv10` | The `result_transform` module: every type, constant, fixed-text function and envelope function above except the tracker types and driver |
-| `crabber-gl4i` | Contract component in `compute_fingerprint`; re-pinning the two hashes |
-| `crabber-f7iv` | `on_result_transform`, `on_final_redaction`, `on_final_redaction_json`, `json_result_transform`, the `on_transform` adapter, `Handler.phase`, `HandlerFn::ResultTransform`; *(assigned here)* the phase in the handler component version and rejecting generic `transform` on this point |
-| `crabber-slgt` | `Dispatcher::transform_tool_result` without cancellation: order, D2 containment, D4 rules |
-| `crabber-ctj9` | Cancellation, acceptance, final-redaction phase and deadline in the driver |
-| `crabber-2xrl` | `CleanupTracker`, `CleanupOwner`, `CleanupJoinTimeout`, the mount's owner, stamping `Handler.cleanup` |
-| `crabber-b4zy` | Bounded close, `MountCloseTimeout`, the error variant, `close_all` semantics, mount-close handling in the driver; *(assigned here)* `Registry::with_close_timeout`, `with_close_observer`, `Observer::mount_close_timed_out`, `AgentBuilder::extension_close_timeout`, `Agent::close_extensions` and its terminal rule |
-| `crabber-zv2d` | Context construction on all five paths, the typed outcome; *(assigned here)* the `$crabber_unknown_tool` record content in `stage_tool` and the record-reading table |
-| `crabber-klyf` | New `ToolPipeline::transform_result`, pre-stage D2, `TOOL_PIPELINE_HANDLER_ID`; *(assigned here)* `OrchestratorBuilder::pipeline_cleanup` |
-| `crabber-orgu` | `execute_tool` on the driver, persisted forms for `Completed` and `Failed`, in-tree consumers compiling |
-| `crabber-v1we` | Per-call child token, `biased` select, both `Interrupted` settlements, the Parallel rule, measurement reason, `INTERRUPT_SETTLEMENT_BOUND`, `INTERRUPTED_RESULT_TEXT` |
-| `crabber-eig3` | The D10 split as implemented and documented in code |
-| `crabber-rmjd` | WASM adapter and guest fixture sources; *(assigned here)* the `wasm-after-tool:<module name>` handler id |
-| `crabber-nzy3` | Token in the epoch callback; the ordinary-only exclusion |
-| `crabber-ufiw`, `crabber-o8ai` | Example moves; `crabber-o8ai` owns the replacement test of answer 5 |
-| `crabber-uvzv`, `crabber-wzlh`, `crabber-mfil` | D8 child and reducer, the real interruption and close tests, the PostgreSQL durable check |
-| `crabber-mlgw`, `crabber-8sxd` | The probe of answer 6 and its verification |
-| `crabber-exbv` | Filling the `Covered by` column |
-| `crabber-mx0r` | The user-facing guide below, `README.md` and example READMEs |
+Order: `cv10` → `gl4i` → `f7iv` → {`slgt` → `ctj9`, `2xrl`}; `b4zy` after
+`2xrl` and `ctj9`; `zv2d` after `cv10` and `5f1n`; `klyf` after `zv2d`; `orgu`
+after `klyf`, `ctj9`, `2xrl` and `0bks`; `v1we` after `orgu`; `eig3` after
+`v1we` and `b4zy`; `rmjd` after `orgu`; `nzy3` after `rmjd` and `v1we`;
+`ufiw` and `o8ai` after `v1we`.
+
+| Slice | Files | Owns |
+| --- | --- | --- |
+| `crabber-cv10` | `crabber-extension/src/result_transform.rs`, `lib.rs` | `ToolInput`, `InputUnavailable`, `ToolOutcomeClass`, `TransformPhase`, `TransformOutput`, `ToolResultOutcome`, `ResultTransformCallback`, `ToolResultContext` with its crate-private phase, `is_error` and tracker setters; `CleanupTracker` including `detached()` and its crate-private constructor; the envelope functions, `EnvelopeError`, `json_result_transform`; `result_transform_failed_message`; only the `crabber-extension` constants: `RESULT_TRANSFORM_CONTRACT_VERSION`, `FINAL_REDACTION_DEADLINE`, `DEFAULT_MOUNT_CLOSE_TIMEOUT` |
+| `crabber-gl4i` | `crabber-extension/src/plan.rs`; one test in `crabber-runtime/src/tests.rs` | Contract component in `compute_fingerprint`; re-pinning the two hashes |
+| `crabber-f7iv` | `crabber-extension/src/registry.rs`, `dispatch.rs` | `Handler.phase` and `Handler.cleanup` (default detached), `HandlerFn::ResultTransform`, the phase-first sort, `on_result_transform`, `on_final_redaction`, `on_final_redaction_json`; *(assigned here)* the phase in the handler component version. `on_transform` is not changed |
+| `crabber-slgt` | `crabber-extension/src/dispatch.rs`, `result_transform.rs` | `Dispatcher::transform_tool_result` without cancellation: order, D2 containment, D4 rules, wrapping `on_transform` callbacks with `json_result_transform`, and passing `handler.cleanup`, the phase and the effective `is_error` into each handler's context |
+| `crabber-ctj9` | same two files | Entry check, cancellation, acceptance, the final-redaction phase and deadline in the driver |
+| `crabber-2xrl` | `crabber-extension/src/registry.rs`; `lib.rs` *(extra file, one re-export line)* | `CleanupOwner` and `CleanupJoinTimeout` (in `registry.rs`), the mount's owner, stamping `Handler.cleanup` in `Registry::mount`. It does not touch `dispatch.rs` or `result_transform.rs`, which `slgt` and `ctj9` hold concurrently |
+| `crabber-b4zy` | `crabber-extension/src/registry.rs`, `plan.rs`; `dispatch.rs` and `lib.rs` *(extra files)* | Bounded close under one bound, `MountCloseTimeout`, `MountCloseObserver`, both new `ExtensionError` variants, the mount-closing checks in the driver (steps 1, 2 and 4); *(assigned here)* `Registry::with_close_timeout`, `with_close_observer`, `try_acquire`, the terminal `closed` flag and the three-step `close_all`, with the registry test of answer 3. Nothing in `crabber-runtime` or `crabber` |
+| `crabber-zv2d` | `crabber-runtime/src/orchestrator.rs` | Context construction on all five paths, the private typed outcome; *(assigned here)* the `$crabber_unknown_tool` record content, the reserved-key rule in `stage_tool` and the record-reading table. Needs only `cv10` items |
+| `crabber-klyf` | `crabber-runtime/src/policy.rs`, `orchestrator.rs`, `tests.rs`, `lib.rs` | New `ToolPipeline::transform_result`, pre-stage D2, `TOOL_PIPELINE_HANDLER_ID`; *(assigned here)* `OrchestratorBuilder::pipeline_cleanup` |
+| `crabber-orgu` | `crabber-runtime/src/orchestrator.rs`, `extension_tests.rs`, `result_transform_tests/mod.rs` | `execute_tool` on the driver, persisted forms for `Completed` and `Failed`. In-tree `on_transform` consumers keep working unchanged through the driver's wrapping, except the `extension_tests.rs` handler that writes `is_error` |
+| `crabber-v1we` | `crabber-runtime/src/orchestrator.rs`; `lib.rs` *(extra file, re-exports)* | Per-call child token, `biased` select, both `Interrupted` settlements, the Parallel rule, measurement reason, `INTERRUPT_SETTLEMENT_BOUND`, `INTERRUPTED_RESULT_TEXT` |
+| `crabber-eig3` | `crabber-runtime/src/orchestrator.rs`; `crates/crabber/src/agent.rs` *(extra file)* | The D10 split as implemented and documented in code; *(assigned here)* `Observer::mount_close_timed_out` (the trait is in `orchestrator.rs`), `AgentBuilder::extension_close_timeout`, `Agent::close_extensions`, the facade's registry observer, and the facade test of answer 3 |
+| `crabber-rmjd` | `crabber-wasm/src/adapters.rs`, `lib.rs` tests, guest fixture sources | Adapter on `on_result_transform` with the argument table of answer 2, envelope reply handling, guest fixtures; *(assigned here)* the `wasm-after-tool:<module name>` handler id. No WIT file changes |
+| `crabber-nzy3` | `crabber-wasm/src/lib.rs`, `adapters.rs` | `LoadedModule::call_cancellable`, the token in the epoch callback, the ordinary-only exclusion |
+| `crabber-ufiw` | `examples/native-extension/**` | The example redactor on `on_final_redaction`; README |
+| `crabber-o8ai` | `examples/agui-sse/**` | The `check.rs` redactor on `on_final_redaction`; the replacement test of answer 5 |
+| `crabber-uvzv`, `crabber-wzlh`, `crabber-mfil` | as reserved | D8 child and reducer, the real interruption and close tests, the PostgreSQL durable check |
+| `crabber-mlgw`, `crabber-8sxd` | `testdata/result-transform-probe/` | The probe of answer 6 and its verification; the final pin commit |
+| `crabber-exbv` | `docs/embedding.md` | Filling the `Covered by` column |
+| `crabber-mx0r` | `docs/embedding.md`, `README.md`, READMEs | The user-facing guide below |
+| `crabber-8q7h` | files of earlier slices | Removing the old contract; *(assigned here)* making generic `transform` and `transform_pinned` reject this point, last, once no in-tree caller is left |
+
+#### Slice text overridden by this section
+
+- `crabber-cv10`: its text puts the interrupt bound in `crabber-extension`.
+  `INTERRUPT_SETTLEMENT_BOUND` is a `crabber-runtime` constant owned by
+  `crabber-v1we`; `cv10` defines only the three `crabber-extension` constants.
+- `crabber-f7iv`: its text allows changing JSON registration for this point.
+  `on_transform` is left alone; the driver wraps its callbacks.
+- `crabber-2xrl`: its text has the driver resolve a `mount_id` to a tracker
+  and keeps an in-flight count and token on the mount. The tracker is stamped
+  on the handler instead, and the close signal on that tracker is what the
+  driver observes; no separate count or token is needed.
+- `crabber-b4zy`: its text joins the tracker under the bound and then waits
+  for leases without one. Leases and the tracker share **one** bound, so
+  `close` can now return `MountCloseTimeout` after 5s while a long run still
+  holds a plan lease; the reaper finishes the close when the run ends. Its
+  text also does not mention the terminal registry state, which it owns.
+- `crabber-eig3`: its text reserves `observation.rs` for the D7 observation
+  and expects a runtime-owned reaper. The `Observer` trait is in
+  `orchestrator.rs`, `observation.rs` is not touched, there is no runtime
+  reaper, and the slice additionally owns the facade methods in
+  `crates/crabber/src/agent.rs`.
+- `crabber-o8ai`: its text wants the replacement test to still prove that
+  unresolved work stays registered. Answer 5 drops that requirement for this
+  test, because the premise no longer exists; the property stays covered by
+  the held-admission test.
+- `crabber-ufiw`, `crabber-o8ai`: the example redactors move to
+  `on_final_redaction`, not merely to the typed ordinary registration.
+- `crabber-mlgw`: the pin it writes is provisional; it is re-set as the final
+  commit before merge (answer 6).
 
 ### User-facing guide
 
