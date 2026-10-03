@@ -398,6 +398,75 @@ mod tests {
             Err(ExtensionError::Rejected(RunBeforeExecute::ID))
         );
     }
+    // Expected to change with crabber-gl4i / crabber-f7iv (typed result-transform chain, D5/D6 phases).
+    #[tokio::test]
+    async fn characterize_result_transform_order_across_two_mounts() {
+        // (tag, order, scope_rank, mount_seq, registration_seq, mount_id), deliberately shuffled.
+        let specs: [(&str, i32, u8, u64, usize, u64); 6] = [
+            ("last", 5, 0, 1, 2, 1),
+            ("r1m1s0", 0, 1, 1, 0, 1),
+            ("r0m2s0", 0, 0, 2, 0, 2),
+            ("r0m1s1", 0, 0, 1, 1, 1),
+            ("first", -1, 1, 2, 0, 2),
+            ("r0m1s0", 0, 0, 1, 0, 1),
+        ];
+        let handlers = specs
+            .into_iter()
+            .map(
+                |(tag, order, scope_rank, mount_seq, registration_seq, mount_id)| {
+                    let mut h = handler(
+                        ToolResultTransform::ID,
+                        Mode::Transform,
+                        order,
+                        tag,
+                        HandlerFn::Ordinary(callback(move |v| {
+                            Ok(Value::String(format!("{}{tag};", v.as_str().unwrap_or(""))))
+                        })),
+                    );
+                    h.scope_rank = scope_rank;
+                    h.mount_seq = mount_seq;
+                    h.registration_seq = registration_seq;
+                    h.mount_id = mount_id;
+                    h
+                },
+            )
+            .collect();
+        let out = Dispatcher::new(handlers)
+            .transform::<ToolResultTransform>(Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(out, "first;r0m1s0;r0m1s1;r0m2s0;r1m1s0;last;");
+    }
+    // Expected to change with crabber-gl4i (D2: handler error settles Failed naming the handler id).
+    #[tokio::test]
+    async fn characterize_result_transform_error_aborts_waterfall() {
+        let later = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&later);
+        let d = Dispatcher::new(vec![
+            handler(
+                ToolResultTransform::ID,
+                Mode::Transform,
+                0,
+                "fails",
+                HandlerFn::Ordinary(callback(|_| Err(ExtensionError::Plan("boom".into())))),
+            ),
+            handler(
+                ToolResultTransform::ID,
+                Mode::Transform,
+                1,
+                "skipped",
+                HandlerFn::Ordinary(callback(move |v| {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Ok(v)
+                })),
+            ),
+        ]);
+        assert_eq!(
+            d.transform::<ToolResultTransform>(Value::Null).await,
+            Err(ExtensionError::Plan("boom".into()))
+        );
+        assert_eq!(later.load(Ordering::SeqCst), 0);
+    }
     #[tokio::test]
     async fn notify_contains_panics() {
         let d = Dispatcher::new(vec![handler(

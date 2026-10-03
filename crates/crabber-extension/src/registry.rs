@@ -715,6 +715,50 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    struct OrderedClose(Arc<Mutex<Vec<&'static str>>>);
+    #[async_trait]
+    impl Extension for OrderedClose {
+        fn id(&self) -> &'static str {
+            "ordered"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let log = Arc::clone(&self.0);
+            r.defer(move || log.lock().unwrap().push("cleanup"));
+            Ok(())
+        }
+        async fn shutdown(&self) {
+            self.0.lock().unwrap().push("shutdown");
+        }
+    }
+    // Expected to change with crabber-b4zy (D7: close waits on the cleanup tracker under a bound).
+    #[tokio::test]
+    async fn characterize_close_orders_lease_wait_cleanup_shutdown() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let registry = Registry::new();
+        let handle = registry
+            .mount(Arc::new(OrderedClose(Arc::clone(&log))), Scope::Global)
+            .await
+            .unwrap();
+        let plan = registry.acquire(&SessionId::new());
+        let task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.close().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        assert!(log.lock().unwrap().is_empty());
+        log.lock().unwrap().push("release");
+        plan.release();
+        task.await.unwrap().unwrap();
+        assert_eq!(*log.lock().unwrap(), ["release", "cleanup", "shutdown"]);
+    }
+
     #[tokio::test]
     async fn canceled_first_close_still_finishes_once() {
         let count = Arc::new(AtomicUsize::new(0));
