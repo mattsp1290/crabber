@@ -11,6 +11,7 @@ mod binding;
 mod cancel;
 mod compose;
 mod context;
+mod interrupted_runtime;
 mod paths;
 mod recovery;
 mod tamper;

@@ -1010,6 +1010,8 @@ impl Orchestrator {
                 .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
                 .await?;
             let mut interrupted = false;
+            // execute_tool may already have settled a redacted Interrupted result.
+            // Listing only unfinished calls keeps both live and resumed cleanup single-write.
             for call in self.store.list_unfinished_tool_calls(run_id).await? {
                 if call.status == ToolCallStatus::Running
                     || (run.status != RunStatus::Paused && !call.retry_safe)
@@ -1274,6 +1276,8 @@ impl Orchestrator {
         include_pending: bool,
         turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
+        // execute_tool may already have settled a redacted Interrupted result.
+        // Listing only unfinished calls keeps both live and resumed cleanup single-write.
         for call in self.store.list_unfinished_tool_calls(run_id).await? {
             if call.status == ToolCallStatus::Pending && !include_pending {
                 continue;
@@ -1299,7 +1303,7 @@ impl Orchestrator {
         turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
         let content = vec![ContentBlock::Text {
-            text: "interrupted".into(),
+            text: INTERRUPTED_RESULT_TEXT.into(),
         }];
         let message_id = MessageId::new();
         let message = Message {
@@ -3215,7 +3219,11 @@ impl Orchestrator {
                 .with_cancellation(child_cancellation.clone())
                 .with_cleanup(self.pipeline_cleanup.clone());
                 let run = tokio::select! {
-                    () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
+                    biased;
+                    () = cancellation.cancelled() => {
+                        measurement.observation.reason = TerminalReason::Cancelled;
+                        return Err(RuntimeError::Interrupted);
+                    },
                     result = self.permit_and_execute(
                     execution,
                     session,
@@ -3303,6 +3311,7 @@ impl Orchestrator {
                 .transform_tool_result(result_context, seed)
                 .await
         };
+        let interrupted = matches!(outcome, ToolResultOutcome::Interrupted { .. });
         let (status, output, is_error) = match outcome {
             ToolResultOutcome::Completed { result, is_error } => (
                 if is_error {
@@ -3318,15 +3327,19 @@ impl Orchestrator {
                 Value::String(result_transform_failed_message(&handler)),
                 true,
             ),
-            // Until the payload-carrying interruption path lands, use the fixed
-            // unfinished-call settlement and never persist a callback value.
-            ToolResultOutcome::Interrupted { .. } => {
+            ToolResultOutcome::Interrupted {
+                redacted: Some(value),
+            } => (ToolResultStatus::Interrupted, value, true),
+            // The run error arm settles unfinished calls with the fixed runtime text.
+            ToolResultOutcome::Interrupted { redacted: None } => {
                 ensure_lease(lease_lost)?;
                 measurement.observation.reason = TerminalReason::Cancelled;
                 return Err(RuntimeError::Interrupted);
             }
         };
-        measurement.observation.reason = if is_error {
+        measurement.observation.reason = if interrupted {
+            TerminalReason::Cancelled
+        } else if is_error {
             TerminalReason::ToolError
         } else {
             TerminalReason::Success
@@ -3372,7 +3385,9 @@ impl Orchestrator {
                 "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()}),
         });
         settled.correlation = Some(call.id.to_string());
-        if let Some((index, receiver, _)) = &settlement {
+        // Interrupted calls settle out of order: their error drops sibling futures,
+        // then bulk cleanup settles only calls that remain unfinished.
+        if !interrupted && let Some((index, receiver, _)) = &settlement {
             let mut receiver = receiver.clone();
             while *receiver.borrow_and_update() != *index {
                 receiver
@@ -3381,6 +3396,7 @@ impl Orchestrator {
                     .map_err(|_| RuntimeError::TaskStopped)?;
             }
         }
+        ensure_lease(lease_lost)?;
         execution
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;
@@ -3392,6 +3408,9 @@ impl Orchestrator {
         plan.dispatcher
             .notify::<crabber_extension::ToolSettled>(settled_projection)
             .await;
+        if interrupted {
+            return Err(RuntimeError::Interrupted);
+        }
         if let Some((index, _, sender)) = settlement {
             let _ = sender.send(index + 1);
         }
@@ -3548,6 +3567,12 @@ impl Orchestrator {
         })
     }
 }
+
+/// Test bound from cancellation to durable settlement; store writes have no timer.
+pub const INTERRUPT_SETTLEMENT_BOUND: Duration = Duration::from_secs(1);
+
+/// Fixed runtime-authored content for interruption without a protected result.
+pub const INTERRUPTED_RESULT_TEXT: &str = "interrupted";
 
 /// Handler id used for sanitized host pre-stage failures.
 pub const TOOL_PIPELINE_HANDLER_ID: &str = "crabber/tool-pipeline";
