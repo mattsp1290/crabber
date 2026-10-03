@@ -240,6 +240,8 @@ impl Default for ConfigSnapshot {
 
 /// Callbacks execute inline: implementations must remain bounded and nonblocking.
 pub trait Observer: Send + Sync {
+    /// Local mount-close timeout; a registry close has no session or run identity.
+    fn mount_close_timed_out(&self, _timeout: &crabber_extension::MountCloseTimeout) {}
     /// One local execution measurement; does not assert durable settlement.
     fn operational_completed(&self, _observation: &OperationalObservation) {}
     fn operational_completed_in_attempt(
@@ -1010,8 +1012,9 @@ impl Orchestrator {
                 .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
                 .await?;
             let mut interrupted = false;
-            // execute_tool may already have settled a redacted Interrupted result.
-            // Listing only unfinished calls keeps both live and resumed cleanup single-write.
+            // D10 fixed settlement: Running calls and non-retry-safe Pending calls
+            // outside a Paused run get only runtime-authored interrupted text.
+            // No executor, pre-stage, result transform or final redactor runs here.
             for call in self.store.list_unfinished_tool_calls(run_id).await? {
                 if call.status == ToolCallStatus::Running
                     || (run.status != RunStatus::Paused && !call.retry_safe)
@@ -1032,6 +1035,8 @@ impl Orchestrator {
                     interrupted = true;
                     continue;
                 }
+                // D10 re-execution: retain durable identity and input, skip ToolPrepare,
+                // and rerun the executor, pre-stage and full result chain.
                 let pending = PendingCall {
                     message_id: None,
                     turn_id: None,
@@ -1221,6 +1226,10 @@ impl Orchestrator {
 
     /// Selects fresh correlation independently for each eligible run.
     /// The selector cannot grant a lease; live leases and competing claims stay fenced.
+    /// Running calls and non-retry-safe Pending calls outside Paused runs settle
+    /// with runtime-only interrupted text, bypassing the pre-stage and result chain.
+    /// Other Pending calls re-execute the full chain from their stored IDs and input
+    /// without rerunning `ToolPrepare`. There is no caller-visible cancellation source.
     /// # Errors
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
@@ -1267,6 +1276,8 @@ impl Orchestrator {
         Ok(report)
     }
 
+    /// Fixed interruption settlement deliberately runs no pre-stage or result chain;
+    /// unfinished calls carry no tool-authored payload into persistence.
     async fn settle_unfinished_calls(
         &self,
         execution: &dyn ExecutionStore,
@@ -1293,6 +1304,8 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Writes only the bare runtime-authored interrupted text, with no pre-stage,
+    /// transform or final redactor. Fixed settlements notify `EventPublished` only.
     async fn settle_interrupted_call(
         &self,
         execution: &dyn ExecutionStore,
@@ -3815,5 +3828,184 @@ async fn request_error(
             compaction_requested: decision["compaction_requested"].as_bool().unwrap_or(false),
         }),
         Err(handler) => Err(RuntimeError::Extension(handler.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod recovery_contract_tests {
+    use super::*;
+    use crate::result_transform_tests::{
+        ClosureExtension, ECHO, Finished, Harness, ScriptedCall, one_turn,
+    };
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct Pause;
+    impl PermissionPolicy for Pause {
+        fn decide(&self, _: &ToolInfo, _: &Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+        fn interrupt_policy(&self, _: &ToolInfo, _: &Value) -> InterruptPolicy {
+            InterruptPolicy::Pause
+        }
+    }
+
+    #[derive(Default)]
+    struct PreStage(Mutex<Vec<ToolResultContext>>);
+    #[async_trait]
+    impl ToolPipeline for PreStage {
+        async fn prepare(&self, _: &ToolInfo, input: Value) -> Result<Value, String> {
+            Ok(input)
+        }
+        async fn transform_result(
+            &self,
+            context: &ToolResultContext,
+            _: &ToolInfo,
+            _: Value,
+        ) -> Result<TransformOutput, String> {
+            self.0.lock().unwrap().push(context.clone());
+            Ok(TransformOutput::new(json!("re-executed pre-stage")))
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_unfinished_settlement_bypasses_pre_stage_and_result_chain() {
+        let call = ScriptedCall::text(ECHO, "tool-authored input");
+        let pipeline = Arc::new(PreStage::default());
+        let harness = Harness::builder(one_turn(&[&call]))
+            .policy(Arc::new(Pause))
+            .tool_pipeline(pipeline.clone())
+            .build()
+            .await;
+        let handle = harness.start().await;
+        let session_id = handle.session_id().clone();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        let prepares = harness.probe.prepares();
+        let fence = harness
+            .store
+            .claim_expired_run(&run_id, "fixed-settlement-test")
+            .await
+            .unwrap();
+        let execution = harness.store.execution(fence).await.unwrap();
+        let runtime = harness.fresh_runtime();
+        let plan = runtime
+            .plan_provider
+            .acquire_plan(&session_id)
+            .await
+            .unwrap();
+        execution
+            .claim_tool_call(
+                &call.id,
+                runtime.event(&session_id, &run_id, EventKind::ToolCallRunning),
+            )
+            .await
+            .unwrap();
+        runtime
+            .settle_unfinished_calls(execution.as_ref(), &session_id, &run_id, &plan, false, None)
+            .await
+            .unwrap();
+        let record = Finished {
+            harness: &harness,
+            session_id,
+            run_id,
+        }
+        .record(&call.id)
+        .await;
+        let result = record.result.unwrap();
+        assert_eq!(result.status, ToolResultStatus::Interrupted);
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::Text {
+                text: INTERRUPTED_RESULT_TEXT.into()
+            }]
+        );
+        assert_eq!(harness.probe.executed(), [] as [(String, Value); 0]);
+        assert_eq!(harness.probe.prepares(), prepares);
+        assert_eq!(pipeline.0.lock().unwrap().len(), 0);
+        assert_eq!(harness.probe.results(), [] as [Value; 0]);
+        plan.release();
+    }
+
+    #[tokio::test]
+    async fn paused_pending_reexecutes_stored_identity_and_full_chain_without_prepare() {
+        let call = ScriptedCall::text(ECHO, "durable input");
+        let pipeline = Arc::new(PreStage::default());
+        let final_contexts = Arc::new(Mutex::new(Vec::new()));
+        let redactor = ClosureExtension::new("replay-final", {
+            let final_contexts = final_contexts.clone();
+            move |r| {
+                let final_contexts = final_contexts.clone();
+                r.on_final_redaction(
+                    0,
+                    "final",
+                    Arc::new(move |context, value| {
+                        final_contexts.lock().unwrap().push(context);
+                        assert_eq!(value, json!("re-executed pre-stage"));
+                        Box::pin(async { Ok(TransformOutput::new(json!("redacted replay"))) })
+                    }),
+                );
+            }
+        });
+        let harness = Harness::builder(one_turn(&[&call]))
+            .mount(redactor, crabber_extension::Scope::Global)
+            .policy(Arc::new(Pause))
+            .tool_pipeline(pipeline.clone())
+            .build()
+            .await;
+        let handle = harness.start().await;
+        let session_id = handle.session_id().clone();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        let prepares = harness.probe.prepares();
+        assert_ne!(prepares, [] as [Value; 0]);
+        assert_eq!(pipeline.0.lock().unwrap().len(), 0);
+        assert_eq!(harness.probe.results(), [] as [Value; 0]);
+        let stored = harness
+            .store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        let result = harness.fresh_runtime().resume(&run_id).await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed);
+        assert_eq!(harness.probe.prepares(), prepares);
+        assert_eq!(
+            harness.probe.executed(),
+            vec![(ECHO.into(), stored[0].arguments.clone())]
+        );
+        let contexts = pipeline.0.lock().unwrap().clone();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].call_id(), &stored[0].id);
+        assert_eq!(contexts[0].session_id(), &session_id);
+        assert_eq!(contexts[0].run_id(), &stored[0].run_id);
+        assert_eq!(
+            contexts[0].input(),
+            &ToolInput::Normalized(stored[0].arguments.clone())
+        );
+        let results = harness.probe.results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["result"], json!("re-executed pre-stage"));
+        assert_eq!(results[0]["context"]["call_id"], stored[0].id.to_string());
+        assert_eq!(results[0]["context"]["session_id"], session_id.to_string());
+        assert_eq!(results[0]["context"]["run_id"], run_id.to_string());
+        let finals = final_contexts.lock().unwrap().clone();
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].call_id(), &stored[0].id);
+        assert_eq!(finals[0].session_id(), &session_id);
+        assert_eq!(finals[0].run_id(), &run_id);
+        let record = Finished {
+            harness: &harness,
+            session_id,
+            run_id,
+        }
+        .record(&call.id)
+        .await;
+        assert_eq!(
+            record.result.unwrap().content,
+            vec![ContentBlock::Text {
+                text: "\"redacted replay\"".into()
+            }]
+        );
     }
 }
