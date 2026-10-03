@@ -110,7 +110,16 @@ impl tool_middleware_api::Guest for Fixture {
         _is_error: bool,
         _turn: types::TurnMetadata,
     ) -> types::Replacement {
-        types::Replacement::Json(output_json.replace("secret", "[REDACTED]"))
+        let mut envelope: crabber_guest::serde_json::Value =
+            match crabber_guest::serde_json::from_str(&output_json) {
+                Ok(envelope) => envelope,
+                Err(_) => return types::Replacement::Error(types::StructuredError {
+                    code: "envelope".into(), message: "invalid envelope".into(), retryable: false,
+                }),
+            };
+        let redacted = envelope["result"].to_string().replace("secret", "[REDACTED]");
+        envelope["result"] = crabber_guest::serde_json::from_str(&redacted).unwrap();
+        types::Replacement::Json(envelope.to_string())
     }
 }
 

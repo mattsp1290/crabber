@@ -1333,9 +1333,11 @@ mod tests {
             .dispatcher
             .transform_tool_result(
                 crabber_extension::ToolResultContext::new(
-                    "test".into(),
+                    "secret-tool".into(),
                     true,
-                    crabber_extension::ToolInput::Normalized(Value::Null),
+                    crabber_extension::ToolInput::Normalized(
+                        serde_json::json!({"secret": "secret"}),
+                    ),
                     crabber_core::ToolCallId::new(),
                     crabber_core::SessionId::new(),
                     crabber_core::RunId::new(),
@@ -1350,9 +1352,8 @@ mod tests {
         assert!(result.to_string().contains("[REDACTED]"));
     }
 
-    // The `characterize_*` tests below pin today's WASM after-tool adapter
-    // (`adapters.rs`, "wasm-after-tool"). crabber-rmjd (WASM adapter adoption of
-    // the new result-transform contract, D9) is expected to change them.
+    // D9 retires the old characterize_* expectations of empty arguments and
+    // result-only guest replies; these tests exercise the full envelope instead.
     async fn echo_middleware_plan() -> (
         crabber_extension::Registry,
         crabber_extension::MountHandle,
@@ -1371,89 +1372,264 @@ mod tests {
         (registry, mount, plan)
     }
 
-    #[tokio::test]
-    async fn characterize_wasm_after_tool_guest_receives_empty_context() {
-        use crabber_extension::ToolResultTransform;
-        let (_registry, _mount, plan) = echo_middleware_plan().await;
-        let out = plan
-            .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":{"a":1},"context":{"is_error":true},"other":"kept"}),
-            )
-            .await
-            .unwrap();
-        // Only `result` is replaced; sibling fields are untouched.
-        assert_eq!(out["context"]["is_error"], true);
-        assert_eq!(out["other"], "kept");
-        let echoed: Value = out["result"].clone();
-        assert_eq!(echoed["tool_name"], "");
-        assert_eq!(echoed["tool_call_id"], "");
-        assert_eq!(echoed["executed_input_json"], "");
-        assert_eq!(echoed["output_json"], "{\"a\":1}");
-        assert_eq!(echoed["is_error"], true);
-        let out = plan
-            .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":"text","context":{"is_error":false}}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(out["result"]["output_json"], "\"text\"");
-        assert_eq!(out["result"]["is_error"], false);
-        assert_eq!(out["result"]["tool_name"], "");
+    fn middleware_context(
+        input: crabber_extension::ToolInput,
+        class: crabber_extension::ToolOutcomeClass,
+    ) -> crabber_extension::ToolResultContext {
+        crabber_extension::ToolResultContext::new(
+            "secret-tool".into(),
+            class != crabber_extension::ToolOutcomeClass::UnknownTool,
+            input,
+            crabber_core::ToolCallId::from("call-rtc"),
+            crabber_core::SessionId::from("session-rtc"),
+            crabber_core::RunId::from("run-rtc"),
+            class,
+        )
     }
 
     #[tokio::test]
-    async fn characterize_wasm_after_tool_unchanged_keeps_value() {
-        use crabber_extension::ToolResultTransform;
+    async fn wasm_after_tool_guest_receives_exact_context_and_arguments() {
+        use crabber_extension::{
+            InputUnavailable, ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput,
+            result_envelope,
+        };
         let (_registry, _mount, plan) = echo_middleware_plan().await;
-        let input = serde_json::json!({"result":"__unchanged__","context":{"is_error":true}});
-        let out = plan
-            .dispatcher
-            .transform::<ToolResultTransform>(input.clone())
-            .await
-            .unwrap();
-        assert_eq!(out, input);
+        for (class, input) in [
+            (
+                ToolOutcomeClass::Succeeded,
+                ToolInput::Normalized(serde_json::json!({"secret": [1, null]})),
+            ),
+            (
+                ToolOutcomeClass::ExecutionFailed,
+                ToolInput::Normalized(Value::Null),
+            ),
+            (
+                ToolOutcomeClass::PermissionDenied,
+                ToolInput::Normalized(serde_json::json!([1])),
+            ),
+            (
+                ToolOutcomeClass::UnknownTool,
+                ToolInput::Raw(serde_json::json!("provider text")),
+            ),
+            (
+                ToolOutcomeClass::PrepareFailed,
+                ToolInput::Unavailable {
+                    reason: InputUnavailable::PrepareFailed,
+                },
+            ),
+            (
+                ToolOutcomeClass::UnknownTool,
+                ToolInput::Unavailable {
+                    reason: InputUnavailable::Unresolved,
+                },
+            ),
+        ] {
+            let context = middleware_context(input, class);
+            let expected = result_envelope(&context, serde_json::json!({"a": 1}));
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context, TransformOutput::new(expected["result"].clone()))
+                .await;
+            let ToolResultOutcome::Completed { result, is_error } = outcome else {
+                panic!("{outcome:?}");
+            };
+            assert_eq!(result["tool_name"], "secret-tool");
+            assert_eq!(result["tool_call_id"], "call-rtc");
+            assert_eq!(result["executed_input"], expected["context"]["input"]);
+            assert_eq!(
+                serde_json::from_str::<Value>(result["output_json"].as_str().unwrap()).unwrap(),
+                expected
+            );
+            assert_eq!(result["is_error"], class.is_error());
+            assert_eq!(is_error, class.is_error());
+            assert_eq!(
+                result["turn"],
+                serde_json::json!({
+                    "session_id":"", "run_id":"", "epoch_id":"", "turn_index":0,
+                    "agent_name":"", "agent_mode":"", "provider_id":"", "model_id":"",
+                    "tool_names":[], "message_count":0,
+                    "role_counts":{"system":0,"user":0,"assistant":0,"tool":0},
+                    "has_system_prompt":false, "workspace_id":""
+                })
+            );
+        }
     }
 
     #[tokio::test]
-    async fn characterize_wasm_after_tool_json_replaces_only_result() {
-        use crabber_extension::ToolResultTransform;
+    async fn wasm_after_tool_unchanged_and_mark_error_preserve_escalation() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
         let (_registry, _mount, plan) = echo_middleware_plan().await;
-        // The guest cannot write `is_error`: the host only assigns `value["result"]`.
-        let out = plan
+        for class in [
+            ToolOutcomeClass::Succeeded,
+            ToolOutcomeClass::ExecutionFailed,
+        ] {
+            for marked in [false, true] {
+                let result = serde_json::json!("__unchanged__");
+                let outcome = plan
+                    .dispatcher
+                    .transform_tool_result(
+                        middleware_context(ToolInput::Normalized(Value::Null), class),
+                        TransformOutput {
+                            result: result.clone(),
+                            mark_error: marked,
+                        },
+                    )
+                    .await;
+                assert_eq!(
+                    outcome,
+                    ToolResultOutcome::Completed {
+                        result,
+                        is_error: class.is_error() || marked
+                    }
+                );
+            }
+        }
+        let outcome = plan
             .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":"x","context":{"is_error":true}}),
+            .transform_tool_result(
+                middleware_context(
+                    ToolInput::Normalized(Value::Null),
+                    ToolOutcomeClass::Succeeded,
+                ),
+                TransformOutput::new(serde_json::json!("__mark_error__")),
             )
-            .await
-            .unwrap();
-        let mut keys: Vec<_> = out.as_object().unwrap().keys().cloned().collect();
-        keys.sort();
-        assert_eq!(keys, ["context", "result"]);
-        assert_eq!(out["context"]["is_error"], true);
-        assert!(out["result"].is_object());
+            .await;
+        assert!(matches!(
+            outcome,
+            ToolResultOutcome::Completed { is_error: true, .. }
+        ));
     }
 
     #[tokio::test]
-    async fn characterize_wasm_after_tool_error_fails_the_chain() {
-        use crabber_extension::{ExtensionError, ToolResultTransform};
+    async fn wasm_after_tool_invalid_replies_are_sanitized_d2_failures() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
         let (_registry, _mount, plan) = echo_middleware_plan().await;
-        let err = plan
-            .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":"__error__","context":{"is_error":false}}),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, ExtensionError::Plan(message) if message == "guest rejected replacement"),
-            "{err:?}"
-        );
-        assert_eq!(
-            err.to_string(),
-            "extension plan failed: guest rejected replacement"
-        );
+        let mut markers = vec![
+            "__error__".to_owned(),
+            "__malformed__".into(),
+            "__non_envelope__".into(),
+            "__missing_mark_error__".into(),
+            "__extra_key__".into(),
+            "__bad_mark_error__".into(),
+        ];
+        for field in [
+            "tool_name",
+            "resolved",
+            "input",
+            "call_id",
+            "session_id",
+            "run_id",
+            "class",
+            "is_error",
+            "phase",
+        ] {
+            markers.push(format!("__tamper__{field}"));
+        }
+        for marker in markers {
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(
+                    middleware_context(
+                        ToolInput::Normalized(Value::Null),
+                        ToolOutcomeClass::Succeeded,
+                    ),
+                    TransformOutput::new(serde_json::json!(marker)),
+                )
+                .await;
+            assert_eq!(
+                outcome,
+                ToolResultOutcome::Failed {
+                    handler: "wasm-after-tool:echo-middleware".into()
+                },
+                "{marker}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wasm_after_tool_deep_input_decode_boundary_is_contained() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        for (depth, raw) in [(124, true), (126, false)] {
+            let deep: Value =
+                serde_json::from_str(&("[".repeat(depth) + &"]".repeat(depth))).unwrap();
+            let arguments = if raw {
+                serde_json::json!({"$crabber_unknown_tool": {"raw": deep}})
+            } else {
+                deep.clone()
+            };
+            let record = crabber_core::ToolCallRecord {
+                id: crabber_core::ToolCallId::from("call-rtc"),
+                run_id: crabber_core::RunId::from("run-rtc"),
+                name: "secret-tool".into(),
+                arguments,
+                status: crabber_core::ToolCallStatus::Running,
+                retry_safe: false,
+                result: None,
+            };
+            assert_eq!(
+                serde_json::from_str::<crabber_core::ToolCallRecord>(
+                    &serde_json::to_string(&record).unwrap()
+                )
+                .unwrap(),
+                record
+            );
+            let input = if raw {
+                ToolInput::Raw(deep)
+            } else {
+                ToolInput::Normalized(deep)
+            };
+            let context = middleware_context(
+                input,
+                if raw {
+                    ToolOutcomeClass::UnknownTool
+                } else {
+                    ToolOutcomeClass::Succeeded
+                },
+            );
+            let envelope =
+                crabber_extension::result_envelope(&context, serde_json::json!("SECRET-ORIGINAL"));
+            assert_eq!(
+                serde_json::from_str::<Value>(&envelope.to_string()).is_ok(),
+                raw
+            );
+            assert!(
+                serde_json::from_str::<Value>(&envelope["context"]["input"].to_string()).is_ok()
+            );
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context, TransformOutput::new(envelope["result"].clone()))
+                .await;
+            if raw {
+                let ToolResultOutcome::Completed { result, is_error } = outcome else {
+                    panic!("depth-124 raw input should roundtrip: {outcome:?}");
+                };
+                assert!(is_error);
+                assert_eq!(result["executed_input"], envelope["context"]["input"]);
+                let mut settled = record;
+                settled.status = crabber_core::ToolCallStatus::Failed;
+                settled.result = Some(crabber_core::ToolResult {
+                    status: crabber_core::ToolResultStatus::Failed,
+                    content: vec![crabber_core::ContentBlock::Text {
+                        text: serde_json::to_string(&result).unwrap(),
+                    }],
+                });
+                assert_eq!(
+                    serde_json::from_str::<crabber_core::ToolCallRecord>(
+                        &serde_json::to_string(&settled).unwrap()
+                    )
+                    .unwrap(),
+                    settled
+                );
+            } else {
+                assert_eq!(
+                    outcome,
+                    ToolResultOutcome::Failed {
+                        handler: "wasm-after-tool:echo-middleware".into()
+                    }
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1507,6 +1683,7 @@ mod tests {
             "deny-policy",
             "banner-context",
             "redact-middleware",
+            "echo-middleware",
             "counter-sink",
             "all-in-one",
             "tool-and-sink",

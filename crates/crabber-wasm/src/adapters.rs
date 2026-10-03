@@ -1,8 +1,8 @@
 use super::{LoadedModule, Loader, turn_metadata, turn_metadata_from_projection};
 use crabber_extension::{
     ContextAssemble, EventPublished, ExtensionError, GuardContext, GuardDecision, ModelStream,
-    Point, Registrar, RunSettled, RunStarted, ToolGuard, ToolPrepare, ToolResultTransform,
-    TurnCompleted, TurnStarted,
+    Point, Registrar, RunSettled, RunStarted, ToolGuard, ToolPrepare, TransformOutput,
+    TurnCompleted, TurnStarted, parse_result_envelope, result_envelope,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -251,35 +251,37 @@ pub(super) async fn mount(
         );
         let module_after = Arc::clone(module);
         let loader_after = Arc::clone(loader);
-        registrar.on_transform(
-            ToolResultTransform::ID,
+        registrar.on_result_transform(
             0,
-            "wasm-after-tool",
-            Arc::new(move |mut value| {
+            format!("wasm-after-tool:{}", module.config.name),
+            Arc::new(move |context, value| {
                 let module = Arc::clone(&module_after);
                 let _loader = Arc::clone(&loader_after);
                 Box::pin(async move {
-                    let output = value["result"].to_string();
-                    let is_error = value["context"]["is_error"].as_bool().unwrap_or(false);
+                    let envelope = result_envelope(&context, value.clone());
                     let result = module
                         .call(
                             "tool-middleware-api",
                             "after-tool-call",
                             &[
-                                Val::String(String::new()),
-                                Val::String(String::new()),
-                                Val::String(String::new()),
-                                Val::String(output),
-                                Val::Bool(is_error),
+                                Val::String(context.tool_name().to_owned()),
+                                Val::String(context.call_id().to_string()),
+                                Val::String(envelope["context"]["input"].to_string()),
+                                Val::String(envelope.to_string()),
+                                Val::Bool(context.is_error()),
                                 turn_metadata(None),
                             ],
                         )
                         .await
                         .map_err(error)?;
-                    if let Some(updated) = replacement(result)? {
-                        value["result"] = updated;
+                    match replacement(result)? {
+                        Some(reply) => {
+                            parse_result_envelope(&context, reply).map_err(|violation| {
+                                error(format!("invalid result envelope: {violation:?}"))
+                            })
+                        }
+                        None => Ok(TransformOutput::new(value)),
                     }
-                    Ok(value)
                 })
             }),
         );
