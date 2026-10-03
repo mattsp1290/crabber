@@ -25,8 +25,8 @@ pub use dispatch::{
     ToolResultTransform, ToolSettled, ToolStarted, TurnCompleted, TurnPrepare, TurnStarted,
 };
 pub use registry::{
-    CleanupJoinTimeout, CleanupOwner, Extension, GuardContext, GuardDecision, MountHandle,
-    Registrar, Registry, Scope, ToolGuard,
+    CleanupJoinTimeout, CleanupOwner, Extension, GuardContext, GuardDecision, MountCloseObserver,
+    MountCloseTimeout, MountHandle, Registrar, Registry, Scope, ToolGuard,
 };
 pub use state::{StateSink, current_state_sink, with_state_sink};
 

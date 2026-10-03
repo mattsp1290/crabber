@@ -81,6 +81,10 @@ pub enum ExtensionError {
     SelfClose,
     #[error("missing host capability: {0}")]
     MissingCapability(&'static str),
+    #[error("mount close timed out: {extension}")]
+    MountCloseTimeout { extension: String },
+    #[error("extension registry is closed")]
+    RegistryClosed,
 }
 
 #[async_trait]

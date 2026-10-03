@@ -5,15 +5,16 @@ use crate::dispatch::{
     ToolResultTransform,
 };
 use crate::{
-    CleanupTracker, ComponentIdentity, ExtensionError, PromptSection, ResultTransformCallback,
-    RunPlan, RunPlanProvider, ToolDefinition, TransformPhase, compute_fingerprint,
-    json_result_transform,
+    CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError, PromptSection,
+    ResultTransformCallback, RunPlan, RunPlanProvider, ToolDefinition, TransformPhase,
+    compute_fingerprint, json_result_transform,
 };
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use std::{
     collections::HashSet,
+    panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -249,9 +250,51 @@ struct Mount {
     leases: AtomicUsize,
     released: Notify,
     closed_notify: Notify,
-    /// Close and join belong to crabber-b4zy's bounded close.
-    #[allow(dead_code)]
+    /// Set by the close task once leases and the tracker are drained, before
+    /// rollback and `shutdown`. The bound on `close` covers this wait only.
+    drained: Mutex<bool>,
+    drained_notify: Notify,
     cleanup: CleanupOwner,
+    close_timeout: Duration,
+    close_observer: Option<MountCloseObserver>,
+}
+impl Mount {
+    /// Waits until no plan lease is held.
+    async fn leases_released(&self) {
+        while self.leases.load(Ordering::SeqCst) > 0 {
+            let notified = self.released.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.leases.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
+        }
+    }
+    /// The mount is deactivated and signalled: waits for leases, then joins the
+    /// tracker, and re-checks both, because a callback that was still in flight
+    /// when the tracker drained can spawn late cleanup (`join` alone would miss
+    /// it). Never bounded and never aborts a task; the caller bounds its wait.
+    async fn drain(&self) {
+        loop {
+            self.leases_released().await;
+            self.cleanup.wait_drained().await;
+            if self.leases.load(Ordering::SeqCst) == 0 && self.cleanup.tracker().pending() == 0 {
+                return;
+            }
+        }
+    }
+}
+async fn wait_flag(flag: &Mutex<bool>, notify: &Notify) {
+    loop {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if *flag.lock().unwrap() {
+            return;
+        }
+        notified.await;
+    }
 }
 /// Owner side of a [`CleanupTracker`]. A mount holds one; a host with a
 /// `ToolPipeline` may hold one.
@@ -275,6 +318,11 @@ impl CleanupOwner {
     pub fn close(&self) {
         self.closing.cancel();
     }
+    /// Closes the tracker and waits, unbounded, until it is empty.
+    async fn wait_drained(&self) {
+        self.tasks.close();
+        self.tasks.wait().await;
+    }
     /// `close()`, then waits for every tracked task, at most `bound`. Tasks
     /// keep running after a timeout and a later call can still succeed.
     pub async fn join(&self, bound: Duration) -> Result<(), CleanupJoinTimeout> {
@@ -293,10 +341,37 @@ impl CleanupOwner {
 pub struct CleanupJoinTimeout {
     pub pending: usize,
 }
-#[derive(Default)]
+/// A `MountHandle::close` that did not finish within its bound. The close
+/// task keeps running and finishes the close when the work it waits for ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountCloseTimeout {
+    /// `Extension::id()`.
+    pub extension: String,
+    pub bound: Duration,
+    /// Plan leases still held when the bound expired.
+    pub leases: usize,
+    /// Tracked cleanup tasks still running when the bound expired.
+    pub pending_tasks: usize,
+}
+pub type MountCloseObserver = Arc<dyn Fn(&MountCloseTimeout) + Send + Sync>;
 struct RegistryInner {
     mounts: Vec<Arc<Mount>>,
     next_id: u64,
+    /// Terminal: set by `close_all` under this mutex, never cleared.
+    closed: bool,
+    close_timeout: Duration,
+    close_observer: Option<MountCloseObserver>,
+}
+impl Default for RegistryInner {
+    fn default() -> Self {
+        Self {
+            mounts: Vec::new(),
+            next_id: 0,
+            closed: false,
+            close_timeout: DEFAULT_MOUNT_CLOSE_TIMEOUT,
+            close_observer: None,
+        }
+    }
 }
 #[cfg(test)]
 type AcquireHook = Arc<dyn Fn() + Send + Sync>;
@@ -311,17 +386,39 @@ impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Bound on each mount's close, shared by every clone. Set it before the
+    /// first mount: mounts take the setting when they are mounted.
+    #[must_use]
+    pub fn with_close_timeout(self, bound: Duration) -> Self {
+        self.inner.lock().unwrap().close_timeout = bound;
+        self
+    }
+    /// Called once per `close` that times out, shared by every clone. Set it
+    /// before the first mount.
+    #[must_use]
+    pub fn with_close_observer(self, observer: MountCloseObserver) -> Self {
+        self.inner.lock().unwrap().close_observer = Some(observer);
+        self
+    }
     pub async fn mount(
         &self,
         extension: Arc<dyn Extension>,
         scope: Scope,
     ) -> Result<MountHandle, ExtensionError> {
+        if self.inner.lock().unwrap().closed {
+            return Err(ExtensionError::RegistryClosed);
+        }
         let mut registrar = Registrar::new();
         if let Err(error) = extension.install(&mut registrar).await {
             registrar.rollback();
             return Err(error);
         }
         let mut inner = self.inner.lock().unwrap();
+        if inner.closed {
+            drop(inner);
+            registrar.rollback();
+            return Err(ExtensionError::RegistryClosed);
+        }
         let mut seen = HashSet::new();
         let collision = registrar.tools.iter().find_map(|tool| {
             (!seen.insert(tool.info.name.clone())
@@ -363,30 +460,61 @@ impl Registry {
             leases: AtomicUsize::new(0),
             released: Notify::new(),
             closed_notify: Notify::new(),
+            drained: Mutex::new(false),
+            drained_notify: Notify::new(),
             cleanup,
+            close_timeout: inner.close_timeout,
+            close_observer: inner.close_observer.clone(),
         });
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
     }
+    /// Terminal: the registry is closed for every clone before any mount is
+    /// deactivated, so no plan can hold some mounts but not a closed one. Every
+    /// mount is deactivated and signalled first, then joined in reverse mount
+    /// order, each under its own bound; the first error is returned after all
+    /// were attempted. The registry stays closed when this returns an error.
     pub async fn close_all(&self) -> Result<(), ExtensionError> {
-        let handles = self
-            .inner
-            .lock()
-            .unwrap()
-            .mounts
-            .iter()
-            .map(|mount| MountHandle {
-                mount: Arc::clone(mount),
-            })
-            .collect::<Vec<_>>();
-        for handle in handles.into_iter().rev() {
-            handle.close().await?;
+        let mounts = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.closed = true;
+            for mount in &inner.mounts {
+                *mount.active.lock().unwrap() = false;
+            }
+            inner.mounts.clone()
+        };
+        for mount in &mounts {
+            mount.cleanup.close();
         }
-        Ok(())
+        let mut first = Ok(());
+        for mount in mounts.into_iter().rev() {
+            let result = MountHandle { mount }.close().await;
+            if first.is_ok() {
+                first = result;
+            }
+        }
+        first
     }
+    /// `Err(ExtensionError::RegistryClosed)` once `close_all` has started.
+    pub fn try_acquire(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
+        let inner = self.inner.lock().unwrap();
+        if inner.closed {
+            return Err(ExtensionError::RegistryClosed);
+        }
+        Ok(self.plan_for(&inner, session))
+    }
+    /// `try_acquire` unwrapped.
+    ///
+    /// # Panics
+    /// When the registry is closed.
     #[must_use]
     pub fn acquire(&self, session: &SessionId) -> RunPlan {
-        let inner = self.inner.lock().unwrap();
+        self.try_acquire(session)
+            .expect("Registry::acquire on a closed registry")
+    }
+    // `self` is read only by the test acquire hook.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    fn plan_for(&self, inner: &RegistryInner, session: &SessionId) -> RunPlan {
         let mut mounts = Vec::new();
         for mount in &inner.mounts {
             let active = mount.active.lock().unwrap();
@@ -499,7 +627,7 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
 #[async_trait]
 impl RunPlanProvider for Registry {
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
-        Ok(self.acquire(session))
+        self.try_acquire(session)
     }
 }
 #[derive(Clone)]
@@ -521,33 +649,45 @@ impl MountHandle {
             leader
         };
         self.deactivate();
+        let mount = &self.mount;
         if leader {
-            let mount = Arc::clone(&self.mount);
+            mount.cleanup.close();
+            // The detached task is the process-lifetime reaper: it outlives a
+            // cancelled or timed-out `close` and never aborts anything.
+            let mount = Arc::clone(mount);
             tokio::spawn(async move {
-                while mount.leases.load(Ordering::SeqCst) > 0 {
-                    let notified = mount.released.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-                    if mount.leases.load(Ordering::SeqCst) == 0 {
-                        break;
-                    }
-                    notified.await;
-                }
+                mount.drain().await;
+                *mount.drained.lock().unwrap() = true;
+                mount.drained_notify.notify_waiters();
                 mount.registrar.lock().unwrap().rollback();
                 mount.extension.shutdown().await;
                 *mount.closed.lock().unwrap() = true;
                 mount.closed_notify.notify_waiters();
             });
         }
-        loop {
-            let notified = self.mount.closed_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if *self.mount.closed.lock().unwrap() {
-                return Ok(());
+        if tokio::time::timeout(
+            mount.close_timeout,
+            wait_flag(&mount.drained, &mount.drained_notify),
+        )
+        .await
+        .is_err()
+        {
+            if let Some(observer) = &mount.close_observer {
+                let timeout = MountCloseTimeout {
+                    extension: mount.extension.id().to_owned(),
+                    bound: mount.close_timeout,
+                    leases: mount.leases.load(Ordering::SeqCst),
+                    pending_tasks: mount.cleanup.tracker().pending(),
+                };
+                // A panicking observer must not turn a timeout into an unwind.
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| observer(&timeout)));
             }
-            notified.await;
+            return Err(ExtensionError::MountCloseTimeout {
+                extension: mount.extension.id().to_owned(),
+            });
         }
+        wait_flag(&mount.closed, &mount.closed_notify).await;
+        Ok(())
     }
 }
 
@@ -937,27 +1077,52 @@ mod tests {
             self.0.lock().unwrap().push("shutdown");
         }
     }
-    // Expected to change with crabber-b4zy (D7: close waits on the cleanup tracker under a bound).
+    // Was `characterize_close_orders_lease_wait_cleanup_shutdown` (crabber-flx7).
+    // crabber-b4zy changed it: close now sends the close signal first and joins
+    // the cleanup tracker after the leases, under one bound, so the order is
+    // signal -> lease wait -> tracker join -> deferred cleanups -> shutdown.
     #[tokio::test]
-    async fn characterize_close_orders_lease_wait_cleanup_shutdown() {
+    async fn close_orders_signal_leases_tracker_cleanup_shutdown() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let registry = Registry::new();
         let handle = registry
             .mount(Arc::new(OrderedClose(Arc::clone(&log))), Scope::Global)
             .await
             .unwrap();
+        let tracker = handle.mount.cleanup.tracker();
+        let (finish, gate) = tokio::sync::oneshot::channel::<()>();
+        let task = tracker.spawn({
+            let log = Arc::clone(&log);
+            async move {
+                gate.await.ok();
+                log.lock().unwrap().push("tracker");
+            }
+        });
         let plan = registry.acquire(&SessionId::new());
-        let task = tokio::spawn({
+        let closing = tokio::spawn({
             let handle = handle.clone();
             async move { handle.close().await }
         });
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished());
+        settle().await;
+        assert!(!closing.is_finished());
+        assert!(tracker.is_closing(), "signal is sent before the waits");
         assert!(log.lock().unwrap().is_empty());
         log.lock().unwrap().push("release");
         plan.release();
-        task.await.unwrap().unwrap();
-        assert_eq!(*log.lock().unwrap(), ["release", "cleanup", "shutdown"]);
+        settle().await;
+        assert!(!closing.is_finished(), "tracker still pending");
+        finish.send(()).unwrap();
+        task.await.unwrap();
+        closing.await.unwrap().unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["release", "tracker", "cleanup", "shutdown"]
+        );
+    }
+    async fn settle() {
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
     }
 
     #[tokio::test]
@@ -1502,15 +1667,606 @@ mod tests {
             task.await.unwrap();
             assert_eq!(ran.load(Ordering::SeqCst), 1);
         }
+    }
+
+    mod close {
+        use super::*;
+        use crate::{ToolInput, ToolOutcomeClass, ToolResultContext, ToolResultOutcome};
+        use tokio::sync::oneshot;
+        use tokio::time::Instant;
+
+        type Log = Arc<Mutex<Vec<String>>>;
+
+        /// Logs `cleanup:<id>` on rollback and `shutdown:<id>` on shutdown;
+        /// optionally registers one ordinary result handler.
+        struct Logged {
+            id: &'static str,
+            log: Log,
+            handler: bool,
+        }
+        #[async_trait]
+        impl Extension for Logged {
+            fn id(&self) -> &'static str {
+                self.id
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                let (log, id) = (Arc::clone(&self.log), self.id);
+                r.defer(move || log.lock().unwrap().push(format!("cleanup:{id}")));
+                if self.handler {
+                    r.on_result_transform(
+                        0,
+                        format!("{}-handler", self.id),
+                        Arc::new(|_, value| {
+                            Box::pin(async move { Ok(crate::TransformOutput::new(value)) })
+                        }),
+                    );
+                }
+                Ok(())
+            }
+            async fn shutdown(&self) {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("shutdown:{}", self.id));
+            }
+        }
+        fn logged(id: &'static str, log: &Log, handler: bool) -> Arc<dyn Extension> {
+            Arc::new(Logged {
+                id,
+                log: Arc::clone(log),
+                handler,
+            })
+        }
+        fn new_log() -> Log {
+            Arc::new(Mutex::new(Vec::new()))
+        }
+        fn entries(log: &Log) -> Vec<String> {
+            log.lock().unwrap().clone()
+        }
+        fn assert_log(log: &Log, expected: &[&str]) {
+            assert_eq!(entries(log), expected);
+        }
+        fn observed() -> (MountCloseObserver, Arc<Mutex<Vec<MountCloseTimeout>>>) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&seen);
+            (
+                Arc::new(move |timeout: &MountCloseTimeout| {
+                    sink.lock().unwrap().push(timeout.clone());
+                }),
+                seen,
+            )
+        }
+        fn context() -> ToolResultContext {
+            ToolResultContext::new(
+                "echo".into(),
+                true,
+                ToolInput::Normalized(json!({})),
+                ToolCallId::from("call-1"),
+                SessionId::from("session-1"),
+                RunId::from("run-1"),
+                ToolOutcomeClass::Succeeded,
+            )
+        }
+        /// A tracked task parked on `gate` that logs `task` when it ends.
+        fn stuck_task(
+            handle: &MountHandle,
+            log: &Log,
+        ) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+            let (release, gate) = oneshot::channel::<()>();
+            let log = Arc::clone(log);
+            let task = handle.mount.cleanup.tracker().spawn(async move {
+                gate.await.ok();
+                log.lock().unwrap().push("task".into());
+            });
+            (release, task)
+        }
+        fn timeout_for(extension: &str) -> ExtensionError {
+            ExtensionError::MountCloseTimeout {
+                extension: extension.into(),
+            }
+        }
+
+        #[test]
+        fn new_error_variants_have_the_designed_texts() {
+            assert_eq!(timeout_for("x").to_string(), "mount close timed out: x");
+            assert_eq!(
+                ExtensionError::RegistryClosed.to_string(),
+                "extension registry is closed"
+            );
+        }
 
         #[tokio::test]
-        async fn existing_close_path_does_not_touch_the_owner() {
+        async fn close_deactivates_signals_and_rejects_result_invocations() {
+            let log = new_log();
             let registry = Registry::new();
-            let (a, seen) = mount_capture(&registry, "a").await;
-            let tracker = a.mount.cleanup.tracker();
+            let handle = registry
+                .mount(logged("one", &log, true), Scope::Global)
+                .await
+                .unwrap();
+            let plan = registry.acquire(&SessionId::new());
+            let tracker = handle.mount.cleanup.tracker();
+            let (release, task) = stuck_task(&handle, &log);
+            let closing = tokio::spawn({
+                let handle = handle.clone();
+                async move { handle.close().await }
+            });
+            settle().await;
+            // (1) deactivated: new plans skip the mount.
+            assert_eq!(registry.acquire(&SessionId::new()).components.len(), 0);
+            // (2) signalled: result invocations through the held plan fail.
+            assert!(tracker.is_closing());
+            assert_eq!(
+                plan.dispatcher
+                    .transform_tool_result(context(), crate::TransformOutput::new(json!("s")))
+                    .await,
+                ToolResultOutcome::Failed {
+                    handler: "one-handler".into()
+                }
+            );
+            // (3) leases and the tracker are still being waited on.
+            assert!(!closing.is_finished());
+            plan.release();
+            settle().await;
+            assert!(!closing.is_finished());
+            assert_log(&log, &[]);
+            release.send(()).unwrap();
+            task.await.unwrap();
+            closing.await.unwrap().unwrap();
+            assert_eq!(entries(&log), ["task", "cleanup:one", "shutdown:one"]);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn tracker_task_finishing_within_the_bound_closes_ok() {
+            let log = new_log();
+            let registry = Registry::new();
+            let handle = registry
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let (release, task) = stuck_task(&handle, &log);
+            let closing = tokio::spawn({
+                let handle = handle.clone();
+                async move { handle.close().await }
+            });
+            tokio::time::advance(DEFAULT_MOUNT_CLOSE_TIMEOUT / 2).await;
+            release.send(()).unwrap();
+            task.await.unwrap();
+            assert_eq!(closing.await.unwrap(), Ok(()));
+            assert_eq!(entries(&log), ["task", "cleanup:one", "shutdown:one"]);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn tracker_task_past_the_bound_times_out_and_the_reaper_finishes_the_close() {
+            let log = new_log();
+            let (observer, seen) = observed();
+            let registry = Registry::new().with_close_observer(observer);
+            assert_eq!(
+                registry.inner.lock().unwrap().close_timeout,
+                DEFAULT_MOUNT_CLOSE_TIMEOUT
+            );
+            let handle = registry
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let (release, task) = stuck_task(&handle, &log);
+            let start = Instant::now();
+            assert_eq!(handle.close().await, Err(timeout_for("one")));
+            assert!(start.elapsed() >= DEFAULT_MOUNT_CLOSE_TIMEOUT);
+            assert_eq!(
+                *seen.lock().unwrap(),
+                [MountCloseTimeout {
+                    extension: "one".into(),
+                    bound: DEFAULT_MOUNT_CLOSE_TIMEOUT,
+                    leases: 0,
+                    pending_tasks: 1,
+                }]
+            );
+            // Not aborted, and neither rollback nor shutdown ran yet.
+            settle().await;
+            assert!(!task.is_finished());
+            assert_log(&log, &[]);
+            // A second close while still stuck waits again and times out again.
+            assert_eq!(handle.close().await, Err(timeout_for("one")));
+            assert_eq!(seen.lock().unwrap().len(), 2);
+            assert_log(&log, &[]);
+            // The reaper runs rollback then shutdown only once the task ends.
+            release.send(()).unwrap();
+            task.await.unwrap();
+            assert_eq!(handle.close().await, Ok(()));
+            assert_eq!(entries(&log), ["task", "cleanup:one", "shutdown:one"]);
+            assert_eq!(seen.lock().unwrap().len(), 2, "no observation on success");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn held_plan_lease_past_the_bound_times_out_with_the_lease_count() {
+            let log = new_log();
+            let (observer, seen) = observed();
+            let registry = Registry::new().with_close_observer(observer);
+            let handle = registry
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let plan = registry.acquire(&SessionId::new());
+            assert_eq!(handle.close().await, Err(timeout_for("one")));
+            assert_eq!(
+                *seen.lock().unwrap(),
+                [MountCloseTimeout {
+                    extension: "one".into(),
+                    bound: DEFAULT_MOUNT_CLOSE_TIMEOUT,
+                    leases: 1,
+                    pending_tasks: 0,
+                }]
+            );
+            assert_log(&log, &[]);
+            plan.release();
+            assert_eq!(handle.close().await, Ok(()));
+            assert_eq!(entries(&log), ["cleanup:one", "shutdown:one"]);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn with_close_timeout_changes_the_bound_for_every_clone() {
+            let log = new_log();
+            let (observer, seen) = observed();
+            let bound = Duration::from_millis(250);
+            assert_ne!(bound, DEFAULT_MOUNT_CLOSE_TIMEOUT);
+            let registry = Registry::new()
+                .with_close_timeout(bound)
+                .with_close_observer(observer);
+            let handle = registry
+                .clone()
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let _plan = registry.acquire(&SessionId::new());
+            let start = Instant::now();
+            assert_eq!(handle.close().await, Err(timeout_for("one")));
+            assert_eq!(start.elapsed(), bound);
+            assert_eq!(seen.lock().unwrap()[0].bound, bound);
+        }
+
+        // Coordinator note 1: a spawn that lands after the close signal while a
+        // lease is still held must be awaited before rollback and shutdown, not
+        // missed because the tracker was joined while it was still empty.
+        #[tokio::test(start_paused = true)]
+        async fn late_spawn_while_a_lease_is_held_is_joined_before_rollback() {
+            let log = new_log();
+            let registry = Registry::new();
+            let handle = registry
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let plan = registry.acquire(&SessionId::new());
+            let closing = tokio::spawn({
+                let handle = handle.clone();
+                async move { handle.close().await }
+            });
+            settle().await;
+            assert_eq!(handle.mount.cleanup.tracker().pending(), 0);
+            let (release, late) = stuck_task(&handle, &log);
+            plan.release();
+            assert_eq!(closing.await.unwrap(), Err(timeout_for("one")));
+            assert_log(&log, &[]);
+            release.send(()).unwrap();
+            late.await.unwrap();
+            assert_eq!(handle.close().await, Ok(()));
+            assert_eq!(entries(&log), ["task", "cleanup:one", "shutdown:one"]);
+        }
+
+        #[tokio::test]
+        async fn closing_a_mount_signals_its_owner_and_is_not_terminal_for_the_registry() {
+            let log = new_log();
+            let registry = Registry::new();
+            let a = registry
+                .mount(logged("a", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let b = registry
+                .mount(logged("b", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let (tracker_a, tracker_b) = (a.mount.cleanup.tracker(), b.mount.cleanup.tracker());
             a.close().await.unwrap();
-            assert!(!tracker.is_closing());
-            assert!(seen.lock().unwrap().is_empty());
+            assert!(tracker_a.is_closing());
+            assert!(!tracker_b.is_closing());
+            let plan = registry.try_acquire(&SessionId::new()).unwrap();
+            assert_eq!(plan.components.len(), 1);
+            plan.release();
+            registry
+                .mount(logged("c", &log, false), Scope::Global)
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn close_all_closes_in_reverse_mount_order_and_is_terminal() {
+            let log = new_log();
+            let registry = Registry::new();
+            for id in ["a", "b", "c"] {
+                registry
+                    .mount(logged(id, &log, false), Scope::Global)
+                    .await
+                    .unwrap();
+            }
+            registry.close_all().await.unwrap();
+            assert_eq!(
+                entries(&log),
+                [
+                    "cleanup:c",
+                    "shutdown:c",
+                    "cleanup:b",
+                    "shutdown:b",
+                    "cleanup:a",
+                    "shutdown:a"
+                ]
+            );
+            assert_eq!(
+                registry.try_acquire(&SessionId::new()).err(),
+                Some(ExtensionError::RegistryClosed)
+            );
+            // A second close_all is harmless.
+            registry.close_all().await.unwrap();
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn close_all_attempts_every_mount_returns_the_first_error_and_stays_terminal() {
+            let log = new_log();
+            let (observer, seen) = observed();
+            let registry = Registry::new().with_close_observer(observer);
+            let mut handles = vec![];
+            for id in ["a", "b", "c"] {
+                handles.push(
+                    registry
+                        .mount(logged(id, &log, false), Scope::Global)
+                        .await
+                        .unwrap(),
+                );
+            }
+            // One global plan leases all three mounts, so every close times out
+            // and the first error is the first mount attempted: the last mounted.
+            let session = SessionId::new();
+            let plan = registry.acquire(&session);
+            assert_eq!(registry.close_all().await, Err(timeout_for("c")));
+            let names: Vec<_> = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|t| t.extension.clone())
+                .collect();
+            assert_eq!(
+                names,
+                ["c", "b", "a"],
+                "every mount attempted, reverse order"
+            );
+            assert_log(&log, &[]);
+            // Terminal even though close_all returned an error.
+            assert_eq!(
+                registry.try_acquire(&session).err(),
+                Some(ExtensionError::RegistryClosed)
+            );
+            assert!(matches!(
+                registry
+                    .mount(logged("d", &log, false), Scope::Global)
+                    .await,
+                Err(ExtensionError::RegistryClosed)
+            ));
+            plan.release();
+            registry.close_all().await.unwrap();
+            let mut finished = entries(&log);
+            finished.sort();
+            assert_eq!(finished.len(), 6);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn close_all_attempts_remaining_mounts_after_a_timeout() {
+            let log = new_log();
+            let registry = Registry::new().with_close_timeout(Duration::from_secs(1));
+            let a = registry
+                .mount(logged("a", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let b = registry
+                .mount(logged("b", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let (release, task) = stuck_task(&b, &log);
+            assert_eq!(registry.close_all().await, Err(timeout_for("b")));
+            // a was still closed after b timed out.
+            assert_eq!(entries(&log), ["cleanup:a", "shutdown:a"]);
+            a.close().await.unwrap();
+            release.send(()).unwrap();
+            task.await.unwrap();
+            b.close().await.unwrap();
+            assert_eq!(
+                entries(&log),
+                ["cleanup:a", "shutdown:a", "task", "cleanup:b", "shutdown:b"]
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_closing_registry_never_hands_out_a_plan_missing_a_mount() {
+            let log = new_log();
+            let registry = Registry::new();
+            for id in ["one", "two"] {
+                registry
+                    .mount(logged(id, &log, true), Scope::Global)
+                    .await
+                    .unwrap();
+            }
+            let session = SessionId::new();
+            let held = registry.acquire(&session);
+            assert_eq!(
+                held.components
+                    .iter()
+                    .filter(|c| c.id.starts_with("extension:"))
+                    .count(),
+                2
+            );
+            let closing = tokio::spawn({
+                let registry = registry.clone();
+                async move { registry.close_all().await }
+            });
+            settle().await;
+            // close_all is parked on the held lease; neither mount is acquirable.
+            assert!(!closing.is_finished());
+            let clone = registry.clone();
+            assert_eq!(
+                clone.try_acquire(&session).err(),
+                Some(ExtensionError::RegistryClosed)
+            );
+            assert_eq!(
+                clone.acquire_plan(&session).await.err(),
+                Some(ExtensionError::RegistryClosed)
+            );
+            assert!(matches!(
+                clone
+                    .mount(logged("three", &log, false), Scope::Global)
+                    .await,
+                Err(ExtensionError::RegistryClosed)
+            ));
+            held.release();
+            closing.await.unwrap().unwrap();
+        }
+
+        // A plan acquired before close_all started is complete: close_all waits
+        // for the registry mutex that acquire holds across all mounts.
+        #[tokio::test]
+        async fn acquire_in_progress_when_close_all_starts_keeps_every_mount() {
+            let log = new_log();
+            let registry = Registry::new();
+            for id in ["one", "two"] {
+                registry
+                    .mount(logged(id, &log, false), Scope::Global)
+                    .await
+                    .unwrap();
+            }
+            let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+            let resume = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            *registry.acquire_hook.lock().unwrap() = Some(Arc::new({
+                let resume = Arc::clone(&resume);
+                let first = std::sync::Once::new();
+                move || {
+                    first.call_once(|| {
+                        observed_tx.send(()).unwrap();
+                        let (lock, ready) = &*resume;
+                        let mut resumed = lock.lock().unwrap();
+                        while !*resumed {
+                            resumed = ready.wait(resumed).unwrap();
+                        }
+                    });
+                }
+            }));
+            let acquiring = tokio::task::spawn_blocking({
+                let registry = registry.clone();
+                move || registry.try_acquire(&SessionId::new())
+            });
+            observed_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap();
+            let closing = tokio::task::spawn_blocking({
+                let registry = registry.clone();
+                let runtime = tokio::runtime::Handle::current();
+                move || runtime.block_on(registry.close_all())
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(!closing.is_finished());
+            let (lock, ready) = &*resume;
+            *lock.lock().unwrap() = true;
+            ready.notify_one();
+            let plan = acquiring.await.unwrap().unwrap();
+            let extensions = plan
+                .components
+                .iter()
+                .filter(|c| c.id.starts_with("extension:"))
+                .count();
+            assert_eq!(extensions, 2);
+            plan.release();
+            tokio::time::timeout(std::time::Duration::from_secs(5), closing)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                registry.try_acquire(&SessionId::new()).err(),
+                Some(ExtensionError::RegistryClosed)
+            );
+        }
+
+        struct SlowInstall {
+            gate: Mutex<Option<oneshot::Receiver<()>>>,
+            rolled_back: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl Extension for SlowInstall {
+            fn id(&self) -> &'static str {
+                "slow"
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                let rolled_back = Arc::clone(&self.rolled_back);
+                r.defer(move || {
+                    rolled_back.fetch_add(1, Ordering::SeqCst);
+                });
+                let gate = self.gate.lock().unwrap().take().unwrap();
+                gate.await.ok();
+                Ok(())
+            }
+        }
+
+        #[tokio::test]
+        async fn mount_after_close_all_started_returns_registry_closed() {
+            let registry = Registry::new();
+            let (release, gate) = oneshot::channel::<()>();
+            let rolled_back = Arc::new(AtomicUsize::new(0));
+            let mounting = tokio::spawn({
+                let registry = registry.clone();
+                let rolled_back = Arc::clone(&rolled_back);
+                async move {
+                    registry
+                        .mount(
+                            Arc::new(SlowInstall {
+                                gate: Mutex::new(Some(gate)),
+                                rolled_back,
+                            }),
+                            Scope::Global,
+                        )
+                        .await
+                        .map(|_| ())
+                }
+            });
+            settle().await;
+            registry.close_all().await.unwrap();
+            release.send(()).unwrap();
+            // Installed before the flag, committed after it: rejected and rolled back.
+            assert_eq!(mounting.await.unwrap(), Err(ExtensionError::RegistryClosed));
+            assert_eq!(rolled_back.load(Ordering::SeqCst), 1);
+            // Mounting once closed does not even install.
+            let count = Arc::new(AtomicUsize::new(0));
+            assert!(matches!(
+                registry
+                    .mount(ext("late", false, false, Arc::clone(&count)), Scope::Global)
+                    .await,
+                Err(ExtensionError::RegistryClosed)
+            ));
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        #[should_panic(expected = "closed registry")]
+        async fn acquire_panics_on_a_closed_registry() {
+            let registry = Registry::new();
+            registry.close_all().await.unwrap();
+            let _ = registry.acquire(&SessionId::new());
         }
     }
 }
