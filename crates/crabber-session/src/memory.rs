@@ -298,9 +298,7 @@ fn admit_transaction(
         .clone()
         .unwrap_or_else(|| request.user_message.session_id.clone());
     let session = if let Some(existing) = state.sessions.get(&session_id) {
-        if !existing.identity_matches(&request.workspace_id, &request.directory) {
-            return Err(StoreError::SessionIdentityMismatch);
-        }
+        existing.ensure_identity(&request.workspace_id, &request.directory)?;
         existing.clone()
     } else if request.session_id.is_some() && !allow_create {
         return Err(StoreError::NotFound);
@@ -417,10 +415,8 @@ impl Store for MemoryStore {
             capsule.validate(&keyed)?;
         }
         self.transact(|state| {
-            if let Some(session) = state.sessions.get(session_id)
-                && !session.identity_matches(&request.workspace_id, &request.directory)
-            {
-                return Err(StoreError::SessionIdentityMismatch);
+            if let Some(session) = state.sessions.get(session_id) {
+                session.ensure_identity(&request.workspace_id, &request.directory)?;
             }
             let key = (session_id.clone(), keyed.options.key.clone());
             if let Some(receipt) = state.receipts.get(&key) {

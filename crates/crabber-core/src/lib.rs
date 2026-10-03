@@ -188,12 +188,20 @@ pub struct Session {
 }
 
 impl Session {
-    /// Whether presented workspace identity equals this session's. Workspace
-    /// identity is immutable: the comparison is exact and per field, an empty
-    /// string is a value like any other, and nothing is normalized or resolved.
-    #[must_use]
-    pub fn identity_matches(&self, workspace_id: &str, directory: &str) -> bool {
-        self.workspace_id == workspace_id && self.directory == directory
+    /// Rejects presented workspace identity that differs from this session's.
+    /// Workspace identity is immutable: the comparison is exact and per field,
+    /// an empty string is a value like any other, and nothing is normalized or
+    /// resolved against the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SessionIdentityMismatch` when either field differs.
+    pub fn ensure_identity(&self, workspace_id: &str, directory: &str) -> Result<(), CoreError> {
+        if self.workspace_id == workspace_id && self.directory == directory {
+            Ok(())
+        } else {
+            Err(CoreError::SessionIdentityMismatch)
+        }
     }
 }
 

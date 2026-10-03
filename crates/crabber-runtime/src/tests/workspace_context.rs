@@ -571,7 +571,7 @@ async fn row6_generic_recovery_of_paused_run_with_checkpoint_request() {
     let run = h.memory.get_run(&run_id).await.unwrap().unwrap();
     assert!(run.checkpoint.unwrap().get("request").is_some());
     expire(&h.clock);
-    let recovered = h.runtime.recover().await.unwrap();
+    let recovered = h.runtime.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].status, RunStatus::Completed);
     let expected = identity("ws-r", "/r");
@@ -656,7 +656,7 @@ async fn row7_reclaimed_running_run_without_checkpoint_is_not_missing_context() 
     assert_eq!(run.status, RunStatus::Running);
     assert!(run.checkpoint.is_none());
     expire(&h.clock);
-    let recovered = h.runtime.recover().await.unwrap();
+    let recovered = h.runtime.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     assert_eq!(h.seen.tools(), [identity("ws-c", "/c")]);
 }
@@ -745,7 +745,7 @@ async fn stored_record_conflict_rejects_resume_and_changes_nothing() {
             mismatch(&h.runtime.resume_with_context(&run_id, None).await);
         }
         // The sweep skips it instead of failing.
-        assert_eq!(h.runtime.recover().await.unwrap().len(), 0);
+        assert_eq!(h.runtime.recover().await.unwrap().recovered.len(), 0);
     }
     assert_eq!(h.plans.acquired.load(Ordering::SeqCst), plans);
     assert_eq!(h.memory.get_run(&run_id).await.unwrap().unwrap(), before);
@@ -793,13 +793,13 @@ async fn recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest() {
     h.store.corrupt.lock().unwrap().insert(runs[4].1.clone());
 
     // The corrupt checkpoint is reported as invalid, not as host drift.
-    let corrupt = StoreError::Validation("checkpoint request has no workspace identity".into());
+    let corrupt = StoreError::Validation("checkpoint request is invalid".into());
     assert!(matches!(
         h.runtime.resume(&runs[4].1).await,
         Err(RuntimeError::Store(ref error)) if *error == corrupt
     ));
 
-    let report = h.runtime.recover_report().await.unwrap();
+    let report = h.runtime.recover().await.unwrap();
     let mut recovered: Vec<_> = report.recovered.iter().map(|r| r.run_id.clone()).collect();
     recovered.sort();
     let mut expected = vec![runs[0].1.clone(), runs[5].1.clone()];

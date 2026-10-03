@@ -57,14 +57,6 @@ impl WorkspaceContext {
             directory: available(directory),
         }
     }
-    /// A context with neither field available.
-    #[must_use]
-    pub fn unavailable() -> Self {
-        Self {
-            workspace_id: None,
-            directory: None,
-        }
-    }
     /// The persisted workspace ID, or `None` when the session has none.
     #[must_use]
     pub fn workspace_id(&self) -> Option<&str> {
@@ -143,7 +135,10 @@ mod tests {
         assert_eq!(directory_only.directory(), Some("/root"));
         assert_eq!(
             WorkspaceContext::from_persisted("", ""),
-            WorkspaceContext::unavailable()
+            WorkspaceContext {
+                workspace_id: None,
+                directory: None,
+            }
         );
     }
 

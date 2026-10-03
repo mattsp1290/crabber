@@ -427,9 +427,7 @@ impl PostgresStore {
         let had_session = existing.is_some();
         let session: Session = if let Some(row) = existing {
             let existing: Session = decode(row.get("data"))?;
-            if !existing.identity_matches(&request.workspace_id, &request.directory) {
-                return Err(StoreError::SessionIdentityMismatch);
-            }
+            existing.ensure_identity(&request.workspace_id, &request.directory)?;
             existing
         } else if request.session_id.is_some() && !allow_create {
             return Err(StoreError::NotFound);
@@ -615,9 +613,7 @@ impl Store for PostgresStore {
             .map_err(db)?
         {
             let existing: Session = decode(row.get("data"))?;
-            if !existing.identity_matches(&request.workspace_id, &request.directory) {
-                return Err(StoreError::SessionIdentityMismatch);
-            }
+            existing.ensure_identity(&request.workspace_id, &request.directory)?;
         }
         if let Some(receipt) = lookup_receipt(&mut tx, session, &keyed.options.key).await? {
             if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest

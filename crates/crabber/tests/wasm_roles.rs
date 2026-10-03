@@ -338,7 +338,7 @@ async fn fresh_agent_recovers_expired_running_run(
         .wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
-    let recovered = second.recover().await.unwrap();
+    let recovered = second.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].run_id, run_id);
     assert_eq!(recovered[0].status, RunStatus::Interrupted);

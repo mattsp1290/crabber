@@ -106,14 +106,13 @@ are only compared with the session.
 | `prompt_keyed` | host-presented, inside the admission transaction, before the receipt lookup | `SessionIdentityMismatch`; no run, no replay |
 | `resume`, `resume_with_context` of a paused run | stored-record: the checkpoint request against the session, before plan acquisition, the claim and any pending tool | `SessionIdentityMismatch`; no plan, fence or lease is taken and the run keeps its status |
 | `resume` of a reclaimed `Running` run with no checkpoint request | none | n/a |
-| `recover`, `recover_with_context`, `recover_report` | as `resume`, per run | the run is skipped, reported by `recover_report`, and the sweep continues |
+| `recover`, `recover_with_context` | as `resume`, per run | the run is skipped, listed in the returned `RecoverReport`, and the sweep continues |
 | `recover_admission` | host-presented, before the receipt lookup and before any replay | `SessionIdentityMismatch`; no claim, no replayed receipt |
 
 A run rejected on `resume` stays unfinished and is rejected again on every
 later attempt; it does not heal itself, and its session stays busy. `recover`
-returns only the runs it recovered. `recover_report` (and
-`recover_report_with_context`) also returns a `SkippedRun` with the reason for
-each expired run it left unfinished: an identity mismatch, a session that is
+returns a `RecoverReport`: the runs it recovered, plus a `SkippedRun` with the
+reason for each expired run it left unfinished: an identity mismatch, a session that is
 missing or cannot be decoded, a checkpoint request without identity
 (`Validation`), a live competing claim or an unstarted keyed admission. Dispose
 of a skipped run through [fenced abandonment](fenced-abandon.md).
@@ -137,7 +136,8 @@ session present a different workspace ID or directory, and a run admitted that
 way saved the different values in its pause checkpoint. After the upgrade such a
 paused run is rejected on `resume`, skipped by `recover` and keeps its session
 busy. Before upgrading, let paused runs finish or settle them; after upgrading,
-find any with `recover_report` and `abandon` them once their lease expires.
+find any in the `skipped` list of `recover` and `abandon` them once their lease
+expires.
 
 One behavior change comes with adoption: an unkeyed `prompt` into an existing
 session now rejects a different workspace ID or directory, as keyed admission

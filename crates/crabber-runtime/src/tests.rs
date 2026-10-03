@@ -1061,7 +1061,7 @@ async fn resume_reexecutes_only_retry_safe_pending_call() {
 #[tokio::test]
 async fn recover_interrupts_expired_running_call() {
     let (runtime, store, executed, run_id) = crashed_run_with_calls(true).await;
-    let result = runtime.recover().await.unwrap();
+    let result = runtime.recover().await.unwrap().recovered;
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].status, RunStatus::Interrupted);
     assert_eq!(executed.load(Ordering::SeqCst), 0);
@@ -2229,7 +2229,8 @@ async fn recovery_selects_current_attempt_per_run_without_ambient_contamination(
             Some(contexts[ids.iter().position(|id| id == &run.id).unwrap()].clone())
         })
         .await
-        .unwrap();
+        .unwrap()
+        .recovered;
     assert_eq!(results.len(), 2);
     assert!(
         results
@@ -2265,7 +2266,8 @@ async fn linked_expired_recovery_preserves_pending_and_running_interruption_poli
         let results = runtime
             .recover_with_context(|_| Some(current.clone()))
             .await
-            .unwrap();
+            .unwrap()
+            .recovered;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].run_id, run_id);
         assert_eq!(results[0].status, RunStatus::Interrupted);

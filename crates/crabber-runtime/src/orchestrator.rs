@@ -361,9 +361,72 @@ pub struct Orchestrator {
     heartbeat_interval: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
-    /// Workspace identity of the run this clone executes, read from the
-    /// persisted session. `None` outside a run: nothing else may fill it.
-    workspace: Option<WorkspaceContext>,
+}
+
+/// The persisted session a run executes in, carried along the run path so a
+/// run cannot execute tools or assemble context without its workspace.
+#[derive(Clone)]
+struct RunSession {
+    id: SessionId,
+    workspace: WorkspaceContext,
+}
+impl From<&Session> for RunSession {
+    fn from(session: &Session) -> Self {
+        Self {
+            id: session.id.clone(),
+            workspace: WorkspaceContext::from_persisted(&session.workspace_id, &session.directory),
+        }
+    }
+}
+
+/// The request saved in a paused run's checkpoint, written and read only here.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CheckpointRequest {
+    workspace_id: String,
+    directory: String,
+    title: String,
+    text: String,
+    provider_id: String,
+    model_id: String,
+    system_prompt: Option<String>,
+}
+impl CheckpointRequest {
+    fn new(request: &Request) -> Self {
+        Self {
+            workspace_id: request.workspace_id.clone(),
+            directory: request.directory.clone(),
+            title: request.title.clone(),
+            text: request.text.clone(),
+            provider_id: request.selection.provider_id.clone(),
+            model_id: request.selection.model_id.clone(),
+            system_prompt: request.system_prompt.clone(),
+        }
+    }
+    /// `None` when the checkpoint saved no request; a request that does not
+    /// decode is corrupt, not drift.
+    fn from_checkpoint(checkpoint: Option<&Value>) -> Result<Option<Self>, StoreError> {
+        checkpoint
+            .and_then(|checkpoint| checkpoint.get("request"))
+            .map(|request| {
+                <Self as serde::Deserialize>::deserialize(request)
+                    .map_err(|_| StoreError::Validation("checkpoint request is invalid".into()))
+            })
+            .transpose()
+    }
+    fn into_request(self, session_id: &SessionId) -> Request {
+        Request {
+            session_id: Some(session_id.clone()),
+            workspace_id: self.workspace_id,
+            directory: self.directory,
+            title: self.title,
+            text: self.text,
+            selection: Selection {
+                provider_id: self.provider_id,
+                model_id: self.model_id,
+            },
+            system_prompt: self.system_prompt,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -529,7 +592,6 @@ impl OrchestratorBuilder {
             heartbeat_interval,
             execution_mode: self.execution_mode.unwrap_or_default(),
             compaction,
-            workspace: None,
         })
     }
 }
@@ -821,28 +883,38 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         // Stored-record identity check, before plan acquisition, the claim and
         // any pending tool execution: a rejection leaves the run untouched.
-        let session = self.validated_session(&run).await?;
-        Box::pin(self.with_workspace(&session).resume_validated(run_id, run)).await
+        let validated = self.validated_session(&run).await?;
+        Box::pin(self.resume_loaded(run, validated)).await
     }
 
     /// Loads the run's persisted session and compares it with the request saved
     /// in the run checkpoint, when there is one.
-    async fn validated_session(&self, run: &crabber_core::Run) -> Result<Session, StoreError> {
+    async fn validated_session(
+        &self,
+        run: &crabber_core::Run,
+    ) -> Result<(RunSession, Option<Request>), StoreError> {
         let session = self
             .store
             .get_session(&run.session_id)
             .await?
             .ok_or(StoreError::NotFound)?;
-        ensure_checkpoint_identity(&session, run.checkpoint.as_ref())?;
-        Ok(session)
+        let saved = CheckpointRequest::from_checkpoint(run.checkpoint.as_ref())?;
+        if let Some(saved) = &saved {
+            session.ensure_identity(&saved.workspace_id, &saved.directory)?;
+        }
+        Ok((
+            RunSession::from(&session),
+            saved.map(|saved| saved.into_request(&session.id)),
+        ))
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn resume_validated(
+    async fn resume_loaded(
         &self,
-        run_id: &RunId,
         run: crabber_core::Run,
+        (session, saved): (RunSession, Option<Request>),
     ) -> Result<RunResult, RuntimeError> {
+        let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
             == Some(crabber_session::AdmissionExecutionState::Unstarted)
         {
@@ -940,7 +1012,7 @@ impl Orchestrator {
                 };
                 self.execute_tool(
                     execution.as_ref(),
-                    &run.session_id,
+                    &session,
                     run_id,
                     &plan,
                     pending,
@@ -953,7 +1025,7 @@ impl Orchestrator {
             }
             if run.status == RunStatus::Paused
                 && let Some(checkpoint) = &run.checkpoint
-                && let Some(request) = request_from_checkpoint(&run.session_id, checkpoint)
+                && let Some(request) = saved
             {
                 let usage = checkpoint
                     .get("usage")
@@ -1003,7 +1075,7 @@ impl Orchestrator {
                     .run_loop(
                         execution.as_ref(),
                         run_id,
-                        &run.session_id,
+                        &session,
                         &request,
                         &plan,
                         &work_cancellation,
@@ -1107,22 +1179,13 @@ impl Orchestrator {
     }
 
     /// Reclaims expired unfinished runs. Live leases are left to their owners.
-    /// Use `recover_report` to also learn which expired runs were skipped.
+    /// The report also lists each expired run left unfinished, and why.
     ///
     /// # Errors
     ///
     /// Returns a store or execution error for a run it successfully claims.
-    pub async fn recover(&self) -> Result<Vec<RunResult>, RuntimeError> {
+    pub async fn recover(&self) -> Result<RecoverReport, RuntimeError> {
         self.recover_with_context(|_| None).await
-    }
-
-    /// Like `recover`, and also reports each expired run it left unfinished.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as `recover`.
-    pub async fn recover_report(&self) -> Result<RecoverReport, RuntimeError> {
-        self.recover_report_with_context(|_| None).await
     }
 
     /// Selects fresh correlation independently for each eligible run.
@@ -1130,22 +1193,6 @@ impl Orchestrator {
     /// # Errors
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
-        &self,
-        context_for: F,
-    ) -> Result<Vec<RunResult>, RuntimeError>
-    where
-        F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
-    {
-        Ok(self
-            .recover_report_with_context(context_for)
-            .await?
-            .recovered)
-    }
-
-    /// Recovery sweep with per-run correlation that reports skipped runs.
-    /// # Errors
-    /// Returns the same store and execution errors as `recover`.
-    pub async fn recover_report_with_context<F>(
         &self,
         mut context_for: F,
     ) -> Result<RecoverReport, RuntimeError>
@@ -1157,34 +1204,32 @@ impl Orchestrator {
             if run.lease_until > self.clock.now() {
                 continue;
             }
-            let mut skip = |reason: StoreError| {
-                report.skipped.push(SkippedRun {
-                    session_id: run.session_id.clone(),
-                    run_id: run.id.clone(),
-                    reason,
-                });
-            };
-            // One run whose session is missing, undecodable or drifted must not
-            // stop the sweep; it stays unfinished and is reported instead.
-            match self.validated_session(&run).await {
-                Err(
-                    reason @ (StoreError::NotFound
-                    | StoreError::Validation(_)
-                    | StoreError::SessionIdentityMismatch),
-                ) => {
-                    skip(reason);
-                    continue;
+            let (session_id, run_id) = (run.session_id.clone(), run.id.clone());
+            let context = context_for(&run);
+            // A run whose session is missing, undecodable or drifted, or that is
+            // claimed elsewhere or awaits admission recovery, stays unfinished
+            // and is reported; it must not stop the sweep.
+            let outcome = match self.validated_session(&run).await {
+                Ok(validated) => {
+                    Box::pin(self.with_context(context).resume_loaded(run, validated)).await
                 }
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
-            }
-            match self.resume_with_context(&run.id, context_for(&run)).await {
+                Err(error) => Err(error.into()),
+            };
+            match outcome {
                 Ok(result) => report.recovered.push(result),
                 Err(RuntimeError::Store(
-                    reason @ (StoreError::Conflict
-                    | StoreError::AdmissionRecoveryRequired
-                    | StoreError::SessionIdentityMismatch),
-                )) => skip(reason),
+                    reason @ (StoreError::NotFound
+                    | StoreError::Validation(_)
+                    | StoreError::SessionIdentityMismatch
+                    | StoreError::Conflict
+                    | StoreError::AdmissionRecoveryRequired),
+                )) => {
+                    report.skipped.push(SkippedRun {
+                        session_id,
+                        run_id,
+                        reason,
+                    });
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -1390,7 +1435,7 @@ impl Orchestrator {
             .get_session(session)
             .await?
             .ok_or(StoreError::NotFound)?;
-        ensure_session_identity(&persisted, &request.workspace_id, &request.directory)?;
+        persisted.ensure_identity(&request.workspace_id, &request.directory)?;
         let receipt = self
             .store
             .lookup_admission(session, &options.key)
@@ -1502,23 +1547,6 @@ impl Orchestrator {
             })
     }
 
-    /// Binds a run to the workspace identity of its persisted session, the
-    /// only source extension context is ever populated from.
-    fn with_workspace(&self, session: &Session) -> Self {
-        let mut runtime = self.clone();
-        runtime.workspace = Some(WorkspaceContext::from_persisted(
-            &session.workspace_id,
-            &session.directory,
-        ));
-        runtime
-    }
-
-    fn workspace(&self) -> Result<&WorkspaceContext, RuntimeError> {
-        self.workspace
-            .as_ref()
-            .ok_or(RuntimeError::Missing("workspace context"))
-    }
-
     fn with_context(&self, context: Option<TraceContext>) -> Self {
         let mut runtime = self.clone();
         runtime.observer = Arc::new(ContextObserver {
@@ -1617,11 +1645,10 @@ impl Orchestrator {
         session: &Session,
         entry: InitialEntry,
     ) -> RunHandle {
-        let session_id = session.id.clone();
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let handle = RunHandle {
-            session_id: session_id.clone(),
+            session_id: session.id.clone(),
             run_id: fence.run_id.clone(),
             store: Arc::clone(&self.store),
             clock: Arc::clone(&self.clock),
@@ -1630,10 +1657,11 @@ impl Orchestrator {
             cancellation: CancellationToken::new(),
         };
         let cancellation = handle.cancellation.clone();
-        let runtime = self.with_workspace(session);
+        let runtime = self.clone();
+        let session = RunSession::from(session);
         tokio::spawn(async move {
             let result = runtime
-                .run(fence, session_id, request, plan, cancellation, entry)
+                .run(fence, session, request, plan, cancellation, entry)
                 .await;
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
@@ -1644,7 +1672,7 @@ impl Orchestrator {
     async fn run(
         &self,
         fence: RunFence,
-        session_id: SessionId,
+        session: RunSession,
         request: Request,
         plan: RunPlan,
         cancellation: CancellationToken,
@@ -1654,7 +1682,7 @@ impl Orchestrator {
         let mut measurement = Measurement::new(
             self.observer.as_ref(),
             self.monotonic_clock.as_ref(),
-            &session_id,
+            &session.id,
             &fence.run_id,
             OperationKind::Run,
             &cancellation,
@@ -1663,7 +1691,7 @@ impl Orchestrator {
         let result = self
             .run_inner(
                 fence.clone(),
-                session_id,
+                session.clone(),
                 InitialRequest { request, entry },
                 plan,
                 cancellation.clone(),
@@ -1681,12 +1709,13 @@ impl Orchestrator {
     async fn run_inner(
         &self,
         fence: RunFence,
-        session_id: SessionId,
+        session: RunSession,
         initial: InitialRequest,
         plan: RunPlan,
         cancellation: CancellationToken,
         observed_lost: &AtomicBool,
     ) -> Result<RunResult, RuntimeError> {
+        let session_id = session.id.clone();
         let InitialRequest { request, entry } = initial;
         let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
         if matches!(entry, InitialEntry::Keyed) {
@@ -1719,7 +1748,7 @@ impl Orchestrator {
                 self.run_loop(
                     execution.as_ref(),
                     &run_id,
-                    &session_id,
+                    &session,
                     &request,
                     &plan,
                     &cancellation,
@@ -1831,7 +1860,7 @@ impl Orchestrator {
         &self,
         execution: &dyn ExecutionStore,
         run_id: &RunId,
-        session_id: &SessionId,
+        session: &RunSession,
         request: &Request,
         plan: &RunPlan,
         cancellation: &CancellationToken,
@@ -1840,6 +1869,7 @@ impl Orchestrator {
         lease_lost: &AtomicBool,
         current_turn: &std::sync::Mutex<Option<TurnId>>,
     ) -> Result<Usage, RuntimeError> {
+        let session_id = &session.id;
         let run_started_at = self.clock.now();
         if initial {
             plan.dispatcher
@@ -1872,7 +1902,7 @@ impl Orchestrator {
                 self.turn_event(session_id, run_id, &turn_id, EventKind::TurnStarted),
             )
             .await?;
-            let mut snapshot = self.snapshot(run_id, session_id, request, plan).await?;
+            let mut snapshot = self.snapshot(run_id, session, request, plan).await?;
             snapshot.identity.turn_id = turn_id.clone();
             let mut compacted = false;
             if let Some(provider) = plan
@@ -1950,9 +1980,7 @@ impl Orchestrator {
             }) {
                 let event = self.turn_event(session_id, run_id, &turn_id, EventKind::RunPaused);
                 execution.pause_run(json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
-                    "request": {"workspace_id":request.workspace_id,"directory":request.directory,"title":request.title,
-                        "text":request.text,"provider_id":request.selection.provider_id,"model_id":request.selection.model_id,
-                        "system_prompt":request.system_prompt}, "usage":usage}), event.clone()).await?;
+                    "request": CheckpointRequest::new(request), "usage":usage}), event.clone()).await?;
                 self.observer.emit(&event);
                 return Err(RuntimeError::Paused);
             }
@@ -1963,7 +1991,7 @@ impl Orchestrator {
                         call.turn_id = Some(turn_id.clone());
                         self.execute_tool(
                             execution,
-                            session_id,
+                            session,
                             run_id,
                             plan,
                             call,
@@ -1986,7 +2014,7 @@ impl Orchestrator {
                             call.turn_id = Some(turn_id);
                             self.execute_tool(
                                 execution,
-                                session_id,
+                                session,
                                 run_id,
                                 plan,
                                 call,
@@ -2053,10 +2081,11 @@ impl Orchestrator {
     async fn snapshot(
         &self,
         run_id: &RunId,
-        session_id: &SessionId,
+        session: &RunSession,
         request: &Request,
         plan: &RunPlan,
     ) -> Result<TurnSnapshot, RuntimeError> {
+        let session_id = &session.id;
         let mut system = request.system_prompt.clone().unwrap_or_default();
         for prompt in &plan.prompts {
             if !system.is_empty() {
@@ -2071,7 +2100,7 @@ impl Orchestrator {
             .count();
         // Workspace keys are runtime-owned: pinned so no handler can change
         // them for a later handler. An unavailable field is JSON null.
-        let workspace = self.workspace()?;
+        let workspace = &session.workspace;
         let contributions = plan
             .dispatcher
             .transform_pinned::<ContextAssemble>(
@@ -2584,63 +2613,6 @@ fn user_message(session_id: SessionId, text: String, now: OffsetDateTime) -> Mes
     }
 }
 
-/// Exact, per-field comparison of presented workspace identity with the
-/// persisted session. An empty string is a value like any other; nothing is
-/// normalized or resolved against the filesystem.
-fn ensure_session_identity(
-    session: &Session,
-    workspace_id: &str,
-    directory: &str,
-) -> Result<(), StoreError> {
-    if session.identity_matches(workspace_id, directory) {
-        Ok(())
-    } else {
-        Err(StoreError::SessionIdentityMismatch)
-    }
-}
-
-/// Compares the request saved in a run checkpoint, when there is one, with the
-/// persisted session. A checkpoint without a request has nothing to compare; a
-/// request without string identity fields is corrupt, not drift.
-fn ensure_checkpoint_identity(
-    session: &Session,
-    checkpoint: Option<&Value>,
-) -> Result<(), StoreError> {
-    let Some(request) = checkpoint.and_then(|checkpoint| checkpoint.get("request")) else {
-        return Ok(());
-    };
-    match (
-        request.get("workspace_id").and_then(Value::as_str),
-        request.get("directory").and_then(Value::as_str),
-    ) {
-        (Some(workspace_id), Some(directory)) => {
-            ensure_session_identity(session, workspace_id, directory)
-        }
-        _ => Err(StoreError::Validation(
-            "checkpoint request has no workspace identity".into(),
-        )),
-    }
-}
-
-fn request_from_checkpoint(session_id: &SessionId, checkpoint: &Value) -> Option<Request> {
-    let value = checkpoint.get("request")?;
-    Some(Request {
-        session_id: Some(session_id.clone()),
-        workspace_id: value.get("workspace_id")?.as_str()?.to_owned(),
-        directory: value.get("directory")?.as_str()?.to_owned(),
-        title: value.get("title")?.as_str()?.to_owned(),
-        text: value.get("text")?.as_str()?.to_owned(),
-        selection: Selection {
-            provider_id: value.get("provider_id")?.as_str()?.to_owned(),
-            model_id: value.get("model_id")?.as_str()?.to_owned(),
-        },
-        system_prompt: value
-            .get("system_prompt")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-    })
-}
-
 struct PendingCall {
     message_id: Option<MessageId>,
     turn_id: Option<TurnId>,
@@ -3132,7 +3104,7 @@ impl Orchestrator {
     async fn execute_tool(
         &self,
         execution: &dyn ExecutionStore,
-        session_id: &SessionId,
+        session: &RunSession,
         run_id: &RunId,
         plan: &RunPlan,
         call: PendingCall,
@@ -3141,6 +3113,7 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<(), RuntimeError> {
+        let session_id = &session.id;
         let definition = plan
             .tools
             .iter()
@@ -3201,7 +3174,7 @@ impl Orchestrator {
                     () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
                     result = self.permit_and_execute(
                     execution,
-                    session_id,
+                    session,
                     run_id,
                     &call.id,
                     plan,
@@ -3328,7 +3301,7 @@ impl Orchestrator {
     async fn permit_and_execute(
         &self,
         execution: &dyn ExecutionStore,
-        session_id: &SessionId,
+        session: &RunSession,
         run_id: &RunId,
         call_id: &ToolCallId,
         plan: &RunPlan,
@@ -3337,7 +3310,7 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<Result<Value, String>, RuntimeError> {
-        let workspace = self.workspace()?.clone();
+        let (session_id, workspace) = (&session.id, session.workspace.clone());
         let guard_decisions: Vec<_> = plan
             .guards
             .iter()

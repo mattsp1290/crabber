@@ -123,10 +123,22 @@ impl Dispatcher {
         Ok(())
     }
     /// Transform callbacks form an ordered waterfall.
-    pub async fn transform<P: Point>(&self, mut value: Value) -> Result<Value, ExtensionError> {
-        for handler in self.matching(P::ID, Mode::Transform) {
+    pub async fn transform<P: Point>(&self, value: Value) -> Result<Value, ExtensionError> {
+        self.waterfall(P::ID, value, |_| Ok(())).await
+    }
+    /// Runs the transform handlers of `point` in order, applying `after` to the
+    /// initial value and to every handler's result.
+    async fn waterfall(
+        &self,
+        point: &'static str,
+        mut value: Value,
+        after: impl Fn(&mut Value) -> Result<(), ExtensionError>,
+    ) -> Result<Value, ExtensionError> {
+        after(&mut value)?;
+        for handler in self.matching(point, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
                 value = with_mount(handler.mount_id, callback(value)).await?;
+                after(&mut value)?;
             }
         }
         Ok(value)
@@ -137,10 +149,10 @@ impl Dispatcher {
     /// A value that is not an object, initially or from a handler, is rejected.
     pub async fn transform_pinned<P: Point>(
         &self,
-        mut value: Value,
+        value: Value,
         pinned: &[(&str, Value)],
     ) -> Result<Value, ExtensionError> {
-        let assert = |value: &mut Value| {
+        let reassert_pinned = |value: &mut Value| {
             let Value::Object(object) = value else {
                 return Err(ExtensionError::Rejected(P::ID));
             };
@@ -149,14 +161,7 @@ impl Dispatcher {
             }
             Ok(())
         };
-        assert(&mut value)?;
-        for handler in self.matching(P::ID, Mode::Transform) {
-            if let HandlerFn::Ordinary(callback) = &handler.callback {
-                value = with_mount(handler.mount_id, callback(value)).await?;
-                assert(&mut value)?;
-            }
-        }
-        Ok(value)
+        self.waterfall(P::ID, value, reassert_pinned).await
     }
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
