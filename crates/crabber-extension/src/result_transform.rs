@@ -281,12 +281,10 @@ impl ToolResultContext {
         &self.cleanup
     }
     /// Driver-only: the phase of the handler about to run.
-    #[allow(dead_code)]
     pub(crate) fn set_phase(&mut self, phase: TransformPhase) {
         self.phase = phase;
     }
     /// Driver-only: the effective `is_error` before the handler about to run.
-    #[allow(dead_code)]
     pub(crate) fn set_is_error(&mut self, is_error: bool) {
         self.is_error = is_error;
     }

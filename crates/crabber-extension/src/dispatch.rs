@@ -1,6 +1,9 @@
 //! Ordered, bounded extension callback dispatch.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-use crate::{CleanupTracker, ExtensionError, ResultTransformCallback, TransformPhase};
+use crate::{
+    CleanupTracker, ExtensionError, ResultTransformCallback, ToolResultContext, ToolResultOutcome,
+    TransformOutput, TransformPhase, json_result_transform,
+};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{
@@ -59,7 +62,6 @@ pub enum HandlerFn {
     Around(AroundCallback),
     /// Typed result-transform callback; run by the chain driver, not by the
     /// generic waterfall.
-    #[allow(dead_code)] // read by the chain driver (crabber-slgt)
     ResultTransform(ResultTransformCallback),
 }
 #[derive(Clone)]
@@ -73,7 +75,6 @@ pub struct Handler {
     pub(crate) registration_seq: usize,
     pub(crate) mount_id: u64,
     pub(crate) phase: TransformPhase,
-    #[allow(dead_code)] // read by the chain driver (crabber-slgt)
     pub(crate) cleanup: CleanupTracker,
     pub(crate) callback: HandlerFn,
 }
@@ -173,6 +174,54 @@ impl Dispatcher {
         };
         self.waterfall(P::ID, value, reassert_pinned).await
     }
+    /// Runs the `crabber/tool/result-transform` chain: every ordinary handler,
+    /// then every final redactor (the handler order is the sort order).
+    ///
+    /// The driver owns the accepted value, so no callback future holds it.
+    /// Cancellation (entry check, selecting around a handler, the mount close
+    /// signal, final-redaction fallback) is not handled yet: crabber-ctj9 wraps
+    /// `invoke_result_handler` and uses `accepted` for fallback acceptance.
+    pub async fn transform_tool_result(
+        &self,
+        context: ToolResultContext,
+        seed: TransformOutput,
+    ) -> ToolResultOutcome {
+        let mut is_error = context.class().is_error() || seed.mark_error;
+        // The seed is never an accepted value (D6); only a handler's valid
+        // output is committed here.
+        let mut accepted: Option<Value> = None;
+        let handlers = self
+            .matching(ToolResultTransform::ID, Mode::Transform)
+            .filter(|h| {
+                matches!(
+                    h.callback,
+                    HandlerFn::Ordinary(_) | HandlerFn::ResultTransform(_)
+                )
+            });
+        for handler in handlers {
+            let failed = || ToolResultOutcome::Failed {
+                handler: handler.id.clone(),
+            };
+            if handler.cleanup.is_closing() {
+                return failed();
+            }
+            let mut handler_context = context.clone().with_cleanup(handler.cleanup.clone());
+            handler_context.set_phase(handler.phase);
+            handler_context.set_is_error(is_error);
+            let current = accepted.as_ref().unwrap_or(&seed.result).clone();
+            match invoke_result_handler(handler, handler_context, current).await {
+                Some(output) => {
+                    is_error |= output.mark_error;
+                    accepted = Some(output.result);
+                }
+                None => return failed(),
+            }
+        }
+        ToolResultOutcome::Completed {
+            result: accepted.unwrap_or(seed.result),
+            is_error,
+        }
+    }
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Gate) {
@@ -196,6 +245,29 @@ impl Dispatcher {
             .collect::<Vec<_>>();
         around_at(Arc::new(handlers), 0, value, terminal).await
     }
+}
+
+/// Runs one result handler under its mount with panics contained. `None` is a
+/// D2 failure (error, panic or envelope violation); handler-authored error
+/// text is discarded here so it can never reach the outcome.
+async fn invoke_result_handler(
+    handler: &Handler,
+    context: ToolResultContext,
+    value: Value,
+) -> Option<TransformOutput> {
+    use futures::FutureExt;
+    let callback = match &handler.callback {
+        HandlerFn::ResultTransform(callback) => Arc::clone(callback),
+        HandlerFn::Ordinary(callback) => json_result_transform(Arc::clone(callback)),
+        HandlerFn::Around(_) => return None,
+    };
+    AssertUnwindSafe(with_mount(handler.mount_id, async move {
+        callback(context, value).await
+    }))
+    .catch_unwind()
+    .await
+    .ok()?
+    .ok()
 }
 
 #[derive(Default)]
@@ -775,5 +847,489 @@ mod tests {
                 .await,
             Err(ExtensionError::Rejected(ContextAssemble::ID))
         );
+    }
+}
+
+#[cfg(test)]
+mod driver_tests {
+    use super::*;
+    use crate::{ToolInput, ToolOutcomeClass};
+    use crabber_core::{RunId, SessionId, ToolCallId};
+    use futures::FutureExt;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const SEED_SECRET: &str = "SEED-SECRET-7f3a";
+    const ERROR_SECRET: &str = "HANDLER-ERROR-SECRET-91bc";
+
+    fn context(class: ToolOutcomeClass) -> ToolResultContext {
+        ToolResultContext::new(
+            "read_file".into(),
+            true,
+            ToolInput::Normalized(json!({"path": "a.txt"})),
+            ToolCallId::from("call-1"),
+            SessionId::from("session-1"),
+            RunId::from("run-1"),
+            class,
+        )
+    }
+    fn seed(value: Value) -> TransformOutput {
+        TransformOutput::new(value)
+    }
+    fn make(order: i32, id: &str, phase: TransformPhase, callback: HandlerFn) -> Handler {
+        Handler {
+            point: ToolResultTransform::ID,
+            mode: Mode::Transform,
+            order,
+            id: id.into(),
+            scope_rank: 0,
+            mount_seq: 0,
+            registration_seq: 0,
+            mount_id: 1,
+            phase,
+            cleanup: CleanupTracker::detached(),
+            callback,
+        }
+    }
+    fn typed(
+        f: impl Fn(ToolResultContext, Value) -> Result<TransformOutput, ExtensionError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> HandlerFn {
+        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(std::future::ready(f(c, v)))))
+    }
+    fn json_cb(
+        f: impl Fn(Value) -> Result<Value, ExtensionError> + Send + Sync + 'static,
+    ) -> HandlerFn {
+        HandlerFn::Ordinary(Arc::new(move |v| Box::pin(std::future::ready(f(v)))))
+    }
+    /// Appends `tag` to a string result.
+    fn append(tag: &'static str) -> HandlerFn {
+        typed(move |_, v| {
+            Ok(TransformOutput::new(json!(format!(
+                "{}{tag}",
+                v.as_str().unwrap_or("")
+            ))))
+        })
+    }
+    fn counting(counter: &Arc<AtomicUsize>) -> HandlerFn {
+        let counter = Arc::clone(counter);
+        typed(move |_, v| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(TransformOutput::new(v))
+        })
+    }
+    fn completed(result: Value, is_error: bool) -> ToolResultOutcome {
+        ToolResultOutcome::Completed { result, is_error }
+    }
+    const O: TransformPhase = TransformPhase::Ordinary;
+    const F: TransformPhase = TransformPhase::FinalRedaction;
+
+    #[tokio::test]
+    async fn no_handlers_completes_with_seed() {
+        let d = Dispatcher::new(Vec::new());
+        assert_eq!(
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+                .await,
+            completed(json!("s"), false)
+        );
+        assert_eq!(
+            d.transform_tool_result(
+                context(ToolOutcomeClass::Succeeded),
+                TransformOutput::marked_error(json!("s"))
+            )
+            .await,
+            completed(json!("s"), true)
+        );
+        assert_eq!(
+            d.transform_tool_result(context(ToolOutcomeClass::UnknownTool), seed(json!("s")))
+                .await,
+            completed(json!("s"), true)
+        );
+    }
+
+    #[tokio::test]
+    async fn reducer_then_redactor_composes_regardless_of_order_and_mount() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let redactor = typed(move |_, v| {
+            recorder.lock().unwrap().push(v.clone());
+            Ok(TransformOutput::new(json!(
+                v.as_str().unwrap().replace("secret", "[redacted]")
+            )))
+        });
+        let mut late_mount = make(-100, "reducer", O, append("+secret"));
+        late_mount.mount_seq = 9;
+        let mut redactor = make(-1000, "redactor", F, redactor);
+        redactor.mount_seq = 0;
+        let d = Dispatcher::new(vec![
+            redactor,
+            late_mount,
+            make(100, "second", O, append("+more")),
+        ]);
+        let out = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("raw")))
+            .await;
+        assert_eq!(out, completed(json!("raw+[redacted]+more"), false));
+        assert_eq!(*seen.lock().unwrap(), [json!("raw+secret+more")]);
+    }
+
+    /// A handler per D2 trigger, native and JSON.
+    fn failing_handlers() -> Vec<(&'static str, HandlerFn)> {
+        let envelope_with = |edit: fn(&mut Value)| {
+            json_cb(move |mut envelope| {
+                edit(&mut envelope);
+                Ok(envelope)
+            })
+        };
+        vec![
+            (
+                "native err",
+                typed(|_, _| Err(ExtensionError::Tool(ERROR_SECRET.into()))),
+            ),
+            ("native panic", typed(|_, _| panic!("{ERROR_SECRET}"))),
+            (
+                "json err",
+                json_cb(|_| Err(ExtensionError::Tool(ERROR_SECRET.into()))),
+            ),
+            ("json panic", json_cb(|_| panic!("{ERROR_SECRET}"))),
+            ("json non-object", json_cb(|_| Ok(json!(ERROR_SECRET)))),
+            (
+                "json missing result",
+                envelope_with(|e| {
+                    e.as_object_mut().unwrap().remove("result");
+                }),
+            ),
+            (
+                "json leftover is_error",
+                envelope_with(|e| e["is_error"] = json!(true)),
+            ),
+            (
+                "json changed context",
+                envelope_with(|e| e["context"]["tool_name"] = json!(ERROR_SECRET)),
+            ),
+            (
+                "json non-bool mark_error",
+                envelope_with(|e| e["mark_error"] = json!("true")),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn every_d2_trigger_fails_with_only_the_handler_id() {
+        for (name, failing) in failing_handlers() {
+            let later = Arc::new(AtomicUsize::new(0));
+            let final_calls = Arc::new(AtomicUsize::new(0));
+            let d = Dispatcher::new(vec![
+                make(0, "first", O, append("+INTERMEDIATE-SECRET")),
+                make(1, "bad", O, failing),
+                make(2, "later", O, counting(&later)),
+                make(0, "final", F, counting(&final_calls)),
+            ]);
+            let outcome = d
+                .transform_tool_result(
+                    context(ToolOutcomeClass::Succeeded),
+                    seed(json!(SEED_SECRET)),
+                )
+                .await;
+            assert_eq!(
+                outcome,
+                ToolResultOutcome::Failed {
+                    handler: "bad".into()
+                },
+                "{name}"
+            );
+            assert_eq!(later.load(Ordering::SeqCst), 0, "{name}");
+            assert_eq!(final_calls.load(Ordering::SeqCst), 0, "{name}");
+            let text = format!("{outcome:?}");
+            for secret in [SEED_SECRET, ERROR_SECRET, "INTERMEDIATE-SECRET"] {
+                assert!(!text.contains(secret), "{name}: {text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failing_final_redactor_fails_the_call() {
+        let d = Dispatcher::new(vec![
+            make(0, "ok", O, append("+x")),
+            make(
+                0,
+                "redactor",
+                F,
+                typed(|_, _| Err(ExtensionError::Tool(ERROR_SECRET.into()))),
+            ),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(
+            outcome,
+            ToolResultOutcome::Failed {
+                handler: "redactor".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn json_tampering_fails_that_handler_and_later_context_stays_authoritative() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let d = Dispatcher::new(vec![
+            make(
+                0,
+                "tamper",
+                O,
+                json_cb(|mut e| {
+                    e["context"]["class"] = json!("succeeded");
+                    e["context"]["is_error"] = json!(false);
+                    Ok(e)
+                }),
+            ),
+            make(
+                1,
+                "later",
+                O,
+                typed(move |c, v| {
+                    recorder.lock().unwrap().push((c.class(), c.is_error()));
+                    Ok(TransformOutput::new(v))
+                }),
+            ),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::ExecutionFailed), seed(json!("s")))
+            .await;
+        assert_eq!(
+            outcome,
+            ToolResultOutcome::Failed {
+                handler: "tamper".into()
+            }
+        );
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_error_is_sticky_and_visible_to_later_handlers() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let d = Dispatcher::new(vec![
+            make(
+                0,
+                "plain",
+                O,
+                typed({
+                    let recorder = Arc::clone(&seen);
+                    move |c, v| {
+                        recorder.lock().unwrap().push(c.is_error());
+                        Ok(TransformOutput::new(v))
+                    }
+                }),
+            ),
+            make(
+                1,
+                "marker",
+                O,
+                typed(|_, v| Ok(TransformOutput::marked_error(v))),
+            ),
+            make(
+                2,
+                "json-clear",
+                O,
+                json_cb({
+                    let recorder = Arc::clone(&seen);
+                    move |e| {
+                        recorder
+                            .lock()
+                            .unwrap()
+                            .push(e["context"]["is_error"] == json!(true));
+                        Ok(e)
+                    }
+                }),
+            ),
+            make(
+                0,
+                "final",
+                F,
+                typed(move |c, v| {
+                    recorder.lock().unwrap().push(c.is_error());
+                    Ok(TransformOutput::new(v))
+                }),
+            ),
+        ]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(*seen.lock().unwrap(), [false, true, true]);
+    }
+
+    #[tokio::test]
+    async fn pre_stage_mark_error_reaches_handlers() {
+        let seen = Arc::new(Mutex::new(None));
+        let recorder = Arc::clone(&seen);
+        let d = Dispatcher::new(vec![make(
+            0,
+            "h",
+            O,
+            typed(move |c, v| {
+                *recorder.lock().unwrap() = Some(c.is_error());
+                Ok(TransformOutput::new(v))
+            }),
+        )]);
+        let outcome = d
+            .transform_tool_result(
+                context(ToolOutcomeClass::Succeeded),
+                TransformOutput::marked_error(json!("s")),
+            )
+            .await;
+        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(*seen.lock().unwrap(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn error_class_cannot_be_cleared() {
+        let d = Dispatcher::new(vec![
+            make(0, "typed", O, typed(|_, v| Ok(TransformOutput::new(v)))),
+            make(1, "json", O, json_cb(Ok)),
+            make(0, "final", F, typed(|_, v| Ok(TransformOutput::new(v)))),
+        ]);
+        for class in [
+            ToolOutcomeClass::ExecutionFailed,
+            ToolOutcomeClass::PermissionDenied,
+            ToolOutcomeClass::UnknownTool,
+            ToolOutcomeClass::PrepareFailed,
+        ] {
+            assert_eq!(
+                d.transform_tool_result(context(class), seed(json!("s")))
+                    .await,
+                completed(json!("s"), true),
+                "{class:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn each_handler_gets_its_own_phase_and_cleanup_tracker() {
+        let tracker_a = CleanupTracker::detached();
+        let tracker_b = CleanupTracker::detached();
+        let (_hold_a, gate_a) = tokio::sync::oneshot::channel::<()>();
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let (rec_a, rec_b, rec_json) = (
+            Arc::clone(&phases),
+            Arc::clone(&phases),
+            Arc::clone(&phases),
+        );
+        let gate_a = Mutex::new(Some(gate_a));
+        let mut a = make(
+            0,
+            "a",
+            O,
+            typed(move |c, v| {
+                rec_a
+                    .lock()
+                    .unwrap()
+                    .push((c.phase(), c.cleanup().pending()));
+                if let Some(gate) = gate_a.lock().unwrap().take() {
+                    c.cleanup().spawn(async move {
+                        let _ = gate.await;
+                    });
+                }
+                Ok(TransformOutput::new(v))
+            }),
+        );
+        a.cleanup = tracker_a.clone();
+        let mut j = make(
+            1,
+            "j",
+            O,
+            json_cb(move |e| {
+                let phase = if e["context"]["phase"] == "ordinary" {
+                    O
+                } else {
+                    F
+                };
+                rec_json.lock().unwrap().push((phase, usize::MAX));
+                Ok(e)
+            }),
+        );
+        j.cleanup = tracker_b.clone();
+        let mut b = make(
+            0,
+            "b",
+            F,
+            typed(move |c, v| {
+                rec_b
+                    .lock()
+                    .unwrap()
+                    .push((c.phase(), c.cleanup().pending()));
+                Ok(TransformOutput::new(v))
+            }),
+        );
+        b.cleanup = tracker_b.clone();
+        let d = Dispatcher::new(vec![a, j, b]);
+        let outcome = d
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(*phases.lock().unwrap(), [(O, 0), (O, usize::MAX), (F, 0)]);
+        assert_eq!(tracker_a.pending(), 1);
+        assert_eq!(tracker_b.pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn closing_mount_fails_the_handler_before_it_runs() {
+        let closing = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut h = make(0, "closing", O, counting(&calls));
+        h.cleanup =
+            CleanupTracker::from_parts(tokio_util::task::TaskTracker::new(), closing.clone());
+        closing.cancel();
+        let outcome = Dispatcher::new(vec![h])
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .await;
+        assert_eq!(
+            outcome,
+            ToolResultOutcome::Failed {
+                handler: "closing".into()
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn panic_does_not_unwind_out_of_the_driver_and_mount_is_scoped() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::clone(&observed);
+        let d = Dispatcher::new(vec![
+            make(
+                0,
+                "scoped",
+                O,
+                HandlerFn::ResultTransform(Arc::new(move |_, v| {
+                    let probe = Arc::clone(&probe);
+                    async move {
+                        if is_active_mount(1) {
+                            probe.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Ok(TransformOutput::new(v))
+                    }
+                    .boxed()
+                })),
+            ),
+            make(1, "boom", O, typed(|_, _| panic!("{ERROR_SECRET}"))),
+        ]);
+        let outcome = AssertUnwindSafe(
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s"))),
+        )
+        .catch_unwind()
+        .await
+        .expect("driver must not unwind");
+        assert_eq!(
+            outcome,
+            ToolResultOutcome::Failed {
+                handler: "boom".into()
+            }
+        );
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
     }
 }
