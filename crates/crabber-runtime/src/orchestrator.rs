@@ -1349,10 +1349,26 @@ impl Orchestrator {
             )
             .await?;
         self.observer.emit(&event);
-        plan.dispatcher
-            .notify::<EventPublished>(serde_json::to_value(&event).unwrap_or(Value::Null))
-            .await;
+        Self::notify_interrupted_settlement(plan, &event, false);
         Ok(())
+    }
+
+    fn notify_interrupted_settlement(plan: &RunPlan, event: &EventRecord, protected: bool) {
+        // Notification callbacks cannot delay sibling settlement. Keep the plan lease
+        // until delivery finishes so mount shutdown still waits for these callbacks.
+        let plan = plan.clone();
+        let projection = serde_json::to_value(event).unwrap_or(Value::Null);
+        tokio::spawn(async move {
+            plan.dispatcher
+                .notify::<EventPublished>(projection.clone())
+                .await;
+            if protected {
+                plan.dispatcher
+                    .notify::<crabber_extension::ToolSettled>(projection)
+                    .await;
+            }
+            plan.release();
+        });
     }
 
     /// Admits a run and starts its turn loop in the background.
@@ -3401,6 +3417,10 @@ impl Orchestrator {
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;
         self.observer.emit(&settled);
+        if interrupted {
+            Self::notify_interrupted_settlement(plan, &settled, true);
+            return Err(RuntimeError::Interrupted);
+        }
         let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
         plan.dispatcher
             .notify::<EventPublished>(settled_projection.clone())
@@ -3408,9 +3428,6 @@ impl Orchestrator {
         plan.dispatcher
             .notify::<crabber_extension::ToolSettled>(settled_projection)
             .await;
-        if interrupted {
-            return Err(RuntimeError::Interrupted);
-        }
         if let Some((index, _, sender)) = settlement {
             let _ = sender.send(index + 1);
         }

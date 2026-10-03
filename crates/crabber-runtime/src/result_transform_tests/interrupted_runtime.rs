@@ -6,18 +6,26 @@ use crabber_core::{RunStatus, ToolResultStatus};
 use crabber_extension::{EventPublished, ToolSettled, TransformOutput};
 use tokio::time::{Instant, timeout};
 
-fn settlement_notifications(log: Arc<Mutex<Vec<(String, Value)>>>) -> Arc<ClosureExtension> {
+fn settlement_notifications(
+    log: Arc<Mutex<Vec<(String, Value)>>>,
+    ready: Arc<Semaphore>,
+) -> Arc<ClosureExtension> {
     ClosureExtension::new("settlement-notifications", move |r| {
         for point in [EventPublished::ID, ToolSettled::ID] {
             let log = log.clone();
+            let ready = ready.clone();
             r.on_notify(
                 point,
                 0,
                 point,
                 Arc::new(move |value| {
                     let log = log.clone();
+                    let ready = ready.clone();
                     Box::pin(async move {
                         log.lock().unwrap().push((point.to_owned(), value.clone()));
+                        if point == ToolSettled::ID || value["kind"] == "tool_call_settled" {
+                            ready.add_permits(1);
+                        }
                         Ok(value)
                     })
                 }),
@@ -86,9 +94,10 @@ async fn assert_interrupted(done: &Finished<'_>, call: &ToolCallId, expected: &s
 async fn blocked_result_transform_interrupts_with_fixed_text_within_bound() {
     let call = ScriptedCall::text(ECHO, "secret");
     let notifications = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Semaphore::new(0));
     let harness = Harness::builder(one_turn(&[&call]))
         .mount(
-            settlement_notifications(notifications.clone()),
+            settlement_notifications(notifications.clone(), ready.clone()),
             Scope::Global,
         )
         .build()
@@ -98,6 +107,11 @@ async fn blocked_result_transform_interrupts_with_fixed_text_within_bound() {
     gate.entered().await;
     let done = interrupt_and_finish(&harness, handle).await;
     assert_interrupted(&done, &call.id, INTERRUPTED_RESULT_TEXT).await;
+    timeout(INTERRUPT_SETTLEMENT_BOUND, ready.acquire_many(1))
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
     let notifications = notifications.lock().unwrap();
     assert!(
         notifications
@@ -133,10 +147,11 @@ async fn accepted_final_redaction_settles_interrupted_with_json_and_notification
         );
     });
     let notifications = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Semaphore::new(0));
     let harness = Harness::builder(one_turn(&[&call]))
         .mount(redactor, Scope::Global)
         .mount(
-            settlement_notifications(notifications.clone()),
+            settlement_notifications(notifications.clone(), ready.clone()),
             Scope::Global,
         )
         .build()
@@ -146,6 +161,11 @@ async fn accepted_final_redaction_settles_interrupted_with_json_and_notification
     entered.release_all();
     let done = interrupt_and_finish(&harness, handle).await;
     assert_interrupted(&done, &call.id, r#"{"redacted":true}"#).await;
+    timeout(INTERRUPT_SETTLEMENT_BOUND, ready.acquire_many(2))
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
     let notifications = notifications.lock().unwrap();
     assert!(
         notifications
@@ -196,4 +216,160 @@ async fn parallel_interruption_settles_out_of_order_without_deadlock() {
     let done = interrupt_and_finish(&harness, handle).await;
     assert_interrupted(&done, &first.id, INTERRUPTED_RESULT_TEXT).await;
     assert_interrupted(&done, &second.id, r#""protected""#).await;
+}
+
+fn cancellation_redactor(first_id: ToolCallId, started: Arc<Semaphore>) -> Arc<ClosureExtension> {
+    ClosureExtension::new("cancellation-redactor", move |r| {
+        let first_id = first_id.clone();
+        let started = started.clone();
+        r.on_final_redaction(
+            0,
+            "protect",
+            Arc::new(move |context, _| {
+                let first_id = first_id.clone();
+                let started = started.clone();
+                Box::pin(async move {
+                    started.add_permits(1);
+                    if context.call_id() == &first_id {
+                        context.cancellation().cancelled().await;
+                    }
+                    Ok(TransformOutput::new(json!("protected")))
+                })
+            }),
+        );
+    })
+}
+
+fn blocked_settlement_notifier(
+    first_id: ToolCallId,
+    gate: Arc<Gate>,
+    blocked_point: &'static str,
+    captured: Arc<Mutex<Vec<(String, Value)>>>,
+    delivered: Arc<Semaphore>,
+) -> Arc<ClosureExtension> {
+    ClosureExtension::new("blocked-settlement-notifier", move |r| {
+        for point in [EventPublished::ID, ToolSettled::ID] {
+            let gate = gate.clone();
+            let first_id = first_id.clone();
+            let captured = captured.clone();
+            let delivered = delivered.clone();
+            r.on_notify(
+                point,
+                0,
+                point,
+                Arc::new(move |value| {
+                    let gate = gate.clone();
+                    let first_id = first_id.clone();
+                    let captured = captured.clone();
+                    let delivered = delivered.clone();
+                    Box::pin(async move {
+                        if point == ToolSettled::ID || value["kind"] == "tool_call_settled" {
+                            if point == blocked_point
+                                && value["payload"]["call_id"] == json!(first_id)
+                            {
+                                gate.pass(&value).await;
+                            }
+                            captured
+                                .lock()
+                                .unwrap()
+                                .push((point.to_owned(), value.clone()));
+                            delivered.add_permits(1);
+                        }
+                        Ok(value)
+                    })
+                }),
+            );
+        }
+    })
+}
+
+#[tokio::test]
+async fn interrupted_notifications_cannot_block_sibling_settlement_and_retain_plan_lease() {
+    for (protected, blocked_point) in [
+        (true, ToolSettled::ID),
+        (true, EventPublished::ID),
+        (false, EventPublished::ID),
+    ] {
+        let first = ScriptedCall::text(ECHO, "first-secret");
+        let second = ScriptedCall::text(SHOUT, "second-secret");
+        let first_id = first.id.clone();
+        let started = Arc::new(Semaphore::new(0));
+        let gate = Gate::all();
+        let entered = gate.clone();
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        let completed = Arc::new(Semaphore::new(0));
+        let delivered = completed.clone();
+        let notifier =
+            blocked_settlement_notifier(first_id, gate, blocked_point, captured, delivered);
+        let mut builder = Harness::builder(one_turn(&[&first, &second]))
+            .execution_mode(ExecutionMode::Parallel { max: 2 })
+            .mount(notifier, Scope::Global);
+        if protected {
+            builder = builder.mount(
+                cancellation_redactor(first.id.clone(), started.clone()),
+                Scope::Global,
+            );
+        }
+        let harness = builder.build().await;
+        let ordinary_gate = (!protected).then(|| harness.block_results());
+        let handle = harness.start().await;
+        if let Some(gate) = ordinary_gate {
+            gate.entered().await;
+            gate.entered().await;
+        } else {
+            started.acquire_many(2).await.unwrap().forget();
+        }
+        let cancelled_at = Instant::now();
+        handle.interrupt();
+        timeout(INTERRUPT_SETTLEMENT_BOUND, entered.entered())
+            .await
+            .unwrap();
+        let done = interrupt_and_finish(&harness, handle).await;
+        assert!(cancelled_at.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
+        assert_interrupted(
+            &done,
+            &first.id,
+            if protected {
+                r#""protected""#
+            } else {
+                INTERRUPTED_RESULT_TEXT
+            },
+        )
+        .await;
+        assert_interrupted(&done, &second.id, INTERRUPTED_RESULT_TEXT).await;
+        let close = harness.registry.close_all();
+        tokio::pin!(close);
+        assert!(
+            timeout(std::time::Duration::from_millis(25), &mut close)
+                .await
+                .is_err(),
+            "blocked callback must retain the mount plan lease"
+        );
+        entered.release_all();
+        timeout(INTERRUPT_SETTLEMENT_BOUND, &mut close)
+            .await
+            .unwrap()
+            .unwrap();
+        completed
+            .acquire_many(if protected { 3 } else { 2 })
+            .await
+            .unwrap()
+            .forget();
+        let notifications = notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|(point, _)| point == EventPublished::ID)
+                .count(),
+            2
+        );
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|(point, _)| point == ToolSettled::ID)
+                .count(),
+            usize::from(protected)
+        );
+    }
 }
