@@ -649,7 +649,7 @@ async fn pre_stage_error_is_sanitized_and_skips_result_chain() {
             true,
             &normalized(json!({"text": "private original output"})),
         );
-        assert_eq!(harness.probe.results(), []);
+        assert_eq!(harness.probe.results(), [] as [Value; 0]);
         assert_settled(
             &done,
             &call.id,
@@ -896,7 +896,7 @@ async fn cancellation_during_pre_stage_discards_output_and_skips_chain() {
             .cancellation()
             .is_cancelled()
     );
-    assert_eq!(harness.probe.results(), []);
+    assert_eq!(harness.probe.results(), [] as [Value; 0]);
     let done = Finished {
         harness: &harness,
         session_id,
