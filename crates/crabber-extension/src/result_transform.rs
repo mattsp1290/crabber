@@ -133,6 +133,10 @@ pub type ResultTransformCallback = Arc<
 >;
 
 /// Handed to callbacks. Wraps a `TaskTracker` and a close signal.
+///
+/// Spawn cleanup from within the callback. A clone kept outside it (in
+/// extension state or an untracked task) can spawn after the mount's close has
+/// drained, and that task is then not waited for.
 #[derive(Debug, Clone)]
 pub struct CleanupTracker {
     tasks: TaskTracker,

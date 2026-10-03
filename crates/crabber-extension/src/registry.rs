@@ -12,6 +12,7 @@ use crate::{
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
+use futures::FutureExt;
 use std::{
     collections::HashSet,
     panic::AssertUnwindSafe,
@@ -257,6 +258,9 @@ struct Mount {
     cleanup: CleanupOwner,
     close_timeout: Duration,
     close_observer: Option<MountCloseObserver>,
+    /// Runs once, right after the tracker first drains, before the re-check.
+    #[cfg(test)]
+    drain_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl Mount {
     /// Waits until no plan lease is held.
@@ -275,10 +279,28 @@ impl Mount {
     /// tracker, and re-checks both, because a callback that was still in flight
     /// when the tracker drained can spawn late cleanup (`join` alone would miss
     /// it). Never bounded and never aborts a task; the caller bounds its wait.
+    /// Runs the deferred cleanups in reverse order with no lock held, so a
+    /// panicking one neither poisons the registrar nor skips the rest.
+    fn rollback_contained(&self) {
+        loop {
+            let next = self
+                .registrar
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .cleanups
+                .pop();
+            let Some(cleanup) = next else { break };
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(cleanup));
+        }
+    }
     async fn drain(&self) {
         loop {
             self.leases_released().await;
             self.cleanup.wait_drained().await;
+            #[cfg(test)]
+            if let Some(hook) = self.drain_hook.lock().unwrap().take() {
+                hook();
+            }
             if self.leases.load(Ordering::SeqCst) == 0 && self.cleanup.tracker().pending() == 0 {
                 return;
             }
@@ -375,11 +397,19 @@ impl Default for RegistryInner {
 }
 #[cfg(test)]
 type AcquireHook = Arc<dyn Fn() + Send + Sync>;
+/// Runs inside `close_all`'s critical section, after the deactivation loop.
+#[cfg(test)]
+type CloseHook = Arc<dyn Fn(&RegistryInner) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct Registry {
     inner: Arc<Mutex<RegistryInner>>,
     #[cfg(test)]
     acquire_hook: Arc<Mutex<Option<AcquireHook>>>,
+    #[cfg(test)]
+    close_hook: Arc<Mutex<Option<CloseHook>>>,
+    /// Runs at the start of `close_all`, before it takes the registry mutex.
+    #[cfg(test)]
+    close_start_hook: Arc<Mutex<Option<AcquireHook>>>,
 }
 impl Registry {
     #[must_use]
@@ -465,35 +495,73 @@ impl Registry {
             cleanup,
             close_timeout: inner.close_timeout,
             close_observer: inner.close_observer.clone(),
+            #[cfg(test)]
+            drain_hook: Mutex::new(None),
         });
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
     }
-    /// Terminal: the registry is closed for every clone before any mount is
-    /// deactivated, so no plan can hold some mounts but not a closed one. Every
-    /// mount is deactivated and signalled first, then joined in reverse mount
-    /// order, each under its own bound; the first error is returned after all
-    /// were attempted. The registry stays closed when this returns an error.
+    /// Closes every mount and makes the registry terminal. Await it to
+    /// completion.
+    ///
+    /// The registry is closed for every clone before any mount is deactivated,
+    /// in one critical section under the mutex `acquire` takes, so no plan can
+    /// hold some mounts but not a closed one. Afterwards `try_acquire`,
+    /// `acquire_plan` and `mount` return `RegistryClosed` and `acquire` panics;
+    /// there is no reopen, also when this returns an error. Then every mount is
+    /// signalled, before any is joined.
+    ///
+    /// The joins run in one detached task, so dropping this future after the
+    /// terminal state is set never leaves a signalled mount without a close
+    /// task: the task keeps going and every mount still gets closed. Mounts are
+    /// closed sequentially in reverse mount order, each under its own bound
+    /// (see [`MountHandle::close`]); the next mount's close starts once the
+    /// previous one finished or timed out. When no close times out, rollbacks
+    /// and shutdowns therefore happen in reverse mount order. A mount whose
+    /// close timed out finishes later in its reaper, possibly after an earlier
+    /// mount. The first error is returned after every mount was attempted.
+    ///
+    /// Returns `SelfClose`, changing nothing, when called from a callback of
+    /// one of this registry's mounts.
     pub async fn close_all(&self) -> Result<(), ExtensionError> {
+        #[cfg(test)]
+        if let Some(hook) = self.close_start_hook.lock().unwrap().clone() {
+            hook();
+        }
         let mounts = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.mounts.iter().any(|m| dispatch::is_active_mount(m.id)) {
+                return Err(ExtensionError::SelfClose);
+            }
             inner.closed = true;
             for mount in &inner.mounts {
                 *mount.active.lock().unwrap() = false;
+            }
+            #[cfg(test)]
+            if let Some(hook) = self.close_hook.lock().unwrap().clone() {
+                hook(&inner);
             }
             inner.mounts.clone()
         };
         for mount in &mounts {
             mount.cleanup.close();
         }
-        let mut first = Ok(());
-        for mount in mounts.into_iter().rev() {
-            let result = MountHandle { mount }.close().await;
-            if first.is_ok() {
-                first = result;
+        let driver = tokio::spawn(async move {
+            let mut first = Ok(());
+            for mount in mounts.into_iter().rev() {
+                let result = MountHandle { mount }.close().await;
+                if first.is_ok() {
+                    first = result;
+                }
             }
+            first
+        });
+        match driver.await {
+            Ok(result) => result,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            // The runtime is shutting down: nothing is left to wait for.
+            Err(_) => Ok(()),
         }
-        first
     }
     /// `Err(ExtensionError::RegistryClosed)` once `close_all` has started.
     pub fn try_acquire(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
@@ -638,6 +706,21 @@ impl MountHandle {
     pub fn deactivate(&self) {
         *self.mount.active.lock().unwrap() = false;
     }
+    /// Closes this mount: deactivates it, signals its cleanup tracker (which
+    /// also fails its result-transform invocations), waits for plan leases and
+    /// the tracker, then runs deferred cleanups and `Extension::shutdown`.
+    ///
+    /// This is NOT terminal for the registry: new plans simply omit this mount.
+    /// Do not close a redactor's mount this way while runs are still admitted;
+    /// use `Registry::close_all`, which makes the registry terminal first.
+    ///
+    /// The registry's close bound covers only the drain of plan leases and the
+    /// tracker. If it expires this returns `MountCloseTimeout`, reports it to
+    /// the close observer and aborts nothing: the detached close task is the
+    /// reaper that keeps waiting and then finishes the close, and a later
+    /// `close` waits again under the bound. Once drained, rollback and
+    /// `shutdown` run unbounded, and a panic in either is contained: the mount
+    /// still ends closed and `close` returns `Ok`.
     pub async fn close(&self) -> Result<(), ExtensionError> {
         if dispatch::is_active_mount(self.mount.id) {
             return Err(ExtensionError::SelfClose);
@@ -659,8 +742,11 @@ impl MountHandle {
                 mount.drain().await;
                 *mount.drained.lock().unwrap() = true;
                 mount.drained_notify.notify_waiters();
-                mount.registrar.lock().unwrap().rollback();
-                mount.extension.shutdown().await;
+                mount.rollback_contained();
+                // A panicking shutdown must not leave the mount unclosed.
+                let _ = AssertUnwindSafe(mount.extension.shutdown())
+                    .catch_unwind()
+                    .await;
                 *mount.closed.lock().unwrap() = true;
                 mount.closed_notify.notify_waiters();
             });
@@ -671,6 +757,8 @@ impl MountHandle {
         )
         .await
         .is_err()
+            // Drained in the instant after expiry: not a timeout.
+            && !*mount.drained.lock().unwrap()
         {
             if let Some(observer) = &mount.close_observer {
                 let timeout = MountCloseTimeout {
@@ -2165,16 +2253,19 @@ mod tests {
                 let registry = registry.clone();
                 move || registry.try_acquire(&SessionId::new())
             });
-            observed_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .unwrap();
+            observed_rx.recv().unwrap();
+            // close_all is about to take the mutex the acquire still holds, so
+            // whichever way they interleave from here the plan is complete.
+            let (about_tx, about_rx) = std::sync::mpsc::channel();
+            *registry.close_start_hook.lock().unwrap() = Some(Arc::new(move || {
+                about_tx.send(()).unwrap();
+            }));
             let closing = tokio::task::spawn_blocking({
                 let registry = registry.clone();
                 let runtime = tokio::runtime::Handle::current();
                 move || runtime.block_on(registry.close_all())
             });
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            assert!(!closing.is_finished());
+            about_rx.recv().unwrap();
             let (lock, ready) = &*resume;
             *lock.lock().unwrap() = true;
             ready.notify_one();
@@ -2186,11 +2277,7 @@ mod tests {
                 .count();
             assert_eq!(extensions, 2);
             plan.release();
-            tokio::time::timeout(std::time::Duration::from_secs(5), closing)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            closing.await.unwrap().unwrap();
             assert_eq!(
                 registry.try_acquire(&SessionId::new()).err(),
                 Some(ExtensionError::RegistryClosed)
@@ -2267,6 +2354,312 @@ mod tests {
             let registry = Registry::new();
             registry.close_all().await.unwrap();
             let _ = registry.acquire(&SessionId::new());
+        }
+
+        // A-1: only the re-check after the first tracker wait catches a spawn
+        // that lands once `wait_drained` has returned (a single pass would run
+        // rollback and shutdown with the task still pending).
+        #[tokio::test(start_paused = true)]
+        async fn a_spawn_after_the_first_tracker_wait_is_joined_before_rollback() {
+            let log = new_log();
+            let registry = Registry::new();
+            let handle = registry
+                .mount(logged("one", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let (release_tx, gate) = oneshot::channel::<()>();
+            let tracker = handle.mount.cleanup.tracker();
+            let late_log = Arc::clone(&log);
+            *handle.mount.drain_hook.lock().unwrap() = Some(Box::new(move || {
+                drop(tracker.spawn(async move {
+                    gate.await.ok();
+                    late_log.lock().unwrap().push("late".into());
+                }));
+            }));
+            assert_eq!(handle.close().await, Err(timeout_for("one")));
+            assert_log(&log, &[]);
+            release_tx.send(()).unwrap();
+            assert_eq!(handle.close().await, Ok(()));
+            assert_log(&log, &["late", "cleanup:one", "shutdown:one"]);
+        }
+
+        // A-2: close_all signals every mount before it joins any.
+        #[tokio::test(start_paused = true)]
+        async fn close_all_signals_every_mount_before_joining_the_last_one() {
+            let log = new_log();
+            let registry = Registry::new();
+            let mut handles = vec![];
+            for id in ["a", "b", "c"] {
+                handles.push(
+                    registry
+                        .mount(logged(id, &log, true), Scope::Global)
+                        .await
+                        .unwrap(),
+                );
+            }
+            // The dispatcher outlives the released plan; no lease is held.
+            let plan = registry.acquire(&SessionId::new());
+            let dispatcher = plan.dispatcher.clone();
+            plan.release();
+            // c is joined first and is stuck on a tracker task.
+            let (release, task) = stuck_task(&handles[2], &log);
+            let closing = registry.close_all();
+            tokio::pin!(closing);
+            for _ in 0..8 {
+                assert!(futures::poll!(&mut closing).is_pending());
+                tokio::task::yield_now().await;
+            }
+            // c's bound has not expired, yet a and b are already signalled and
+            // their handlers already fail through the driver.
+            assert!(handles[0].mount.cleanup.tracker().is_closing());
+            assert!(handles[1].mount.cleanup.tracker().is_closing());
+            assert_eq!(
+                dispatcher
+                    .transform_tool_result(context(), crate::TransformOutput::new(json!("s")))
+                    .await,
+                ToolResultOutcome::Failed {
+                    handler: "a-handler".into()
+                }
+            );
+            assert_log(&log, &[]);
+            assert_eq!(closing.await, Err(timeout_for("c")));
+            release.send(()).unwrap();
+            task.await.unwrap();
+        }
+
+        // A-3: closed is set in the same critical section as the deactivation.
+        #[tokio::test]
+        async fn close_all_sets_closed_in_the_deactivation_critical_section() {
+            let log = new_log();
+            let registry = Registry::new();
+            for id in ["a", "b"] {
+                registry
+                    .mount(logged(id, &log, true), Scope::Global)
+                    .await
+                    .unwrap();
+            }
+            let ran = Arc::new(AtomicUsize::new(0));
+            let mutex = Arc::clone(&registry.inner);
+            *registry.close_hook.lock().unwrap() = Some(Arc::new({
+                let ran = Arc::clone(&ran);
+                move |inner: &RegistryInner| {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    // Every mount is deactivated, so the flag must already be
+                    // set, and the mutex `try_acquire` takes is still held:
+                    // no acquire can have observed the state in between.
+                    assert!(inner.mounts.iter().all(|m| !*m.active.lock().unwrap()));
+                    assert!(inner.closed, "closed must be set with the deactivation");
+                    assert!(mutex.try_lock().is_err(), "critical section was left");
+                }
+            }));
+            registry.close_all().await.unwrap();
+            assert_eq!(ran.load(Ordering::SeqCst), 1);
+        }
+
+        // A-3 (stress): while close_all runs, every try_acquire is either a
+        // complete plan (every mount's handler) or RegistryClosed, never a
+        // plan missing mounts.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_acquires_see_a_complete_plan_or_registry_closed() {
+            for _ in 0..200 {
+                let log = new_log();
+                let registry = Registry::new();
+                for id in ["a", "b", "c"] {
+                    registry
+                        .mount(logged(id, &log, true), Scope::Global)
+                        .await
+                        .unwrap();
+                }
+                let spinners: Vec<_> = (0..2)
+                    .map(|_| {
+                        let registry = registry.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let session = SessionId::new();
+                            let mut complete = 0;
+                            loop {
+                                match registry.try_acquire(&session) {
+                                    Ok(plan) => {
+                                        let handlers = plan
+                                            .components
+                                            .iter()
+                                            .filter(|c| c.id.starts_with("handler:"));
+                                        assert_eq!(handlers.count(), 3, "partial plan");
+                                        plan.release();
+                                        complete += 1;
+                                    }
+                                    Err(error) => {
+                                        assert_eq!(error, ExtensionError::RegistryClosed);
+                                        return complete;
+                                    }
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                tokio::task::yield_now().await;
+                registry.close_all().await.unwrap();
+                for spinner in spinners {
+                    spinner.await.unwrap();
+                }
+            }
+        }
+
+        // B-1: dropping the close_all future must not strand a signalled mount.
+        #[tokio::test(start_paused = true)]
+        async fn dropped_close_all_still_closes_every_mount() {
+            let log = new_log();
+            let registry = Registry::new();
+            for id in ["a", "b"] {
+                registry
+                    .mount(logged(id, &log, false), Scope::Global)
+                    .await
+                    .unwrap();
+            }
+            let plan = registry.acquire(&SessionId::new());
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), registry.close_all())
+                    .await
+                    .is_err()
+            );
+            assert_log(&log, &[]);
+            plan.release();
+            // No second close_all: the detached driver finishes both mounts, in
+            // reverse mount order.
+            tokio::time::sleep(DEFAULT_MOUNT_CLOSE_TIMEOUT * 2).await;
+            assert_log(
+                &log,
+                &["cleanup:b", "shutdown:b", "cleanup:a", "shutdown:a"],
+            );
+        }
+
+        // B-2
+        struct CloseAllFromHandler {
+            registry: Registry,
+            result: Arc<Mutex<Option<Result<(), ExtensionError>>>>,
+        }
+        #[async_trait]
+        impl Extension for CloseAllFromHandler {
+            fn id(&self) -> &'static str {
+                "reentrant-close-all"
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                let (registry, result) = (self.registry.clone(), Arc::clone(&self.result));
+                r.on_hook(
+                    crate::TurnPrepare::ID,
+                    0,
+                    "close-all",
+                    Arc::new(move |_| {
+                        let (registry, result) = (registry.clone(), Arc::clone(&result));
+                        Box::pin(async move {
+                            *result.lock().unwrap() = Some(registry.close_all().await);
+                            Ok(Value::Null)
+                        })
+                    }),
+                );
+                Ok(())
+            }
+        }
+
+        #[tokio::test]
+        async fn close_all_from_a_handler_is_rejected_before_anything_changes() {
+            let log = new_log();
+            let registry = Registry::new();
+            let other = registry
+                .mount(logged("other", &log, false), Scope::Global)
+                .await
+                .unwrap();
+            let result = Arc::new(Mutex::new(None));
+            registry
+                .mount(
+                    Arc::new(CloseAllFromHandler {
+                        registry: registry.clone(),
+                        result: Arc::clone(&result),
+                    }),
+                    Scope::Global,
+                )
+                .await
+                .unwrap();
+            let plan = registry.acquire(&SessionId::new());
+            plan.dispatcher
+                .hook::<crate::TurnPrepare>(Value::Null)
+                .await
+                .unwrap();
+            assert_eq!(
+                result.lock().unwrap().take(),
+                Some(Err(ExtensionError::SelfClose))
+            );
+            plan.release();
+            // Not terminal, nothing deactivated or signalled.
+            assert!(!registry.inner.lock().unwrap().closed);
+            assert!(!other.mount.cleanup.tracker().is_closing());
+            let plan = registry.try_acquire(&SessionId::new()).unwrap();
+            assert_eq!(
+                plan.components
+                    .iter()
+                    .filter(|c| c.id.starts_with("extension:"))
+                    .count(),
+                2
+            );
+            plan.release();
+            registry.close_all().await.unwrap();
+        }
+
+        // B-4
+        struct Panicking {
+            log: Log,
+            panic_shutdown: bool,
+        }
+        #[async_trait]
+        impl Extension for Panicking {
+            fn id(&self) -> &'static str {
+                "panicking"
+            }
+            fn version(&self) -> &'static str {
+                "1"
+            }
+            fn config_hash(&self) -> String {
+                "{}".into()
+            }
+            async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+                let log = Arc::clone(&self.log);
+                r.defer(move || log.lock().unwrap().push("cleanup:first".into()));
+                r.defer(|| panic!("deferred cleanup panics"));
+                Ok(())
+            }
+            async fn shutdown(&self) {
+                self.log.lock().unwrap().push("shutdown".into());
+                assert!(!self.panic_shutdown, "shutdown panics");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_panicking_cleanup_or_shutdown_still_ends_the_mount_closed() {
+            for panic_shutdown in [false, true] {
+                let log = new_log();
+                let registry = Registry::new();
+                let handle = registry
+                    .mount(
+                        Arc::new(Panicking {
+                            log: Arc::clone(&log),
+                            panic_shutdown,
+                        }),
+                        Scope::Global,
+                    )
+                    .await
+                    .unwrap();
+                // The panicking cleanup runs first (reverse order); the earlier
+                // cleanup and shutdown still run and the mount ends closed.
+                assert_eq!(handle.close().await, Ok(()));
+                assert_log(&log, &["cleanup:first", "shutdown"]);
+                assert_eq!(handle.close().await, Ok(()));
+                assert_log(&log, &["cleanup:first", "shutdown"]);
+            }
         }
     }
 }

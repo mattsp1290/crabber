@@ -289,10 +289,8 @@ impl Dispatcher {
                         // Drops only this handler's future; the driver goes on.
                         continue;
                     }
-                    if mount_closed {
-                        // A final redactor whose mount closes is dropped.
-                        return interrupted();
-                    }
+                    // A final redactor in flight whose mount is closing is dropped
+                    // below, where the close arm decides `Interrupted`.
                 } else if mount_closed {
                     return ToolResultOutcome::Failed {
                         handler: handler.id.clone(),
@@ -1835,6 +1833,28 @@ mod driver_tests {
         closing.cancel();
         assert_eq!(driver.await, interrupted(Some(json!("[red]+F"))));
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_redactor_with_cancellation_and_close_ready_together_is_interrupted() {
+        let (started, dropped) = (Arc::new(Notify::new()), flag());
+        let (tracker, closing) = closable();
+        let mut hung = make(0, "hang", F, hang(&started, &dropped));
+        hung.cleanup = tracker;
+        let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
+        let token = CancellationToken::new();
+        let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
+        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        tokio::pin!(driver);
+        park(&mut driver).await;
+        // Both ready at once on a final redactor running on an accepted value:
+        // cancellation is observed, so never `Failed`, and no payload.
+        token.cancel();
+        closing.cancel();
+        let outcome = driver.await;
+        assert_eq!(outcome, interrupted(None));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_no_leak(&outcome);
     }
 
     // Same-poll completion and cancellation: the handler cancels as it
