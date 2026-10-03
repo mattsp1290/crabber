@@ -18,10 +18,11 @@ use crabber_core::{
 };
 use crabber_extension::{
     ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
-    HostServices, ModelCompleted, ModelRequestError, ModelRequested,
+    HostServices, InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
     ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
-    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolPrepare,
-    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
+    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput,
+    ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultTransform, TurnCompleted,
+    TurnPrepare, TurnStarted, WorkspaceContext,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -361,7 +362,13 @@ pub struct Orchestrator {
     heartbeat_interval: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
+    /// Test seam: sees every authoritative result context `execute_tool` builds.
+    #[cfg(test)]
+    context_observer: Option<ResultContextObserver>,
 }
+
+#[cfg(test)]
+pub(crate) type ResultContextObserver = Arc<dyn Fn(&ToolResultContext) + Send + Sync>;
 
 /// The persisted session a run executes in, carried along the run path so a
 /// run cannot execute tools or assemble context without its workspace.
@@ -446,9 +453,17 @@ pub struct OrchestratorBuilder {
     heartbeat_interval: Option<Duration>,
     execution_mode: Option<ExecutionMode>,
     compaction: Option<CompactionPolicy>,
+    #[cfg(test)]
+    context_observer: Option<ResultContextObserver>,
 }
 
 impl OrchestratorBuilder {
+    #[cfg(test)]
+    pub(crate) fn context_observer(mut self, observer: ResultContextObserver) -> Self {
+        self.context_observer = Some(observer);
+        self
+    }
+
     #[must_use]
     pub fn store(mut self, value: Arc<dyn Store>) -> Self {
         self.store = Some(value);
@@ -592,6 +607,8 @@ impl OrchestratorBuilder {
             heartbeat_interval,
             execution_mode: self.execution_mode.unwrap_or_default(),
             compaction,
+            #[cfg(test)]
+            context_observer: self.context_observer,
         })
     }
 }
@@ -3059,8 +3076,8 @@ impl Orchestrator {
             .find(|tool| tool.info.name == call.name)
             .cloned();
         let raw = call.arguments.unwrap_or(Value::String(call.raw));
-        let prepared = if let Some(tool) = &definition {
-            match validate_arguments(&tool.info, &raw) {
+        let arguments = if let Some(tool) = &definition {
+            let prepared = match validate_arguments(&tool.info, &raw) {
                 Ok(()) => match self.tool_pipeline.prepare(&tool.info, raw.clone()).await {
                     Ok(value) => match plan.dispatcher.transform::<ToolPrepare>(json!({"name":tool.info.name,"call_id":call.id.to_string(),"input":value})).await {
                         Ok(output) => {
@@ -3072,9 +3089,16 @@ impl Orchestrator {
                     Err(error) => Err(error),
                 },
                 Err(error) => Err(error),
+            };
+            match prepared {
+                Ok(value) if is_reserved_arguments(&value) => {
+                    json!({PREPARE_ERROR_KEY: RESERVED_ARGUMENT_KEY_TEXT})
+                }
+                Ok(value) => value,
+                Err(error) => json!({PREPARE_ERROR_KEY: error}),
             }
         } else {
-            Err(format!("unknown tool: {}", call.name))
+            json!({UNKNOWN_TOOL_KEY: {"raw": raw}})
         };
         ensure_lease(lease_lost)?;
         let mut event = self.event(session_id, run_id, EventKind::ToolCallPending);
@@ -3085,7 +3109,7 @@ impl Orchestrator {
             id: call.id,
             run_id: run_id.clone(),
             name: call.name,
-            arguments: prepared.unwrap_or_else(|error| json!({"$crabber_prepare_error":error})),
+            arguments,
             status: ToolCallStatus::Pending,
             retry_safe: definition.as_ref().is_some_and(|tool| tool.info.retry_safe),
             result: None,
@@ -3120,15 +3144,7 @@ impl Orchestrator {
             .find(|tool| tool.info.name == call.name)
             .cloned();
         let record = existing.expect("tool calls are staged before execution");
-        let prepared = if let Some(error) = record
-            .arguments
-            .get("$crabber_prepare_error")
-            .and_then(Value::as_str)
-        {
-            Err(error.to_owned())
-        } else {
-            Ok(record.arguments)
-        };
+        let recorded = read_recorded_call(record.arguments, &call.name, definition.is_some());
         ensure_lease(lease_lost)?;
         let tool_name = call.name.clone();
         let mut measurement = Measurement::new(
@@ -3168,9 +3184,11 @@ impl Orchestrator {
                 measurement.observation.reason = TerminalReason::RuntimeError;
             })?;
         ensure_lease(lease_lost)?;
-        let outcome: Result<Value, String> = match (definition, prepared) {
-            (Some(tool), Ok(arguments)) => {
-                tokio::select! {
+        let (class, input, resolved, outcome): (_, _, _, Result<Value, String>) = match recorded {
+            RecordedCall::Execute(arguments) => {
+                let tool = definition.expect("the record reader executes only calls that resolve");
+                let input = ToolInput::Normalized(arguments.clone());
+                let run = tokio::select! {
                     () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
                     result = self.permit_and_execute(
                     execution,
@@ -3190,12 +3208,43 @@ impl Orchestrator {
                             _ => TerminalReason::RuntimeError,
                         };
                     })?,
+                };
+                match run {
+                    ToolRun::Output(value) => (ToolOutcomeClass::Succeeded, input, true, Ok(value)),
+                    ToolRun::PermissionDenied => (
+                        ToolOutcomeClass::PermissionDenied,
+                        input,
+                        true,
+                        Err("permission denied".into()),
+                    ),
+                    ToolRun::ExecutionFailed(error) => {
+                        (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
+                    }
                 }
             }
-            (_, Err(error)) => Err(error),
-            (None, Ok(_)) => Err("unknown tool".into()),
+            RecordedCall::Settled {
+                class,
+                input,
+                resolved,
+                seed,
+            } => (class, input, resolved, Err(seed)),
         };
         ensure_lease(lease_lost)?;
+        // Built from the stored record only, so a resumed call derives the same context.
+        let result_context = ToolResultContext::new(
+            call.name.clone(),
+            resolved,
+            input,
+            record.id.clone(),
+            session_id.clone(),
+            run_id.clone(),
+            class,
+        );
+        debug_assert_eq!(result_context.class().is_error(), outcome.is_err());
+        #[cfg(test)]
+        if let Some(observer) = &self.context_observer {
+            observer(&result_context);
+        }
         let original_error = outcome.is_err();
         let seed = match outcome {
             Ok(value) => value,
@@ -3309,7 +3358,7 @@ impl Orchestrator {
         arguments: Value,
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
-    ) -> Result<Result<Value, String>, RuntimeError> {
+    ) -> Result<ToolRun, RuntimeError> {
         let (session_id, workspace) = (&session.id, session.workspace.clone());
         let guard_decisions: Vec<_> = plan
             .guards
@@ -3365,7 +3414,7 @@ impl Orchestrator {
             }
         };
         if !allowed {
-            return Ok(Err("permission denied".into()));
+            return Ok(ToolRun::PermissionDenied);
         }
         ensure_lease(lease_lost)?;
         execution
@@ -3430,13 +3479,101 @@ impl Orchestrator {
             .await
         {
             Ok(output) => output,
-            Err(error) => return Ok(Err(error.to_string())),
+            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
         };
         ensure_lease(lease_lost)?;
-        Ok(self
-            .tool_pipeline
-            .transform_result(&tool.info, output)
-            .await)
+        // Until crabber-klyf gives the pre-stage its own D2 outcome, its `Err` persists as it does
+        // today, as an execution failure.
+        Ok(
+            match self
+                .tool_pipeline
+                .transform_result(&tool.info, output)
+                .await
+            {
+                Ok(value) => ToolRun::Output(value),
+                Err(error) => ToolRun::ExecutionFailed(error),
+            },
+        )
+    }
+}
+
+const PREPARE_ERROR_KEY: &str = "$crabber_prepare_error";
+const UNKNOWN_TOOL_KEY: &str = "$crabber_unknown_tool";
+const RESERVED_KEY_PREFIX: &str = "$crabber_";
+/// Recorded (and seeded) when prepared arguments would be read back as a runtime sentinel.
+const RESERVED_ARGUMENT_KEY_TEXT: &str = "reserved argument key";
+
+/// Typed result of running a resolved call, so the class never depends on error text.
+enum ToolRun {
+    Output(Value),
+    PermissionDenied,
+    ExecutionFailed(String),
+}
+
+/// What the stored `record.arguments` say about a call (Recorded answer 1).
+#[derive(Debug, PartialEq)]
+pub(crate) enum RecordedCall {
+    /// A resolved call with real arguments: class comes from execution.
+    Execute(Value),
+    /// The call does not execute; class, input and the chain's seed text come from the record.
+    Settled {
+        class: ToolOutcomeClass,
+        input: ToolInput,
+        resolved: bool,
+        seed: String,
+    },
+}
+
+/// An object whose only key is reserved for the runtime.
+fn sole_reserved_key(arguments: &Value) -> Option<(&str, &Value)> {
+    let object = arguments.as_object().filter(|object| object.len() == 1)?;
+    let (key, value) = object.iter().next()?;
+    key.starts_with(RESERVED_KEY_PREFIX)
+        .then_some((key.as_str(), value))
+}
+
+fn is_reserved_arguments(arguments: &Value) -> bool {
+    sole_reserved_key(arguments).is_some()
+}
+
+pub(crate) fn read_recorded_call(arguments: Value, name: &str, resolves: bool) -> RecordedCall {
+    let unknown_seed = || format!("unknown tool: {name}");
+    let prepare_failed = |seed: String| RecordedCall::Settled {
+        class: ToolOutcomeClass::PrepareFailed,
+        input: ToolInput::Unavailable {
+            reason: InputUnavailable::PrepareFailed,
+        },
+        resolved: true,
+        seed,
+    };
+    match sole_reserved_key(&arguments) {
+        Some((UNKNOWN_TOOL_KEY, value)) => RecordedCall::Settled {
+            class: ToolOutcomeClass::UnknownTool,
+            input: match value.as_object().and_then(|object| object.get("raw")) {
+                Some(raw) => ToolInput::Raw(raw.clone()),
+                None => ToolInput::Unavailable {
+                    reason: InputUnavailable::Unresolved,
+                },
+            },
+            resolved: false,
+            seed: unknown_seed(),
+        },
+        Some((PREPARE_ERROR_KEY, value)) => prepare_failed(
+            value
+                .as_str()
+                .unwrap_or(RESERVED_ARGUMENT_KEY_TEXT)
+                .to_owned(),
+        ),
+        Some(_) => prepare_failed(RESERVED_ARGUMENT_KEY_TEXT.to_owned()),
+        None if resolves => RecordedCall::Execute(arguments),
+        None => RecordedCall::Settled {
+            class: ToolOutcomeClass::UnknownTool,
+            input: ToolInput::Unavailable {
+                reason: InputUnavailable::Unresolved,
+            },
+            resolved: false,
+            seed: unknown_seed(),
+        },
     }
 }
 

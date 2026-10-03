@@ -656,6 +656,10 @@ from the record alone:
 | anything else | yes | from execution | `Normalized(arguments)` |
 | anything else | no (the defensive `(None, Ok(_))` arm) | `UnknownTool`, `resolved` false, seed `"unknown tool: <name>"` | `Unavailable { Unresolved }` |
 
+The chain's seed text for the two reserved-key rows (a sole other
+`$crabber_*` key, or a non-string `$crabber_prepare_error`) is the fixed string
+`reserved argument key`, the same text `stage_tool` records.
+
 - *Schema.* This is a record-content change with **no schema change and no
   migration**: `ToolCallRecord.arguments` is an opaque JSON value and the
   schema version stays 5.

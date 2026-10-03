@@ -10,6 +10,7 @@
 mod binding;
 mod cancel;
 mod compose;
+mod context;
 mod paths;
 mod recovery;
 mod tamper;
@@ -25,7 +26,7 @@ use crabber_core::{
 };
 use crabber_extension::{
     Extension, ExtensionError, Point, Registrar, Registry, RunPlanProvider, Scope, ToolDefinition,
-    ToolExecutor, ToolGuard, ToolPrepare, ToolResultTransform,
+    ToolExecutor, ToolGuard, ToolPrepare, ToolResultContext, ToolResultTransform,
 };
 use crabber_providers::{FakeProvider, ModelRequest, Resolver, Selection, StreamDelta};
 use crabber_session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
@@ -42,6 +43,8 @@ pub(super) const SHOUT: &str = "shout";
 pub(super) const FAIL: &str = "fail";
 /// Tool the harness policy denies before it executes.
 pub(super) const FORBIDDEN: &str = "forbidden";
+/// Tool whose schema accepts any object, so a sentinel-shaped argument object passes validation.
+pub(super) const OPEN: &str = "open";
 /// Tool name the plan does not contain.
 pub(super) const MISSING: &str = "missing";
 /// `text` value a `ToolPrepare` handler rejects.
@@ -193,12 +196,16 @@ impl Extension for RecordingExtension {
         String::new()
     }
     async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
-        for name in [ECHO, SHOUT, FAIL, FORBIDDEN] {
+        for name in [ECHO, SHOUT, FAIL, FORBIDDEN, OPEN] {
             r.tool(Arc::new(ToolDefinition {
                 info: ToolInfo {
                     name: name.into(),
                     description: "test".into(),
-                    parameters: json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
+                    parameters: if name == OPEN {
+                        json!({"type":"object"})
+                    } else {
+                        json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
+                    },
                     retry_safe: true,
                     required_permissions: vec![],
                 },
@@ -469,6 +476,7 @@ impl HarnessBuilder {
             pipeline: self.pipeline,
             policy: self.policy,
             approver: self.approver,
+            contexts: Arc::default(),
         };
         let runtime = harness.fresh_runtime();
         Harness {
@@ -490,6 +498,7 @@ pub(super) struct Harness {
     pipeline: Option<Arc<dyn ToolPipeline>>,
     policy: Arc<dyn PermissionPolicy>,
     approver: Option<Arc<dyn ApprovalRequester>>,
+    contexts: Arc<Mutex<Vec<ToolResultContext>>>,
 }
 impl Harness {
     pub(super) fn builder(scripts: Vec<Vec<StreamDelta>>) -> HarnessBuilder {
@@ -524,7 +533,13 @@ impl Harness {
             .store(Arc::clone(&self.store) as Arc<dyn Store>)
             .resolver(resolver)
             .plan_provider(Arc::clone(&self.registry) as Arc<dyn RunPlanProvider>)
-            .policy(Arc::clone(&self.policy));
+            .policy(Arc::clone(&self.policy))
+            .context_observer({
+                let contexts = Arc::clone(&self.contexts);
+                Arc::new(move |context: &ToolResultContext| {
+                    contexts.lock().unwrap().push(context.clone());
+                })
+            });
         if let Some(approver) = &self.approver {
             builder = builder.approver(Arc::clone(approver));
         }
@@ -535,6 +550,10 @@ impl Harness {
             builder = builder.execution_mode(mode);
         }
         builder.build().unwrap()
+    }
+    /// Every authoritative result context any runtime of this harness has built, in order.
+    pub(super) fn contexts(&self) -> Vec<ToolResultContext> {
+        self.contexts.lock().unwrap().clone()
     }
     /// Install a gate that parks every result handler after it records its payload.
     pub(super) fn block_results(&self) -> Arc<Gate> {
@@ -802,10 +821,12 @@ async fn characterize_unknown_tool_path() {
         true,
     )
     .await;
-    // The raw provider arguments are dropped; only the sentinel survives durably.
+    // crabber-zv2d: the record now keeps the raw provider arguments under the unknown-tool key
+    // (Recorded answer 1), so the class comes from the record instead of the error text. The
+    // persisted result is unchanged.
     assert_eq!(
         done.record(&call.id).await.arguments,
-        json!({"$crabber_prepare_error": "unknown tool: missing"})
+        json!({"$crabber_unknown_tool": {"raw": {"text": "hi"}}})
     );
 }
 
