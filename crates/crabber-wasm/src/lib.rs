@@ -1339,6 +1339,108 @@ mod tests {
         assert!(result.to_string().contains("[REDACTED]"));
     }
 
+    // The `characterize_*` tests below pin today's WASM after-tool adapter
+    // (`adapters.rs`, "wasm-after-tool"). crabber-rmjd (WASM adapter adoption of
+    // the new result-transform contract, D9) is expected to change them.
+    async fn echo_middleware_plan() -> (
+        crabber_extension::Registry,
+        crabber_extension::MountHandle,
+        crabber_extension::RunPlan,
+    ) {
+        use crabber_extension::{Registry, Scope};
+        let registry = Registry::new();
+        let mount = registry
+            .mount(
+                Arc::new(WasmExtension::new(fixture("echo-middleware"))),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&crabber_core::SessionId::new());
+        (registry, mount, plan)
+    }
+
+    #[tokio::test]
+    async fn characterize_wasm_after_tool_guest_receives_empty_context() {
+        use crabber_extension::ToolResultTransform;
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        let out = plan
+            .dispatcher
+            .transform::<ToolResultTransform>(
+                serde_json::json!({"result":{"a":1},"is_error":true,"other":"kept"}),
+            )
+            .await
+            .unwrap();
+        // Only `result` is replaced; sibling fields are untouched.
+        assert_eq!(out["is_error"], true);
+        assert_eq!(out["other"], "kept");
+        let echoed: Value = out["result"].clone();
+        assert_eq!(echoed["tool_name"], "");
+        assert_eq!(echoed["tool_call_id"], "");
+        assert_eq!(echoed["executed_input_json"], "");
+        assert_eq!(echoed["output_json"], "{\"a\":1}");
+        assert_eq!(echoed["is_error"], true);
+        let out = plan
+            .dispatcher
+            .transform::<ToolResultTransform>(serde_json::json!({"result":"text","is_error":false}))
+            .await
+            .unwrap();
+        assert_eq!(out["result"]["output_json"], "\"text\"");
+        assert_eq!(out["result"]["is_error"], false);
+        assert_eq!(out["result"]["tool_name"], "");
+    }
+
+    #[tokio::test]
+    async fn characterize_wasm_after_tool_unchanged_keeps_value() {
+        use crabber_extension::ToolResultTransform;
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        let input = serde_json::json!({"result":"__unchanged__","is_error":true});
+        let out = plan
+            .dispatcher
+            .transform::<ToolResultTransform>(input.clone())
+            .await
+            .unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[tokio::test]
+    async fn characterize_wasm_after_tool_json_replaces_only_result() {
+        use crabber_extension::ToolResultTransform;
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        // The guest cannot write `is_error`: the host only assigns `value["result"]`.
+        let out = plan
+            .dispatcher
+            .transform::<ToolResultTransform>(serde_json::json!({"result":"x","is_error":true}))
+            .await
+            .unwrap();
+        let mut keys: Vec<_> = out.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["is_error", "result"]);
+        assert_eq!(out["is_error"], true);
+        assert!(out["result"].is_object());
+    }
+
+    #[tokio::test]
+    async fn characterize_wasm_after_tool_error_fails_the_chain() {
+        use crabber_extension::{ExtensionError, ToolResultTransform};
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        let err = plan
+            .dispatcher
+            .transform::<ToolResultTransform>(
+                serde_json::json!({"result":"__error__","is_error":false}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ExtensionError::Plan(message) if message == "guest rejected replacement"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "extension plan failed: guest rejected replacement"
+        );
+    }
+
     #[tokio::test]
     async fn policy_guard_does_not_commit_state_after_fence_loss() {
         use crabber_extension::{Registry, Scope};
