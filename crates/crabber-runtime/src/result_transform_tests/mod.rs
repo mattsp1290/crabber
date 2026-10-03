@@ -15,7 +15,8 @@ mod recovery;
 mod tamper;
 
 use crate::{
-    ApprovalRequester, Orchestrator, PermissionDecision, PermissionPolicy, Request, RunHandle,
+    ApprovalRequester, ExecutionMode, Orchestrator, PermissionDecision, PermissionPolicy, Request,
+    RunHandle, ToolPipeline,
 };
 use async_trait::async_trait;
 use crabber_core::{
@@ -23,14 +24,15 @@ use crabber_core::{
     ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
-    Extension, ExtensionError, Point, Registrar, Registry, Scope, ToolDefinition, ToolExecutor,
-    ToolPrepare, ToolResultTransform,
+    Extension, ExtensionError, Point, Registrar, Registry, RunPlanProvider, Scope, ToolDefinition,
+    ToolExecutor, ToolGuard, ToolPrepare, ToolResultTransform,
 };
-use crabber_providers::{FakeProvider, ModelRequest, Selection, StreamDelta};
+use crabber_providers::{FakeProvider, ModelRequest, Resolver, Selection, StreamDelta};
 use crabber_session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
+use tokio::sync::{Semaphore, oneshot};
 
 /// Tool whose executor echoes its input.
 pub(super) const ECHO: &str = "echo";
@@ -49,10 +51,16 @@ pub(super) const EXECUTOR_ERROR: &str = "executor exploded";
 
 struct TextTool {
     name: &'static str,
+    probe: Arc<Probe>,
 }
 #[async_trait]
 impl ToolExecutor for TextTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
+        self.probe
+            .executed
+            .lock()
+            .unwrap()
+            .push((self.name.to_owned(), input.clone()));
         match self.name {
             FAIL => Err(ExtensionError::Tool(EXECUTOR_ERROR.into())),
             SHOUT => {
@@ -63,13 +71,85 @@ impl ToolExecutor for TextTool {
     }
 }
 
-/// Handler that parks until released; later cancellation slices drive it.
-#[derive(Default)]
+/// Parks handlers of any kind until the test releases them.
+///
+/// Not tied to the recording handler: a test builds a `Gate`, and any handler (an ordinary
+/// result handler, a `ToolPipeline` stage, a final redactor) calls [`Gate::pass`] with a key
+/// describing what it is processing. Only keys the gate's selector accepts park, so one call can
+/// be held while others go through, and a specific parked call can be released on its own.
+///
+/// Today the key is the payload the handler sees, which carries no call ID or tool name, so
+/// selectors look at the value. crabber-orgu adds the typed context; selecting by call ID is then
+/// a change to the selector closure only. Arrivals are counted by a semaphore and handed out in
+/// order, so several handlers parking at once never coalesce, and release is by per-entry
+/// channel, so no wakeup is lost. Release only affects entries that have already parked, so
+/// await [`Gate::entered`] first.
 pub(super) struct Gate {
-    /// Notified once a handler has reached the gate.
-    pub(super) entered: Notify,
-    /// Notify to let the parked handler continue.
-    pub(super) release: Notify,
+    select: Box<dyn Fn(&Value) -> bool + Send + Sync>,
+    arrivals: Semaphore,
+    state: Mutex<GateState>,
+}
+#[derive(Default)]
+struct GateState {
+    /// Keys that have parked and not yet been handed out by `entered`.
+    unseen: VecDeque<Value>,
+    /// Parked entries waiting for release.
+    parked: Vec<(Value, oneshot::Sender<()>)>,
+}
+impl Gate {
+    /// Park every key the predicate accepts.
+    pub(super) fn when(select: impl Fn(&Value) -> bool + Send + Sync + 'static) -> Arc<Self> {
+        Arc::new(Self {
+            select: Box::new(select),
+            arrivals: Semaphore::new(0),
+            state: Mutex::default(),
+        })
+    }
+    /// Park every key.
+    pub(super) fn all() -> Arc<Self> {
+        Self::when(|_| true)
+    }
+    /// Called by the handler under test: returns at once for an unselected key, otherwise parks
+    /// until released.
+    pub(super) async fn pass(&self, key: &Value) {
+        if !(self.select)(key) {
+            return;
+        }
+        let (release, parked) = oneshot::channel();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.unseen.push_back(key.clone());
+            state.parked.push((key.clone(), release));
+        }
+        self.arrivals.add_permits(1);
+        let _ = parked.await;
+    }
+    /// Wait for the next handler to park (one per call, in arrival order) and return its key.
+    pub(super) async fn entered(&self) -> Value {
+        self.arrivals.acquire().await.unwrap().forget();
+        self.state.lock().unwrap().unseen.pop_front().unwrap()
+    }
+    /// Number of handlers currently parked.
+    pub(super) fn parked(&self) -> usize {
+        self.state.lock().unwrap().parked.len()
+    }
+    /// Release every parked entry whose key the predicate accepts; returns how many.
+    pub(super) fn release_where(&self, accept: impl Fn(&Value) -> bool) -> usize {
+        let mut state = self.state.lock().unwrap();
+        let (release, keep) = std::mem::take(&mut state.parked)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(key, _)| accept(key));
+        state.parked = keep;
+        let released = release.len();
+        for (_, sender) in release {
+            let _ = sender.send(());
+        }
+        released
+    }
+    /// Release everything parked.
+    pub(super) fn release_all(&self) -> usize {
+        self.release_where(|_| true)
+    }
 }
 
 /// Everything the recording extension saw, as the raw payloads handlers receive.
@@ -79,6 +159,8 @@ pub(super) struct Probe {
     pub(super) results: Mutex<Vec<Value>>,
     /// Payload of every `ToolPrepare` invocation, in order.
     pub(super) prepares: Mutex<Vec<Value>>,
+    /// Every executor invocation as `(tool name, input)`, in order.
+    pub(super) executed: Mutex<Vec<(String, Value)>>,
     /// When set, the result handler parks here after recording.
     pub(super) gate: Mutex<Option<Arc<Gate>>>,
 }
@@ -88,6 +170,9 @@ impl Probe {
     }
     pub(super) fn prepares(&self) -> Vec<Value> {
         self.prepares.lock().unwrap().clone()
+    }
+    pub(super) fn executed(&self) -> Vec<(String, Value)> {
+        self.executed.lock().unwrap().clone()
     }
 }
 
@@ -117,7 +202,10 @@ impl Extension for RecordingExtension {
                     retry_safe: true,
                     required_permissions: vec![],
                 },
-                executor: Arc::new(TextTool { name }),
+                executor: Arc::new(TextTool {
+                    name,
+                    probe: Arc::clone(&self.probe),
+                }),
             }));
         }
         let probe = Arc::clone(&self.probe);
@@ -147,8 +235,7 @@ impl Extension for RecordingExtension {
                     probe.results.lock().unwrap().push(value.clone());
                     let gate = probe.gate.lock().unwrap().clone();
                     if let Some(gate) = gate {
-                        gate.entered.notify_one();
-                        gate.release.notified().await;
+                        gate.pass(&value).await;
                     }
                     Ok(value)
                 })
@@ -267,23 +354,98 @@ fn request() -> Request {
     }
 }
 
-/// A runtime wired to the recording extension, a scripted provider and an in-memory store.
-pub(super) struct Harness {
-    pub(super) store: Arc<MemoryStore>,
-    pub(super) fake: FakeProvider,
-    pub(super) runtime: Orchestrator,
-    pub(super) probe: Arc<Probe>,
+/// Extension built from a closure, so a slice can mount extra handlers, guards or restrictions
+/// from its own file without a new type.
+pub(super) struct ClosureExtension {
+    id: &'static str,
+    install: Box<dyn Fn(&mut Registrar) + Send + Sync>,
 }
-impl Harness {
-    /// Every tool allowed except [`FORBIDDEN`], which the policy denies.
-    pub(super) async fn new(scripts: Vec<Vec<StreamDelta>>) -> Self {
-        Self::with_denial(scripts, Denial::Policy).await
+impl ClosureExtension {
+    pub(super) fn new(
+        id: &'static str,
+        install: impl Fn(&mut Registrar) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            install: Box::new(install),
+        })
     }
-    pub(super) async fn with_denial(scripts: Vec<Vec<StreamDelta>>, denial: Denial) -> Self {
+    /// Extension that installs a guard (`Registrar::guard`, consulted in `permit_and_execute`).
+    pub(super) fn guard(id: &'static str, guard: Arc<dyn ToolGuard>) -> Arc<Self> {
+        Self::new(id, move |r| r.guard(Arc::clone(&guard)))
+    }
+    /// Extension that restricts the run to the named tools (`Registrar::restrict_tools`); every
+    /// other tool is denied.
+    pub(super) fn restrict_to(id: &'static str, names: &[&str]) -> Arc<Self> {
+        let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        Self::new(id, move |r| r.restrict_tools(names.clone()))
+    }
+}
+#[async_trait]
+impl Extension for ClosureExtension {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        String::new()
+    }
+    async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+        (self.install)(r);
+        Ok(())
+    }
+}
+
+/// Configures a [`Harness`]; everything a later slice needs is reachable from here.
+pub(super) struct HarnessBuilder {
+    scripts: Vec<Vec<StreamDelta>>,
+    extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    mode: Option<ExecutionMode>,
+    pipeline: Option<Arc<dyn ToolPipeline>>,
+    policy: Arc<dyn PermissionPolicy>,
+    approver: Option<Arc<dyn ApprovalRequester>>,
+}
+impl HarnessBuilder {
+    pub(super) fn new(scripts: Vec<Vec<StreamDelta>>) -> Self {
+        Self {
+            scripts,
+            extensions: Vec::new(),
+            mode: None,
+            pipeline: None,
+            policy: Arc::new(DenyForbidden),
+            approver: None,
+        }
+    }
+    /// Mount another extension as its own mount, after the recorder.
+    pub(super) fn mount(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
+        self.extensions.push((extension, scope));
+        self
+    }
+    pub(super) fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+    /// Host `ToolPipeline` (runs `prepare` before and `transform_result` after execution).
+    pub(super) fn tool_pipeline(mut self, pipeline: Arc<dyn ToolPipeline>) -> Self {
+        self.pipeline = Some(pipeline);
+        self
+    }
+    pub(super) fn policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+    pub(super) fn approver(mut self, approver: Arc<dyn ApprovalRequester>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+    pub(super) async fn build(self) -> Harness {
         let store = Arc::new(MemoryStore::new());
-        let fake = FakeProvider::scripted(scripts);
+        let turns = self.scripts.len();
+        let fake = FakeProvider::scripted(self.scripts);
         let probe = Arc::new(Probe::default());
-        let registry = Registry::new();
+        let registry = Arc::new(Registry::new());
         registry
             .mount(
                 Arc::new(RecordingExtension {
@@ -293,33 +455,99 @@ impl Harness {
             )
             .await
             .unwrap();
-        let builder = Orchestrator::builder()
-            .store(Arc::clone(&store) as Arc<dyn Store>)
-            .resolver(Arc::new(fake.clone()))
-            .plan_provider(Arc::new(registry));
-        let builder = match denial {
-            Denial::Policy => builder.policy(Arc::new(DenyForbidden)),
+        for (extension, scope) in self.extensions {
+            registry.mount(extension, scope).await.unwrap();
+        }
+        let harness = Harness {
+            store,
+            fake,
+            runtime: None,
+            registry,
+            probe,
+            turns,
+            mode: self.mode,
+            pipeline: self.pipeline,
+            policy: self.policy,
+            approver: self.approver,
+        };
+        let runtime = harness.fresh_runtime();
+        Harness {
+            runtime: Some(runtime),
+            ..harness
+        }
+    }
+}
+
+/// A runtime wired to the recording extension, a scripted provider and an in-memory store.
+pub(super) struct Harness {
+    pub(super) store: Arc<MemoryStore>,
+    pub(super) fake: FakeProvider,
+    runtime: Option<Orchestrator>,
+    pub(super) registry: Arc<Registry>,
+    pub(super) probe: Arc<Probe>,
+    turns: usize,
+    mode: Option<ExecutionMode>,
+    pipeline: Option<Arc<dyn ToolPipeline>>,
+    policy: Arc<dyn PermissionPolicy>,
+    approver: Option<Arc<dyn ApprovalRequester>>,
+}
+impl Harness {
+    pub(super) fn builder(scripts: Vec<Vec<StreamDelta>>) -> HarnessBuilder {
+        HarnessBuilder::new(scripts)
+    }
+    /// Every tool allowed except [`FORBIDDEN`], which the policy denies.
+    pub(super) async fn new(scripts: Vec<Vec<StreamDelta>>) -> Self {
+        HarnessBuilder::new(scripts).build().await
+    }
+    pub(super) async fn with_denial(scripts: Vec<Vec<StreamDelta>>, denial: Denial) -> Self {
+        let builder = HarnessBuilder::new(scripts);
+        match denial {
+            Denial::Policy => builder,
             Denial::RefusedApproval => builder
                 .policy(Arc::new(AskAndRefuse))
                 .approver(Arc::new(Refuse)),
-        };
-        let runtime = builder.build().unwrap();
-        Self {
-            store,
-            fake,
-            runtime,
-            probe,
         }
+        .build()
+        .await
+    }
+    /// The runtime the harness was built with.
+    pub(super) fn runtime(&self) -> &Orchestrator {
+        self.runtime.as_ref().expect("built")
+    }
+    /// A new `Orchestrator` over the same store, registry and provider, for resume/recover tests.
+    pub(super) fn fresh_runtime(&self) -> Orchestrator {
+        self.fresh_runtime_with(Arc::new(self.fake.clone()))
+    }
+    /// As [`Harness::fresh_runtime`], with a different model resolver (e.g. new scripted turns).
+    pub(super) fn fresh_runtime_with(&self, resolver: Arc<dyn Resolver>) -> Orchestrator {
+        let mut builder = Orchestrator::builder()
+            .store(Arc::clone(&self.store) as Arc<dyn Store>)
+            .resolver(resolver)
+            .plan_provider(Arc::clone(&self.registry) as Arc<dyn RunPlanProvider>)
+            .policy(Arc::clone(&self.policy));
+        if let Some(approver) = &self.approver {
+            builder = builder.approver(Arc::clone(approver));
+        }
+        if let Some(pipeline) = &self.pipeline {
+            builder = builder.tool_pipeline(Arc::clone(pipeline));
+        }
+        if let Some(mode) = self.mode {
+            builder = builder.execution_mode(mode);
+        }
+        builder.build().unwrap()
     }
     /// Install a gate that parks every result handler after it records its payload.
     pub(super) fn block_results(&self) -> Arc<Gate> {
-        let gate = Arc::new(Gate::default());
+        self.block_results_with(Gate::all())
+    }
+    /// Install the given gate on the recording result handler.
+    pub(super) fn block_results_with(&self, gate: Arc<Gate>) -> Arc<Gate> {
         *self.probe.gate.lock().unwrap() = Some(Arc::clone(&gate));
         gate
     }
     /// Start a run without waiting for it (for cancellation tests).
     pub(super) async fn start(&self) -> RunHandle {
-        self.runtime.start(request()).await.unwrap()
+        self.runtime().start(request()).await.unwrap()
     }
     /// Run to completion and return handles for reading everything back.
     pub(super) async fn run(&self) -> Finished<'_> {
@@ -406,30 +634,47 @@ impl Finished<'_> {
             })
             .expect("settled event persisted")
     }
-    /// The model request made after the given zero-based turn (what the model sees next).
+    /// The model request made after the given zero-based turn. Assumes one provider request per
+    /// scripted turn (no retries or compaction) and fails loudly if that does not hold; prefer
+    /// [`Finished::next_request_for`] when a call ID is available.
     pub(super) fn next_request(&self, after_turn: usize) -> ModelRequest {
-        self.harness.fake.requests()[after_turn + 1].clone()
+        let requests = self.harness.fake.requests();
+        assert_eq!(
+            requests.len(),
+            self.harness.turns,
+            "expected exactly one provider request per scripted turn"
+        );
+        requests[after_turn + 1].clone()
+    }
+    /// The first model request that carries a result for the call: what the model sees next,
+    /// independent of how many requests preceded it.
+    pub(super) fn next_request_for(&self, call: &ToolCallId) -> ModelRequest {
+        self.harness
+            .fake
+            .requests()
+            .into_iter()
+            .find(|request| request_result(request, call).is_some())
+            .expect("a provider request carries the call's result")
     }
     /// Text and `is_error` of the call's result as the next provider request carries it.
-    pub(super) fn next_request_result(
-        &self,
-        after_turn: usize,
-        call: &ToolCallId,
-    ) -> (String, bool) {
-        self.next_request(after_turn)
-            .messages
-            .iter()
-            .flat_map(|message| &message.parts)
-            .find_map(|part| match &part.content {
-                ContentBlock::ToolResult {
-                    call_id,
-                    content,
-                    is_error,
-                } if call_id == call => Some((tool_text(content), *is_error)),
-                _ => None,
-            })
-            .expect("tool result in next request")
+    pub(super) fn next_request_result(&self, call: &ToolCallId) -> (String, bool) {
+        request_result(&self.next_request_for(call), call).expect("tool result in request")
     }
+}
+
+fn request_result(request: &ModelRequest, call: &ToolCallId) -> Option<(String, bool)> {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find_map(|part| match &part.content {
+            ContentBlock::ToolResult {
+                call_id,
+                content,
+                is_error,
+            } if call_id == call => Some((tool_text(content), *is_error)),
+            _ => None,
+        })
 }
 
 fn tool_text(content: &[ContentBlock]) -> String {
@@ -466,7 +711,7 @@ async fn assert_settled(
     let event = done.settled_event(call).await;
     assert_eq!(event.payload["is_error"], is_error);
     assert_eq!(event.payload["content"][0]["text"], text);
-    let (next_text, next_error) = done.next_request_result(0, call);
+    let (next_text, next_error) = done.next_request_result(call);
     assert_eq!((next_text.as_str(), next_error), (text, is_error));
 }
 
@@ -478,6 +723,10 @@ async fn characterize_success_path() {
     assert_eq!(
         harness.probe.results(),
         [json!({"result": {"text": "hi"}, "is_error": false})]
+    );
+    assert_eq!(
+        harness.probe.executed(),
+        [(ECHO.to_owned(), json!({"text": "hi"}))]
     );
     assert_settled(
         &done,
@@ -499,6 +748,10 @@ async fn characterize_execution_error_path() {
         harness.probe.results(),
         [json!({"result": "tool execution failed: executor exploded", "is_error": true})]
     );
+    assert_eq!(
+        harness.probe.executed(),
+        [(FAIL.to_owned(), json!({"text": "hi"}))]
+    );
     assert_settled(
         &done,
         &call.id,
@@ -519,6 +772,7 @@ async fn characterize_permission_denial_path() {
             harness.probe.results(),
             [json!({"result": "permission denied", "is_error": true})]
         );
+        assert_eq!(harness.probe.executed(), []);
         assert_settled(
             &done,
             &call.id,
@@ -539,6 +793,7 @@ async fn characterize_unknown_tool_path() {
         harness.probe.results(),
         [json!({"result": "unknown tool: missing", "is_error": true})]
     );
+    assert_eq!(harness.probe.executed(), []);
     assert_settled(
         &done,
         &call.id,
@@ -561,6 +816,7 @@ async fn characterize_preparation_error_path() {
     let harness = Harness::new(one_turn(&[&handler])).await;
     let done = harness.run().await;
     assert_eq!(harness.probe.prepares().len(), 1);
+    assert_eq!(harness.probe.executed(), []);
     assert_eq!(
         harness.probe.results(),
         [json!({"result": "tool execution failed: prepare handler rejected", "is_error": true})]
@@ -579,6 +835,7 @@ async fn characterize_preparation_error_path() {
     let harness = Harness::new(one_turn(&[&invalid])).await;
     let done = harness.run().await;
     assert_eq!(harness.probe.prepares().len(), 0);
+    assert_eq!(harness.probe.executed(), []);
     let results = harness.probe.results();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["is_error"], true);
@@ -614,6 +871,14 @@ async fn characterize_two_calls_one_turn_each_see_only_result_and_flag() {
             json!({"result": {"shouted": "C"}, "is_error": false}),
         ]
     );
+    assert_eq!(
+        harness.probe.executed(),
+        [
+            (ECHO.to_owned(), json!({"text": "a"})),
+            (ECHO.to_owned(), json!({"text": "b"})),
+            (SHOUT.to_owned(), json!({"text": "c"})),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -622,10 +887,110 @@ async fn harness_gate_parks_the_result_handler_until_released() {
     let harness = Harness::new(one_turn(&[&call])).await;
     let gate = harness.block_results();
     let handle = harness.start().await;
-    gate.entered.notified().await;
+    let key = gate.entered().await;
+    assert_eq!(key, json!({"result": {"text": "hi"}, "is_error": false}));
+    assert_eq!(gate.parked(), 1);
     assert_eq!(harness.probe.results().len(), 1);
     assert_eq!(harness.fake.requests().len(), 1);
-    gate.release.notify_one();
+    assert_eq!(gate.release_all(), 1);
     handle.done().await.unwrap();
     assert_eq!(harness.fake.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn harness_gate_parks_only_the_selected_call_and_releases_it_alone() {
+    let held = ScriptedCall::text(ECHO, "held");
+    let free = ScriptedCall::text(SHOUT, "free");
+    // Selected by what the handler can see today; crabber-orgu will select by call ID instead.
+    let gate = Gate::when(|value| value["result"]["text"] == "held");
+    let harness = Harness::builder(one_turn(&[&held, &free]))
+        .execution_mode(ExecutionMode::Parallel { max: 2 })
+        .build()
+        .await;
+    harness.block_results_with(Arc::clone(&gate));
+    let handle = harness.start().await;
+    let key = gate.entered().await;
+    assert_eq!(key["result"]["text"], "held");
+    assert_eq!(gate.parked(), 1);
+    assert_eq!(gate.release_where(|key| key["result"]["text"] == "held"), 1);
+    handle.done().await.unwrap();
+    // The unselected call went through the handler without ever parking.
+    assert_eq!(gate.parked(), 0);
+    assert_eq!(harness.probe.results().len(), 2);
+}
+
+struct DenyEcho;
+impl ToolGuard for DenyEcho {
+    fn id(&self) -> &'static str {
+        "deny-echo"
+    }
+    fn check(&self, name: &str, _input: &Value) -> crabber_extension::GuardDecision {
+        if name == ECHO {
+            crabber_extension::GuardDecision::Deny
+        } else {
+            crabber_extension::GuardDecision::Abstain
+        }
+    }
+}
+
+#[tokio::test]
+async fn harness_builder_mounts_extra_extensions_and_runs_in_parallel() {
+    let a = ScriptedCall::text(ECHO, "a");
+    let b = ScriptedCall::text(SHOUT, "b");
+    let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let observer = Arc::clone(&seen);
+    let second = ClosureExtension::new("second-recorder", move |r| {
+        let observer = Arc::clone(&observer);
+        r.on_transform(
+            ToolResultTransform::ID,
+            1,
+            "second-record-result",
+            Arc::new(move |value| {
+                let observer = Arc::clone(&observer);
+                Box::pin(async move {
+                    observer.lock().unwrap().push(value.clone());
+                    Ok(value)
+                })
+            }),
+        );
+    });
+    let harness = Harness::builder(one_turn(&[&a, &b]))
+        .mount(second, Scope::Global)
+        .execution_mode(ExecutionMode::Parallel { max: 2 })
+        .build()
+        .await;
+    let done = harness.run().await;
+    // Both mounts' handlers saw both results (parallel completion order is not fixed).
+    assert_eq!(harness.probe.results().len(), 2);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    done.record(&a.id).await;
+    done.record(&b.id).await;
+    // A fresh runtime shares the store and registry.
+    let _fresh = harness.fresh_runtime();
+}
+
+#[tokio::test]
+async fn harness_builder_installs_guard_and_restriction_denials() {
+    let guarded = ScriptedCall::text(ECHO, "a");
+    let restricted = ScriptedCall::text(SHOUT, "b");
+    let harness = Harness::builder(one_turn(&[&guarded, &restricted]))
+        .mount(
+            ClosureExtension::guard("deny-echo-guard", Arc::new(DenyEcho)),
+            Scope::Global,
+        )
+        .mount(
+            ClosureExtension::restrict_to("only-echo", &[ECHO]),
+            Scope::Global,
+        )
+        .build()
+        .await;
+    harness.run().await;
+    assert_eq!(harness.probe.executed(), []);
+    assert_eq!(
+        harness.probe.results(),
+        [
+            json!({"result": "permission denied", "is_error": true}),
+            json!({"result": "permission denied", "is_error": true}),
+        ]
+    );
 }
