@@ -531,6 +531,12 @@ async fn old_contract_fingerprint_is_refused_without_mutation() {
                 Some(pre_contract_fingerprint),
             )
             .await;
+            let session_before = fixture
+                .harness
+                .store
+                .get_session(&fixture.session)
+                .await
+                .unwrap();
             let run_before = fixture.harness.store.get_run(&fixture.run).await.unwrap();
             let calls_before = fixture
                 .harness
@@ -557,6 +563,15 @@ async fn old_contract_fingerprint_is_refused_without_mutation() {
             assert!(
                 matches!(error, RuntimeError::PlanChanged),
                 "{entry:?}: {error:?}"
+            );
+            assert_eq!(
+                fixture
+                    .harness
+                    .store
+                    .get_session(&fixture.session)
+                    .await
+                    .unwrap(),
+                session_before
             );
             assert_eq!(
                 fixture.harness.store.get_run(&fixture.run).await.unwrap(),
