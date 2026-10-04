@@ -1,0 +1,13 @@
+[package]
+name = "result-transform-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "fb179621d61f57c60a420f674c632f8101179a87" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
