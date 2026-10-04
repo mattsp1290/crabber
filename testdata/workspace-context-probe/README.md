@@ -1,8 +1,8 @@
 # Standalone workspace-context probe
 
 This Rust 2024 crate has its own workspace and committed lockfile. It consumes
-only the public `crabber` facade, provisionally pinned to
-`74e546f8c6427ba062991f4f00c68a440e4155d4`. Existing authorized Git SSH access
+only the public `crabber` facade, pinned to
+`4afc30aa8e3ca96f5e0b6307d490b4e495efe308`; valid once that commit is reachable from `origin/main`. Existing authorized Git SSH access
 fetches the private source repository; no provider or runtime credentials are
 needed. The memory command needs no database or task-specific environment.
 
