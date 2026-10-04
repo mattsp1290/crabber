@@ -31,3 +31,6 @@ mod extension_tests;
 mod result_transform_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod prompt_contribution_tests;
