@@ -12,9 +12,10 @@ pub use observation::{
 mod policy;
 
 pub use orchestrator::{
-    Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode, ModelStream,
-    NoopObserver, Observer, Orchestrator, OrchestratorBuilder, RecoverReport, Request, RunHandle,
-    RunResult, RuntimeError, SkippedRun, TurnSnapshot,
+    Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode,
+    INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer,
+    Orchestrator, OrchestratorBuilder, RecoverReport, Request, RunHandle, RunResult, RuntimeError,
+    SkippedRun, TOOL_PIPELINE_HANDLER_ID, TurnSnapshot,
 };
 pub use policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
@@ -26,5 +27,7 @@ pub const CRATE_NAME: &str = "crabber-runtime";
 
 #[cfg(test)]
 mod extension_tests;
+#[cfg(test)]
+mod result_transform_tests;
 #[cfg(test)]
 mod tests;

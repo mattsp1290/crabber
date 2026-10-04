@@ -4,8 +4,8 @@ use crabber::{
     StreamDelta, ToolDefinition, ToolExecutor,
     core::{ToolCallId, ToolInfo},
     extension::{
-        Callback, EventPublished, Extension, GuardDecision, Point, PromptSection, Registrar, Scope,
-        ToolContext, ToolGuard, ToolResultTransform,
+        EventPublished, Extension, GuardDecision, Point, PromptSection, Registrar,
+        ResultTransformCallback, Scope, ToolContext, ToolGuard, ToolInput, TransformOutput,
     },
 };
 use serde_json::{Value, json};
@@ -80,19 +80,20 @@ impl Extension for NativeExtension {
             text: "Use the shell tool carefully.".into(),
         }));
         r.guard(Arc::new(DenyDelete));
-        let redact: Callback = Arc::new(|mut value| {
+        let redact: ResultTransformCallback = Arc::new(|context, mut result| {
             Box::pin(async move {
-                if let Some(secret) = value
-                    .get_mut("result")
-                    .and_then(|result| result.get_mut("secret"))
+                if context.tool_name() == "shell"
+                    && let ToolInput::Normalized(input) = context.input()
+                    && input["command"] == "echo hello"
+                    && let Some(secret) = result.get_mut("secret")
                 {
                     *secret = Value::String("[REDACTED]".into());
                 }
                 println!("redacted tool result");
-                Ok(value)
+                Ok(TransformOutput::new(result))
             })
         });
-        r.on_transform(ToolResultTransform::ID, 0, "redact", redact);
+        r.on_final_redaction(0, "redact", redact);
         let observed = Arc::clone(&self.observed);
         r.on_notify(
             EventPublished::ID,

@@ -4,7 +4,7 @@ use crabber::{
     Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
     StreamDelta, ToolDefinition, ToolExecutor,
     core::{ContentBlock, ToolCallId, ToolInfo},
-    extension::{Extension, Point, Registrar, Scope, ToolResultTransform},
+    extension::{Extension, Registrar, Scope, TransformOutput},
     session::{MemoryStore, Store},
 };
 use crabber_agui::ag_ui_core::{event::Event, types::Message};
@@ -35,16 +35,15 @@ impl Extension for Redact {
         "public-echo".into()
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
-        registrar.on_transform(
-            ToolResultTransform::ID,
+        registrar.on_final_redaction(
             0,
             "redact",
-            Arc::new(|mut value| {
+            Arc::new(|_, mut value| {
                 Box::pin(async move {
-                    if let Some(object) = value["result"].as_object_mut() {
+                    if let Some(object) = value.as_object_mut() {
                         object.remove("private");
                     }
-                    Ok(value)
+                    Ok(TransformOutput::new(value))
                 })
             }),
         );

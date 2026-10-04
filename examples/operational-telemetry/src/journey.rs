@@ -967,6 +967,11 @@ async fn control_bounds() {
         false,
     );
     complete(&host, true).await;
+    let first = export.clone();
+    let first_flush = tokio::spawn(async move { first.flush().await });
+    entered.notified().await; // Establish the real stalled request before pausing.
+    tokio::time::pause();
+    // Measure only paused time: real scheduling before timeout creation is unbounded.
     let flushing = export.clone();
     let (start_tx, start_rx) = tokio::sync::oneshot::channel();
     let flush = tokio::spawn(async move {
@@ -975,18 +980,18 @@ async fn control_bounds() {
         let result = flushing.flush().await;
         (result, start.elapsed())
     });
-    let flush_start = start_rx.await.unwrap();
-    entered.notified().await; // Request is actually stalled before pausing virtual time.
-    tokio::time::pause();
-    let remaining = (flush_start + Duration::from_secs(10))
-        .saturating_duration_since(tokio::time::Instant::now());
-    tokio::time::advance(remaining).await;
+    start_rx.await.unwrap();
+    tokio::time::advance(Duration::from_secs(10)).await;
     let (result, elapsed) = flush.await.unwrap();
     assert!(matches!(result, Err(crabber::obs::ExportError::Timeout)));
     assert!(
         elapsed <= Duration::from_secs(10) + Duration::from_millis(1),
         "flush elapsed: {elapsed:?}"
     );
+    assert!(matches!(
+        first_flush.await.unwrap(),
+        Err(crabber::obs::ExportError::Timeout)
+    ));
     assert_eq!(export.health().worker_status, WorkerStatus::Running);
     assert_eq!(export.health().last_success_unix_seconds, None);
     // Synchronize actual control polling, rather than relying on a single yield.

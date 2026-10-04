@@ -331,6 +331,134 @@ where
         [] as [crabber_core::ToolCallRecord; 0]
     );
 
+    // Interrupted settlement can carry a redacted value, not just runtime text.
+    let interrupted_id = ToolCallId::new();
+    execution
+        .create_tool_call(
+            ToolCallRecord {
+                id: interrupted_id.clone(),
+                run_id: admitted.run.id.clone(),
+                name: "redacted".into(),
+                arguments: Value::Null,
+                status: ToolCallStatus::Pending,
+                retry_safe: false,
+                result: None,
+            },
+            event(
+                &session_id,
+                &admitted.run.id,
+                EventKind::ToolCallPending,
+                now,
+            ),
+        )
+        .await
+        .unwrap();
+    execution
+        .claim_tool_call(
+            &interrupted_id,
+            event(
+                &session_id,
+                &admitted.run.id,
+                EventKind::ToolCallRunning,
+                now,
+            ),
+        )
+        .await
+        .unwrap();
+    let redacted = ToolResult {
+        status: ToolResultStatus::Interrupted,
+        content: vec![ContentBlock::Text {
+            text: serde_json::json!({"redacted": "redacted"}).to_string(),
+        }],
+    };
+    let mut redacted_message = message(
+        &session_id,
+        Some(admitted.run.id.clone()),
+        Role::Tool,
+        PartKind::FunctionToolResult,
+        "",
+        now,
+    );
+    redacted_message.parts[0].content = ContentBlock::ToolResult {
+        call_id: interrupted_id.clone(),
+        content: redacted.content.clone(),
+        is_error: true,
+    };
+    let mut redacted_event = event(
+        &session_id,
+        &admitted.run.id,
+        EventKind::ToolCallSettled,
+        now,
+    );
+    redacted_event.payload = serde_json::json!({
+        "call_id": interrupted_id,
+        "content": redacted.content,
+        "is_error": true,
+    });
+    execution
+        .settle_tool_call(
+            &interrupted_id,
+            redacted.clone(),
+            redacted_message.clone(),
+            redacted_event.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        execution
+            .settle_tool_call(
+                &interrupted_id,
+                redacted.clone(),
+                redacted_message.clone(),
+                redacted_event.clone(),
+            )
+            .await,
+        Err(StoreError::Conflict)
+    ));
+    let crate::SnapshotOutcome::Page(page) = store
+        .snapshot(crate::SnapshotRequest {
+            session_id: session_id.clone(),
+            limits: crate::SnapshotLimits {
+                messages: 100,
+                tool_calls: 100,
+                parts: 1000,
+                text_bytes: 100_000,
+                encoded_bytes: 1_000_000,
+            },
+            continuation: None,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("complete contract snapshot")
+    };
+    assert!(page.continuation.is_none());
+    let interrupted = page
+        .tool_calls
+        .iter()
+        .find(|call| call.id == interrupted_id)
+        .unwrap();
+    assert_eq!(interrupted.status, ToolCallStatus::Interrupted);
+    assert_eq!(interrupted.result.as_ref(), Some(&redacted));
+    assert!(
+        store
+            .list_all_messages(&session_id)
+            .await
+            .unwrap()
+            .contains(&redacted_message)
+    );
+    let settled_events: Vec<_> = store
+        .list_events(&session_id, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|entry| {
+            entry.kind == EventKind::ToolCallSettled && entry.payload == redacted_event.payload
+        })
+        .collect();
+    assert_eq!(settled_events.len(), 1);
+    assert!(settled_events[0].cursor.is_some());
+
     clock.set(now + time::Duration::seconds(2));
     assert_eq!(
         execution

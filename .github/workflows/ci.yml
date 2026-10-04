@@ -49,6 +49,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: PostgreSQL contracts, concurrency, migration and process durability
         run: cargo test -p crabber-session --features postgres
+      - name: Public result-transform interruption and protected durable settlement
+        run: cargo test -p crabber --features postgres --test result_transform_interrupt -- --nocapture
       - name: Public facade response-loss and fresh-process reconciliation
         run: cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
       - name: Noninteractive PostgreSQL admission demo
@@ -66,5 +68,7 @@ jobs:
         run: cargo test -p crabber --features postgres --test fenced_abandon -- --nocapture
       - name: Noninteractive PostgreSQL fenced abandonment demo
         run: cargo run --quiet -p fenced-abandon --features postgres -- --postgres
+      - name: Deeply nested unknown-tool record stays decodable
+        run: cargo test -p crabber --features postgres --test unknown_tool_depth -- --nocapture
       - name: Public workspace context probe and fresh-process resume
         run: cargo test -p workspace-context-probe --features postgres -- --nocapture

@@ -14,7 +14,7 @@ use crabber_runtime::{
 #[cfg(feature = "postgres")]
 use crabber_session::PostgresStore;
 use crabber_session::{MemoryStore, Store};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::{OnceCell, broadcast};
 
 /// Host-owned settings frozen into each prompt request.
@@ -62,6 +62,7 @@ pub struct AgentBuilder {
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogConfig>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    extension_close_timeout: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
 }
@@ -184,6 +185,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Bounds each mount's wait for run leases and extension-owned cleanup.
+    #[must_use]
+    pub fn extension_close_timeout(mut self, bound: Duration) -> Self {
+        self.extension_close_timeout = bound;
+        self
+    }
+
     /// Builds the embeddable agent.
     ///
     /// # Errors
@@ -203,7 +211,14 @@ impl AgentBuilder {
         });
         let extensions = self.extensions;
         let has_extensions = !extensions.is_empty();
-        let registry = has_extensions.then(Registry::new);
+        let registry = has_extensions.then(|| {
+            let observer = Arc::clone(&observer);
+            Registry::new()
+                .with_close_timeout(self.extension_close_timeout)
+                .with_close_observer(Arc::new(move |timeout| {
+                    observer.mount_close_timed_out(timeout);
+                }))
+        });
         let mut mounts = extensions;
         if has_extensions && (!self.tools.is_empty() || !self.prompts.is_empty()) {
             mounts.insert(
@@ -257,6 +272,14 @@ struct EventBroadcaster {
 }
 
 impl Observer for EventBroadcaster {
+    fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
+        for observer in &self.observers {
+            // A faulty local observer must not suppress the remaining observers.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                observer.mount_close_timed_out(timeout);
+            }));
+        }
+    }
     fn operational_completed(&self, observation: &crabber_runtime::OperationalObservation) {
         for observer in &self.observers {
             observer.operational_completed(observation);
@@ -374,6 +397,21 @@ impl Agent {
         Ok(())
     }
 
+    /// Terminally closes the extension registry without interrupting live runs.
+    /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
+    /// retained plan leases keep the detached close task waiting until completion.
+    /// An agent without extensions remains usable.
+    ///
+    /// # Errors
+    /// Returns the first mount close error after attempting every mount.
+    pub async fn close_extensions(&self) -> Result<(), ExtensionError> {
+        if let Some(registry) = &self.registry {
+            registry.close_all().await
+        } else {
+            Ok(())
+        }
+    }
+
     /// Returns local export health, or `None` when Datadog is disabled.
     #[cfg(feature = "datadog")]
     #[must_use]
@@ -418,6 +456,7 @@ impl Agent {
             #[cfg(feature = "datadog")]
             datadog: None,
             extensions: Vec::new(),
+            extension_close_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),
         }
@@ -802,6 +841,178 @@ mod tests {
     use super::*;
     use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, StreamDelta};
     use std::time::Duration;
+
+    struct CloseProbe {
+        ready: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+        stopped: Arc<tokio::sync::Semaphore>,
+    }
+    #[async_trait]
+    impl Extension for CloseProbe {
+        fn id(&self) -> &'static str {
+            "close-probe"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, r: &mut Registrar) -> Result<(), ExtensionError> {
+            let ready = self.ready.clone();
+            let release = self.release.clone();
+            r.on_result_transform(
+                0,
+                "cleanup",
+                Arc::new(move |context, value| {
+                    let ready = ready.clone();
+                    let release = release.clone();
+                    Box::pin(async move {
+                        let closing = context.cleanup().closing();
+                        context.cleanup().spawn(async move {
+                            closing.await;
+                            ready.add_permits(1);
+                            release.acquire().await.unwrap().forget();
+                        });
+                        Ok(crabber_extension::TransformOutput::new(value))
+                    })
+                }),
+            );
+            Ok(())
+        }
+        async fn shutdown(&self) {
+            self.stopped.add_permits(1);
+        }
+    }
+    #[derive(Default)]
+    struct CloseCapture(std::sync::Mutex<Vec<crabber_extension::MountCloseTimeout>>);
+    impl Observer for CloseCapture {
+        fn emit(&self, _: &EventRecord) {}
+        fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
+            self.0.lock().unwrap().push(timeout.clone());
+        }
+    }
+
+    struct PanickingCloseObserver;
+    impl Observer for PanickingCloseObserver {
+        fn emit(&self, _: &EventRecord) {}
+        fn mount_close_timed_out(&self, _: &crabber_extension::MountCloseTimeout) {
+            panic!("local close observer failure");
+        }
+    }
+
+    #[tokio::test]
+    async fn close_extensions_is_terminal_and_reports_retained_work() {
+        let ready = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let stopped = Arc::new(tokio::sync::Semaphore::new(0));
+        let first = Arc::new(CloseCapture::default());
+        let second = Arc::new(CloseCapture::default());
+        let bound = Duration::from_millis(50);
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(FakeProvider::scripted(vec![])))
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .observer(Arc::new(PanickingCloseObserver))
+            .observer(first.clone())
+            .observer(second.clone())
+            .extension_close_timeout(bound)
+            .extension(
+                Arc::new(CloseProbe {
+                    ready: ready.clone(),
+                    release: release.clone(),
+                    stopped: stopped.clone(),
+                }),
+                Scope::Global,
+            )
+            .build()
+            .unwrap();
+        agent.initialize_extensions().await.unwrap();
+        let session = SessionId::new();
+        let plan = agent
+            .registry
+            .as_ref()
+            .unwrap()
+            .try_acquire(&session)
+            .unwrap();
+        let context = crabber_extension::ToolResultContext::new(
+            "echo".into(),
+            true,
+            crabber_extension::ToolInput::Normalized(serde_json::json!({})),
+            crabber_core::ToolCallId::new(),
+            session,
+            RunId::new(),
+            crabber_extension::ToolOutcomeClass::Succeeded,
+        );
+        plan.dispatcher
+            .transform_tool_result(
+                context,
+                crabber_extension::TransformOutput::new(serde_json::Value::Null),
+            )
+            .await;
+        let closing = agent.close_extensions();
+        tokio::pin!(closing);
+        tokio::select! {
+            result = &mut closing => panic!("close returned before cleanup signal: {result:?}"),
+            permit = ready.acquire() => permit.unwrap().forget(),
+        }
+        assert!(matches!(
+            agent.prompt(None, "during close").await,
+            Err(RuntimeError::Extension(_))
+        ));
+        assert!(
+            matches!(closing.await, Err(ExtensionError::MountCloseTimeout { extension }) if extension == "close-probe")
+        );
+        for capture in [&first, &second] {
+            let timeouts = capture.0.lock().unwrap();
+            assert_eq!(timeouts.len(), 1);
+            assert_eq!(timeouts[0].extension, "close-probe");
+            assert_eq!(timeouts[0].bound, bound);
+            assert_eq!(timeouts[0].leases, 1);
+            assert_eq!(timeouts[0].pending_tasks, 1);
+        }
+        assert!(matches!(
+            agent.prompt(None, "after timeout").await,
+            Err(RuntimeError::Extension(_))
+        ));
+        assert_eq!(stopped.available_permits(), 0);
+        plan.release();
+        release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(1), stopped.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        agent.close_extensions().await.unwrap();
+        assert_eq!(first.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn close_without_extensions_keeps_agent_usable() {
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(FakeProvider::scripted(vec![vec![
+                StreamDelta::TextDelta("done".into()),
+                StreamDelta::Completed,
+            ]])))
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .build()
+            .unwrap();
+        agent.close_extensions().await.unwrap();
+        agent
+            .prompt(None, "hello")
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap();
+    }
 
     #[cfg(feature = "datadog")]
     #[tokio::test]

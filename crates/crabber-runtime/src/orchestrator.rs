@@ -17,11 +17,13 @@ use crabber_core::{
     ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision,
-    HostServices, ModelCompleted, ModelRequestError, ModelRequested,
-    ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider,
-    RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolPrepare,
-    ToolResultTransform, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
+    ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
+    GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
+    ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan,
+    RunPlanProvider, RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute,
+    ToolInput, ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultOutcome,
+    TransformOutput, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
+    result_transform_failed_message,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -32,7 +34,7 @@ use crabber_session::{
     AdmissionRequestData, AdmitRequest, ClaimUnstartedAdmissionRequest, ExecutionStore, InboxKind,
     KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError, admission_config_hash,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -238,6 +240,8 @@ impl Default for ConfigSnapshot {
 
 /// Callbacks execute inline: implementations must remain bounded and nonblocking.
 pub trait Observer: Send + Sync {
+    /// Local mount-close timeout; a registry close has no session or run identity.
+    fn mount_close_timed_out(&self, _timeout: &crabber_extension::MountCloseTimeout) {}
     /// One local execution measurement; does not assert durable settlement.
     fn operational_completed(&self, _observation: &OperationalObservation) {}
     fn operational_completed_in_attempt(
@@ -356,12 +360,19 @@ pub struct Orchestrator {
     policy: Arc<dyn PermissionPolicy>,
     approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
+    pipeline_cleanup: CleanupTracker,
     host_services: HostServices,
     max_turns: usize,
     heartbeat_interval: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
+    /// Test seam: sees every authoritative result context `execute_tool` builds.
+    #[cfg(test)]
+    context_observer: Option<ResultContextObserver>,
 }
+
+#[cfg(test)]
+pub(crate) type ResultContextObserver = Arc<dyn Fn(&ToolResultContext) + Send + Sync>;
 
 /// The persisted session a run executes in, carried along the run path so a
 /// run cannot execute tools or assemble context without its workspace.
@@ -441,14 +452,23 @@ pub struct OrchestratorBuilder {
     policy: Option<Arc<dyn PermissionPolicy>>,
     approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
+    pipeline_cleanup: Option<CleanupTracker>,
     host_services: Option<HostServices>,
     max_turns: Option<usize>,
     heartbeat_interval: Option<Duration>,
     execution_mode: Option<ExecutionMode>,
     compaction: Option<CompactionPolicy>,
+    #[cfg(test)]
+    context_observer: Option<ResultContextObserver>,
 }
 
 impl OrchestratorBuilder {
+    #[cfg(test)]
+    pub(crate) fn context_observer(mut self, observer: ResultContextObserver) -> Self {
+        self.context_observer = Some(observer);
+        self
+    }
+
     #[must_use]
     pub fn store(mut self, value: Arc<dyn Store>) -> Self {
         self.store = Some(value);
@@ -498,6 +518,12 @@ impl OrchestratorBuilder {
     #[must_use]
     pub fn tool_pipeline(mut self, value: Arc<dyn ToolPipeline>) -> Self {
         self.tool_pipeline = Some(value);
+        self
+    }
+    /// Tracker handed to the pre-stage. Default: a detached tracker.
+    #[must_use]
+    pub fn pipeline_cleanup(mut self, tracker: CleanupTracker) -> Self {
+        self.pipeline_cleanup = Some(tracker);
         self
     }
     #[must_use]
@@ -587,11 +613,16 @@ impl OrchestratorBuilder {
             tool_pipeline: self
                 .tool_pipeline
                 .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
+            pipeline_cleanup: self
+                .pipeline_cleanup
+                .unwrap_or_else(CleanupTracker::detached),
             host_services: self.host_services.unwrap_or_default(),
             max_turns: self.max_turns.unwrap_or(64),
             heartbeat_interval,
             execution_mode: self.execution_mode.unwrap_or_default(),
             compaction,
+            #[cfg(test)]
+            context_observer: self.context_observer,
         })
     }
 }
@@ -981,6 +1012,9 @@ impl Orchestrator {
                 .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
                 .await?;
             let mut interrupted = false;
+            // D10 fixed settlement: Running calls and non-retry-safe Pending calls
+            // outside a Paused run get only runtime-authored interrupted text.
+            // No executor, pre-stage, result transform or final redactor runs here.
             for call in self.store.list_unfinished_tool_calls(run_id).await? {
                 if call.status == ToolCallStatus::Running
                     || (run.status != RunStatus::Paused && !call.retry_safe)
@@ -1001,6 +1035,8 @@ impl Orchestrator {
                     interrupted = true;
                     continue;
                 }
+                // D10 re-execution: retain durable identity and input, skip ToolPrepare,
+                // and rerun the executor, pre-stage and full result chain.
                 let pending = PendingCall {
                     message_id: None,
                     turn_id: None,
@@ -1190,6 +1226,10 @@ impl Orchestrator {
 
     /// Selects fresh correlation independently for each eligible run.
     /// The selector cannot grant a lease; live leases and competing claims stay fenced.
+    /// Running calls and non-retry-safe Pending calls outside Paused runs settle
+    /// with runtime-only interrupted text, bypassing the pre-stage and result chain.
+    /// Other Pending calls re-execute the full chain from their stored IDs and input
+    /// without rerunning `ToolPrepare`. There is no caller-visible cancellation source.
     /// # Errors
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
@@ -1236,6 +1276,8 @@ impl Orchestrator {
         Ok(report)
     }
 
+    /// Fixed interruption settlement deliberately runs no pre-stage or result chain;
+    /// unfinished calls carry no tool-authored payload into persistence.
     async fn settle_unfinished_calls(
         &self,
         execution: &dyn ExecutionStore,
@@ -1245,6 +1287,8 @@ impl Orchestrator {
         include_pending: bool,
         turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
+        // execute_tool may already have settled a redacted Interrupted result.
+        // Listing only unfinished calls keeps both live and resumed cleanup single-write.
         for call in self.store.list_unfinished_tool_calls(run_id).await? {
             if call.status == ToolCallStatus::Pending && !include_pending {
                 continue;
@@ -1260,6 +1304,8 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Writes only the bare runtime-authored interrupted text, with no pre-stage,
+    /// transform or final redactor. Fixed settlements notify `EventPublished` only.
     async fn settle_interrupted_call(
         &self,
         execution: &dyn ExecutionStore,
@@ -1270,7 +1316,7 @@ impl Orchestrator {
         turn_id: Option<&TurnId>,
     ) -> Result<(), RuntimeError> {
         let content = vec![ContentBlock::Text {
-            text: "interrupted".into(),
+            text: INTERRUPTED_RESULT_TEXT.into(),
         }];
         let message_id = MessageId::new();
         let message = Message {
@@ -1316,10 +1362,36 @@ impl Orchestrator {
             )
             .await?;
         self.observer.emit(&event);
-        plan.dispatcher
-            .notify::<EventPublished>(serde_json::to_value(&event).unwrap_or(Value::Null))
-            .await;
+        Self::notify_interrupted_settlement(plan, &event, false);
         Ok(())
+    }
+
+    fn notify_interrupted_settlement(plan: &RunPlan, event: &EventRecord, protected: bool) {
+        // Notification callbacks cannot delay sibling settlement. Keep the plan lease
+        // until delivery finishes so mount shutdown still waits for these callbacks.
+        let plan = plan.clone();
+        let state_sink = crabber_extension::current_state_sink();
+        let projection = serde_json::to_value(event).unwrap_or(Value::Null);
+        tokio::spawn(async move {
+            let delivery = async {
+                plan.dispatcher
+                    .notify::<EventPublished>(projection.clone())
+                    .await;
+                if protected {
+                    plan.dispatcher
+                        .notify::<crabber_extension::ToolSettled>(projection)
+                        .await;
+                }
+            };
+            // Preserve state reads and best-effort writes; the original sink still
+            // rejects writes after terminal settlement through its execution fence.
+            if let Some(sink) = state_sink {
+                crabber_extension::with_state_sink(sink, delivery).await;
+            } else {
+                delivery.await;
+            }
+            plan.release();
+        });
     }
 
     /// Admits a run and starts its turn loop in the background.
@@ -3059,8 +3131,8 @@ impl Orchestrator {
             .find(|tool| tool.info.name == call.name)
             .cloned();
         let raw = call.arguments.unwrap_or(Value::String(call.raw));
-        let prepared = if let Some(tool) = &definition {
-            match validate_arguments(&tool.info, &raw) {
+        let arguments = if let Some(tool) = &definition {
+            let prepared = match validate_arguments(&tool.info, &raw) {
                 Ok(()) => match self.tool_pipeline.prepare(&tool.info, raw.clone()).await {
                     Ok(value) => match plan.dispatcher.transform::<ToolPrepare>(json!({"name":tool.info.name,"call_id":call.id.to_string(),"input":value})).await {
                         Ok(output) => {
@@ -3072,9 +3144,16 @@ impl Orchestrator {
                     Err(error) => Err(error),
                 },
                 Err(error) => Err(error),
+            };
+            match prepared {
+                Ok(value) if is_reserved_arguments(&value) => {
+                    json!({PREPARE_ERROR_KEY: RESERVED_ARGUMENT_KEY_TEXT})
+                }
+                Ok(value) => value,
+                Err(error) => json!({PREPARE_ERROR_KEY: error}),
             }
         } else {
-            Err(format!("unknown tool: {}", call.name))
+            unknown_tool_arguments(&raw)
         };
         ensure_lease(lease_lost)?;
         let mut event = self.event(session_id, run_id, EventKind::ToolCallPending);
@@ -3085,7 +3164,7 @@ impl Orchestrator {
             id: call.id,
             run_id: run_id.clone(),
             name: call.name,
-            arguments: prepared.unwrap_or_else(|error| json!({"$crabber_prepare_error":error})),
+            arguments,
             status: ToolCallStatus::Pending,
             retry_safe: definition.as_ref().is_some_and(|tool| tool.info.retry_safe),
             result: None,
@@ -3120,15 +3199,7 @@ impl Orchestrator {
             .find(|tool| tool.info.name == call.name)
             .cloned();
         let record = existing.expect("tool calls are staged before execution");
-        let prepared = if let Some(error) = record
-            .arguments
-            .get("$crabber_prepare_error")
-            .and_then(Value::as_str)
-        {
-            Err(error.to_owned())
-        } else {
-            Ok(record.arguments)
-        };
+        let recorded = read_recorded_call(record.arguments, &call.name, definition.is_some());
         ensure_lease(lease_lost)?;
         let tool_name = call.name.clone();
         let mut measurement = Measurement::new(
@@ -3168,10 +3239,30 @@ impl Orchestrator {
                 measurement.observation.reason = TerminalReason::RuntimeError;
             })?;
         ensure_lease(lease_lost)?;
-        let outcome: Result<Value, String> = match (definition, prepared) {
-            (Some(tool), Ok(arguments)) => {
-                tokio::select! {
-                    () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
+        let child_cancellation = cancellation.child_token();
+        let mut mark_error = false;
+        let mut pipeline_failed = false;
+        let (class, input, resolved, outcome): (_, _, _, Result<Value, String>) = match recorded {
+            RecordedCall::Execute(arguments) => {
+                let tool = definition.expect("the record reader executes only calls that resolve");
+                let input = ToolInput::Normalized(arguments.clone());
+                let pipeline_context = ToolResultContext::new(
+                    call.name.clone(),
+                    true,
+                    input.clone(),
+                    record.id.clone(),
+                    session_id.clone(),
+                    run_id.clone(),
+                    ToolOutcomeClass::Succeeded,
+                )
+                .with_cancellation(child_cancellation.clone())
+                .with_cleanup(self.pipeline_cleanup.clone());
+                let run = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => {
+                        measurement.observation.reason = TerminalReason::Cancelled;
+                        return Err(RuntimeError::Interrupted);
+                    },
                     result = self.permit_and_execute(
                     execution,
                     session,
@@ -3182,6 +3273,7 @@ impl Orchestrator {
                     arguments,
                     cancellation,
                     lease_lost,
+                    &pipeline_context,
                     ) => result.inspect_err(|error| {
                         measurement.observation.reason = match error {
                             RuntimeError::LeaseLost => TerminalReason::LeaseLost,
@@ -3190,42 +3282,103 @@ impl Orchestrator {
                             _ => TerminalReason::RuntimeError,
                         };
                     })?,
+                };
+                match run {
+                    ToolRun::Output(value) => {
+                        mark_error = value.mark_error;
+                        (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
+                    }
+                    ToolRun::PipelineFailed => {
+                        pipeline_failed = true;
+                        (
+                            ToolOutcomeClass::Succeeded,
+                            input,
+                            true,
+                            Ok(Value::String(result_transform_failed_message(
+                                TOOL_PIPELINE_HANDLER_ID,
+                            ))),
+                        )
+                    }
+                    ToolRun::PermissionDenied => (
+                        ToolOutcomeClass::PermissionDenied,
+                        input,
+                        true,
+                        Err("permission denied".into()),
+                    ),
+                    ToolRun::ExecutionFailed(error) => {
+                        (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
+                    }
                 }
             }
-            (_, Err(error)) => Err(error),
-            (None, Ok(_)) => Err("unknown tool".into()),
+            RecordedCall::Settled {
+                class,
+                input,
+                resolved,
+                seed,
+            } => (class, input, resolved, Err(seed)),
         };
         ensure_lease(lease_lost)?;
-        let original_error = outcome.is_err();
-        let seed = match outcome {
-            Ok(value) => value,
-            Err(error) => Value::String(error),
+        // Built from the stored record only, so a resumed call derives the same context.
+        let result_context = ToolResultContext::new(
+            call.name.clone(),
+            resolved,
+            input,
+            record.id.clone(),
+            session_id.clone(),
+            run_id.clone(),
+            class,
+        )
+        .with_cancellation(child_cancellation);
+        debug_assert_eq!(result_context.class().is_error(), outcome.is_err());
+        #[cfg(test)]
+        if let Some(observer) = &self.context_observer {
+            observer(&result_context);
+        }
+        let seed = TransformOutput {
+            result: match outcome {
+                Ok(value) => value,
+                Err(error) => Value::String(error),
+            },
+            mark_error,
         };
-        let outcome = match plan
-            .dispatcher
-            .transform::<ToolResultTransform>(json!({"result":seed,"is_error":original_error}))
-            .await
-        {
-            Ok(output) => {
-                let result = output
-                    .get("result")
-                    .cloned()
-                    .unwrap_or_else(|| output.clone());
-                if original_error || output.get("is_error").and_then(Value::as_bool) == Some(true) {
-                    Err(result
-                        .as_str()
-                        .map_or_else(|| result.to_string(), str::to_owned))
-                } else {
-                    Ok(result)
-                }
+        let outcome = if pipeline_failed {
+            ToolResultOutcome::Failed {
+                handler: TOOL_PIPELINE_HANDLER_ID.into(),
             }
-            Err(error) => Err(error.to_string()),
+        } else {
+            plan.dispatcher
+                .transform_tool_result(result_context, seed)
+                .await
         };
+        let interrupted = matches!(outcome, ToolResultOutcome::Interrupted { .. });
         let (status, output, is_error) = match outcome {
-            Ok(value) => (ToolResultStatus::Completed, value, false),
-            Err(error) => (ToolResultStatus::Failed, Value::String(error), true),
+            ToolResultOutcome::Completed { result, is_error } => (
+                if is_error {
+                    ToolResultStatus::Failed
+                } else {
+                    ToolResultStatus::Completed
+                },
+                result,
+                is_error,
+            ),
+            ToolResultOutcome::Failed { handler } => (
+                ToolResultStatus::Failed,
+                Value::String(result_transform_failed_message(&handler)),
+                true,
+            ),
+            ToolResultOutcome::Interrupted {
+                redacted: Some(value),
+            } => (ToolResultStatus::Interrupted, value, true),
+            // The run error arm settles unfinished calls with the fixed runtime text.
+            ToolResultOutcome::Interrupted { redacted: None } => {
+                ensure_lease(lease_lost)?;
+                measurement.observation.reason = TerminalReason::Cancelled;
+                return Err(RuntimeError::Interrupted);
+            }
         };
-        measurement.observation.reason = if is_error {
+        measurement.observation.reason = if interrupted {
+            TerminalReason::Cancelled
+        } else if is_error {
             TerminalReason::ToolError
         } else {
             TerminalReason::Success
@@ -3271,7 +3424,9 @@ impl Orchestrator {
                 "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()}),
         });
         settled.correlation = Some(call.id.to_string());
-        if let Some((index, receiver, _)) = &settlement {
+        // Interrupted calls settle out of order: their error drops sibling futures,
+        // then bulk cleanup settles only calls that remain unfinished.
+        if !interrupted && let Some((index, receiver, _)) = &settlement {
             let mut receiver = receiver.clone();
             while *receiver.borrow_and_update() != *index {
                 receiver
@@ -3280,10 +3435,15 @@ impl Orchestrator {
                     .map_err(|_| RuntimeError::TaskStopped)?;
             }
         }
+        ensure_lease(lease_lost)?;
         execution
             .settle_tool_call(&call.id, result, message, settled.clone())
             .await?;
         self.observer.emit(&settled);
+        if interrupted {
+            Self::notify_interrupted_settlement(plan, &settled, true);
+            return Err(RuntimeError::Interrupted);
+        }
         let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
         plan.dispatcher
             .notify::<EventPublished>(settled_projection.clone())
@@ -3309,7 +3469,8 @@ impl Orchestrator {
         arguments: Value,
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
-    ) -> Result<Result<Value, String>, RuntimeError> {
+        pipeline_context: &ToolResultContext,
+    ) -> Result<ToolRun, RuntimeError> {
         let (session_id, workspace) = (&session.id, session.workspace.clone());
         let guard_decisions: Vec<_> = plan
             .guards
@@ -3365,7 +3526,7 @@ impl Orchestrator {
             }
         };
         if !allowed {
-            return Ok(Err("permission denied".into()));
+            return Ok(ToolRun::PermissionDenied);
         }
         ensure_lease(lease_lost)?;
         execution
@@ -3430,13 +3591,137 @@ impl Orchestrator {
             .await
         {
             Ok(output) => output,
-            Err(error) => return Ok(Err(error.to_string())),
+            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
         };
         ensure_lease(lease_lost)?;
-        Ok(self
-            .tool_pipeline
-            .transform_result(&tool.info, output)
-            .await)
+        let transformed = std::panic::AssertUnwindSafe(async {
+            self.tool_pipeline
+                .transform_result(pipeline_context, &tool.info, output)
+                .await
+        })
+        .catch_unwind()
+        .await;
+        Ok(match transformed {
+            Ok(Ok(value)) => ToolRun::Output(value),
+            Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
+        })
+    }
+}
+
+/// Test bound from cancellation to durable settlement; store writes have no timer.
+pub const INTERRUPT_SETTLEMENT_BOUND: Duration = Duration::from_secs(1);
+
+/// Fixed runtime-authored content for interruption without a protected result.
+pub const INTERRUPTED_RESULT_TEXT: &str = "interrupted";
+
+/// Handler id used for sanitized host pre-stage failures.
+pub const TOOL_PIPELINE_HANDLER_ID: &str = "crabber/tool-pipeline";
+
+const PREPARE_ERROR_KEY: &str = "$crabber_prepare_error";
+const UNKNOWN_TOOL_KEY: &str = "$crabber_unknown_tool";
+const RESERVED_KEY_PREFIX: &str = "$crabber_";
+/// Recorded (and seeded) when prepared arguments would be read back as a runtime sentinel.
+const RESERVED_ARGUMENT_KEY_TEXT: &str = "reserved argument key";
+
+/// The record arguments for an unknown tool. Stores write records without a depth limit but decode
+/// them with `serde_json::from_str` (128 levels), and both the sentinel and the enclosing
+/// `ToolCallRecord` add levels. When the whole record would not decode back unchanged, `raw` holds
+/// the arguments' JSON text instead, as for unparseable provider text. That form is a fixed depth
+/// (a string is a scalar), so it always decodes.
+pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
+    let arguments = json!({UNKNOWN_TOOL_KEY: {"raw": raw}});
+    let probe = ToolCallRecord {
+        id: ToolCallId::new(),
+        run_id: RunId::new(),
+        name: String::new(),
+        arguments: arguments.clone(),
+        status: ToolCallStatus::Pending,
+        retry_safe: false,
+        result: None,
+    };
+    let decodes = serde_json::to_string(&probe)
+        .ok()
+        .and_then(|text| serde_json::from_str::<ToolCallRecord>(&text).ok())
+        .is_some_and(|decoded| decoded.arguments == arguments);
+    if decodes {
+        return arguments;
+    }
+    let text = serde_json::to_string(raw).unwrap_or_default();
+    json!({UNKNOWN_TOOL_KEY: {"raw": text}})
+}
+
+/// Typed result of running a resolved call, so the class never depends on error text.
+enum ToolRun {
+    Output(TransformOutput),
+    PipelineFailed,
+    PermissionDenied,
+    ExecutionFailed(String),
+}
+
+/// What the stored `record.arguments` say about a call (Recorded answer 1).
+#[derive(Debug, PartialEq)]
+pub(crate) enum RecordedCall {
+    /// A resolved call with real arguments: class comes from execution.
+    Execute(Value),
+    /// The call does not execute; class, input and the chain's seed text come from the record.
+    Settled {
+        class: ToolOutcomeClass,
+        input: ToolInput,
+        resolved: bool,
+        seed: String,
+    },
+}
+
+/// An object whose only key is reserved for the runtime.
+fn sole_reserved_key(arguments: &Value) -> Option<(&str, &Value)> {
+    let object = arguments.as_object().filter(|object| object.len() == 1)?;
+    let (key, value) = object.iter().next()?;
+    key.starts_with(RESERVED_KEY_PREFIX)
+        .then_some((key.as_str(), value))
+}
+
+fn is_reserved_arguments(arguments: &Value) -> bool {
+    sole_reserved_key(arguments).is_some()
+}
+
+pub(crate) fn read_recorded_call(arguments: Value, name: &str, resolves: bool) -> RecordedCall {
+    let unknown_seed = || format!("unknown tool: {name}");
+    let prepare_failed = |seed: String| RecordedCall::Settled {
+        class: ToolOutcomeClass::PrepareFailed,
+        input: ToolInput::Unavailable {
+            reason: InputUnavailable::PrepareFailed,
+        },
+        resolved: true,
+        seed,
+    };
+    match sole_reserved_key(&arguments) {
+        Some((UNKNOWN_TOOL_KEY, value)) => RecordedCall::Settled {
+            class: ToolOutcomeClass::UnknownTool,
+            input: match value.as_object().and_then(|object| object.get("raw")) {
+                Some(raw) => ToolInput::Raw(raw.clone()),
+                None => ToolInput::Unavailable {
+                    reason: InputUnavailable::Unresolved,
+                },
+            },
+            resolved: false,
+            seed: unknown_seed(),
+        },
+        Some((PREPARE_ERROR_KEY, value)) => prepare_failed(
+            value
+                .as_str()
+                .unwrap_or(RESERVED_ARGUMENT_KEY_TEXT)
+                .to_owned(),
+        ),
+        Some(_) => prepare_failed(RESERVED_ARGUMENT_KEY_TEXT.to_owned()),
+        None if resolves => RecordedCall::Execute(arguments),
+        None => RecordedCall::Settled {
+            class: ToolOutcomeClass::UnknownTool,
+            input: ToolInput::Unavailable {
+                reason: InputUnavailable::Unresolved,
+            },
+            resolved: false,
+            seed: unknown_seed(),
+        },
     }
 }
 
@@ -3543,5 +3828,184 @@ async fn request_error(
             compaction_requested: decision["compaction_requested"].as_bool().unwrap_or(false),
         }),
         Err(handler) => Err(RuntimeError::Extension(handler.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod recovery_contract_tests {
+    use super::*;
+    use crate::result_transform_tests::{
+        ClosureExtension, ECHO, Finished, Harness, ScriptedCall, one_turn,
+    };
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct Pause;
+    impl PermissionPolicy for Pause {
+        fn decide(&self, _: &ToolInfo, _: &Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+        fn interrupt_policy(&self, _: &ToolInfo, _: &Value) -> InterruptPolicy {
+            InterruptPolicy::Pause
+        }
+    }
+
+    #[derive(Default)]
+    struct PreStage(Mutex<Vec<ToolResultContext>>);
+    #[async_trait]
+    impl ToolPipeline for PreStage {
+        async fn prepare(&self, _: &ToolInfo, input: Value) -> Result<Value, String> {
+            Ok(input)
+        }
+        async fn transform_result(
+            &self,
+            context: &ToolResultContext,
+            _: &ToolInfo,
+            _: Value,
+        ) -> Result<TransformOutput, String> {
+            self.0.lock().unwrap().push(context.clone());
+            Ok(TransformOutput::new(json!("re-executed pre-stage")))
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_unfinished_settlement_bypasses_pre_stage_and_result_chain() {
+        let call = ScriptedCall::text(ECHO, "tool-authored input");
+        let pipeline = Arc::new(PreStage::default());
+        let harness = Harness::builder(one_turn(&[&call]))
+            .policy(Arc::new(Pause))
+            .tool_pipeline(pipeline.clone())
+            .build()
+            .await;
+        let handle = harness.start().await;
+        let session_id = handle.session_id().clone();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        let prepares = harness.probe.prepares();
+        let fence = harness
+            .store
+            .claim_expired_run(&run_id, "fixed-settlement-test")
+            .await
+            .unwrap();
+        let execution = harness.store.execution(fence).await.unwrap();
+        let runtime = harness.fresh_runtime();
+        let plan = runtime
+            .plan_provider
+            .acquire_plan(&session_id)
+            .await
+            .unwrap();
+        execution
+            .claim_tool_call(
+                &call.id,
+                runtime.event(&session_id, &run_id, EventKind::ToolCallRunning),
+            )
+            .await
+            .unwrap();
+        runtime
+            .settle_unfinished_calls(execution.as_ref(), &session_id, &run_id, &plan, false, None)
+            .await
+            .unwrap();
+        let record = Finished {
+            harness: &harness,
+            session_id,
+            run_id,
+        }
+        .record(&call.id)
+        .await;
+        let result = record.result.unwrap();
+        assert_eq!(result.status, ToolResultStatus::Interrupted);
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::Text {
+                text: INTERRUPTED_RESULT_TEXT.into()
+            }]
+        );
+        assert_eq!(harness.probe.executed(), [] as [(String, Value); 0]);
+        assert_eq!(harness.probe.prepares(), prepares);
+        assert_eq!(pipeline.0.lock().unwrap().len(), 0);
+        assert_eq!(harness.probe.results(), [] as [Value; 0]);
+        plan.release();
+    }
+
+    #[tokio::test]
+    async fn paused_pending_reexecutes_stored_identity_and_full_chain_without_prepare() {
+        let call = ScriptedCall::text(ECHO, "durable input");
+        let pipeline = Arc::new(PreStage::default());
+        let final_contexts = Arc::new(Mutex::new(Vec::new()));
+        let redactor = ClosureExtension::new("replay-final", {
+            let final_contexts = final_contexts.clone();
+            move |r| {
+                let final_contexts = final_contexts.clone();
+                r.on_final_redaction(
+                    0,
+                    "final",
+                    Arc::new(move |context, value| {
+                        final_contexts.lock().unwrap().push(context);
+                        assert_eq!(value, json!("re-executed pre-stage"));
+                        Box::pin(async { Ok(TransformOutput::new(json!("redacted replay"))) })
+                    }),
+                );
+            }
+        });
+        let harness = Harness::builder(one_turn(&[&call]))
+            .mount(redactor, crabber_extension::Scope::Global)
+            .policy(Arc::new(Pause))
+            .tool_pipeline(pipeline.clone())
+            .build()
+            .await;
+        let handle = harness.start().await;
+        let session_id = handle.session_id().clone();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        let prepares = harness.probe.prepares();
+        assert_ne!(prepares, [] as [Value; 0]);
+        assert_eq!(pipeline.0.lock().unwrap().len(), 0);
+        assert_eq!(harness.probe.results(), [] as [Value; 0]);
+        let stored = harness
+            .store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        let result = harness.fresh_runtime().resume(&run_id).await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed);
+        assert_eq!(harness.probe.prepares(), prepares);
+        assert_eq!(
+            harness.probe.executed(),
+            vec![(ECHO.into(), stored[0].arguments.clone())]
+        );
+        let contexts = pipeline.0.lock().unwrap().clone();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].call_id(), &stored[0].id);
+        assert_eq!(contexts[0].session_id(), &session_id);
+        assert_eq!(contexts[0].run_id(), &stored[0].run_id);
+        assert_eq!(
+            contexts[0].input(),
+            &ToolInput::Normalized(stored[0].arguments.clone())
+        );
+        let results = harness.probe.results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["result"], json!("re-executed pre-stage"));
+        assert_eq!(results[0]["context"]["call_id"], stored[0].id.to_string());
+        assert_eq!(results[0]["context"]["session_id"], session_id.to_string());
+        assert_eq!(results[0]["context"]["run_id"], run_id.to_string());
+        let finals = final_contexts.lock().unwrap().clone();
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].call_id(), &stored[0].id);
+        assert_eq!(finals[0].session_id(), &session_id);
+        assert_eq!(finals[0].run_id(), &run_id);
+        let record = Finished {
+            harness: &harness,
+            session_id,
+            run_id,
+        }
+        .record(&call.id)
+        .await;
+        assert_eq!(
+            record.result.unwrap().content,
+            vec![ContentBlock::Text {
+                text: "\"redacted replay\"".into()
+            }]
+        );
     }
 }

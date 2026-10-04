@@ -56,6 +56,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-middleware"
+version = "0.1.0"
+dependencies = [
+ "crabber-guest",
+]
+
+[[package]]
 name = "echo-tool"
 version = "0.1.0"
 dependencies = [
@@ -234,6 +241,13 @@ dependencies = [
 
 [[package]]
 name = "slow-tool"
+version = "0.1.0"
+dependencies = [
+ "crabber-guest",
+]
+
+[[package]]
+name = "spinning-middleware"
 version = "0.1.0"
 dependencies = [
  "crabber-guest",

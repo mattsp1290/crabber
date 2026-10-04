@@ -623,6 +623,8 @@ dependencies = [
  "async-trait",
  "crabber-core",
  "crabber-extension",
+ "crabber-providers",
+ "crabber-runtime",
  "crabber-session",
  "serde_json",
  "sha2",

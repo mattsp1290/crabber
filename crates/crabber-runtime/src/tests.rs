@@ -66,10 +66,11 @@ impl ToolPipeline for CountingPipeline {
     }
     async fn transform_result(
         &self,
+        _context: &crabber_extension::ToolResultContext,
         _tool: &crabber_core::ToolInfo,
         result: Value,
-    ) -> Result<Value, String> {
-        Ok(result)
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        Ok(crabber_extension::TransformOutput::new(result))
     }
 }
 
@@ -946,6 +947,16 @@ async fn crashed_run_with_observer(
     running: bool,
     observer: Arc<dyn Observer>,
 ) -> (Orchestrator, Arc<MemoryStore>, Arc<AtomicUsize>, RunId) {
+    crashed_run_admitted_under(running, observer, None).await
+}
+
+/// `admitted_fingerprint` replaces the plan fingerprint stored with the run.
+#[allow(clippy::too_many_lines)]
+async fn crashed_run_admitted_under(
+    running: bool,
+    observer: Arc<dyn Observer>,
+    admitted_fingerprint: Option<fn(&crabber_extension::RunPlan) -> String>,
+) -> (Orchestrator, Arc<MemoryStore>, Arc<AtomicUsize>, RunId) {
     let now = time::OffsetDateTime::now_utc();
     let clock = Arc::new(ManualClock::new(now));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
@@ -956,7 +967,8 @@ async fn crashed_run_with_observer(
     ));
     let session = SessionId::new();
     let plan = plan_provider.acquire_plan(&session).await.unwrap();
-    let fingerprint = plan.fingerprint().to_string();
+    let fingerprint =
+        admitted_fingerprint.map_or_else(|| plan.fingerprint().to_string(), |stale| stale(&plan));
     plan.release();
     let message_id = crabber_core::MessageId::new();
     let admitted = store
@@ -1044,6 +1056,46 @@ async fn crashed_run_with_observer(
         .build()
         .unwrap();
     (runtime, store, executed, admitted.run.id)
+}
+
+/// The digest `compute_fingerprint` produced before the result-transform
+/// contract component (D9): SHA-256 of the sorted component identities.
+fn pre_contract_fingerprint(plan: &crabber_extension::RunPlan) -> String {
+    use sha2::{Digest, Sha256};
+    let mut components = plan.components.clone();
+    components.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
+    crabber_extension::PlanFingerprint(
+        Sha256::digest(serde_json::to_vec(&components).unwrap()).into(),
+    )
+    .to_string()
+}
+
+#[tokio::test]
+async fn resume_refuses_run_admitted_under_pre_contract_fingerprint() {
+    let (runtime, store, executed, run_id) = crashed_run_admitted_under(
+        false,
+        Arc::new(crate::NoopObserver),
+        Some(pre_contract_fingerprint),
+    )
+    .await;
+    let stored = store
+        .get_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_fingerprint;
+    assert_eq!(stored.len(), 64);
+    let error = runtime.resume(&run_id).await.unwrap_err();
+    assert!(matches!(error, RuntimeError::PlanChanged), "{error:?}");
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -2911,4 +2963,67 @@ async fn admission_recovery_verifies_turn_limit_before_terminal_replay() {
     ));
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(provider.requests().len(), 1);
+}
+
+struct PipelineCleanup(Arc<Notify>);
+#[async_trait]
+impl ToolPipeline for PipelineCleanup {
+    async fn prepare(
+        &self,
+        _tool: &crabber_core::ToolInfo,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        context: &crabber_extension::ToolResultContext,
+        _tool: &crabber_core::ToolInfo,
+        result: Value,
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        let closing = context.cleanup().closing();
+        let reaped = self.0.clone();
+        context.cleanup().spawn(async move {
+            closing.await;
+            reaped.notify_one();
+        });
+        Ok(crabber_extension::TransformOutput::new(result))
+    }
+}
+
+#[tokio::test]
+async fn pipeline_cleanup_is_joined_by_the_host_owner() {
+    let store = Arc::new(MemoryStore::new());
+    let owner = crabber_extension::CleanupOwner::new();
+    let completed = Arc::new(Notify::new());
+    let runtime = Orchestrator::builder()
+        .store(store)
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
+            text_script("done"),
+        ])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![tool(Arc::new(EchoTool(Arc::new(AtomicUsize::new(0)))))],
+            Vec::new(),
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .tool_pipeline(Arc::new(PipelineCleanup(completed.clone())))
+        .pipeline_cleanup(owner.tracker())
+        .build()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    assert_eq!(owner.tracker().pending(), 1);
+    owner.join(std::time::Duration::from_secs(1)).await.unwrap();
+    completed.notified().await;
+    assert_eq!(owner.tracker().pending(), 0);
 }

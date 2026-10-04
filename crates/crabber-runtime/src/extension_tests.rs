@@ -108,9 +108,8 @@ impl Extension for TestExtension {
                     "redact",
                     Arc::new(|mut value| {
                         Box::pin(async move {
-                            if value["is_error"] == true {
+                            if value["context"]["is_error"] == true {
                                 value["result"] = "[REDACTED]".into();
-                                value["is_error"] = false.into();
                             }
                             Ok(value)
                         })

@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
 use wasmtime::component::{Component, Instance, Linker, ResourceTable, Val, types::ComponentItem};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
@@ -535,7 +536,7 @@ impl Drop for Loader {
 
 impl LoadedModule {
     async fn validate(&self) -> Result<(), WasmError> {
-        let mut store = self.store();
+        let mut store = self.store(&CancellationToken::new());
         let instance = self.instance(&mut store).await?;
         let manifest = self
             .call_in_instance(&mut store, &instance, "manifest-api", "describe", &[])
@@ -671,7 +672,7 @@ impl LoadedModule {
         Ok(linker)
     }
 
-    fn store(&self) -> Store<HostState> {
+    fn store(&self, cancellation: &CancellationToken) -> Store<HostState> {
         let limits = guest_store_limits(&self.config.limits);
         let stdout = MemoryOutputPipe::new(self.config.limits.max_output_bytes);
         let stderr = MemoryOutputPipe::new(self.config.limits.max_output_bytes);
@@ -697,7 +698,11 @@ impl LoadedModule {
         let admitted = Arc::clone(&self.admission);
         let started = Instant::now();
         let timeout = self.config.limits.call_timeout;
+        let cancellation = cancellation.clone();
         store.epoch_deadline_callback(move |_| {
+            if cancellation.is_cancelled() {
+                return Err(wasmtime::Error::msg("guest call cancelled"));
+            }
             if admitted.load(Ordering::Acquire) {
                 return Err(wasmtime::Error::msg("loader closed"));
             }
@@ -722,6 +727,18 @@ impl LoadedModule {
         interface: &str,
         function: &str,
         args: &[Val],
+    ) -> Result<Val, WasmError> {
+        self.call_cancellable(interface, function, args, &CancellationToken::new())
+            .await
+    }
+
+    /// Calls an ordinary guest with token-driven epoch interruption.
+    pub async fn call_cancellable(
+        &self,
+        interface: &str,
+        function: &str,
+        args: &[Val],
+        cancellation: &CancellationToken,
     ) -> Result<Val, WasmError> {
         if self.admission.load(Ordering::Acquire) {
             return Err(WasmError::Closed);
@@ -749,7 +766,7 @@ impl LoadedModule {
         } else {
             BTreeMap::new()
         };
-        let mut store = self.store();
+        let mut store = self.store(cancellation);
         store.data_mut().state = prior.clone();
         let instance = self.instance(&mut store).await?;
         let configured = self
@@ -1144,6 +1161,458 @@ mod tests {
         );
     }
 
+    async fn spinning_module() -> (Arc<Loader>, Arc<LoadedModule>, Arc<tokio::sync::Semaphore>) {
+        let ready = Arc::new(tokio::sync::Semaphore::new(0));
+        let observed = ready.clone();
+        let loader = Arc::new(Loader::new().unwrap().with_log_observer(Arc::new(
+            move |_, _, message| {
+                if message == "spin-ready" {
+                    observed.add_permits(1);
+                }
+            },
+        )));
+        let mut config = fixture("spinning-middleware");
+        config.limits.call_timeout = Duration::from_secs(10);
+        let module = loader.load(config).await.unwrap();
+        (loader, module, ready)
+    }
+
+    fn spinning_args() -> Vec<Val> {
+        vec![
+            Val::String("echo-tool".into()),
+            Val::String(String::new()),
+            Val::String("{}".into()),
+            Val::String("SECRET-GUEST-PAYLOAD".into()),
+            Val::Bool(false),
+            turn_metadata(None),
+        ]
+    }
+
+    #[tokio::test]
+    async fn token_interrupts_active_guest_and_releases_serial_lock() {
+        use crabber_runtime::INTERRUPT_SETTLEMENT_BOUND;
+        let (loader, module, ready) = spinning_module().await;
+        let token = CancellationToken::new();
+        let call = tokio::spawn({
+            let module = module.clone();
+            let token = token.clone();
+            async move {
+                module
+                    .call_cancellable(
+                        "tool-middleware-api",
+                        "after-tool-call",
+                        &spinning_args(),
+                        &token,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), ready.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        let started = Instant::now();
+        token.cancel();
+        let result = tokio::time::timeout(INTERRUPT_SETTLEMENT_BOUND, call)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(result, Err(WasmError::Trap(ref text)) if text.contains("guest call cancelled")),
+            "{result:?}"
+        );
+        assert!(started.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
+        assert_eq!(module.active.load(Ordering::Acquire), 0);
+        tokio::time::timeout(
+            INTERRUPT_SETTLEMENT_BOUND,
+            module.call("manifest-api", "describe", &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        loader.close().await;
+    }
+
+    struct InterruptMiddleware {
+        loader: Arc<Loader>,
+        module: Arc<LoadedModule>,
+        protected: bool,
+    }
+    #[async_trait]
+    impl Extension for InterruptMiddleware {
+        fn id(&self) -> &'static str {
+            "interrupt-middleware"
+        }
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+        fn config_hash(&self) -> String {
+            "test".into()
+        }
+        async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+            adapters::mount(&self.module, &self.loader, registrar).await?;
+            if self.protected {
+                registrar.on_result_transform(
+                    -1,
+                    "accept",
+                    Arc::new(|_, value| {
+                        Box::pin(async move { Ok(crabber_extension::TransformOutput::new(value)) })
+                    }),
+                );
+                registrar.on_final_redaction(
+                    -100,
+                    "protect",
+                    Arc::new(|context, _| {
+                        Box::pin(async move {
+                            assert!(context.cancellation().is_cancelled());
+                            Ok(crabber_extension::TransformOutput::new(serde_json::json!(
+                                "protected"
+                            )))
+                        })
+                    }),
+                );
+            }
+            Ok(())
+        }
+    }
+
+    async fn assert_wasm_interrupted_settlement(
+        store: &crabber_session::MemoryStore,
+        session_id: &crabber_core::SessionId,
+        run_id: &crabber_core::RunId,
+        call_id: &crabber_core::ToolCallId,
+        expected: &str,
+    ) {
+        use crabber_core::{ContentBlock, ToolCallStatus, ToolResultStatus};
+        use crabber_session::{SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
+        let SnapshotOutcome::Page(page) = store
+            .snapshot(SnapshotRequest {
+                session_id: session_id.clone(),
+                limits: SnapshotLimits {
+                    messages: 100,
+                    tool_calls: 100,
+                    parts: 1000,
+                    text_bytes: 1 << 20,
+                    encoded_bytes: 1 << 22,
+                },
+                continuation: None,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("snapshot page");
+        };
+        let record = page
+            .tool_calls
+            .iter()
+            .find(|record| &record.id == call_id)
+            .unwrap();
+        assert_eq!(record.status, ToolCallStatus::Interrupted);
+        let result = record.result.as_ref().unwrap();
+        assert_eq!(result.status, ToolResultStatus::Interrupted);
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::Text {
+                text: expected.into()
+            }]
+        );
+        assert_eq!(
+            store.list_unfinished_tool_calls(run_id).await.unwrap(),
+            [] as [crabber_core::ToolCallRecord; 0]
+        );
+        for message in &page.messages {
+            for part in &message.parts {
+                if let ContentBlock::ToolResult {
+                    content, is_error, ..
+                } = &part.content
+                {
+                    assert!(*is_error);
+                    assert_eq!(*content, result.content);
+                }
+            }
+        }
+        let events = store.list_events(session_id, None, 1000).await.unwrap();
+        let settled = events
+            .iter()
+            .find(|event| event.kind == crabber_core::EventKind::ToolCallSettled)
+            .unwrap();
+        assert_eq!(settled.payload["content"][0]["text"], expected);
+        assert_eq!(settled.payload["is_error"], true);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_interrupts_active_wasm_with_fixed_or_final_redacted_settlement() {
+        use crabber_core::{RunStatus, ToolCallId};
+        use crabber_extension::{Registry, Scope};
+        use crabber_providers::{FakeProvider, Selection, StreamDelta};
+        use crabber_runtime::{
+            INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, Orchestrator, Request,
+        };
+        use crabber_session::MemoryStore;
+        for protected in [false, true] {
+            let (loader, module, ready) = spinning_module().await;
+            let registry = Arc::new(Registry::new());
+            registry
+                .mount(
+                    Arc::new(WasmExtension::new(fixture("echo-tool"))),
+                    Scope::Global,
+                )
+                .await
+                .unwrap();
+            registry
+                .mount(
+                    Arc::new(InterruptMiddleware {
+                        loader: loader.clone(),
+                        module: module.clone(),
+                        protected,
+                    }),
+                    Scope::Global,
+                )
+                .await
+                .unwrap();
+            let call_id = ToolCallId::new();
+            let fake = FakeProvider::scripted(vec![vec![
+                StreamDelta::ToolCallStart {
+                    call_id: call_id.clone(),
+                    name: "echo".into(),
+                },
+                StreamDelta::ToolCallArgsDelta {
+                    call_id: call_id.clone(),
+                    text: r#"{"text":"SECRET-ORIGINAL"}"#.into(),
+                },
+                StreamDelta::ToolCallDone {
+                    call_id: call_id.clone(),
+                },
+                StreamDelta::Completed,
+            ]]);
+            let store = Arc::new(MemoryStore::new());
+            let runtime = Orchestrator::builder()
+                .store(store.clone())
+                .resolver(Arc::new(fake))
+                .plan_provider(registry.clone())
+                .build()
+                .unwrap();
+            let handle = runtime
+                .start(Request {
+                    session_id: None,
+                    workspace_id: "test".into(),
+                    directory: ".".into(),
+                    title: "test".into(),
+                    text: "test".into(),
+                    selection: Selection {
+                        provider_id: "fake".into(),
+                        model_id: "scripted".into(),
+                    },
+                    system_prompt: None,
+                })
+                .await
+                .unwrap();
+            let session_id = handle.session_id().clone();
+            let run_id = handle.run_id().clone();
+            tokio::time::timeout(Duration::from_secs(10), ready.acquire())
+                .await
+                .unwrap()
+                .unwrap()
+                .forget();
+            let started = Instant::now();
+            handle.interrupt();
+            assert_eq!(
+                tokio::time::timeout(INTERRUPT_SETTLEMENT_BOUND, handle.done())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                RunStatus::Interrupted
+            );
+            assert!(started.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
+            let expected = if protected {
+                r#""protected""#
+            } else {
+                INTERRUPTED_RESULT_TEXT
+            };
+            assert_wasm_interrupted_settlement(&store, &session_id, &run_id, &call_id, expected)
+                .await;
+            assert_eq!(module.active.load(Ordering::Acquire), 0);
+            assert!(module.serial.try_lock().is_ok());
+            registry.close_all().await.unwrap();
+            loader.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_driver_releases_call_waiting_on_serial_mutex() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        let (loader, module, _) = spinning_module().await;
+        let registry = crabber_extension::Registry::new();
+        registry
+            .mount(
+                Arc::new(InterruptMiddleware {
+                    loader: loader.clone(),
+                    module: module.clone(),
+                    protected: false,
+                }),
+                crabber_extension::Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&crabber_core::SessionId::new());
+        let guard = module.serial.lock().await;
+        let token = CancellationToken::new();
+        let context = middleware_context(
+            ToolInput::Normalized(serde_json::json!({})),
+            ToolOutcomeClass::Succeeded,
+        )
+        .with_cancellation(token.clone());
+        let mut invocation = Box::pin(
+            plan.dispatcher
+                .transform_tool_result(context, TransformOutput::new(serde_json::json!("secret"))),
+        );
+        std::future::poll_fn(|cx| {
+            assert!(invocation.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        token.cancel();
+        assert_eq!(
+            invocation.await,
+            ToolResultOutcome::Interrupted { redacted: None }
+        );
+        drop(guard);
+        assert!(module.serial.try_lock().is_ok());
+        assert_eq!(module.active.load(Ordering::Acquire), 0);
+        drop(plan);
+        registry.close_all().await.unwrap();
+        loader.close().await;
+    }
+
+    struct BlockedHostMiddleware {
+        module: Arc<LoadedModule>,
+        entered: Arc<tokio::sync::Semaphore>,
+        dropped: Arc<tokio::sync::Semaphore>,
+    }
+
+    struct HostImportGuard(Arc<tokio::sync::Semaphore>);
+    impl Drop for HostImportGuard {
+        fn drop(&mut self) {
+            self.0.add_permits(1);
+        }
+    }
+
+    #[async_trait]
+    impl Extension for BlockedHostMiddleware {
+        fn id(&self) -> &'static str {
+            "blocked-host"
+        }
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+        fn config_hash(&self) -> String {
+            "test".into()
+        }
+        async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+            let module = self.module.clone();
+            let entered = self.entered.clone();
+            let dropped = self.dropped.clone();
+            registrar.on_result_transform(
+                0,
+                "blocked-host",
+                Arc::new(move |context, _| {
+                    let module = module.clone();
+                    let entered = entered.clone();
+                    let dropped = dropped.clone();
+                    Box::pin(async move {
+                        let _serial = module.serial.lock().await;
+                        let mut store = module.store(context.cancellation());
+                        let mut linker = module.linker().unwrap();
+                        linker
+                            .allow_shadowing(true)
+                            .instance("crabber:host/log@0.1.0")
+                            .unwrap()
+                            .func_new_async("log", move |_, _, _, _| {
+                                let entered = entered.clone();
+                                let dropped = dropped.clone();
+                                Box::new(async move {
+                                    let _guard = HostImportGuard(dropped);
+                                    entered.add_permits(1);
+                                    std::future::pending::<()>().await;
+                                    Ok(())
+                                })
+                            })
+                            .unwrap();
+                        let instance = linker
+                            .instantiate_async(&mut store, &module.component)
+                            .await
+                            .unwrap();
+                        let value = module
+                            .call_in_instance(
+                                &mut store,
+                                &instance,
+                                "tool-middleware-api",
+                                "after-tool-call",
+                                &spinning_args(),
+                            )
+                            .await
+                            .map_err(|error| ExtensionError::Tool(error.to_string()))?;
+                        panic!("blocked host import returned: {value:?}");
+                    })
+                }),
+            );
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_driver_releases_guest_blocked_in_host_import() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        use crabber_runtime::INTERRUPT_SETTLEMENT_BOUND;
+        let (loader, module, _) = spinning_module().await;
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let dropped = Arc::new(tokio::sync::Semaphore::new(0));
+        let registry = crabber_extension::Registry::new();
+        registry
+            .mount(
+                Arc::new(BlockedHostMiddleware {
+                    module: module.clone(),
+                    entered: entered.clone(),
+                    dropped: dropped.clone(),
+                }),
+                crabber_extension::Scope::Global,
+            )
+            .await
+            .unwrap();
+        let plan = registry.acquire(&crabber_core::SessionId::new());
+        let token = CancellationToken::new();
+        let context = middleware_context(
+            ToolInput::Normalized(serde_json::json!({})),
+            ToolOutcomeClass::Succeeded,
+        )
+        .with_cancellation(token.clone());
+        let invocation = tokio::spawn(async move {
+            let plan = plan;
+            plan.dispatcher
+                .transform_tool_result(context, TransformOutput::new(serde_json::json!("secret")))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        token.cancel();
+        assert_eq!(
+            tokio::time::timeout(INTERRUPT_SETTLEMENT_BOUND, invocation)
+                .await
+                .unwrap()
+                .unwrap(),
+            ToolResultOutcome::Interrupted { redacted: None }
+        );
+        assert_eq!(dropped.available_permits(), 1);
+        assert!(module.serial.try_lock().is_ok());
+        registry.close_all().await.unwrap();
+        loader.close().await;
+    }
+
     #[tokio::test]
     async fn slow_guest_times_out() {
         let loader = Loader::new().unwrap();
@@ -1282,7 +1751,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_adapters_dispatch_guest_roles() {
-        use crabber_extension::{ContextAssemble, Registry, Scope, ToolResultTransform};
+        use crabber_extension::{ContextAssemble, Registry, Scope};
         let registry = Registry::new();
         let _deny = registry
             .mount(
@@ -1331,12 +1800,303 @@ mod tests {
         );
         let result = plan
             .dispatcher
-            .transform::<ToolResultTransform>(
-                serde_json::json!({"result":{"secret":"secret"},"is_error":false}),
+            .transform_tool_result(
+                crabber_extension::ToolResultContext::new(
+                    "secret-tool".into(),
+                    true,
+                    crabber_extension::ToolInput::Normalized(
+                        serde_json::json!({"secret": "secret"}),
+                    ),
+                    crabber_core::ToolCallId::new(),
+                    crabber_core::SessionId::new(),
+                    crabber_core::RunId::new(),
+                    crabber_extension::ToolOutcomeClass::Succeeded,
+                ),
+                crabber_extension::TransformOutput::new(serde_json::json!({"secret":"secret"})),
+            )
+            .await;
+        let crabber_extension::ToolResultOutcome::Completed { result, .. } = result else {
+            panic!("WASM redactor failed");
+        };
+        assert!(result.to_string().contains("[REDACTED]"));
+    }
+
+    async fn echo_middleware_plan() -> (
+        crabber_extension::Registry,
+        crabber_extension::MountHandle,
+        crabber_extension::RunPlan,
+    ) {
+        use crabber_extension::{Registry, Scope};
+        let registry = Registry::new();
+        let mount = registry
+            .mount(
+                Arc::new(WasmExtension::new(fixture("echo-middleware"))),
+                Scope::Global,
             )
             .await
             .unwrap();
-        assert!(result.to_string().contains("[REDACTED]"));
+        let plan = registry.acquire(&crabber_core::SessionId::new());
+        (registry, mount, plan)
+    }
+
+    fn middleware_context(
+        input: crabber_extension::ToolInput,
+        class: crabber_extension::ToolOutcomeClass,
+    ) -> crabber_extension::ToolResultContext {
+        crabber_extension::ToolResultContext::new(
+            "secret-tool".into(),
+            class != crabber_extension::ToolOutcomeClass::UnknownTool,
+            input,
+            crabber_core::ToolCallId::from("call-rtc"),
+            crabber_core::SessionId::from("session-rtc"),
+            crabber_core::RunId::from("run-rtc"),
+            class,
+        )
+    }
+
+    #[tokio::test]
+    async fn wasm_after_tool_guest_receives_exact_context_and_arguments() {
+        use crabber_extension::{
+            InputUnavailable, ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput,
+            result_envelope,
+        };
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        for (class, input) in [
+            (
+                ToolOutcomeClass::Succeeded,
+                ToolInput::Normalized(serde_json::json!({"secret": [1, null]})),
+            ),
+            (
+                ToolOutcomeClass::ExecutionFailed,
+                ToolInput::Normalized(Value::Null),
+            ),
+            (
+                ToolOutcomeClass::PermissionDenied,
+                ToolInput::Normalized(serde_json::json!([1])),
+            ),
+            (
+                ToolOutcomeClass::UnknownTool,
+                ToolInput::Raw(serde_json::json!("provider text")),
+            ),
+            (
+                ToolOutcomeClass::PrepareFailed,
+                ToolInput::Unavailable {
+                    reason: InputUnavailable::PrepareFailed,
+                },
+            ),
+            (
+                ToolOutcomeClass::UnknownTool,
+                ToolInput::Unavailable {
+                    reason: InputUnavailable::Unresolved,
+                },
+            ),
+        ] {
+            let context = middleware_context(input, class);
+            let expected = result_envelope(&context, serde_json::json!({"a": 1}));
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context, TransformOutput::new(expected["result"].clone()))
+                .await;
+            let ToolResultOutcome::Completed { result, is_error } = outcome else {
+                panic!("{outcome:?}");
+            };
+            assert_eq!(result["tool_name"], "secret-tool");
+            assert_eq!(result["tool_call_id"], "call-rtc");
+            assert_eq!(result["executed_input"], expected["context"]["input"]);
+            assert_eq!(
+                serde_json::from_str::<Value>(result["output_json"].as_str().unwrap()).unwrap(),
+                expected
+            );
+            assert_eq!(result["is_error"], class.is_error());
+            assert_eq!(is_error, class.is_error());
+            assert_eq!(
+                result["turn"],
+                serde_json::json!({
+                    "session_id":"", "run_id":"", "epoch_id":"", "turn_index":0,
+                    "agent_name":"", "agent_mode":"", "provider_id":"", "model_id":"",
+                    "tool_names":[], "message_count":0,
+                    "role_counts":{"system":0,"user":0,"assistant":0,"tool":0},
+                    "has_system_prompt":false, "workspace_id":""
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wasm_after_tool_unchanged_and_mark_error_preserve_escalation() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        for class in [
+            ToolOutcomeClass::Succeeded,
+            ToolOutcomeClass::ExecutionFailed,
+        ] {
+            for marked in [false, true] {
+                let result = serde_json::json!("__unchanged__");
+                let outcome = plan
+                    .dispatcher
+                    .transform_tool_result(
+                        middleware_context(ToolInput::Normalized(Value::Null), class),
+                        TransformOutput {
+                            result: result.clone(),
+                            mark_error: marked,
+                        },
+                    )
+                    .await;
+                assert_eq!(
+                    outcome,
+                    ToolResultOutcome::Completed {
+                        result,
+                        is_error: class.is_error() || marked
+                    }
+                );
+            }
+        }
+        let outcome = plan
+            .dispatcher
+            .transform_tool_result(
+                middleware_context(
+                    ToolInput::Normalized(Value::Null),
+                    ToolOutcomeClass::Succeeded,
+                ),
+                TransformOutput::new(serde_json::json!("__mark_error__")),
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            ToolResultOutcome::Completed { is_error: true, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn wasm_after_tool_invalid_replies_are_sanitized_d2_failures() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        let mut markers = vec![
+            "__error__".to_owned(),
+            "__malformed__".into(),
+            "__non_envelope__".into(),
+            "__missing_mark_error__".into(),
+            "__extra_key__".into(),
+            "__bad_mark_error__".into(),
+        ];
+        for field in [
+            "tool_name",
+            "resolved",
+            "input",
+            "call_id",
+            "session_id",
+            "run_id",
+            "class",
+            "is_error",
+            "phase",
+        ] {
+            markers.push(format!("__tamper__{field}"));
+        }
+        for marker in markers {
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(
+                    middleware_context(
+                        ToolInput::Normalized(Value::Null),
+                        ToolOutcomeClass::Succeeded,
+                    ),
+                    TransformOutput::new(serde_json::json!(marker)),
+                )
+                .await;
+            assert_eq!(
+                outcome,
+                ToolResultOutcome::Failed {
+                    handler: "wasm-after-tool:echo-middleware".into()
+                },
+                "{marker}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wasm_after_tool_deep_input_decode_boundary_is_contained() {
+        use crabber_extension::{ToolInput, ToolOutcomeClass, ToolResultOutcome, TransformOutput};
+        let (_registry, _mount, plan) = echo_middleware_plan().await;
+        for (depth, raw) in [(124, true), (126, false)] {
+            let deep: Value =
+                serde_json::from_str(&("[".repeat(depth) + &"]".repeat(depth))).unwrap();
+            let arguments = if raw {
+                serde_json::json!({"$crabber_unknown_tool": {"raw": deep}})
+            } else {
+                deep.clone()
+            };
+            let record = crabber_core::ToolCallRecord {
+                id: crabber_core::ToolCallId::from("call-rtc"),
+                run_id: crabber_core::RunId::from("run-rtc"),
+                name: "secret-tool".into(),
+                arguments,
+                status: crabber_core::ToolCallStatus::Running,
+                retry_safe: false,
+                result: None,
+            };
+            assert_eq!(
+                serde_json::from_str::<crabber_core::ToolCallRecord>(
+                    &serde_json::to_string(&record).unwrap()
+                )
+                .unwrap(),
+                record
+            );
+            let input = if raw {
+                ToolInput::Raw(deep)
+            } else {
+                ToolInput::Normalized(deep)
+            };
+            let context = middleware_context(
+                input,
+                if raw {
+                    ToolOutcomeClass::UnknownTool
+                } else {
+                    ToolOutcomeClass::Succeeded
+                },
+            );
+            let envelope =
+                crabber_extension::result_envelope(&context, serde_json::json!("SECRET-ORIGINAL"));
+            assert_eq!(
+                serde_json::from_str::<Value>(&envelope.to_string()).is_ok(),
+                raw
+            );
+            assert!(
+                serde_json::from_str::<Value>(&envelope["context"]["input"].to_string()).is_ok()
+            );
+            let outcome = plan
+                .dispatcher
+                .transform_tool_result(context, TransformOutput::new(envelope["result"].clone()))
+                .await;
+            if raw {
+                let ToolResultOutcome::Completed { result, is_error } = outcome else {
+                    panic!("depth-124 raw input should roundtrip: {outcome:?}");
+                };
+                assert!(is_error);
+                assert_eq!(result["executed_input"], envelope["context"]["input"]);
+                let mut settled = record;
+                settled.status = crabber_core::ToolCallStatus::Failed;
+                settled.result = Some(crabber_core::ToolResult {
+                    status: crabber_core::ToolResultStatus::Failed,
+                    content: vec![crabber_core::ContentBlock::Text {
+                        text: serde_json::to_string(&result).unwrap(),
+                    }],
+                });
+                assert_eq!(
+                    serde_json::from_str::<crabber_core::ToolCallRecord>(
+                        &serde_json::to_string(&settled).unwrap()
+                    )
+                    .unwrap(),
+                    settled
+                );
+            } else {
+                assert_eq!(
+                    outcome,
+                    ToolResultOutcome::Failed {
+                        handler: "wasm-after-tool:echo-middleware".into()
+                    }
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1390,6 +2150,7 @@ mod tests {
             "deny-policy",
             "banner-context",
             "redact-middleware",
+            "echo-middleware",
             "counter-sink",
             "all-in-one",
             "tool-and-sink",

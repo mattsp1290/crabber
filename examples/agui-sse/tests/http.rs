@@ -462,15 +462,13 @@ impl crabber::extension::Extension for HeldResult {
         &self,
         r: &mut crabber::extension::Registrar,
     ) -> Result<(), crabber::ExtensionError> {
-        use crabber::extension::Point;
         let entered = self.entered.clone();
         let count = self.count.clone();
         let release = self.release.clone();
-        r.on_transform(
-            crabber::extension::ToolResultTransform::ID,
+        r.on_result_transform(
             10,
             "hold",
-            Arc::new(move |value| {
+            Arc::new(move |_, value| {
                 let entered = entered.clone();
                 let count = count.clone();
                 let release = release.clone();
@@ -478,7 +476,7 @@ impl crabber::extension::Extension for HeldResult {
                     count.fetch_add(1, Ordering::SeqCst);
                     entered.notify_one();
                     release.notified().await;
-                    Ok(value)
+                    Ok(crabber::extension::TransformOutput::new(value))
                 })
             }),
         );
@@ -487,26 +485,27 @@ impl crabber::extension::Extension for HeldResult {
 }
 
 #[tokio::test]
-async fn unresolved_work_stays_registered_until_noncooperative_transform_finishes() -> CheckResult {
+async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
+    // The old unresolved-work characterization required result callbacks to ignore
+    // cancellation. The result-chain driver now drops that future on disconnect.
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let store = Arc::new(MemoryStore::new());
-    let count = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(HeldResult {
-        count: count.clone(),
+        count: Arc::new(AtomicUsize::new(0)),
         entered: entered.clone(),
-        release: release.clone(),
+        release,
     });
-    let mut host = Host::new(Arc::new(move || {
+    let retained = store.clone();
+    let server = Server::start(Host::new(Arc::new(move || {
         builder(
             store.clone(),
             Arc::new(FakeProvider::scripted(journey(false))),
         )
         .extension(gate.clone(), crabber::extension::Scope::Global)
         .build()
-    }));
-    host.cleanup = Duration::from_millis(20);
-    let server = Server::start(host).await?;
+    })))
+    .await?;
     let response = reqwest::Client::new()
         .post(&server.url)
         .json(&input("held"))
@@ -514,24 +513,42 @@ async fn unresolved_work_stays_registered_until_noncooperative_transform_finishe
         .await?;
     entered.notified().await;
     drop(response);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while server.host.unresolved.load(Ordering::SeqCst) == 0 {
+    tokio::time::timeout(crabber::runtime::INTERRUPT_SETTLEMENT_BOUND, async {
+        while server.host.active.load(Ordering::SeqCst) != 0 {
+            assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
             tokio::task::yield_now().await;
         }
     })
     .await?;
-    assert_eq!(server.host.active.load(Ordering::SeqCst), 1);
-    assert!(server.host.shutdown().await.is_err());
-    // Both parallel tool transforms may hold the run. Notify the gates as they enter.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while count.load(Ordering::SeqCst) < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    release.notify_waiters();
-    idle(&server.host).await;
     assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
+    server.host.shutdown().await?;
+    let crabber::session::SnapshotOutcome::Page(page) = retained
+        .snapshot(crabber::session::SnapshotRequest {
+            session_id: SessionId::from("held"),
+            continuation: None,
+            limits: crabber::session::SnapshotLimits {
+                messages: 100,
+                tool_calls: 100,
+                parts: 100,
+                text_bytes: 100_000,
+                encoded_bytes: 100_000,
+            },
+        })
+        .await?
+    else {
+        panic!("expected complete durable snapshot");
+    };
+    assert!(page.continuation.is_none());
+    assert_ne!(page.tool_calls, []);
+    for call in page.tool_calls {
+        assert_eq!(call.status, crabber::core::ToolCallStatus::Interrupted);
+        assert_eq!(
+            call.result.unwrap().content,
+            vec![crabber::core::ContentBlock::Text {
+                text: "interrupted".into(),
+            }]
+        );
+    }
     server.stop().await?;
     Ok(())
 }
