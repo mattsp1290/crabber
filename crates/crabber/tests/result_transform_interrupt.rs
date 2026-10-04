@@ -6,7 +6,7 @@ use crabber::{
         ContentBlock, EventKind, EventRecord, RunStatus, SessionId, ToolCallStatus,
         ToolResultStatus,
     },
-    extension::{FINAL_REDACTION_DEADLINE, MountCloseTimeout},
+    extension::{DEFAULT_MOUNT_CLOSE_TIMEOUT, FINAL_REDACTION_DEADLINE, MountCloseTimeout},
     runtime::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT},
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
 };
@@ -265,7 +265,7 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         let probes = Probes::new(true);
         let store = Arc::new(MemoryStore::new());
         let observer = Arc::new(CloseCapture::default());
-        let bound = Duration::from_millis(50);
+        let bound = DEFAULT_MOUNT_CLOSE_TIMEOUT / 100;
         let agent = agent_builder(store.clone(), probes.clone(), false)
             .observer(observer.clone())
             .extension_close_timeout(bound)
