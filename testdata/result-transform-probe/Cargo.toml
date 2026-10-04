@@ -7,7 +7,13 @@ publish = false
 [workspace]
 
 [dependencies]
-crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "fb179621d61f57c60a420f674c632f8101179a87" }
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "77069652300201433fa0faa64dfd4c7a9e57197c" }
 async-trait = "0.1"
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+# `watchdog` removes the container when the test run is interrupted (Ctrl-C).
+testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"], optional = true }
+
+[features]
+default = []
+postgres = ["crabber/postgres", "dep:testcontainers-modules"]

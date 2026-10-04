@@ -181,7 +181,7 @@ flag.
 | D8 Interruption test infrastructure | The real interruption test runs the real `Orchestrator` through the `crabber` facade in `crates/crabber/tests/`, with `MemoryStore`, in the `check` job. The fixture reduction child is source only, built at test time, modeled on `crates/crabber/tests/admission_support/{child,process}.rs`. The child writes a ready line on its pipe before the test interrupts. "Permit" is a reducer-owned semaphore permit per child, held by the cleanup task until `wait()` reaps it. The test asserts the permit count recovers only after reaping, the PID is gone, pipes are closed, both bounds hold against the named constants, mount close through `Agent::close_extensions` joins the cleanup, and the durable status is `Interrupted` with no unredacted output. | confirmed | [`run_interrupt_drops_reducer_and_settles_fixed_text`](../crates/crabber/tests/result_transform_interrupt.rs#L212); [`run_interrupt_persists_only_accepted_final_redaction`](../crates/crabber/tests/result_transform_interrupt.rs#L217); [`postgres_run_interrupt_drops_reducer_and_settles_fixed_text`](../crates/crabber/tests/result_transform_interrupt.rs#L243); [`postgres_run_interrupt_persists_only_accepted_final_redaction`](../crates/crabber/tests/result_transform_interrupt.rs#L249); [`close_timeout_retains_child_reaper_and_terminal_registry`](../crates/crabber/tests/result_transform_interrupt.rs#L263). [Source child](../crates/crabber/tests/result_transform_support/child.rs), [tracked kill/wait/pipe/permit cleanup](../crates/crabber/tests/result_transform_support/process.rs); PostgreSQL execution requires `CRABBER_TEST_POSTGRES_URL` (set `CRABBER_REQUIRE_POSTGRES=1` to forbid skipping). |
 | D9 ABI, schema and fingerprint | Clean break, no shims. The point ID stays `crabber/tool/result-transform`. `RESULT_TRANSFORM_CONTRACT_VERSION` enters `compute_fingerprint`, so every plan frozen under the old contract fails the strict check (`RuntimeError::PlanChanged`) instead of resuming. WASM guests get the new envelope through `crates/crabber-wasm/src/adapters.rs` with no WIT change; only guest fixture sources change and generated `fixtures/wasm/` binaries stay uncommitted. There is no durable schema change; one record-content change is recorded (unknown-tool arguments, Recorded answer 1). | confirmed | [`contract_component_participates_in_fingerprint`](../crates/crabber-extension/src/plan.rs#L320); [`fingerprint_of_fixed_components_is_pinned`](../crates/crabber-extension/src/plan.rs#L283); [`old_contract_fingerprint_is_refused_without_mutation`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L522); [`wasm_after_tool_guest_receives_exact_context_and_arguments`](../crates/crabber-wasm/src/lib.rs#L1858); [`wasm_after_tool_invalid_replies_are_sanitized_d2_failures`](../crates/crabber-wasm/src/lib.rs#L1971). [`generic_transform_rejects_tool_result_without_invoking_callbacks`](../crates/crabber-extension/src/dispatch.rs#L717); [`generic_pinned_transform_rejects_tool_result_without_invoking_callbacks`](../crates/crabber-extension/src/dispatch.rs#L731); WIT copies and syntax are checked by `cargo xtask check`; the absence of a historical WIT change is verified by the implementation diff. Schema 5 is asserted by [`forward_migration_preserves_v1_and_connect_is_read_only`](../crates/crabber-session/src/postgres/admission_tests/migrations.rs#L6), whose shared migration helper queries and asserts versions `[1, 2, 3, 4, 5]`; executing this live PostgreSQL check remains a required final gate, separate from default xtask. |
 | D10 Recovery and replay | On `resume` and `recover`, an unfinished call takes one of two paths, decided from the stored record. **Fixed settlement:** a call found `Running`, and a `Pending` call that is not `retry_safe` on a run that is not `Paused`, is settled by `settle_interrupted_call` with status `Interrupted` and the fixed runtime text. No pre-stage, no transform, no final redactor runs, and nothing tool-authored is persisted. **Re-execution:** every other `Pending` call (`retry_safe`, or any `Pending` call of a `Paused` run) is re-claimed and run through `execute_tool`: executor, pre-stage and the full result chain, with the same durable call, session and run IDs and with class and input derived from the stored record only, never from in-memory substitutes. `ToolPrepare` is not rerun. | overridden: the default text said "transforms never run during recovery", which does not match the code. `resume_loaded` re-executes `Pending` calls through `execute_tool` and its whole chain (`orchestrator.rs:984-1024`). The decision is restated as the split above; the fixed path is unchanged. | [`public_entrypoints_apply_the_full_d10_state_matrix`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L361); [`replay_class_and_input_come_only_from_the_record`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L420); [`old_contract_fingerprint_is_refused_without_mutation`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L522). Fixed settlements assert no executor/pre-stage/chain; replay asserts stored IDs/input, both phases and no repeated preparation. [Caller-cancellation exclusion](#coverage-exclusions-and-pending-work). |
-| D11 Human gates | Slices that publish (merge to `main`, tag or release), reply on `bn request crabber-r-u7l3`, or record acceptance are labeled `human-gate` and are not executed by agents without explicit user approval. Agents may prepare drafts only: release notes and the response file under `$HOME/.agents/projects/crabber/responses/`. The external consumer probe is a standalone crate outside the workspace that depends on the published git revision, needs no credentials, and passes when `cargo test` exercises D3/D4 context binding and a reducer then final-redactor chain. | confirmed | Workflow exclusion: approval, publication and request acceptance are human actions, documented in [Human gates](#human-gates). Standalone provisional-pin coverage: [`exact_normalized_binding_reducer_then_final_redactor_protects_next_request` and `prepare_failure_reports_unavailable_input_and_cannot_downgrade_error`](../testdata/result-transform-probe/tests/public_contract.rs). [Probe instructions](../testdata/result-transform-probe/README.md) describe pre-publication clean-clone `cargo test`; final pin and post-publication verification remain owned by `crabber-8sxd` ([Recorded answer 6](#recorded-answers)). The workspace external-consumer check is separate. |
+| D11 Human gates | Slices that publish (merge to `main`, tag or release), reply on `bn request crabber-r-u7l3`, or record acceptance are labeled `human-gate` and are not executed by agents without explicit user approval. Agents may prepare drafts only: release notes and the response file under `$HOME/.agents/projects/crabber/responses/`. The external consumer probe is a standalone crate outside the workspace that depends on the published git revision, needs no credentials, and passes when `cargo test` exercises D3/D4 context binding and a reducer then final-redactor chain. | confirmed | Workflow exclusion: approval, publication and request acceptance are human actions, documented in [Human gates](#human-gates). Standalone probe coverage: [`exact_normalized_binding_reducer_then_final_redactor_protects_next_request` and `prepare_failure_reports_unavailable_input_and_cannot_downgrade_error`](../testdata/result-transform-probe/tests/public_contract.rs); [`execution_error_keeps_class_and_normalized_input`, `permission_denial_keeps_class_and_never_executes`, `unknown_tool_reports_unresolved_name_and_raw_input`, `parallel_calls_keep_their_own_tool_input_and_ids_under_reverse_completion` and `tampered_envelope_fails_closed_with_fixed_text`](../testdata/result-transform-probe/tests/paths_binding_tamper.rs); [`run_interrupt_with_active_child_settles_interrupted_fixed_text` and `run_interrupt_after_accepted_fallback_persists_only_final_redaction`, with `postgres_` variants](../testdata/result-transform-probe/tests/interruption.rs). The probe manifest holds the pin: the last content commit before the commit that changes only the probe's `rev` and lockfile ([Recorded answer 6](#recorded-answers), [Human gates](#human-gates)). The workspace external-consumer check is separate. |
 
 ### Request acceptance coverage
 
@@ -211,8 +211,18 @@ writes readiness on its pipe. They inspect durable and live interrupted
 settlement, then hold cleanup before `wait()` to prove the permit remains
 held through reaping. They check the PID is gone (Linux), pipe EOF and restored
 permit after close joins cleanup. Both MemoryStore and PostgreSQL use the same
-assertions. PostgreSQL tests can skip without configuration; a live verification
+assertions. These in-repository PostgreSQL tests can skip without configuration; a live verification
 must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
+
+The [standalone probe](../testdata/result-transform-probe/README.md) repeats
+the consumer-visible part of this coverage through the public facade only, as
+an external crate pinned to a published revision. It covers all five outcome
+paths, three parallel calls released in reverse order, every tampered context
+field and an extra envelope key, reducer then final-redactor protection, and a
+live `RunHandle` interruption with an active child on MemoryStore and, with its
+`postgres` feature, on PostgreSQL. Guard, restriction and approval denials,
+recovery, fingerprint refusal and the mount-close timeout stay proven by the
+tests in this repository.
 
 ### Coverage exclusions and pending work
 
@@ -235,14 +245,12 @@ must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
 - The D7 bound covers lease/tracker draining. Rollback and extension shutdown
   remain unbounded; `crabber-tyr5` owns that follow-up (Recorded answer 3 and
   Cleanup and close).
-- D11 publication, immutable pin, post-publication clean-clone probe verification
-  (`crabber-8sxd`), request reply
-  and acceptance are human-gated. The [standalone probe](../testdata/result-transform-probe/README.md)
-  covers normalized binding, preparation-failure input availability, monotonic
-  error status and reducer/final-redactor protection with a provisional pin.
-  Its pre-publication clean-clone command is `cargo test` in the probe directory;
-  final-pin reset and post-publication verification remain pending under
-  `crabber-8sxd`. Green local workspace checks alone do not meet those delivery gates.
+- D11 merge to `main`, request reply and acceptance are human-gated. The
+  [standalone probe](../testdata/result-transform-probe/README.md) is not run
+  by `cargo xtask check` or by CI: it fetches a published revision of this
+  private repository. Its evidence is a recorded clean-clone `cargo test` run
+  at the merge commit that published its pin. Green workspace checks alone do
+  not meet that delivery gate.
 
 ### Public API
 
@@ -1077,6 +1085,9 @@ permission decisions, identities, lease checks or store fences. A handler can
 change only `result`, plus request escalation with `mark_error`. The class
 never changes; effective `is_error` is the class's error bit OR every earlier
 `mark_error`, including the pre-stage. Returning false cannot clear an error.
+A handler receives the typed context, or for JSON and WASM handlers the
+[JSON envelope](#json-envelope), and nothing else: Crabber offers no Eino-style
+attachment channel and no second, unvalidated raw-JSON form of the envelope.
 
 `ToolPipeline::transform_result` is a host-owned pre-stage for executed success
 only. It runs inside the execution cancellation select, with the child token
@@ -1274,18 +1285,22 @@ policy decision, not a way to resume a new-contract frozen run.
 D11 requires explicit user approval to merge to `main`, tag/release, reply on
 `bn request crabber-r-u7l3` or record acceptance. Agents may prepare release
 notes and response drafts only. A green local check does not perform those
-gates. The standalone [`testdata/result-transform-probe/`](../testdata/result-transform-probe/README.md)
-uses the provisional full Git revision `fb179621d61f57c60a420f674c632f8101179a87`
-from the feature branch. Fetching this private repository uses existing
+gates.
+
+The standalone [`testdata/result-transform-probe/`](../testdata/result-transform-probe/README.md)
+depends on this repository by Git revision. Its manifest holds the current
+pin; this document does not repeat the SHA. The pin is the last content commit
+before the commit that changes only the probe's `rev` and lockfile, and the
+pull request is merged with a merge commit so the pin stays reachable from
+`main` (Recorded answer 6). Run the probe at the merge commit that published
+the pin, not at the pinned commit itself, whose manifest carries the earlier
+`rev`; `cargo tree -i crabber` in the probe directory prints the revision
+actually tested. Fetching this private repository uses existing
 authorized Git access; probe execution needs no provider/runtime credentials
 or task-specific environment variables. Run plain `cargo test` in the probe
-directory, including in a clean clone of the committed candidate.
-`exact_normalized_binding_reducer_then_final_redactor_protects_next_request`
-checks exact tool/input binding, status escalation and protection in the next
-full provider request and durable results/messages/events;
-`prepare_failure_reports_unavailable_input_and_cannot_downgrade_error` checks
-the error class, unavailable input and preserved error status. It is separate
-from the path-based external consumer
-that `cargo xtask check` runs and is not part of that gate. Recorded answer 6
-binds its final pin, reachable merge revision and clean-clone publication
-verification; those publication and acceptance steps remain human-gated.
+directory for the MemoryStore proofs. `cargo test --features postgres` adds
+the durable interruption proofs: it uses `CRABBER_TEST_POSTGRES_URL` when set
+and otherwise starts a disposable `postgres:14` container, so it needs Docker
+or a database and never skips. The probe is separate from the path-based
+external consumer that `cargo xtask check` runs, and neither that gate nor CI
+runs it. Publication and acceptance steps remain human-gated.
