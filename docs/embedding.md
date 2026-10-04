@@ -41,69 +41,6 @@ to. The values are **routing data, never authorization**: use them to pick a
 root or an owner record, and keep trust decisions, process policy and
 credentials in the host.
 
-### Request acceptance coverage
-
-These links identify assertions read during the coverage audit, not just test
-names. The concurrency test parks three same/different-tool invocations and
-releases callbacks in reverse order, then compares every context with its
-durable call/session/run records. The tamper tests alter every context field,
-assert fixed failure and skipped later handlers, and check store fences.
-
-| Outcome | Classification and honest input | Reducer then final redactor before persistence |
-| --- | --- | --- |
-| Success | [`success_uses_post_tool_prepare_input_without_preparing_again`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L170) | [`success_runs_pre_stage_then_reducer_then_final_redactor`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L246) |
-| Execution error | [`execution_failure_cannot_be_cleared_by_unchanged_result`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L230) | [`execution_failure_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L251) |
-| Permission denial | [`guard_denial_keeps_normalized_input_and_never_executes`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L266) | [`permission_denial_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L256) |
-| Unknown tool | [`unknown_tool_keeps_raw_provider_values_including_unparseable_text`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L330) | [`unknown_tool_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L261) |
-| Preparation failure | [`tool_prepare_handler_failure_has_unavailable_input_without_reconstruction`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L423) | [`preparation_failure_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L266) |
-
-The composition tests vary mount order and handler order, assert the final
-phase follows the reducer, and inspect the full durable result, message,
-settlement event and next provider request for protected content and absence
-of the secret. Their shared `assert_protected` performs those checks.
-Permission-policy, restriction and approval-denial variants, plus schema and
-pipeline preparation failures, are also asserted in `paths.rs`.
-
-The D8 facade tests interrupt a live `RunHandle` only after the source child
-writes readiness on its pipe. They inspect durable and live interrupted
-settlement, then hold cleanup before `wait()` to prove the permit remains
-held through reaping. They check the PID is gone (Linux), pipe EOF and restored
-permit after close joins cleanup. Both MemoryStore and PostgreSQL use the same
-assertions. PostgreSQL tests can skip without configuration; a live verification
-must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
-
-### Coverage exclusions and pending work
-
-- D5 cancellation-arm polling order and the internal between-handler precheck
-  have no deterministic pinning test: the coordinator's `crabber-exbv` note
-  requires an exclusion because a driver hook is needed. The post-select
-  recheck preserves legal outcomes. `cross_thread_cancellation_leaves_only_legal_outcomes`
-  checks permitted interleavings, and `accepted_predecessor_at_next_ordinary_entry_is_discarded`
-  parks the next handler body after predecessor acceptance; neither proves
-  the internal polling/precheck order.
-- `resume`/`recover` have no caller-visible cancellation source. Lease loss
-  drops work without settlement; the live-run interruption bound excludes
-  these paths (Recorded answers, Resume and recover cancellation).
-- WASM is ordinary only, so it cannot supply final protection. Epoch
-  interruption covers active guest execution; module-lock and host-import
-  waits are released by dropping the driver future, not by epoch safepoints.
-  `dropped_driver_releases_call_waiting_on_serial_mutex` and
-  `dropped_driver_releases_guest_blocked_in_host_import` in
-  [WASM tests](../crates/crabber-wasm/src/lib.rs) assert that release.
-- The D7 bound covers lease/tracker draining. Rollback and extension shutdown
-  remain unbounded; `crabber-tyr5` owns that follow-up (Recorded answer 3 and
-  Cleanup and close).
-- Generic `transform`/`transform_pinned` rejection is intentionally deferred
-  to `crabber-8q7h`, after caller migration, by the explicit Public API and
-  registration contract override. Existing generic-waterfall tests are not
-  evidence of final rejection; this audit does not implement that slice.
-- D11 publication, immutable pin, post-publication clean-clone probe verification
-  (`crabber-8sxd`), request reply
-  and acceptance are human-gated. The standalone probe remains pending under
-  `crabber-mlgw`/`crabber-8sxd`; `crabber-mlgw` still requires a pre-publication
-  clean-clone build/test of its provisional pin; no current standalone probe is claimed by this
-  audit. Green local workspace checks alone do not meet those delivery gates.
-
 ### Public API
 
 | Surface | API |
@@ -239,6 +176,69 @@ flag.
 | D9 ABI, schema and fingerprint | Clean break, no shims. The point ID stays `crabber/tool/result-transform`. `RESULT_TRANSFORM_CONTRACT_VERSION` enters `compute_fingerprint`, so every plan frozen under the old contract fails the strict check (`RuntimeError::PlanChanged`) instead of resuming. WASM guests get the new envelope through `crates/crabber-wasm/src/adapters.rs` with no WIT change; only guest fixture sources change and generated `fixtures/wasm/` binaries stay uncommitted. There is no durable schema change; one record-content change is recorded (unknown-tool arguments, Recorded answer 1). | confirmed | [`contract_component_participates_in_fingerprint`](../crates/crabber-extension/src/plan.rs#L320); [`fingerprint_of_fixed_components_is_pinned`](../crates/crabber-extension/src/plan.rs#L283); [`old_contract_fingerprint_is_refused_without_mutation`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L522); [`wasm_after_tool_guest_receives_exact_context_and_arguments`](../crates/crabber-wasm/src/lib.rs#L1860); [`wasm_after_tool_invalid_replies_are_sanitized_d2_failures`](../crates/crabber-wasm/src/lib.rs#L1973). [Generic-dispatch migration pending `crabber-8q7h`](#coverage-exclusions-and-pending-work); unchanged WIT is checked by `cargo xtask check`. Schema 5 is asserted by [`forward_migration_preserves_v1_and_connect_is_read_only`](../crates/crabber-session/src/postgres/admission_tests/migrations.rs#L6), whose shared migration helper queries and asserts versions `[1, 2, 3, 4, 5]`; executing this live PostgreSQL check remains a required final gate, separate from default xtask. |
 | D10 Recovery and replay | On `resume` and `recover`, an unfinished call takes one of two paths, decided from the stored record. **Fixed settlement:** a call found `Running`, and a `Pending` call that is not `retry_safe` on a run that is not `Paused`, is settled by `settle_interrupted_call` with status `Interrupted` and the fixed runtime text. No pre-stage, no transform, no final redactor runs, and nothing tool-authored is persisted. **Re-execution:** every other `Pending` call (`retry_safe`, or any `Pending` call of a `Paused` run) is re-claimed and run through `execute_tool`: executor, pre-stage and the full result chain, with the same durable call, session and run IDs and with class and input derived from the stored record only, never from in-memory substitutes. `ToolPrepare` is not rerun. | overridden: the default text said "transforms never run during recovery", which does not match the code. `resume_loaded` re-executes `Pending` calls through `execute_tool` and its whole chain (`orchestrator.rs:984-1024`). The decision is restated as the split above; the fixed path is unchanged. | [`public_entrypoints_apply_the_full_d10_state_matrix`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L361); [`replay_class_and_input_come_only_from_the_record`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L420); [`old_contract_fingerprint_is_refused_without_mutation`](../crates/crabber-runtime/src/result_transform_tests/recovery.rs#L522). Fixed settlements assert no executor/pre-stage/chain; replay asserts stored IDs/input, both phases and no repeated preparation. [Caller-cancellation exclusion](#coverage-exclusions-and-pending-work). |
 | D11 Human gates | Slices that publish (merge to `main`, tag or release), reply on `bn request crabber-r-u7l3`, or record acceptance are labeled `human-gate` and are not executed by agents without explicit user approval. Agents may prepare drafts only: release notes and the response file under `$HOME/.agents/projects/crabber/responses/`. The external consumer probe is a standalone crate outside the workspace that depends on the published git revision, needs no credentials, and passes when `cargo test` exercises D3/D4 context binding and a reducer then final-redactor chain. | confirmed | Workflow exclusion: approval, publication and request acceptance are human actions, documented in [Human gates](#human-gates). Standalone published-revision probe and clean-clone verification remain pending, owned by `crabber-mlgw`/`crabber-8sxd` ([Recorded answer 6](#recorded-answers)); the workspace external-consumer check is not that probe. |
+
+### Request acceptance coverage
+
+These links identify assertions read during the coverage audit, not just test
+names. The concurrency test parks three same/different-tool invocations and
+releases callbacks in reverse order, then compares every context with its
+durable call/session/run records. The tamper tests alter every context field,
+assert fixed failure and skipped later handlers, and check store fences.
+
+| Outcome | Classification and honest input | Reducer then final redactor before persistence |
+| --- | --- | --- |
+| Success | [`success_uses_post_tool_prepare_input_without_preparing_again`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L170) | [`success_runs_pre_stage_then_reducer_then_final_redactor`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L246) |
+| Execution error | [`execution_failure_cannot_be_cleared_by_unchanged_result`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L230) | [`execution_failure_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L251) |
+| Permission denial | [`guard_denial_keeps_normalized_input_and_never_executes`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L266) | [`permission_denial_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L256) |
+| Unknown tool | [`unknown_tool_keeps_raw_provider_values_including_unparseable_text`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L330) | [`unknown_tool_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L261) |
+| Preparation failure | [`tool_prepare_handler_failure_has_unavailable_input_without_reconstruction`](../crates/crabber-runtime/src/result_transform_tests/paths.rs#L423) | [`preparation_failure_runs_reducer_then_final_redactor_without_pre_stage`](../crates/crabber-runtime/src/result_transform_tests/compose.rs#L266) |
+
+The composition tests vary mount order and handler order, assert the final
+phase follows the reducer, and inspect the full durable result, message,
+settlement event and next provider request for protected content and absence
+of the secret. Their shared `assert_protected` performs those checks.
+Permission-policy, restriction and approval-denial variants, plus schema and
+pipeline preparation failures, are also asserted in `paths.rs`.
+
+The D8 facade tests interrupt a live `RunHandle` only after the source child
+writes readiness on its pipe. They inspect durable and live interrupted
+settlement, then hold cleanup before `wait()` to prove the permit remains
+held through reaping. They check the PID is gone (Linux), pipe EOF and restored
+permit after close joins cleanup. Both MemoryStore and PostgreSQL use the same
+assertions. PostgreSQL tests can skip without configuration; a live verification
+must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
+
+### Coverage exclusions and pending work
+
+- D5 cancellation-arm polling order and the internal between-handler precheck
+  have no deterministic pinning test: the coordinator's `crabber-exbv` note
+  requires an exclusion because a driver hook is needed. The post-select
+  recheck preserves legal outcomes. `cross_thread_cancellation_leaves_only_legal_outcomes`
+  checks permitted interleavings, and `accepted_predecessor_at_next_ordinary_entry_is_discarded`
+  parks the next handler body after predecessor acceptance; neither proves
+  the internal polling/precheck order.
+- `resume`/`recover` have no caller-visible cancellation source. Lease loss
+  drops work without settlement; the live-run interruption bound excludes
+  these paths (Recorded answers, Resume and recover cancellation).
+- WASM is ordinary only, so it cannot supply final protection. Epoch
+  interruption covers active guest execution; module-lock and host-import
+  waits are released by dropping the driver future, not by epoch safepoints.
+  `dropped_driver_releases_call_waiting_on_serial_mutex` and
+  `dropped_driver_releases_guest_blocked_in_host_import` in
+  [WASM tests](../crates/crabber-wasm/src/lib.rs) assert that release.
+- The D7 bound covers lease/tracker draining. Rollback and extension shutdown
+  remain unbounded; `crabber-tyr5` owns that follow-up (Recorded answer 3 and
+  Cleanup and close).
+- Generic `transform`/`transform_pinned` rejection is intentionally deferred
+  to `crabber-8q7h`, after caller migration, by the explicit Public API and
+  registration contract override. Existing generic-waterfall tests are not
+  evidence of final rejection; this audit does not implement that slice.
+- D11 publication, immutable pin, post-publication clean-clone probe verification
+  (`crabber-8sxd`), request reply
+  and acceptance are human-gated. The standalone probe remains pending under
+  `crabber-mlgw`/`crabber-8sxd`; `crabber-mlgw` still requires a pre-publication
+  clean-clone build/test of its provisional pin; no current standalone probe is claimed by this
+  audit. Green local workspace checks alone do not meet those delivery gates.
 
 ### Public API
 
