@@ -12,7 +12,7 @@ capabilities your host uses.
 | Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
 | Fenced abandonment | [host protocol](fenced-abandon.md) | `cargo run -p fenced-abandon`; memory default, manual PostgreSQL mode |
 | Native extensions | [native guide](../examples/native-extension/README.md) | `cargo run -p native-extension` |
-| Workspace context for native extensions | [contract](#workspace-context), [external-consumer probe](../examples/workspace-context-probe/README.md) | `cargo test -p workspace-context-probe` |
+| Workspace context for native extensions | [contract](#workspace-context), [in-workspace probe](../examples/workspace-context-probe/README.md), [standalone pinned probe](../testdata/workspace-context-probe/README.md) | `cargo test -p workspace-context-probe`; `cargo test` in `testdata/workspace-context-probe/` |
 | WASM extensions | [WASM guide](../examples/wasm-extension/README.md) | `cargo xtask build-fixtures`, then `cargo run -p wasm-extension`; facade `wasm` |
 | Codex browser login | [login guide](../examples/codex-login/README.md) | `cargo run -p codex-login -- status`; manual local credential access |
 | LLM observability | [Datadog guide](../examples/datadog-export/README.md) | `env -u DD_API_KEY cargo run -p datadog-export`; facade `datadog` |
@@ -75,7 +75,8 @@ are only compared with the session.
 - **Invalid.** A stored session that cannot be decoded, or compared values
   that differ, fail closed with a typed error before any executor or
   `ContextAssemble` handler runs. A difference is
-  `StoreError::SessionIdentityMismatch`.
+  `RuntimeError::Store(crabber::core::CoreError::SessionIdentityMismatch)`
+  through the public facade (`StoreError` aliases `CoreError`).
 - **Comparison.** Exact string equality, per field. There is no lexical
   normalization, no symlink or filesystem resolution and no check that the
   directory exists; `/srv/a` and `/srv/a/` differ. An empty string is a value
@@ -144,6 +145,12 @@ session now rejects a different workspace ID or directory, as keyed admission
 already did. A host that reuses a session must present the identity it was
 created with. Sessions created with an empty workspace ID or directory keep
 working and expose the unavailable value.
+
+Verify consumer adoption with the [standalone pinned workspace-context probe](../testdata/workspace-context-probe/README.md).
+It compiles against a published Git revision using the public facade only;
+run it from `origin/main` at or after the probe's merge commit. The
+[in-workspace probe](../examples/workspace-context-probe/README.md) guards the
+current source in CI.
 
 ## Tool result transform context
 

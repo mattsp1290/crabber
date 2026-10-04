@@ -24,6 +24,10 @@ The in-memory tests in [tests/memory.rs](tests/memory.rs) prove that:
   explicit unavailable value (`None`), even when the resuming host has other
   defaults and the model's tool arguments name another workspace.
 
+- permission denial and a reclaimed stale fence never enter a tool executor;
+- a running tool receives an uncancelled token at entry and its own observer
+  sees cancellation after the run is interrupted.
+
 The fresh-process tests in [tests/postgres.rs](tests/postgres.rs) need a durable
 store. Set `CRABBER_TEST_POSTGRES_URL` to a disposable PostgreSQL 14+ database:
 
@@ -39,3 +43,9 @@ is a failure.
 
 WASM guests do not receive workspace context. See
 [the embedding guide](../../docs/embedding.md#workspace-context).
+
+The [standalone pinned probe](../../testdata/workspace-context-probe/README.md)
+verifies a published revision for consumers; this workspace member guards the
+current source in CI. Their Rust sources are duplicated deliberately and differ
+only in the imported probe crate name. The standalone copy must use only APIs
+available at its pin; update both copies when changing the shared proofs.

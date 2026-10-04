@@ -20,7 +20,7 @@ use tokio::{
     sync::{Notify, oneshot},
     time::timeout,
 };
-use workspace_context_probe::{
+use workspace_context_pinned_probe::{
     CANCEL_TOOL, Identity, Observations, ProbeExtension, ROOT_TOOL, TOOL, config, host,
     host_with_policy, identity, named_tool_call, text, tool_call,
 };

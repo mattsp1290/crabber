@@ -14,7 +14,7 @@ use std::{
     process::Command,
     sync::Arc,
 };
-use workspace_context_probe::{Identity, Observations, config, host, identity, text, tool_call};
+use workspace_context_pinned_probe::{Identity, Observations, config, host, identity, text, tool_call};
 
 const CHILD: &str = "CRABBER_PROBE_CHILD";
 const HANDOFF: &str = "CRABBER_PROBE_HANDOFF";
