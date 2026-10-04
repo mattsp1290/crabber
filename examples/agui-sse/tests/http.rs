@@ -462,15 +462,13 @@ impl crabber::extension::Extension for HeldResult {
         &self,
         r: &mut crabber::extension::Registrar,
     ) -> Result<(), crabber::ExtensionError> {
-        use crabber::extension::Point;
         let entered = self.entered.clone();
         let count = self.count.clone();
         let release = self.release.clone();
-        r.on_transform(
-            crabber::extension::ToolResultTransform::ID,
+        r.on_result_transform(
             10,
             "hold",
-            Arc::new(move |value| {
+            Arc::new(move |_, value| {
                 let entered = entered.clone();
                 let count = count.clone();
                 let release = release.clone();
@@ -478,7 +476,7 @@ impl crabber::extension::Extension for HeldResult {
                     count.fetch_add(1, Ordering::SeqCst);
                     entered.notify_one();
                     release.notified().await;
-                    Ok(value)
+                    Ok(crabber::extension::TransformOutput::new(value))
                 })
             }),
         );
@@ -487,7 +485,7 @@ impl crabber::extension::Extension for HeldResult {
 }
 
 #[tokio::test]
-async fn disconnect_interrupts_noncooperative_result_transform() -> CheckResult {
+async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
     // The old unresolved-work characterization required result callbacks to ignore
     // cancellation. The result-chain driver now drops that future on disconnect.
     let entered = Arc::new(Notify::new());
@@ -498,6 +496,7 @@ async fn disconnect_interrupts_noncooperative_result_transform() -> CheckResult 
         entered: entered.clone(),
         release,
     });
+    let retained = store.clone();
     let server = Server::start(Host::new(Arc::new(move || {
         builder(
             store.clone(),
@@ -514,8 +513,42 @@ async fn disconnect_interrupts_noncooperative_result_transform() -> CheckResult 
         .await?;
     entered.notified().await;
     drop(response);
-    tokio::time::timeout(Duration::from_secs(2), idle(&server.host)).await?;
+    tokio::time::timeout(crabber::runtime::INTERRUPT_SETTLEMENT_BOUND, async {
+        while server.host.active.load(Ordering::SeqCst) != 0 {
+            assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     assert_eq!(server.host.unresolved.load(Ordering::SeqCst), 0);
+    server.host.shutdown().await?;
+    let crabber::session::SnapshotOutcome::Page(page) = retained
+        .snapshot(crabber::session::SnapshotRequest {
+            session_id: SessionId::from("held"),
+            continuation: None,
+            limits: crabber::session::SnapshotLimits {
+                messages: 100,
+                tool_calls: 100,
+                parts: 100,
+                text_bytes: 100_000,
+                encoded_bytes: 100_000,
+            },
+        })
+        .await?
+    else {
+        panic!("expected complete durable snapshot");
+    };
+    assert!(page.continuation.is_none());
+    assert!(!page.tool_calls.is_empty());
+    for call in page.tool_calls {
+        assert_eq!(call.status, crabber::core::ToolCallStatus::Interrupted);
+        assert_eq!(
+            call.result.unwrap().content,
+            vec![crabber::core::ContentBlock::Text {
+                text: "interrupted".into(),
+            }]
+        );
+    }
     server.stop().await?;
     Ok(())
 }

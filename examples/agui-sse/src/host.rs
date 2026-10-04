@@ -231,34 +231,38 @@ async fn serve_owned(
     let Ok(agent) = (host.factory)() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed");
     };
-    let admission = agent.prompt(Some(SessionId::from(input.thread_id.to_string())), text);
-    tokio::pin!(admission);
-    let result = tokio::select! {
-        result = &mut admission => result,
-        () = host.shutdown.cancelled() => {
-            respond(reply, error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"));
-            late_admission(host, admission.as_mut()).await
-        },
-        () = tokio::time::sleep_until(expires) => {
-            respond(reply, error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
-            late_admission(host, admission.as_mut()).await
-        },
-        () = reply.as_mut().expect("response pending").closed() => {
-            reply.take();
-            late_admission(host, admission.as_mut()).await
-        },
+    let result = {
+        let admission = agent.prompt(Some(SessionId::from(input.thread_id.to_string())), text);
+        tokio::pin!(admission);
+        tokio::select! {
+            result = &mut admission => result,
+            () = host.shutdown.cancelled() => {
+                respond(reply, error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"));
+                late_admission(host, admission.as_mut()).await
+            },
+            () = tokio::time::sleep_until(expires) => {
+                respond(reply, error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
+                late_admission(host, admission.as_mut()).await
+            },
+            () = reply.as_mut().expect("response pending").closed() => {
+                reply.take();
+                late_admission(host, admission.as_mut()).await
+            },
+        }
     };
     let handle = match result {
         Ok(handle) => handle,
         Err(RuntimeError::SessionBusy) => return error(StatusCode::CONFLICT, "thread_busy"),
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed"),
     };
-    admitted_response(host, input, handle, expires, reply, permit).await
+    admitted_response(host, input, agent, handle, expires, reply, permit).await
 }
 
+#[allow(clippy::too_many_arguments)] // Admission transfers agent and run ownership together.
 async fn admitted_response(
     host: &Host,
     input: RunAgentInput,
+    agent: Agent,
     handle: RunHandle,
     expires: tokio::time::Instant,
     reply: &mut Option<oneshot::Sender<Response>>,
@@ -309,6 +313,7 @@ async fn admitted_response(
     worker_host.deadline = expires.saturating_duration_since(tokio::time::Instant::now());
     host.tasks.spawn(worker(
         worker_host,
+        agent,
         handle,
         projector,
         sender,
@@ -351,7 +356,7 @@ impl Frame {
 
 struct Output {
     receiver: mpsc::Receiver<Frame>,
-    terminal: oneshot::Receiver<Vec<Frame>>,
+    terminal: oneshot::Receiver<Result<Vec<Frame>, ProjectionError>>,
     terminal_frames: std::vec::IntoIter<Frame>,
     disconnect: CancellationToken,
     data_closed: bool,
@@ -381,7 +386,7 @@ impl Stream for Output {
             return Poll::Ready(None);
         }
         match Pin::new(&mut self.terminal).poll(cx) {
-            Poll::Ready(Ok(frames)) => {
+            Poll::Ready(Ok(Ok(frames))) => {
                 self.terminal_closed = true;
                 self.terminal_frames = frames.into_iter();
                 Poll::Ready(
@@ -390,9 +395,11 @@ impl Stream for Output {
                         .map(|frame| Ok(frame.into_bytes().into())),
                 )
             }
-            Poll::Ready(Err(_)) => {
+            Poll::Ready(Ok(Err(_)) | Err(_)) => {
                 self.terminal_closed = true;
-                Poll::Ready(None)
+                Poll::Ready(Some(Err(std::io::Error::other(
+                    "terminal projection failed",
+                ))))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -436,10 +443,11 @@ fn enqueue(
 #[allow(clippy::too_many_arguments)] // The worker exclusively owns runtime and delivery lifecycle.
 async fn worker(
     host: Host,
+    agent: Agent,
     mut handle: RunHandle,
     mut projector: Projector,
     sender: mpsc::Sender<Frame>,
-    terminal: oneshot::Sender<Vec<Frame>>,
+    terminal: oneshot::Sender<Result<Vec<Frame>, ProjectionError>>,
     disconnect: CancellationToken,
     _capacity: OwnedSemaphorePermit,
 ) {
@@ -519,10 +527,10 @@ async fn worker(
     let final_frames = projector
         .finish(completion)
         .and_then(|batch| control_frames(&batch, host.config.max_event_bytes));
+    // Keep the event publisher alive until the run receiver and completion are drained.
+    drop(agent);
+    let _ = terminal.send(final_frames);
     drop(sender);
-    if let Ok(frames) = final_frames {
-        let _ = terminal.send(frames);
-    }
     if unresolved {
         host.unresolved.fetch_sub(1, Ordering::SeqCst);
     }
@@ -564,6 +572,106 @@ fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, Projecti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output() -> (
+        Output,
+        mpsc::Sender<Frame>,
+        oneshot::Sender<Result<Vec<Frame>, ProjectionError>>,
+    ) {
+        let (sender, receiver) = mpsc::channel(32);
+        let (terminal_sender, terminal) = oneshot::channel();
+        (
+            Output {
+                receiver,
+                terminal,
+                terminal_frames: Vec::new().into_iter(),
+                disconnect: CancellationToken::new(),
+                data_closed: false,
+                terminal_closed: false,
+            },
+            sender,
+            terminal_sender,
+        )
+    }
+
+    #[tokio::test]
+    async fn buffered_sse_is_drained_before_terminal_in_both_channel_orderings() {
+        use futures::StreamExt as _;
+        for terminal_first in [false, true] {
+            let (mut output, sender, terminal) = output();
+            let events: Vec<Event> = [
+                json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}),
+                json!({"type":"TEXT_MESSAGE_START", "messageId":"m", "role":"assistant"}),
+                json!({"type":"TEXT_MESSAGE_CONTENT", "messageId":"m", "delta":"buffered"}),
+                json!({"type":"TEXT_MESSAGE_END", "messageId":"m"}),
+            ]
+            .into_iter()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+            for frame in control_frames(&events, 1_048_576).unwrap() {
+                sender
+                    .try_send(frame)
+                    .unwrap_or_else(|_| panic!("data queue full"));
+            }
+            let finished = serde_json::from_value(json!({"type":"RUN_FINISHED", "threadId":"t", "runId":"r", "outcome":{"type":"success"}})).unwrap();
+            let final_frames = control_frames(&[finished], 1_048_576).unwrap();
+            let mut raw = Vec::new();
+            if terminal_first {
+                assert!(terminal.send(Ok(final_frames)).is_ok());
+                for _ in &events {
+                    raw.extend(output.next().await.unwrap().unwrap());
+                }
+                // A ready terminal cannot overtake an open data channel.
+                assert!(futures::poll!(output.next()).is_pending());
+                drop(sender);
+            } else {
+                drop(sender);
+                for _ in &events {
+                    raw.extend(output.next().await.unwrap().unwrap());
+                }
+                // Data EOF cannot terminate the stream before the terminal arrives.
+                assert!(futures::poll!(output.next()).is_pending());
+                assert!(terminal.send(Ok(final_frames)).is_ok());
+            }
+            raw.extend(output.next().await.unwrap().unwrap());
+            assert!(output.next().await.is_none());
+            let mut decoder = crate::check::Decoder::default();
+            decoder.push(&raw).unwrap();
+            let decoded = decoder.finish().unwrap();
+            assert_eq!(&decoded[..events.len()], events);
+            assert!(matches!(decoded.last(), Some(Event::RunFinished(_))));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_or_sender_loss_is_a_body_error_after_buffered_data() {
+        use futures::StreamExt as _;
+        for sender_lost in [false, true] {
+            let (mut output, sender, terminal) = output();
+            let event =
+                serde_json::from_value(json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}))
+                    .unwrap();
+            sender
+                .try_send(control_frames(&[event], 1_048_576).unwrap().remove(0))
+                .unwrap_or_else(|_| panic!("data queue full"));
+            if sender_lost {
+                drop(terminal);
+            } else {
+                // Even the bounded fallback cannot fit this invalid event limit.
+                let event = serde_json::from_value(
+                    json!({"type":"RUN_FINISHED", "threadId":"t", "runId":"r"}),
+                )
+                .unwrap();
+                let error = control_frames(&[event], 0);
+                assert!(error.is_err());
+                assert!(terminal.send(error).is_ok());
+            }
+            drop(sender);
+            assert!(output.next().await.unwrap().is_ok());
+            assert!(output.next().await.unwrap().is_err());
+            assert!(output.next().await.is_none());
+        }
+    }
 
     #[test]
     fn large_terminal_closures_use_bounded_control_error() {
