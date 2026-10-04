@@ -350,6 +350,11 @@ fn assert_error_path(
     let record = path.durable.call(&path.call);
     assert_eq!(record.name, tool);
     assert_eq!(record.run_id, path.run);
+    // A resolved call's record holds the normalized input the handlers saw.
+    // An unknown tool's record uses its own stored form for raw arguments.
+    if let ToolInput::Normalized(arguments) = input {
+        assert_eq!(&record.arguments, arguments);
+    }
     let result = record.result.as_ref().unwrap();
     // Pass-through handlers returned `mark_error: false`; the class still wins.
     assert_eq!(result.status, ToolResultStatus::Failed);

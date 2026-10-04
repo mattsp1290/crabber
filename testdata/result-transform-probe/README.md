@@ -11,7 +11,7 @@ access fetches the private source; `.cargo/config.toml` uses the Git CLI.
 From this directory, run exactly:
 
 ```sh
-cargo test
+cargo test --locked
 ```
 
 No task-specific environment variables are required. A complete run reports
@@ -69,7 +69,7 @@ the callbacks recorded and from durable state.
 For the durable PostgreSQL proofs of both interruption cases, run:
 
 ```sh
-cargo test --features postgres -- --nocapture
+cargo test --locked --features postgres -- --nocapture
 ```
 
 The `interruption` binary then reports 5 passed tests, and each PostgreSQL
@@ -77,14 +77,23 @@ test prints which database it used. With `CRABBER_TEST_POSTGRES_URL` set to a
 non-empty value, the tests use that disposable PostgreSQL 14+ database.
 Without it they start their own `postgres:14` container, which needs a
 reachable Docker daemon; the container is removed when the test ends or the
-run is interrupted. They never skip: with neither, they fail.
+run is interrupted with Ctrl-C (an interrupt during container start-up takes
+effect once the start completes). A killed run (`SIGKILL`) can leave a
+`postgres:14` container to remove by hand. They never skip: with neither a
+database nor Docker, they fail.
 
-The interruption proofs assert the runtime's own bounds: settlement within
-`INTERRUPT_SETTLEMENT_BOUND` (1 second) and accepted final redaction within
-`FINAL_REDACTION_DEADLINE` (500 milliseconds), measured from `interrupt()` to
-the run handle resolving. Use a database on the same host or network; a slow
-link to a remote database can exceed them. The process-gone check uses
+The interruption proofs time `interrupt()` to the run handle resolving, which
+happens after durable settlement, and print the measured time. They require
+it to stay within `INTERRUPT_SETTLEMENT_BOUND` (1 second), and within
+`FINAL_REDACTION_DEADLINE` (500 milliseconds) when a fallback was accepted.
+This shows a prompt bounded settlement; that the runtime enforces the
+redaction deadline against a slow redactor is proven by the tests in the
+repository, not here. Use a database on the same host or network; a slow link
+to a remote database can exceed the bounds. The process-gone check uses
 `/proc` and runs on Linux only.
+
+`--locked` makes a lockfile that disagrees with the manifest an error instead
+of a silent rewrite.
 
 This probe is excluded from `cargo xtask check` and from CI. Run it at the
 merge commit that published the pin, not at the pinned commit itself, whose
