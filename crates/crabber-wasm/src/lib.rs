@@ -1821,8 +1821,6 @@ mod tests {
         assert!(result.to_string().contains("[REDACTED]"));
     }
 
-    // D9 retires the old characterize_* expectations of empty arguments and
-    // result-only guest replies; these tests exercise the full envelope instead.
     async fn echo_middleware_plan() -> (
         crabber_extension::Registry,
         crabber_extension::MountHandle,

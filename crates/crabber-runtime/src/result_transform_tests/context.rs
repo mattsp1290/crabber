@@ -1,6 +1,6 @@
 //! The authoritative `ToolResultContext` `execute_tool` builds on every outcome path (crabber-zv2d).
 //!
-//! The chain still dispatches the old payload; these tests observe the context through the
+//! These tests observe the context through the
 //! `#[cfg(test)]` `context_observer` seam on the orchestrator, which the harness installs on
 //! every runtime it builds.
 

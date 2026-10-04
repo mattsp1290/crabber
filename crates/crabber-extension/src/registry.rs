@@ -1165,10 +1165,6 @@ mod tests {
             self.0.lock().unwrap().push("shutdown");
         }
     }
-    // Was `characterize_close_orders_lease_wait_cleanup_shutdown` (crabber-flx7).
-    // crabber-b4zy changed it: close now sends the close signal first and joins
-    // the cleanup tracker after the leases, under one bound, so the order is
-    // signal -> lease wait -> tracker join -> deferred cleanups -> shutdown.
     #[tokio::test]
     async fn close_orders_signal_leases_tracker_cleanup_shutdown() {
         let log = Arc::new(Mutex::new(Vec::new()));

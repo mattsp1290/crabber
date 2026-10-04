@@ -718,10 +718,6 @@ pub(super) fn record_text(record: &ToolCallRecord) -> String {
     tool_text(&record.result.as_ref().expect("settled result").content)
 }
 
-// The old characterize_* tests required a result/is_error-only payload and are
-// retired by crabber-orgu (D9). Their outcome and persistence coverage below now
-// checks the authoritative envelope; context.rs covers durable input and IDs.
-
 /// Assert one settled call end to end: record, tool message, event and next provider request
 /// all agree, and the settled content is the JSON-encoded `text`.
 async fn assert_settled(

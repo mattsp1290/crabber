@@ -139,6 +139,7 @@ impl Dispatcher {
         Ok(())
     }
     /// Transform callbacks form an ordered waterfall.
+    /// `ToolResultTransform` requires `transform_tool_result` and is rejected.
     pub async fn transform<P: Point>(&self, value: Value) -> Result<Value, ExtensionError> {
         self.waterfall(P::ID, value, |_| Ok(())).await
     }
@@ -150,6 +151,9 @@ impl Dispatcher {
         mut value: Value,
         after: impl Fn(&mut Value) -> Result<(), ExtensionError>,
     ) -> Result<Value, ExtensionError> {
+        if point == ToolResultTransform::ID {
+            return Err(ExtensionError::Rejected(ToolResultTransform::ID));
+        }
         after(&mut value)?;
         for handler in self.matching(point, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
@@ -163,6 +167,7 @@ impl Dispatcher {
     /// by the caller: they are re-asserted after every handler, so no handler
     /// can change, add or remove them for a later handler or for the caller.
     /// A value that is not an object, initially or from a handler, is rejected.
+    /// `ToolResultTransform` requires `transform_tool_result` and is rejected.
     pub async fn transform_pinned<P: Point>(
         &self,
         value: Value,
@@ -644,9 +649,8 @@ mod tests {
             Err(ExtensionError::Rejected(RunBeforeExecute::ID))
         );
     }
-    // Expected to change with crabber-gl4i / crabber-f7iv (typed result-transform chain, D5/D6 phases).
     #[tokio::test]
-    async fn characterize_result_transform_order_across_two_mounts() {
+    async fn generic_transform_order_across_two_mounts() {
         // (tag, order, scope_rank, mount_seq, registration_seq, mount_id), deliberately shuffled.
         let specs: [(&str, i32, u8, u64, usize, u64); 6] = [
             ("last", 5, 0, 1, 2, 1),
@@ -661,7 +665,7 @@ mod tests {
             .map(
                 |(tag, order, scope_rank, mount_seq, registration_seq, mount_id)| {
                     let mut h = handler(
-                        ToolResultTransform::ID,
+                        ToolPrepare::ID,
                         Mode::Transform,
                         order,
                         tag,
@@ -678,10 +682,69 @@ mod tests {
             )
             .collect();
         let out = Dispatcher::new(handlers)
-            .transform::<ToolResultTransform>(Value::Null)
+            .transform::<ToolPrepare>(Value::Null)
             .await
             .unwrap();
         assert_eq!(out, "first;r0m1s0;r0m1s1;r0m2s0;r1m1s0;last;");
+    }
+    fn result_transform_callbacks(calls: &Arc<AtomicUsize>) -> Vec<Handler> {
+        let json_calls = Arc::clone(calls);
+        let typed_calls = Arc::clone(calls);
+        vec![
+            handler(
+                ToolResultTransform::ID,
+                Mode::Transform,
+                0,
+                "json",
+                HandlerFn::Ordinary(callback(move |v| {
+                    json_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(v)
+                })),
+            ),
+            handler(
+                ToolResultTransform::ID,
+                Mode::Transform,
+                1,
+                "typed",
+                HandlerFn::ResultTransform(Arc::new(move |_, result| {
+                    typed_calls.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(std::future::ready(Ok(crate::TransformOutput::new(result))))
+                })),
+            ),
+        ]
+    }
+    #[tokio::test]
+    async fn generic_transform_rejects_tool_result_without_invoking_callbacks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        for handlers in [Vec::new(), result_transform_callbacks(&calls)] {
+            let dispatcher = Dispatcher::new(handlers);
+            for value in [Value::Null, serde_json::json!({"result": "seed"})] {
+                assert_eq!(
+                    dispatcher.transform::<ToolResultTransform>(value).await,
+                    Err(ExtensionError::Rejected(ToolResultTransform::ID))
+                );
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn generic_pinned_transform_rejects_tool_result_without_invoking_callbacks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        for handlers in [Vec::new(), result_transform_callbacks(&calls)] {
+            let dispatcher = Dispatcher::new(handlers);
+            for value in [Value::Null, serde_json::json!({"result": "seed"})] {
+                assert_eq!(
+                    dispatcher
+                        .transform_pinned::<ToolResultTransform>(
+                            value,
+                            &[("result", serde_json::json!("pinned"))],
+                        )
+                        .await,
+                    Err(ExtensionError::Rejected(ToolResultTransform::ID))
+                );
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
     fn typed_handler(order: i32, id: &str, phase: TransformPhase) -> Handler {
         let mut h = handler(
@@ -743,37 +806,35 @@ mod tests {
     }
     #[tokio::test]
     async fn generic_waterfall_skips_typed_result_transform_handlers() {
+        let mut typed = typed_handler(0, "typed", TransformPhase::Ordinary);
+        typed.point = ToolPrepare::ID;
         let d = Dispatcher::new(vec![
-            typed_handler(0, "typed", TransformPhase::Ordinary),
+            typed,
             handler(
-                ToolResultTransform::ID,
+                ToolPrepare::ID,
                 Mode::Transform,
                 1,
                 "json",
                 HandlerFn::Ordinary(callback(|_| Ok(Value::String("json".into())))),
             ),
         ]);
-        let out = d
-            .transform::<ToolResultTransform>(Value::Null)
-            .await
-            .unwrap();
+        let out = d.transform::<ToolPrepare>(Value::Null).await.unwrap();
         assert_eq!(out, "json");
     }
-    // Expected to change with crabber-gl4i (D2: handler error settles Failed naming the handler id).
     #[tokio::test]
-    async fn characterize_result_transform_error_aborts_waterfall() {
+    async fn generic_transform_error_aborts_waterfall() {
         let later = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&later);
         let d = Dispatcher::new(vec![
             handler(
-                ToolResultTransform::ID,
+                ToolPrepare::ID,
                 Mode::Transform,
                 0,
                 "fails",
                 HandlerFn::Ordinary(callback(|_| Err(ExtensionError::Plan("boom".into())))),
             ),
             handler(
-                ToolResultTransform::ID,
+                ToolPrepare::ID,
                 Mode::Transform,
                 1,
                 "skipped",
@@ -784,7 +845,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            d.transform::<ToolResultTransform>(Value::Null).await,
+            d.transform::<ToolPrepare>(Value::Null).await,
             Err(ExtensionError::Plan("boom".into()))
         );
         assert_eq!(later.load(Ordering::SeqCst), 0);
