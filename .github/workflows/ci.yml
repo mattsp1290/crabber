@@ -49,6 +49,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: PostgreSQL contracts, concurrency, migration and process durability
         run: cargo test -p crabber-session --features postgres
+      - name: Public result-transform interruption and protected durable settlement
+        run: cargo test -p crabber --features postgres --test result_transform_interrupt -- --nocapture
       - name: Public facade response-loss and fresh-process reconciliation
         run: cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
       - name: Noninteractive PostgreSQL admission demo

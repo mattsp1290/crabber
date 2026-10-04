@@ -2,7 +2,10 @@ mod result_transform_support;
 
 use crabber::{
     ExtensionError, Observer, RuntimeError,
-    core::{ContentBlock, EventRecord, RunStatus, SessionId, ToolCallStatus, ToolResultStatus},
+    core::{
+        ContentBlock, EventKind, EventRecord, RunStatus, SessionId, ToolCallStatus,
+        ToolResultStatus,
+    },
     extension::{FINAL_REDACTION_DEADLINE, MountCloseTimeout},
     runtime::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT},
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
@@ -17,7 +20,7 @@ use tokio::time::{Instant, timeout};
 const FIXTURE_BOUND: Duration = Duration::from_secs(10);
 
 async fn assert_settlement(
-    store: &MemoryStore,
+    store: &dyn Store,
     session: &SessionId,
     run: &crabber::core::RunId,
     probes: &Probes,
@@ -83,6 +86,18 @@ async fn assert_settlement(
     assert!(*tool_results[0].2);
     let events = store.list_events(session, None, 1000).await.unwrap();
     assert!(events.len() < 1000);
+    let settled: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == EventKind::ToolCallSettled)
+        .collect();
+    assert_eq!(settled.len(), 1);
+    let payload = &settled[0].payload;
+    assert_eq!(payload["call_id"], serde_json::json!(call.id));
+    assert_eq!(payload["content"], serde_json::json!(result.content));
+    assert_eq!(payload["is_error"], true);
+    assert_eq!(payload["status"], "interrupted");
+    assert!(!settled[0].live_only);
+    assert!(settled[0].cursor.is_some());
     let requests = probes.provider.requests();
     assert_eq!(requests.len(), 1);
     for persisted in [
@@ -119,10 +134,9 @@ async fn assert_drained(probes: &Probes, pid: u32) {
     println!("fixture PID {pid} reaped; pipes closed; permit restored");
 }
 
-async fn interrupt_active_child(accepted: bool) {
+async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
     timeout(FIXTURE_BOUND, async {
         let probes = Probes::new(true);
-        let store = Arc::new(MemoryStore::new());
         let agent = agent_builder(store.clone(), probes.clone(), accepted)
             .build()
             .unwrap();
@@ -138,7 +152,7 @@ async fn interrupt_active_child(accepted: bool) {
         timeout(INTERRUPT_SETTLEMENT_BOUND, async {
             assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
             assert_settlement(
-                &store,
+                store.as_ref(),
                 &session,
                 &run_id,
                 &probes,
@@ -157,9 +171,29 @@ async fn interrupt_active_child(accepted: bool) {
         if accepted {
             assert!(interrupted.elapsed() <= FINAL_REDACTION_DEADLINE);
         }
+        let mut live_settlements = 0;
         while let Some(event) = events.recv().await.unwrap() {
-            assert!(!serde_json::to_string(&event).unwrap().contains(RAW_OUTPUT));
+            let serialized = serde_json::to_string(&event).unwrap();
+            assert!(!serialized.contains(RAW_OUTPUT));
+            if !accepted {
+                assert!(!serialized.contains(REDACTED_OUTPUT));
+            }
+            if event.kind == EventKind::ToolCallSettled {
+                live_settlements += 1;
+                assert_eq!(event.payload["is_error"], true);
+                assert_eq!(event.payload["status"], "interrupted");
+                let text = if accepted {
+                    serde_json::to_string(REDACTED_OUTPUT).unwrap()
+                } else {
+                    INTERRUPTED_RESULT_TEXT.into()
+                };
+                assert_eq!(
+                    event.payload["content"],
+                    serde_json::json!([ContentBlock::Text { text }])
+                );
+            }
         }
+        assert_eq!(live_settlements, 1);
         probes.callback_dropped.wait().await;
         probes.kill_started.wait().await;
         // Cleanup outlives the dropped callback and cannot release before wait().
@@ -176,12 +210,44 @@ async fn interrupt_active_child(accepted: bool) {
 
 #[tokio::test]
 async fn run_interrupt_drops_reducer_and_settles_fixed_text() {
-    interrupt_active_child(false).await;
+    interrupt_active_child(Arc::new(MemoryStore::new()), false).await;
 }
 
 #[tokio::test]
 async fn run_interrupt_persists_only_accepted_final_redaction() {
-    interrupt_active_child(true).await;
+    interrupt_active_child(Arc::new(MemoryStore::new()), true).await;
+}
+
+#[cfg(feature = "postgres")]
+async fn postgres_interrupt(accepted: bool) {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert_ne!(
+            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
+            Ok("1"),
+            "CRABBER_TEST_POSTGRES_URL is required"
+        );
+        eprintln!("PostgreSQL interruption skipped: CRABBER_TEST_POSTGRES_URL unset");
+        return;
+    };
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    let store = crabber::session::PostgresStore::connect(&url)
+        .await
+        .unwrap();
+    interrupt_active_child(Arc::new(store), accepted).await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_run_interrupt_drops_reducer_and_settles_fixed_text() {
+    postgres_interrupt(false).await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_run_interrupt_persists_only_accepted_final_redaction() {
+    postgres_interrupt(true).await;
 }
 
 #[derive(Default)]
@@ -212,7 +278,14 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         run.interrupt();
         timeout(INTERRUPT_SETTLEMENT_BOUND, async {
             assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
-            assert_settlement(&store, &session, &run_id, &probes, INTERRUPTED_RESULT_TEXT).await;
+            assert_settlement(
+                store.as_ref(),
+                &session,
+                &run_id,
+                &probes,
+                INTERRUPTED_RESULT_TEXT,
+            )
+            .await;
         })
         .await
         .expect("durable interrupt settlement bound");
