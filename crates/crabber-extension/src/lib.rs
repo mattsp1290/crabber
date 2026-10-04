@@ -2,8 +2,10 @@
 
 mod dispatch;
 mod plan;
+mod prompt_contribution;
 mod registry;
 mod result_transform;
+pub use prompt_contribution::*;
 mod state;
 mod tool;
 pub use tool::{

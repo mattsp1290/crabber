@@ -376,9 +376,9 @@ impl Dispatcher {
 /// driver. The panic is swallowed and never changes the outcome, which is
 /// already decided at those sites (`Interrupted`), so it can neither upgrade a
 /// result to success nor surface as `Failed` after observed cancellation.
-struct InFlight<F: Future>(Option<Pin<Box<F>>>);
+pub(crate) struct InFlight<F: Future>(Option<Pin<Box<F>>>);
 impl<F: Future> InFlight<F> {
-    fn new(future: F) -> Self {
+    pub(crate) fn new(future: F) -> Self {
         Self(Some(Box::pin(future)))
     }
 }

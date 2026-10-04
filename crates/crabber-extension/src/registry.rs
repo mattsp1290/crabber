@@ -5,7 +5,9 @@ use crate::dispatch::{
     ToolResultTransform,
 };
 use crate::{
-    CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError, PromptSection,
+    CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError,
+    MAX_PROMPT_CONTRIBUTOR_NAME_BYTES, MountedPromptContributor,
+    PROMPT_CONTRIBUTION_CONTRACT_VERSION, PromptContributor, PromptSection,
     ResultTransformCallback, RunPlan, RunPlanProvider, ToolDefinition, TransformPhase,
     compute_fingerprint, json_result_transform,
 };
@@ -55,6 +57,7 @@ pub struct Registrar {
     guards: Vec<Arc<dyn ToolGuard>>,
     restrictions: Vec<Vec<String>>,
     handlers: Vec<Handler>,
+    contributors: Vec<MountedPromptContributor>,
     providers: Vec<Arc<dyn ProviderAdapter>>,
     cleanups: Vec<Cleanup>,
 }
@@ -66,6 +69,7 @@ impl Registrar {
             guards: vec![],
             restrictions: vec![],
             handlers: vec![],
+            contributors: vec![],
             providers: vec![],
             cleanups: vec![],
         }
@@ -75,6 +79,22 @@ impl Registrar {
     }
     pub fn prompt(&mut self, prompt: Arc<PromptSection>) {
         self.prompts.push(prompt);
+    }
+    /// Registers one named native contributor. Names are validated atomically at mount.
+    pub fn prompt_contributor(
+        &mut self,
+        order: i32,
+        name: impl Into<String>,
+        cb: PromptContributor,
+    ) {
+        self.contributors.push(MountedPromptContributor {
+            name: name.into(),
+            order,
+            callback: cb,
+            mount_id: 0,
+            mount_seq: 0,
+            cleanup: CleanupTracker::detached(),
+        });
     }
     pub fn guard(&mut self, guard: Arc<dyn ToolGuard>) {
         self.guards.push(guard);
@@ -469,6 +489,11 @@ impl Registry {
             registrar.rollback();
             return Err(ExtensionError::ToolCollision(name));
         }
+        if let Some(error) = validate_contributors(&registrar, &inner, &scope) {
+            drop(inner);
+            registrar.rollback();
+            return Err(error);
+        }
         inner.next_id += 1;
         let id = inner.next_id;
         let cleanup = CleanupOwner::new();
@@ -477,6 +502,11 @@ impl Registry {
             handler.mount_id = id;
             handler.mount_seq = id;
             handler.scope_rank = scope.rank();
+        }
+        for contributor in &mut registrar.contributors {
+            contributor.cleanup = cleanup.tracker();
+            contributor.mount_id = id;
+            contributor.mount_seq = id;
         }
         let mount = Arc::new(Mount {
             id,
@@ -598,6 +628,7 @@ impl Registry {
         mounts.sort_by_key(|m| (m.scope.rank(), m.seq));
         let mut tools = vec![];
         let mut prompts = vec![];
+        let mut contributors = vec![];
         let mut guards = vec![];
         let mut restrictions = vec![];
         let mut handlers = vec![];
@@ -610,6 +641,7 @@ impl Registry {
                 prompts.retain(|old: &Arc<PromptSection>| old.name != prompt.name);
                 prompts.push(Arc::clone(prompt));
             }
+            freeze_contributors(&r.contributors, &mut contributors, &mut components);
             guards.extend(r.guards.iter().cloned());
             restrictions.extend(r.restrictions.iter().cloned());
             handlers.extend(r.handlers.iter().cloned());
@@ -660,11 +692,13 @@ impl Registry {
             }
         }
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
+        finish_contributors(&mut contributors, &mut components);
         let fingerprint = compute_fingerprint(&components);
         RunPlan::from_registry(
             fingerprint,
             tools,
             prompts,
+            contributors,
             guards,
             restrictions,
             Dispatcher::new(handlers),
@@ -678,6 +712,65 @@ impl Registry {
                 }
             },
         )
+    }
+}
+fn validate_contributors(
+    registrar: &Registrar,
+    inner: &RegistryInner,
+    scope: &Scope,
+) -> Option<ExtensionError> {
+    let mut seen = HashSet::new();
+    registrar.contributors.iter().find_map(|contributor| {
+        let name = &contributor.name;
+        if name.is_empty()
+            || name.len() > MAX_PROMPT_CONTRIBUTOR_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Some(ExtensionError::Plan(
+                "invalid prompt contributor name".into(),
+            ));
+        }
+        if !seen.insert(name.clone())
+            || inner.mounts.iter().any(|m| {
+                *m.active.lock().unwrap()
+                    && &m.scope == scope
+                    && m.registrar
+                        .lock()
+                        .unwrap()
+                        .contributors
+                        .iter()
+                        .any(|c| c.name == *name)
+            })
+        {
+            return Some(ExtensionError::PromptContributorCollision(name.clone()));
+        }
+        None
+    })
+}
+fn finish_contributors(
+    contributors: &mut [MountedPromptContributor],
+    components: &mut Vec<ComponentIdentity>,
+) {
+    contributors.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
+    if !contributors.is_empty() {
+        components.push(ComponentIdentity {
+            id: "contract:crabber/prompt/contribution".into(),
+            version: PROMPT_CONTRIBUTION_CONTRACT_VERSION.to_string(),
+        });
+    }
+}
+fn freeze_contributors(
+    registrations: &[MountedPromptContributor],
+    contributors: &mut Vec<MountedPromptContributor>,
+    components: &mut Vec<ComponentIdentity>,
+) {
+    for contributor in registrations {
+        contributors.retain(|old: &MountedPromptContributor| old.name != contributor.name);
+        contributors.push(contributor.clone());
+        components.push(ComponentIdentity {
+            id: format!("prompt-contributor:{}", contributor.name),
+            version: format!("{}:{}", contributor.order, contributor.mount_seq),
+        });
     }
 }
 fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
@@ -2659,3 +2752,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "registry/prompt_contribution_tests.rs"]
+mod prompt_contribution_tests;
