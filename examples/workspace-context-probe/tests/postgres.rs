@@ -49,7 +49,7 @@ fn fresh_host(dir: &Path, mode: &str) {
     assert!(status.success(), "fresh host process failed in mode {mode}");
 }
 
-fn observed(dir: &Path, name: &str) -> (Vec<Identity>, Vec<Identity>) {
+fn observed(dir: &Path, name: &str) -> (Vec<Identity>, Vec<Identity>, Vec<bool>) {
     // libtest exits successfully when `--exact fresh_host_child` matches no
     // test, so a missing handoff file means the child never ran.
     let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|error| {
@@ -94,9 +94,10 @@ async fn fresh_host_resumes_paused_run_with_the_persisted_workspace() {
 
     // A freshly started host, configured with other defaults, resumes it.
     fresh_host(&dir.0, "resume");
-    let (tool, assemble) = observed(&dir.0, "observed.json");
+    let (tool, assemble, cancelled) = observed(&dir.0, "observed.json");
     let expected = identity(Some(&workspace_id), Some(&directory));
     assert_eq!((tool, assemble), (vec![expected.clone()], vec![expected]));
+    assert_eq!(cancelled, [false]);
 
     // A freshly started host presenting a replacement root is rejected.
     std::fs::write(
@@ -105,8 +106,9 @@ async fn fresh_host_resumes_paused_run_with_the_persisted_workspace() {
     )
     .unwrap();
     fresh_host(&dir.0, "drift");
-    let (tool, assemble) = observed(&dir.0, "rejected.json");
+    let (tool, assemble, cancelled) = observed(&dir.0, "rejected.json");
     assert_eq!((tool, assemble), (Vec::new(), Vec::new()));
+    assert!(cancelled.is_empty());
 }
 
 // Invoked by the parent test in a genuinely fresh OS process, never recursively.
@@ -138,7 +140,15 @@ async fn fresh_host_child() {
         );
         std::fs::write(
             dir.join("observed.json"),
-            serde_json::to_vec(&(seen.tool(), seen.assemble())).unwrap(),
+            serde_json::to_vec(&(
+                seen.tool(),
+                seen.assemble(),
+                seen.executions()
+                    .iter()
+                    .map(|entry| entry.cancelled_at_entry)
+                    .collect::<Vec<_>>(),
+            ))
+            .unwrap(),
         )
         .unwrap();
     } else {
@@ -161,7 +171,15 @@ async fn fresh_host_child() {
         ));
         std::fs::write(
             dir.join("rejected.json"),
-            serde_json::to_vec(&(seen.tool(), seen.assemble())).unwrap(),
+            serde_json::to_vec(&(
+                seen.tool(),
+                seen.assemble(),
+                seen.executions()
+                    .iter()
+                    .map(|entry| entry.cancelled_at_entry)
+                    .collect::<Vec<_>>(),
+            ))
+            .unwrap(),
         )
         .unwrap();
     }

@@ -22,11 +22,23 @@ use std::sync::{Arc, Mutex};
 pub type Identity = (Option<String>, Option<String>);
 
 pub const TOOL: &str = "where_am_i";
+pub const ROOT_TOOL: &str = "where_is_root";
+pub const CANCEL_TOOL: &str = "wait_for_cancel";
+
+/// Entry observations from one named native tool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolObservation {
+    pub name: String,
+    pub identity: Identity,
+    pub cancelled_at_entry: bool,
+}
 
 /// What the runtime handed to the probe's two extension surfaces.
 #[derive(Default)]
 pub struct Observations {
-    tool: Mutex<Vec<Identity>>,
+    tool: Mutex<Vec<ToolObservation>>,
+    pub started: tokio::sync::Notify,
+    pub cancellation_observed: tokio::sync::Notify,
     assemble: Mutex<Vec<Identity>>,
 }
 impl Observations {
@@ -37,6 +49,18 @@ impl Observations {
     /// Panics if a recording thread panicked.
     #[must_use]
     pub fn tool(&self) -> Vec<Identity> {
+        self.executions()
+            .into_iter()
+            .map(|entry| entry.identity)
+            .collect()
+    }
+    /// Named observations, including the cancellation state at entry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a recording thread panicked.
+    #[must_use]
+    pub fn executions(&self) -> Vec<ToolObservation> {
         self.tool.lock().expect("probe poisoned").clone()
     }
     /// One entry per `ContextAssemble` invocation, that is, per model turn.
@@ -50,9 +74,12 @@ impl Observations {
     }
 }
 
-struct WhereAmI(Arc<Observations>);
+struct WorkspaceTool {
+    observations: Arc<Observations>,
+    name: &'static str,
+}
 #[async_trait]
-impl ToolExecutor for WhereAmI {
+impl ToolExecutor for WorkspaceTool {
     async fn execute(&self, _arguments: Value) -> Result<Value, ExtensionError> {
         Err(ExtensionError::Tool("tool context required".into()))
     }
@@ -68,16 +95,34 @@ impl ToolExecutor for WhereAmI {
             workspace.workspace_id().map(str::to_owned),
             workspace.directory().map(str::to_owned),
         );
-        self.0
+        self.observations
             .tool
             .lock()
             .expect("probe poisoned")
-            .push(identity.clone());
+            .push(ToolObservation {
+                name: self.name.into(),
+                identity: identity.clone(),
+                cancelled_at_entry: context.cancel.is_cancelled(),
+            });
+        if self.name == CANCEL_TOOL {
+            // The runtime may drop the executor future as soon as it cancels
+            // the token. A tool-owned observer must survive that drop to
+            // record cancellation, just as asynchronous cleanup would.
+            let observations = Arc::clone(&self.observations);
+            let observer = tokio::spawn(async move {
+                context.cancel.cancelled().await;
+                observations.cancellation_observed.notify_one();
+            });
+            self.observations.started.notify_one();
+            observer
+                .await
+                .map_err(|error| ExtensionError::Tool(error.to_string()))?;
+        }
         Ok(json!({"workspace_id": identity.0, "directory": identity.1}))
     }
 }
 
-/// A native extension with one tool and one dynamic prompt contributor.
+/// A native extension with two identity tools, a cancellation tool and a prompt contributor.
 pub struct ProbeExtension(pub Arc<Observations>);
 #[async_trait]
 impl Extension for ProbeExtension {
@@ -91,16 +136,21 @@ impl Extension for ProbeExtension {
         "probe".into()
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
-        registrar.tool(Arc::new(ToolDefinition {
-            info: ToolInfo {
-                name: TOOL.into(),
-                description: "Reports the session workspace".into(),
-                parameters: json!({"type":"object","properties":{"note":{"type":"string"}}}),
-                retry_safe: true,
-                required_permissions: Vec::new(),
-            },
-            executor: Arc::new(WhereAmI(Arc::clone(&self.0))),
-        }));
+        for name in [TOOL, ROOT_TOOL, CANCEL_TOOL] {
+            registrar.tool(Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: name.into(),
+                    description: "Reports the session workspace".into(),
+                    parameters: json!({"type":"object","properties":{"note":{"type":"string"}}}),
+                    retry_safe: true,
+                    required_permissions: Vec::new(),
+                },
+                executor: Arc::new(WorkspaceTool {
+                    observations: Arc::clone(&self.0),
+                    name,
+                }),
+            }));
+        }
         let observations = Arc::clone(&self.0);
         registrar.on_transform(
             ContextAssemble::ID,
@@ -148,11 +198,17 @@ impl PermissionPolicy for PauseBeforeTools {
 /// the session does not have. The runtime must never surface these values.
 #[must_use]
 pub fn tool_call() -> Vec<StreamDelta> {
+    named_tool_call(TOOL)
+}
+
+/// A model turn calling a selected probe tool.
+#[must_use]
+pub fn named_tool_call(name: &str) -> Vec<StreamDelta> {
     let call_id = ToolCallId::new();
     vec![
         StreamDelta::ToolCallStart {
             call_id: call_id.clone(),
-            name: TOOL.into(),
+            name: name.into(),
         },
         StreamDelta::ToolCallArgsDelta {
             call_id: call_id.clone(),
@@ -194,6 +250,17 @@ pub fn host(
     } else {
         Arc::new(StaticPolicy::new(PermissionDecision::Allow))
     };
+    host_with_policy(observations, scripts, config, policy)
+}
+
+/// Mounts the probe using the caller's permission policy.
+#[must_use]
+pub fn host_with_policy(
+    observations: &Arc<Observations>,
+    scripts: Vec<Vec<StreamDelta>>,
+    config: AgentConfig,
+    policy: Arc<dyn PermissionPolicy>,
+) -> AgentBuilder {
     crabber::Agent::builder()
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(config)
