@@ -3,8 +3,8 @@ mod process;
 
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
+    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
     core::{ToolCallId, ToolInfo},
     extension::{Extension, Registrar, Scope, TransformOutput},
     session::Store,
@@ -36,6 +36,7 @@ impl Signal {
 #[derive(Clone)]
 pub struct Probes {
     pub ready_pid: watch::Sender<Option<u32>>,
+    pub provider: Arc<FakeProvider>,
     pub kill_started: Signal,
     pub reaped: Signal,
     pub pipe_closed: Signal,
@@ -47,7 +48,27 @@ pub struct Probes {
 }
 impl Probes {
     pub fn new(hold_reap: bool) -> Self {
+        let call = ToolCallId::new();
+        let provider = Arc::new(FakeProvider::scripted(vec![
+            vec![
+                StreamDelta::ToolCallStart {
+                    call_id: call.clone(),
+                    name: "fixture".into(),
+                },
+                StreamDelta::ToolCallArgsDelta {
+                    call_id: call.clone(),
+                    text: "{}".into(),
+                },
+                StreamDelta::ToolCallDone { call_id: call },
+                StreamDelta::Completed,
+            ],
+            vec![
+                StreamDelta::TextDelta("done".into()),
+                StreamDelta::Completed,
+            ],
+        ]));
         Self {
+            provider,
             ready_pid: watch::channel(None).0,
             kill_started: Signal::new(),
             reaped: Signal::new(),
@@ -164,28 +185,14 @@ impl ToolExecutor for FixtureTool {
     }
 }
 
-pub fn agent(store: Arc<dyn Store>, probes: Probes, accept_before_reduction: bool) -> Agent {
-    let call = ToolCallId::new();
+pub fn agent_builder(
+    store: Arc<dyn Store>,
+    probes: Probes,
+    accept_before_reduction: bool,
+) -> AgentBuilder {
     Agent::builder()
         .store(store)
-        .provider(Arc::new(FakeProvider::scripted(vec![
-            vec![
-                StreamDelta::ToolCallStart {
-                    call_id: call.clone(),
-                    name: "fixture".into(),
-                },
-                StreamDelta::ToolCallArgsDelta {
-                    call_id: call.clone(),
-                    text: "{}".into(),
-                },
-                StreamDelta::ToolCallDone { call_id: call },
-                StreamDelta::Completed,
-            ],
-            vec![
-                StreamDelta::TextDelta("done".into()),
-                StreamDelta::Completed,
-            ],
-        ])))
+        .provider(probes.provider.clone())
         .config(AgentConfig::new(Selection {
             provider_id: "fake".into(),
             model_id: "scripted".into(),
@@ -208,6 +215,4 @@ pub fn agent(store: Arc<dyn Store>, probes: Probes, accept_before_reduction: boo
             }),
             Scope::Global,
         )
-        .build()
-        .unwrap()
 }

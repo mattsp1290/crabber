@@ -1,14 +1,16 @@
 mod result_transform_support;
 
 use crabber::session::MemoryStore;
-use result_transform_support::{Probes, agent};
+use result_transform_support::{Probes, agent_builder};
 use std::{sync::Arc, time::Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reduction_child_starts_and_reaps() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let probes = Probes::new(true);
-        let agent = agent(Arc::new(MemoryStore::new()), probes.clone(), false);
+        let agent = agent_builder(Arc::new(MemoryStore::new()), probes.clone(), false)
+            .build()
+            .unwrap();
         let run = agent.prompt(None, "reduce fixture output").await.unwrap();
         assert_ne!(probes.ready().await, 0);
         assert_eq!(probes.permit_count(), 0);

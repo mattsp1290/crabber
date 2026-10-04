@@ -68,13 +68,13 @@ pub(super) fn spawn(
         // Held after start_kill, before wait, for deterministic permit/reap sampling.
         probes.reap_gate.clone().acquire_owned().await.unwrap().forget();
         child.wait().await.expect("reap fixture child");
+        probes.reaped.set();
         drop(child); // closes parent stdin after the child has been reaped
         let mut remaining = Vec::new();
         stdout.read_to_end(&mut remaining).await.expect("fixture stdout EOF");
         drop(stdout);
         probes.pipe_closed.set();
         drop(permit);
-        probes.reaped.set();
     });
     Ok(ready_rx)
 }
