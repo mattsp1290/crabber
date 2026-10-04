@@ -1162,9 +1162,10 @@ traps, invalid strings/variants and size violations follow D2. The guest's
 
 WASM handlers are ordinary only and cannot supply the final protection
 guarantee. Mount a native or JSON final redactor when protection must hold
-under cancellation. WASM execution uses token-driven epoch interruption with
-no opt-out; `call_cancellable` also permits cancellation while waiting on the
-module mutex or a host import. Existing `LoadedModule::call` behaves as before
+under cancellation. WASM execution uses token-driven epoch interruption through
+`call_cancellable`, with no opt-out. The driver drops the ordinary callback
+future on cancellation, releasing waits on the module mutex or a host import.
+Existing `LoadedModule::call` behaves as before
 with a token that is never cancelled. Input appears twice in the new WASM
 arguments, so large inputs reach `max_input_bytes` sooner.
 
@@ -1207,8 +1208,8 @@ policy decision, not a way to resume a new-contract frozen run.
 D11 requires explicit user approval to merge to `main`, tag/release, reply on
 `bn request crabber-r-u7l3` or record acceptance. Agents may prepare release
 notes and response drafts only. A green local check does not perform those
-gates. The standalone `testdata/result-transform-probe/` depends on a full
-published Git revision. Fetching this private repository uses existing
+gates. The planned standalone `testdata/result-transform-probe/` (owned by
+`crabber-mlgw`) will depend on a full published Git revision. Fetching this private repository uses existing
 authorized Git access; probe execution needs no provider/runtime credentials
 or task-specific environment variables. It runs `cargo test` and checks normalized binding, status escalation and a reducer then
 final-redactor chain. It is separate from the path-based external consumer
