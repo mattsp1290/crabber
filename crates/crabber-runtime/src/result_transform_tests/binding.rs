@@ -98,12 +98,26 @@ async fn exact_binding(mode: ExecutionMode) {
         session_id,
         run_id,
     };
-    let run = harness.store.get_run(&done.run_id).await.unwrap().unwrap();
+    let contexts = seen.lock().unwrap().clone();
+    assert_bound_outputs(&done, &calls, &contexts).await;
+}
+
+async fn assert_bound_outputs(
+    done: &Finished<'_>,
+    calls: &[&ScriptedCall],
+    contexts: &[ToolResultContext],
+) {
+    let run = done
+        .harness
+        .store
+        .get_run(&done.run_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(run.id, done.run_id);
     assert_eq!(run.session_id, done.session_id);
-    let contexts = seen.lock().unwrap().clone();
     assert_eq!(contexts.len(), calls.len());
-    assert_eq!(harness.probe.executed().len(), calls.len());
+    assert_eq!(done.harness.probe.executed().len(), calls.len());
     let expected = [
         json!({"text": "leave-alone"}),
         json!({"bound": "changed"}),
@@ -136,7 +150,7 @@ async fn exact_binding(mode: ExecutionMode) {
         assert_eq!(context.class(), ToolOutcomeClass::Succeeded);
         assert!(!context.is_error());
         assert_settled(
-            &done,
+            done,
             &record.id,
             ToolCallStatus::Completed,
             &serde_json::to_string(&output).unwrap(),
