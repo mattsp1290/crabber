@@ -44,31 +44,124 @@ impl ToolPipeline for CompositionProbe {
     }
 }
 
+fn assert_observations(
+    probe: &CompositionProbe,
+    done: &Finished<'_>,
+    call: &ScriptedCall,
+    class: ToolOutcomeClass,
+    seed: Value,
+    redactor_first: bool,
+    orders: (i32, i32),
+) {
+    let (reducer_order, redactor_order) = orders;
+    let observations = probe.0.lock().unwrap();
+    let stages: Vec<_> = observations.iter().map(|seen| seen.stage).collect();
+    let expected = if class == ToolOutcomeClass::Succeeded {
+        vec!["pre-stage", "reducer", "redactor"]
+    } else {
+        vec!["reducer", "redactor"]
+    };
+    assert_eq!(
+        stages, expected,
+        "{class:?}, redactor first: {redactor_first}, orders: {reducer_order}/{redactor_order}"
+    );
+    for seen in observations.iter() {
+        assert_eq!(seen.context.class(), class);
+        assert_eq!(seen.context.call_id(), &call.id);
+        assert_eq!(seen.context.session_id(), &done.session_id);
+        assert_eq!(seen.context.run_id(), &done.run_id);
+        assert_eq!(seen.context.is_error(), class.is_error());
+        assert_eq!(
+            seen.context.phase(),
+            if seen.stage == "redactor" {
+                TransformPhase::FinalRedaction
+            } else {
+                TransformPhase::Ordinary
+            }
+        );
+    }
+    let reducer = &observations[observations.len() - 2];
+    assert_eq!(
+        reducer.result,
+        if class == ToolOutcomeClass::Succeeded {
+            assert_eq!(observations[0].result, seed);
+            json!({"source": seed, "secret": SECRET})
+        } else {
+            seed
+        }
+    );
+    assert_eq!(
+        observations.last().unwrap().result,
+        json!({"reduced": REDUCED, "secret": SECRET})
+    );
+}
+
+async fn assert_protected(done: &Finished<'_>, call: &ScriptedCall, class: ToolOutcomeClass) {
+    let protected = serde_json::to_string(&json!({"reduced": REDUCED})).unwrap();
+    assert_settled(
+        done,
+        &call.id,
+        if class.is_error() {
+            ToolCallStatus::Failed
+        } else {
+            ToolCallStatus::Completed
+        },
+        &protected,
+        class.is_error(),
+    )
+    .await;
+    let record = done.record(&call.id).await;
+    let result = record.result.as_ref().unwrap();
+    assert_eq!(
+        result.status,
+        if class.is_error() {
+            crabber_core::ToolResultStatus::Failed
+        } else {
+            crabber_core::ToolResultStatus::Completed
+        }
+    );
+    let (message, _, _) = done.tool_message(&call.id).await;
+    let event = done.settled_event(&call.id).await;
+    let request = done.next_request_for(&call.id);
+    for artifact in [
+        serde_json::to_string(result).unwrap(),
+        serde_json::to_string(&message).unwrap(),
+        serde_json::to_string(&event).unwrap(),
+        format!("{request:?}"),
+    ] {
+        assert!(
+            artifact.contains(REDUCED),
+            "reduced content missing: {artifact}"
+        );
+        assert!(!artifact.contains(SECRET), "secret leaked: {artifact}");
+    }
+}
+
+fn path_fixture(class: ToolOutcomeClass) -> (&'static str, &'static str, Value) {
+    match class {
+        ToolOutcomeClass::Succeeded => (ECHO, "verbose source", json!({"text": "verbose source"})),
+        ToolOutcomeClass::ExecutionFailed => (
+            FAIL,
+            "execution input",
+            json!("tool execution failed: executor exploded"),
+        ),
+        ToolOutcomeClass::PermissionDenied => {
+            (FORBIDDEN, "denied input", json!("permission denied"))
+        }
+        ToolOutcomeClass::UnknownTool => (MISSING, "raw input", json!("unknown tool: missing")),
+        ToolOutcomeClass::PrepareFailed => (
+            ECHO,
+            PREPARE_REJECTED,
+            json!("tool execution failed: prepare handler rejected"),
+        ),
+    }
+}
+
 async fn composed_path(class: ToolOutcomeClass) {
     for redactor_first in [false, true] {
         for (reducer_order, redactor_order) in [(i32::MAX, i32::MIN), (0, 0), (i32::MIN, i32::MAX)]
         {
-            let (name, input, seed) = match class {
-                ToolOutcomeClass::Succeeded => {
-                    (ECHO, "verbose source", json!({"text": "verbose source"}))
-                }
-                ToolOutcomeClass::ExecutionFailed => (
-                    FAIL,
-                    "execution input",
-                    json!("tool execution failed: executor exploded"),
-                ),
-                ToolOutcomeClass::PermissionDenied => {
-                    (FORBIDDEN, "denied input", json!("permission denied"))
-                }
-                ToolOutcomeClass::UnknownTool => {
-                    (MISSING, "raw input", json!("unknown tool: missing"))
-                }
-                ToolOutcomeClass::PrepareFailed => (
-                    ECHO,
-                    PREPARE_REJECTED,
-                    json!("tool execution failed: prepare handler rejected"),
-                ),
-            };
+            let (name, input, seed) = path_fixture(class);
             // Secrets originate in result processing, never in provider arguments or history.
             let call = ScriptedCall::text(name, input);
             let probe = Arc::new(CompositionProbe::default());
@@ -135,86 +228,16 @@ async fn composed_path(class: ToolOutcomeClass) {
                     vec![]
                 }
             );
-            {
-                let observations = probe.0.lock().unwrap();
-                let stages: Vec<_> = observations.iter().map(|seen| seen.stage).collect();
-                let expected = if class == ToolOutcomeClass::Succeeded {
-                    vec!["pre-stage", "reducer", "redactor"]
-                } else {
-                    vec!["reducer", "redactor"]
-                };
-                assert_eq!(
-                    stages, expected,
-                    "{class:?}, redactor first: {redactor_first}, orders: {reducer_order}/{redactor_order}"
-                );
-                for seen in observations.iter() {
-                    assert_eq!(seen.context.class(), class);
-                    assert_eq!(seen.context.call_id(), &call.id);
-                    assert_eq!(seen.context.session_id(), &done.session_id);
-                    assert_eq!(seen.context.run_id(), &done.run_id);
-                    assert_eq!(seen.context.is_error(), class.is_error());
-                    assert_eq!(
-                        seen.context.phase(),
-                        if seen.stage == "redactor" {
-                            TransformPhase::FinalRedaction
-                        } else {
-                            TransformPhase::Ordinary
-                        }
-                    );
-                }
-                let reducer = &observations[observations.len() - 2];
-                assert_eq!(
-                    reducer.result,
-                    if class == ToolOutcomeClass::Succeeded {
-                        assert_eq!(observations[0].result, seed);
-                        json!({"source": seed, "secret": SECRET})
-                    } else {
-                        seed
-                    }
-                );
-                assert_eq!(
-                    observations.last().unwrap().result,
-                    json!({"reduced": REDUCED, "secret": SECRET})
-                );
-            }
-            let protected = serde_json::to_string(&json!({"reduced": REDUCED})).unwrap();
-            assert_settled(
+            assert_observations(
+                &probe,
                 &done,
-                &call.id,
-                if class.is_error() {
-                    ToolCallStatus::Failed
-                } else {
-                    ToolCallStatus::Completed
-                },
-                &protected,
-                class.is_error(),
-            )
-            .await;
-            let record = done.record(&call.id).await;
-            let result = record.result.as_ref().unwrap();
-            assert_eq!(
-                result.status,
-                if class.is_error() {
-                    crabber_core::ToolResultStatus::Failed
-                } else {
-                    crabber_core::ToolResultStatus::Completed
-                }
+                &call,
+                class,
+                seed,
+                redactor_first,
+                (reducer_order, redactor_order),
             );
-            let (message, _, _) = done.tool_message(&call.id).await;
-            let event = done.settled_event(&call.id).await;
-            let request = done.next_request_for(&call.id);
-            for artifact in [
-                serde_json::to_string(result).unwrap(),
-                serde_json::to_string(&message).unwrap(),
-                serde_json::to_string(&event).unwrap(),
-                format!("{request:?}"),
-            ] {
-                assert!(
-                    artifact.contains(REDUCED),
-                    "reduced content missing: {artifact}"
-                );
-                assert!(!artifact.contains(SECRET), "secret leaked: {artifact}");
-            }
+            assert_protected(&done, &call, class).await;
         }
     }
 }
