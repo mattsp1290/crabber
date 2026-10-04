@@ -175,20 +175,25 @@ async fn empty_identity_is_unavailable_not_a_host_default_or_model_argument() {
 
 #[tokio::test]
 async fn one_empty_field_is_unavailable_while_the_other_is_exposed() {
-    let seen = Arc::new(Observations::default());
-    let agent = host(
-        &seen,
-        vec![tool_call(), text("done")],
-        config("ws-only", ""),
-        false,
-    )
-    .memory()
-    .build()
-    .unwrap();
-    let run = agent.prompt(None, "first").await.unwrap();
-    run.done().await.unwrap();
-    assert_eq!(seen.tool(), [identity(Some("ws-only"), None)]);
-    assert_eq!(seen.assemble(), vec![identity(Some("ws-only"), None); 2]);
+    for (workspace_id, directory, expected) in [
+        ("ws-only", "", identity(Some("ws-only"), None)),
+        ("", "/srv/root-only", identity(None, Some("/srv/root-only"))),
+    ] {
+        let seen = Arc::new(Observations::default());
+        let agent = host(
+            &seen,
+            vec![tool_call(), text("done")],
+            config(workspace_id, directory),
+            false,
+        )
+        .memory()
+        .build()
+        .unwrap();
+        let run = agent.prompt(None, "first").await.unwrap();
+        run.done().await.unwrap();
+        assert_eq!(seen.tool(), [expected.clone()]);
+        assert_eq!(seen.assemble(), vec![expected; 2]);
+    }
 }
 
 #[tokio::test]
