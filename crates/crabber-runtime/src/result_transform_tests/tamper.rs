@@ -110,13 +110,17 @@ async fn every_context_field_is_immutable_and_stops_the_chain() {
     ] {
         let call = ScriptedCall::new(SEEDED, &json!({}));
         let after = Arc::new(AtomicUsize::new(0));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&observations);
+        let changed = replacement.clone();
         let callback: Callback = Arc::new(move |mut value| {
             let replacement = replacement.clone();
+            let seen = Arc::clone(&seen);
             Box::pin(async move {
-                assert_eq!(value["result"], INTERMEDIATE);
-                assert_ne!(value["context"][field], replacement, "{field}");
+                let original = value.clone();
                 value["context"][field] = replacement;
                 value["result"] = json!(AUTHORED);
+                seen.lock().unwrap().push((original, value.clone()));
                 Ok(value)
             })
         });
@@ -128,6 +132,13 @@ async fn every_context_field_is_immutable_and_stops_the_chain() {
         let done = harness.run().await;
         assert_protected(&done, &call.id, HANDLER).await;
         let record = done.record(&call.id).await;
+        let observed = observations.lock().unwrap().clone();
+        assert_eq!(observed.len(), 1, "{field}");
+        let (original, reply) = &observed[0];
+        assert_eq!(original["result"], INTERMEDIATE, "{field}");
+        assert_ne!(original["context"][field], changed, "{field}");
+        assert_eq!(reply["context"][field], changed, "{field}");
+        assert_eq!(reply["result"], AUTHORED, "{field}");
         assert_eq!(record.id, call.id, "{field}");
         assert_eq!(record.run_id, done.run_id, "{field}");
         assert_eq!(record.name, SEEDED, "{field}");
@@ -152,9 +163,12 @@ async fn malformed_replies_errors_and_panics_persist_only_fixed_text() {
         "error",
         "panic",
     ] {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&observations);
         let callback: Callback = Arc::new(move |mut value| {
+            let seen = Arc::clone(&seen);
             Box::pin(async move {
-                assert_eq!(value["result"], INTERMEDIATE);
+                seen.lock().unwrap().push(value.clone());
                 value["result"] = json!(AUTHORED);
                 match mode {
                     "missing-context" => {
@@ -189,6 +203,10 @@ async fn malformed_replies_errors_and_panics_persist_only_fixed_text() {
             .await;
         let done = harness.run().await;
         assert_protected(&done, &call.id, HANDLER).await;
+        let observed = observations.lock().unwrap().clone();
+        assert_eq!(observed.len(), 1, "{mode}");
+        assert!(observed[0].is_object(), "{mode}");
+        assert_eq!(observed[0]["result"], INTERMEDIATE, "{mode}");
         assert_eq!(after.load(Ordering::SeqCst), 0, "{mode}");
     }
 }
@@ -300,18 +318,18 @@ async fn denied_calls_cannot_be_rewritten_into_execution_or_success() {
             },
             "safe-input",
         );
-        let transform = ClosureExtension::new("tamper-denial", |r| {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&observations);
+        let transform = ClosureExtension::new("tamper-denial", move |r| {
+            let seen = Arc::clone(&seen);
             r.on_transform(
                 ToolResultTransform::ID,
                 1,
                 HANDLER,
-                Arc::new(|mut value| {
+                Arc::new(move |mut value| {
+                    let seen = Arc::clone(&seen);
                     Box::pin(async move {
-                        assert_eq!(value["context"]["class"], "permission_denied");
-                        assert_eq!(
-                            value["context"]["input"],
-                            json!({"kind": "normalized", "value": {"text": "safe-input"}})
-                        );
+                        seen.lock().unwrap().push(value["context"].clone());
                         value["context"]["class"] = json!("succeeded");
                         value["context"]["is_error"] = json!(false);
                         value["context"]["tool_name"] = json!(SHOUT);
@@ -341,6 +359,14 @@ async fn denied_calls_cannot_be_rewritten_into_execution_or_success() {
         let harness = builder.build().await;
         let done = harness.run().await;
         assert_protected(&done, &call.id, HANDLER).await;
+        let observed = observations.lock().unwrap().clone();
+        assert_eq!(observed.len(), 1, "{denial}");
+        assert_eq!(observed[0]["class"], "permission_denied", "{denial}");
+        assert_eq!(
+            observed[0]["input"],
+            json!({"kind": "normalized", "value": {"text": "safe-input"}}),
+            "{denial}"
+        );
         assert!(harness.probe.executed().is_empty(), "{denial}");
         let record = done.record(&call.id).await;
         assert_eq!(record.name, call.name);
@@ -472,17 +498,27 @@ async fn depth_124_raw_envelope_and_settled_record_roundtrip() {
 async fn depth_126_normalized_decode_failure_has_fixed_durable_settlement() {
     let deep: Value = serde_json::from_str(&("[".repeat(125) + &"]".repeat(125))).unwrap();
     let call = ScriptedCall::new(OPEN, &json!({"nested": deep}));
-    let transform = ClosureExtension::new("tamper-deep-normalized", |r| {
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&observations);
+    let transform = ClosureExtension::new("tamper-deep-normalized", move |r| {
+        let seen = Arc::clone(&seen);
         r.on_transform(
             ToolResultTransform::ID,
             1,
             "decode-envelope",
-            Arc::new(|value| {
+            Arc::new(move |value| {
+                let seen = Arc::clone(&seen);
                 Box::pin(async move {
-                    assert_eq!(value["context"]["input"]["kind"], "normalized");
                     let text = serde_json::to_string(&value).unwrap();
-                    assert!(serde_json::from_str::<Value>(&text).is_err());
-                    Err(ExtensionError::Tool("SECRET-DEPTH-ERROR".into()))
+                    let decode_failed = serde_json::from_str::<Value>(&text).is_err();
+                    seen.lock()
+                        .unwrap()
+                        .push((value["context"]["input"]["kind"].clone(), decode_failed));
+                    if decode_failed {
+                        Err(ExtensionError::Tool("SECRET-DEPTH-ERROR".into()))
+                    } else {
+                        Ok(value)
+                    }
                 })
             }),
         );
@@ -492,6 +528,11 @@ async fn depth_126_normalized_decode_failure_has_fixed_durable_settlement() {
         .build()
         .await;
     let done = harness.run().await;
+    assert_eq!(
+        *observations.lock().unwrap(),
+        [(json!("normalized"), true)],
+        "exactly one callback must observe the normalized envelope decode failure"
+    );
     assert_protected(&done, &call.id, "decode-envelope").await;
     let record = done.record(&call.id).await;
     assert_eq!(
