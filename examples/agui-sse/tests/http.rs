@@ -539,7 +539,7 @@ async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
         panic!("expected complete durable snapshot");
     };
     assert!(page.continuation.is_none());
-    assert!(!page.tool_calls.is_empty());
+    assert_ne!(page.tool_calls, []);
     for call in page.tool_calls {
         assert_eq!(call.status, crabber::core::ToolCallStatus::Interrupted);
         assert_eq!(

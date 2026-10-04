@@ -573,15 +573,17 @@ fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, Projecti
 mod tests {
     use super::*;
 
-    fn output() -> (
-        Output,
-        mpsc::Sender<Frame>,
-        oneshot::Sender<Result<Vec<Frame>, ProjectionError>>,
-    ) {
+    struct OutputFixture {
+        output: Output,
+        sender: mpsc::Sender<Frame>,
+        terminal: oneshot::Sender<Result<Vec<Frame>, ProjectionError>>,
+    }
+
+    fn output() -> OutputFixture {
         let (sender, receiver) = mpsc::channel(32);
         let (terminal_sender, terminal) = oneshot::channel();
-        (
-            Output {
+        OutputFixture {
+            output: Output {
                 receiver,
                 terminal,
                 terminal_frames: Vec::new().into_iter(),
@@ -590,15 +592,19 @@ mod tests {
                 terminal_closed: false,
             },
             sender,
-            terminal_sender,
-        )
+            terminal: terminal_sender,
+        }
     }
 
     #[tokio::test]
     async fn buffered_sse_is_drained_before_terminal_in_both_channel_orderings() {
         use futures::StreamExt as _;
         for terminal_first in [false, true] {
-            let (mut output, sender, terminal) = output();
+            let OutputFixture {
+                mut output,
+                sender,
+                terminal,
+            } = output();
             let events: Vec<Event> = [
                 json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}),
                 json!({"type":"TEXT_MESSAGE_START", "messageId":"m", "role":"assistant"}),
@@ -637,9 +643,9 @@ mod tests {
             assert!(output.next().await.is_none());
             let mut decoder = crate::check::Decoder::default();
             decoder.push(&raw).unwrap();
-            let decoded = decoder.finish().unwrap();
-            assert_eq!(&decoded[..events.len()], events);
-            assert!(matches!(decoded.last(), Some(Event::RunFinished(_))));
+            let received = decoder.finish().unwrap();
+            assert_eq!(&received[..events.len()], events);
+            assert!(matches!(received.last(), Some(Event::RunFinished(_))));
         }
     }
 
@@ -647,7 +653,11 @@ mod tests {
     async fn terminal_failure_or_sender_loss_is_a_body_error_after_buffered_data() {
         use futures::StreamExt as _;
         for sender_lost in [false, true] {
-            let (mut output, sender, terminal) = output();
+            let OutputFixture {
+                mut output,
+                sender,
+                terminal,
+            } = output();
             let event =
                 serde_json::from_value(json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}))
                     .unwrap();
