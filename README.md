@@ -133,6 +133,49 @@ PostgreSQL, provider, extension, authentication and telemetry paths. Guides for
 [Datadog export](examples/datadog-export/README.md) explain their actual commands
 and credential requirements.
 
+Tool result transforms receive read-only call context and return
+`TransformOutput`. Bind on the exact tool name and normalized input, and
+register any protective redactor in the final phase:
+
+```rust,no_run
+use crabber::extension::{Registrar, ToolInput, TransformOutput};
+use serde_json::json;
+use std::sync::Arc;
+
+fn register_redactor(registrar: &mut Registrar) {
+    registrar.on_final_redaction(0, "shell-redactor", Arc::new(|context, mut result| {
+        Box::pin(async move {
+            if context.tool_name() == "shell"
+                && context.resolved()
+                && matches!(context.input(), ToolInput::Normalized(input)
+                    if input["command"] == "echo hello")
+            {
+                result["private"] = json!("[REDACTED]");
+            }
+            Ok(TransformOutput::new(result))
+        })
+    }));
+}
+```
+
+Use `on_result_transform` for ordinary reducers. Final redactors run after
+all ordinary handlers; a false `mark_error` never clears an existing error.
+After cancellation, only an accepted value protected by all remaining final
+redactors can be persisted, still as `Interrupted`; otherwise the result is
+fixed text `interrupted`. See the [public API, five paths and migration
+contract](docs/embedding.md#tool-result-transform-context) and the runnable
+[native example](examples/native-extension/README.md).
+
+Adoption is a clean contract break: update JSON callbacks to preserve the full
+envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
+Schema 5 stays unchanged, but old frozen plans fail with `PlanChanged`.
+Finish or settle unfinished runs before upgrading or rolling back; rollback
+pins the previous host revision and compatible guests. Await
+`Agent::close_extensions()` on a Tokio runtime after interrupting runs as
+needed. Its default 5s bound covers lease and cleanup draining; rollback and
+extension shutdown remain unbounded. The guide describes timeout observation,
+the detached reaper and human publication gates.
+
 For live HTTP streams, add the opt-in [crabber-agui adapter](crates/crabber-agui/README.md)
 and follow the [AG-UI contract](docs/ag-ui.md). Run
 `cargo run -p agui-sse -- --check` for the [credential-free SSE example](examples/agui-sse/README.md),

@@ -147,11 +147,11 @@ working and expose the unavailable value.
 
 ## Tool result transform context
 
-Status: **design gate for epic `crabber-miia` (request `crabber-r-u7l3`)**. This
-section is the contract the implementation slices build against. Nothing in it
-is implemented at the commit that introduces it; line references are to
-`a36b639`. Where this section and a slice description disagree, this section
-wins.
+This is the binding contract for epic `crabber-miia` (request
+`crabber-r-u7l3`). The [user-facing guide](#user-facing-guide) below explains
+adoption and operation. Historical implementation line references in the
+decisions are to `a36b639`. Where this section and a slice description disagree,
+this section wins.
 
 The `crabber/tool/result-transform` point changes from an untyped
 `{"result","is_error"}` waterfall into a typed chain: every handler receives
@@ -181,6 +181,53 @@ flag.
 
 All items below are new or changed. Items in `crabber-extension` are reachable
 as `crabber::extension::…`; items in `crabber-runtime` as `crabber::runtime::…`.
+
+The table maps the public surface to the detailed contract below. `Value` is
+`serde_json::Value`, and `CancellationToken` is `tokio_util::sync::CancellationToken`.
+
+| Surface | API and contract |
+| --- | --- |
+| Tagged input | `ToolInput::{Normalized(Value), Raw(Value), Unavailable { reason: InputUnavailable }}`; never bind a resolved tool on raw or unavailable input (D3, Recorded answer 1) |
+| Unavailable reason | `InputUnavailable::{PrepareFailed, Unresolved}`; explicit absence, never a default (D3) |
+| Outcome class | `ToolOutcomeClass::{Succeeded, ExecutionFailed, PermissionDenied, UnknownTool, PrepareFailed}`; `is_error(self) -> bool` and `as_str(self) -> &'static str`; immutable source outcome (D4) |
+| Phase | `TransformPhase::{Ordinary, FinalRedaction}`; final phase follows all ordinary handlers (D6) |
+| Handler output | `TransformOutput { pub result: Value, pub mark_error: bool }`; `new(Value) -> Self` sets false; `marked_error(Value) -> Self` sets true (D4) |
+| Driver outcome | `ToolResultOutcome::{Completed { result: Value, is_error: bool }, Failed { handler: String }, Interrupted { redacted: Option<Value> }}`; maps to the Persisted forms table (D2, D6) |
+| Native callback | `ResultTransformCallback = Arc<dyn Fn(ToolResultContext, Value) -> BoxFuture<'static, Result<TransformOutput, ExtensionError>> + Send + Sync>`; read-only context and mutable result (D4) |
+| Context construction | `ToolResultContext::new(tool_name: String, resolved: bool, input: ToolInput, call_id: ToolCallId, session_id: SessionId, run_id: RunId, class: ToolOutcomeClass) -> Self`; `with_cancellation(self, CancellationToken) -> Self`, `with_cleanup(self, CleanupTracker) -> Self`; runtime/test construction, no authority granted to a handler |
+| Name and binding | `ToolResultContext::tool_name(&self) -> &str`, `resolved(&self) -> bool`, `input(&self) -> &ToolInput`; provider-requested name and record-derived input (D3) |
+| Durable identities | `ToolResultContext::call_id(&self) -> &ToolCallId`, `session_id(&self) -> &SessionId`, `run_id(&self) -> &RunId`; unchanged on re-execution (D10) |
+| Status and phase | `ToolResultContext::class(&self) -> ToolOutcomeClass`, `is_error(&self) -> bool`, `phase(&self) -> TransformPhase`; driver supplies effective escalation and current phase (D4) |
+| Cancellation and cleanup | `ToolResultContext::cancellation(&self) -> &CancellationToken`, `cleanup(&self) -> &CleanupTracker`; per-call child token and current handler's mount tracker (D5, D7) |
+| Native registrations | `Registrar::on_result_transform(&mut self, order: i32, id: impl Into<String>, cb: ResultTransformCallback)` and `on_final_redaction` with the same arguments; ordinary and final phases respectively |
+| JSON registrations | Existing `Registrar::on_transform(ToolResultTransform::ID, order, id, cb: Callback)` is ordinary; `on_final_redaction_json(&mut self, order: i32, id: impl Into<String>, cb: Callback)` is final; both use the exact envelope |
+| JSON adapter | `json_result_transform(cb: Callback) -> ResultTransformCallback`; validates context and output, no token or cleanup in JSON |
+| Envelope helpers | `result_envelope(context: &ToolResultContext, result: Value) -> Value`; `parse_result_envelope(context: &ToolResultContext, reply: Value) -> Result<TransformOutput, EnvelopeError>`; exact keys and equality rules in JSON envelope |
+| Envelope errors | `EnvelopeError::{NotAnObject, MissingField(&'static str), UnknownField, ContextChanged, MarkErrorNotBool}`; violations follow D2 |
+| Chain driver | `Dispatcher::transform_tool_result(&self, context: ToolResultContext, seed: TransformOutput) -> ToolResultOutcome` (async); seed is never accepted; driver owns acceptance outside callback futures |
+| Generic dispatch | `Dispatcher::transform::<ToolResultTransform>` and `transform_pinned::<ToolResultTransform>` reject with `ExtensionError::Rejected(ToolResultTransform::ID)` after caller migration (`crabber-8q7h`); use the driver |
+| Point identity | `ToolResultTransform::ID` remains `crabber/tool/result-transform`; registration identity includes phase in `"{order}:{mount_seq}:{phase}"` |
+| Cleanup task handle | `CleanupTracker::detached() -> Self`, `spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>` (`F: Future + Send + 'static`, `F::Output: Send + 'static`); tracked until finished, even if callback or handle is dropped |
+| Cleanup signals | `CleanupTracker::closing(&self) -> tokio_util::sync::WaitForCancellationFutureOwned`, `is_closing(&self) -> bool`, `pending(&self) -> usize`; callbacks cannot close or join |
+| Cleanup owner | `CleanupOwner::new() -> Self` and `Default`, `tracker(&self) -> CleanupTracker`, `close(&self)`, `join(&self, bound: Duration) -> Result<(), CleanupJoinTimeout>` (async); never aborts a task |
+| Cleanup timeout | `CleanupJoinTimeout { pub pending: usize }`; owner join exceeded its bound |
+| Close configuration | `Registry::with_close_timeout(self, bound: Duration) -> Self`, `with_close_observer(self, observer: MountCloseObserver) -> Self`; settings shared by clones, before first mount |
+| Mount timeout observation | `MountCloseTimeout { pub extension: String, pub bound: Duration, pub leases: usize, pub pending_tasks: usize }`; `MountCloseObserver = Arc<dyn Fn(&MountCloseTimeout) + Send + Sync>`; local typed observation (D7) |
+| Close errors | `ExtensionError::MountCloseTimeout { extension: String }` and `ExtensionError::RegistryClosed`; timeout does not reopen a terminal registry |
+| Registry lifecycle | Existing async `MountHandle::close(&self) -> Result<(), ExtensionError>` and `Registry::close_all(&self) -> Result<(), ExtensionError>`; bounded drain and detached reaper; `try_acquire(&self, session: &SessionId) -> Result<RunPlan, ExtensionError>`; existing `acquire` panics after terminal close |
+| Fingerprint | Existing `compute_fingerprint` signature; contract component version `2` is added for every plan (D9) |
+| Contract version | `RESULT_TRANSFORM_CONTRACT_VERSION: u32 = 2` (`crabber-extension`); clean ABI break |
+| Redaction deadline | `FINAL_REDACTION_DEADLINE: Duration = 500ms` (`crabber-extension`); one deadline from observed cancellation |
+| Close default | `DEFAULT_MOUNT_CLOSE_TIMEOUT: Duration = 5s` (`crabber-extension`); lease and cleanup drain only |
+| Failure text | `result_transform_failed_message(handler: &str) -> String` (`crabber-extension`); exactly `result transform failed: <handler id>` |
+| Live interrupt bound | `INTERRUPT_SETTLEMENT_BOUND: Duration = 1s` (`crabber-runtime`); test assertion, not a store-write timer |
+| Interrupted text | `INTERRUPTED_RESULT_TEXT: &str = "interrupted"` (`crabber-runtime`); bare fixed settlement text |
+| Pre-stage identity | `TOOL_PIPELINE_HANDLER_ID: &str = "crabber/tool-pipeline"` (`crabber-runtime`); fixed failure identifies host pre-stage |
+| Host pre-stage | `ToolPipeline::transform_result(&self, context: &ToolResultContext, tool: &ToolInfo, result: Value) -> Result<TransformOutput, String>` (async); executed success only, before registry chain (D1) |
+| Host cleanup injection | `OrchestratorBuilder::pipeline_cleanup(self, tracker: CleanupTracker) -> Self`; host retains and joins its `CleanupOwner` |
+| Runtime close observer | `Observer::mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout)`; default no-op, facade forwards to registered observers |
+| Facade close | `AgentBuilder::extension_close_timeout(self, bound: Duration) -> Self`; `Agent::close_extensions(&self) -> Result<(), ExtensionError>` (async), terminal when a registry exists |
+| WASM cancellable call | `LoadedModule::call_cancellable(&self, interface: &str, function: &str, args: &[Val], cancellation: &CancellationToken) -> Result<Val, WasmError>` (async, `crabber::wasm`, feature `wasm`); existing `call` signature unchanged (Recorded answer 2) |
 
 #### Types (`crabber-extension`, new module `result_transform`, re-exported from the crate root)
 
@@ -946,12 +993,225 @@ after `klyf`, `ctj9`, `2xrl` and `0bks`; `v1we` after `orgu`; `eig3` after
 
 ### User-facing guide
 
-Reserved for `crabber-mx0r`: usage examples, the outcome-path matrix written
-for extension authors, and the adoption and rollback procedure. Until then the
-contract above is the reference. In short: adopting means rewriting every
-`ToolResultTransform` handler and every `ToolPipeline` implementation against
-the API above and rebuilding WASM guests; runs frozen before the upgrade do not
-resume (`RuntimeError::PlanChanged`); rolling back means reverting the
-revision, with no data migration in either direction. Unfinished runs must be
-settled before either move, or abandoned afterwards through
-[fenced abandonment](fenced-abandon.md).
+Native result handlers receive `ToolResultContext` and the current JSON result
+separately. Register a reducer with `on_result_transform`, and register any
+redactor relied on for protection with `on_final_redaction`. The
+[native example](../examples/native-extension/README.md) binds on the exact
+`shell` name and `ToolInput::Normalized` command, changes the result, and
+returns `TransformOutput::new(result)`. The
+[AG-UI example](../examples/agui-sse/README.md) uses the same final phase.
+
+#### Source and guarantees
+
+The durable call record supplies the call name, IDs and input, and the execution
+path supplies the outcome class. Input is never reconstructed from output,
+reparsed by a transform or normalized again. `ToolPrepare` is not rerun.
+Context is routing and binding data: it grants no permissions and cannot change
+permission decisions, identities, lease checks or store fences. A handler can
+change only `result`, plus request escalation with `mark_error`. The class
+never changes; effective `is_error` is the class's error bit OR every earlier
+`mark_error`, including the pre-stage. Returning false cannot clear an error.
+
+`ToolPipeline::transform_result` is a host-owned pre-stage for executed success
+only. It runs inside the execution cancellation select, with the child token
+and host-supplied cleanup tracker. Its output becomes the chain's seed, never
+an accepted fallback. An error or panic discards its text, skips the registry
+chain and uses D2 with handler ID `crabber/tool-pipeline`; cancellation during
+it uses the fixed interrupted text.
+
+The registry chain is the final layer before persistence on all five paths.
+All ordinary handlers run first, then all final redactors, with each phase
+sorted by `(order, scope_rank, mount_seq, registration_seq)`. A final redactor
+with a smaller `order` still follows every ordinary handler. One transformed
+value supplies the durable result, tool message part, settlement event and
+next provider input; no original or intermediate result is written there.
+This guarantee concerns result content, not the already persisted arguments
+or assistant tool-call message.
+
+A callback error, panic, malformed envelope, changed context or closing mount
+fails the chain with D2 before observed cancellation: status `Failed`, error
+true and JSON serialization of the string
+`result transform failed: <handler id>`. Remaining handlers are skipped, and
+handler-authored error text and intermediate output are discarded. The
+registered ID is static configuration and is the only handler text retained.
+A malformed JSON reply is never treated as a bare replacement result.
+
+#### Path matrix
+
+| Path | Immutable class | Input and binding | Seed | Host pre-stage |
+| --- | --- | --- | --- | --- |
+| Executed success | `Succeeded` | `Normalized(record.arguments)` after `ToolPrepare`, exactly as supplied to guards and policy; resolved | executed result | yes |
+| Executor or `ToolExecute` error | `ExecutionFailed` | same `Normalized` input; resolved | error text as a JSON string | no |
+| Permission denial | `PermissionDenied` | same `Normalized` input; resolved | JSON string `permission denied` | no |
+| Unknown requested tool | `UnknownTool` | `Raw` provider arguments, unvalidated and unnormalized; unresolved | JSON string `unknown tool: <name>` | no |
+| Preparation failure | `PrepareFailed` | `Unavailable { reason: PrepareFailed }`; resolved | preparation error text as a JSON string | no |
+
+`tool_name()` is always the provider-requested name; `resolved()` is false
+only for `UnknownTool`. Raw input can be parsed JSON or a JSON string holding
+unparseable provider text. The record reader in Recorded answer 1 also covers
+defensive old/malformed records: unknown input without an authoritative raw
+value is `Unavailable { reason: Unresolved }`. Bind a tool-specific reducer
+only on its name, resolved status and normalized input; raw/unavailable input
+must not match. Error seeds also pass through the final chain.
+
+#### Cancellation, acceptance and settlement
+
+Each live call gets one child of the run token. The driver polls cancellation
+first around every callback. It commits each valid callback output into its
+own acceptance state before invoking the next handler. Neither the original
+seed nor pre-stage output is accepted. An already cancelled token on entry
+returns fixed interruption without invoking a handler.
+
+After cancellation is observed, ordinary handlers are skipped and their
+in-flight future is dropped. An accepted value can be retained only if every
+remaining final redactor succeeds under the one
+`FINAL_REDACTION_DEADLINE` (500ms) measured from observed cancellation, with at
+least one final redactor running after cancellation or in flight when it was
+observed. Such an in-flight final redactor is allowed to finish on the accepted
+value. A final redactor running on the seed is dropped; it has no accepted
+fallback. Native final redactors see the cancelled token and must perform their
+protection work despite it.
+
+With no accepted value, no final redactor, a failing/panicking redactor,
+malformed reply, changed context, closing mount or expired deadline, the
+outcome is `Interrupted` with bare text `interrupted`. Cancellation takes
+precedence over D2 once observed. A protected value is JSON serialized and
+persisted with status `Interrupted` and `is_error` true. A driver that already
+returned `Completed` before cancellation persists normally; the run observes
+interruption at its next check. See Persisted forms for the exact encoding
+and notification set for every outcome.
+
+`INTERRUPT_SETTLEMENT_BOUND` (1s) is the live-run test bound from cancellation
+to durable call settlement. It is not a timer around storage writes. In
+`Parallel` mode interrupted calls bypass ordered settlement; the first error
+drops sibling futures and unfinished siblings receive fixed settlement. A
+sibling's accepted value can therefore be lost during final redaction, but
+unredacted content cannot replace the fixed text. Retention of the protected
+value is deterministic only for a single call or `Sequential` execution.
+Lease loss takes precedence over cancellation reporting and this process
+settles nothing after losing its lease.
+
+For protected `Interrupted`, `EventPublished` and `ToolSettled` notifications
+run asynchronously; for fixed `Interrupted`, only `EventPublished` does.
+Callbacks cannot delay durable sibling settlement, but their delivery retains
+the full `PlanLease`, so extension close may remain pending after
+`RunHandle::done` completes. Normal `Completed` and `Failed` notifications
+remain awaited. Existing `StateSink` context is preserved where present;
+notification errors are best-effort, and normal terminal-run fencing rejects
+post-terminal state writes. Completion of notification delivery does not
+guarantee a successful post-terminal callback commit.
+
+#### Cleanup and close
+
+Spawn child/process cleanup through `context.cleanup().spawn(...)` before
+awaiting work that cancellation may drop. Tasks remain tracked when the callback
+or returned join handle is dropped. A callback can await `closing()`, inspect
+`is_closing()` and `pending()`, but cannot close or join the tracker. Tasks
+spawned after close are still tracked. A detached tracker has no owner, never
+signals close and is not joined automatically; direct `ToolPipeline` hosts
+supply `CleanupOwner::tracker()` via `pipeline_cleanup` and join the owner.
+
+Call and await `Agent::close_extensions` or `Registry::close_all` on a Tokio
+runtime. Interrupt runs first when the host needs them to stop; close does not
+interrupt them. Registry close is terminal before any mount is deactivated;
+all clones reject subsequent mounting and plan acquisition, even after a
+timeout. Direct `Registry::acquire` panics after close; `try_acquire` returns
+`RegistryClosed`. An agent without extensions has no registry and keeps
+working after its no-op close. Closing one `MountHandle` is not terminal and
+new plans omit it: do not remove a protective redactor while admitting runs.
+
+Each mount's leases and cleanup tracker share one default 5s drain bound,
+configured before mounting. Expiry returns
+`ExtensionError::MountCloseTimeout { extension }` and sends a local typed
+`MountCloseTimeout` observation containing extension ID, bound, remaining
+leases and pending tasks. The facade forwards it through
+`Observer::mount_close_timed_out`; it is not a durable run event. Registry
+close attempts all mounts in reverse mount order and returns the first error.
+
+The detached mount close task remains the reaper after timeout. It never
+aborts cleanup: it waits for leases and tasks, then runs rollback and
+`Extension::shutdown`. Cleanup owning a child must react to close by killing
+it (`start_kill`, with `kill_on_drop` as backstop) and retain its permit until
+`wait()` reaps it. Reaper lifetime depends on the Tokio runtime remaining
+alive. A later mount close waits again and can return success after the reaper
+finishes. **The bound covers lease and tracker draining only.** Rollback and
+`Extension::shutdown` remain unbounded; that follow-up is tracked as
+`crabber-tyr5`.
+
+#### Recovery and unsupported context
+
+D10 uses the stored record to decide recovery behavior. A `Running` call, or a
+non-`retry_safe` `Pending` call on a run that is not `Paused`, receives fixed
+`Interrupted` settlement with no tool-authored payload and no pre-stage,
+transform or final redactor. Every other `Pending` call is re-claimed and
+re-executed through executor, pre-stage where applicable and full chain with
+the same durable IDs. Class and input come only from the record;
+`ToolPrepare` is not rerun. `resume` and `recover` expose no caller cancellation
+source. Their token is cancelled on lease loss, which drops work without
+settling; the live-run interruption bound does not cover those paths.
+
+JSON callbacks receive the exact envelope above and must preserve its whole
+`context`, modifying `result` and optionally setting `mark_error` true. They
+receive neither token nor cleanup tracker and are interrupted by dropping the
+future. WASM uses the same full envelope in `output-json`, with the tagged
+input separately in `executed-input-json`; all six existing WIT arguments and
+reply rules are listed in Recorded answer 2. `unchanged` retains the current
+result without escalation; `json` must return a full valid envelope. Errors,
+traps, invalid strings/variants and size violations follow D2. The guest's
+`turn` stays empty, and workspace identity is not newly exposed.
+
+WASM handlers are ordinary only and cannot supply the final protection
+guarantee. Mount a native or JSON final redactor when protection must hold
+under cancellation. WASM execution uses token-driven epoch interruption with
+no opt-out; `call_cancellable` also permits cancellation while waiting on the
+module mutex or a host import. Existing `LoadedModule::call` behaves as before
+with a token that is never cancelled. Input appears twice in the new WASM
+arguments, so large inputs reach `max_input_bytes` sooner.
+
+#### Schema, adoption and rollback
+
+This is contract version 2, a clean ABI break with no shim or feature flag.
+The point ID stays `crabber/tool/result-transform`. Every plan fingerprint
+includes `contract:crabber/tool/result-transform` version `2`, even without
+handlers, and handler identity includes its phase. Frozen old plans fail the
+strict resume check with `RuntimeError::PlanChanged`.
+
+The durable schema stays 5; there is no migration. Unknown-tool arguments now
+also reside in the call record under
+`{"$crabber_unknown_tool":{"raw":...}}`. This duplicates data already in the
+assistant tool-call message and increases snapshot size. Hosts with different
+access policies for records and messages must account for that second copy.
+Runtime-only `$crabber_` sentinel keys cannot be spoofed by sole-key prepared
+arguments: they become preparation failures with `reserved argument key`.
+
+Before upgrading, finish or settle unfinished runs. Upgrade the host and
+rewrite native handlers to typed context/output, JSON handlers to the exact
+envelope, and every `ToolPipeline::transform_result` implementation to its
+new signature. Register protection in the final phase, configure and await
+cleanup ownership, and rebuild WASM guests to preserve context and return the
+full envelope. WIT signatures and package `crabber:extensions@0.1.0` stay
+unchanged; a WIT-compatible old guest returning a bare result still fails the
+new envelope contract. Run the credential-free native, WASM and workspace
+checks; service-specific PostgreSQL/provider verification remains manual.
+
+Roll back by pinning the previous host revision and its compatible guest
+artifacts, after finishing or settling unfinished runs. No data migration is
+needed in either direction. Runs frozen under the other contract cannot be
+resumed; after either move, inspect recovery results and use
+[fenced abandonment](fenced-abandon.md) for stranded runs once eligible.
+Rollback restores the previous protection behavior, so treat it as a host
+policy decision, not a way to resume a new-contract frozen run.
+
+#### Human gates
+
+D11 requires explicit user approval to merge to `main`, tag/release, reply on
+`bn request crabber-r-u7l3` or record acceptance. Agents may prepare release
+notes and response drafts only. A green local check does not perform those
+gates. The standalone `testdata/result-transform-probe/` depends on a full
+published Git revision. Fetching this private repository uses existing
+authorized Git access; probe execution needs no provider/runtime credentials
+or task-specific environment variables. It runs `cargo test` and checks normalized binding, status escalation and a reducer then
+final-redactor chain. It is separate from the path-based external consumer
+that `cargo xtask check` runs and is not part of that gate. Recorded answer 6
+binds its final pin, reachable merge revision and clean-clone publication
+verification; those publication and acceptance steps remain human-gated.
