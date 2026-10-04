@@ -191,7 +191,7 @@ async fn one_empty_field_is_unavailable_while_the_other_is_exposed() {
         .unwrap();
         let run = agent.prompt(None, "first").await.unwrap();
         run.done().await.unwrap();
-        assert_eq!(seen.tool(), [expected.clone()]);
+        assert_eq!(seen.tool(), std::slice::from_ref(&expected));
         assert_eq!(seen.assemble(), vec![expected; 2]);
     }
 }
