@@ -51,6 +51,15 @@ impl PathProbe {
         result: Value,
     ) {
         let record = done.record(&call.id).await;
+        let run = done
+            .harness
+            .store
+            .get_run(&done.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.id, done.run_id);
+        assert_eq!(run.session_id, done.session_id);
         assert_eq!(
             record.result.as_ref().unwrap().status,
             if class.is_error() {
@@ -68,7 +77,11 @@ impl PathProbe {
         assert_eq!(record.id, call.id);
         assert_eq!(context.run_id(), &record.run_id);
         assert_eq!(record.run_id, done.run_id);
-        assert_eq!(context.session_id(), &done.session_id);
+        assert_eq!(context.run_id(), &run.id);
+        assert_eq!(context.session_id(), &run.session_id);
+        let (message, _, _) = done.tool_message(&call.id).await;
+        assert_eq!(message.session_id, run.session_id);
+        assert_eq!(message.run_id.as_ref(), Some(&run.id));
         assert_eq!(context.class(), class);
         assert_eq!(context.resolved(), class != ToolOutcomeClass::UnknownTool);
         assert_eq!(context.input(), &input);
