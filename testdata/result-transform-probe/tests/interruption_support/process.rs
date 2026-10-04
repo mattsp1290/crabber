@@ -20,7 +20,8 @@ pub(super) fn spawn(
         .env(child::MODE_ENV, "reduce")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // A child that fails before reporting ready explains itself here.
+        .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .map_err(|failure| error(&failure))?;

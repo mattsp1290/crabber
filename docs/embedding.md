@@ -211,7 +211,7 @@ writes readiness on its pipe. They inspect durable and live interrupted
 settlement, then hold cleanup before `wait()` to prove the permit remains
 held through reaping. They check the PID is gone (Linux), pipe EOF and restored
 permit after close joins cleanup. Both MemoryStore and PostgreSQL use the same
-assertions. PostgreSQL tests can skip without configuration; a live verification
+assertions. These in-repository PostgreSQL tests can skip without configuration; a live verification
 must set `CRABBER_REQUIRE_POSTGRES=1` as well as `CRABBER_TEST_POSTGRES_URL`.
 
 The [standalone probe](../testdata/result-transform-probe/README.md) repeats
@@ -1085,8 +1085,9 @@ permission decisions, identities, lease checks or store fences. A handler can
 change only `result`, plus request escalation with `mark_error`. The class
 never changes; effective `is_error` is the class's error bit OR every earlier
 `mark_error`, including the pre-stage. Returning false cannot clear an error.
-The context and the [JSON envelope](#json-envelope) are the whole contract:
-there is no Eino-style attachment channel and no raw-JSON envelope beside them.
+A handler receives the typed context, or for JSON and WASM handlers the
+[JSON envelope](#json-envelope), and nothing else: Crabber offers no Eino-style
+attachment channel and no second, unvalidated raw-JSON form of the envelope.
 
 `ToolPipeline::transform_result` is a host-owned pre-stage for executed success
 only. It runs inside the execution cancellation select, with the child token

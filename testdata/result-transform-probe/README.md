@@ -14,10 +14,14 @@ From this directory, run exactly:
 cargo test
 ```
 
-No task-specific environment variables are required. The tests run real
-`Agent`/`Orchestrator` execution with public `FakeProvider`, `MemoryStore`,
-extensions and tools. Callback observations are asserted after the run,
-outside callbacks whose panics the runtime contains.
+No task-specific environment variables are required. A complete run reports
+10 passed tests: 2 in `public_contract`, 5 in `paths_binding_tamper` and 3 in
+`interruption`. Fewer means the checkout predates these proofs.
+
+The tests run real `Agent`/`Orchestrator` execution with public
+`FakeProvider`, `MemoryStore`, extensions and tools. The runtime contains
+panics inside callbacks, so every proof is asserted after the run from what
+the callbacks recorded and from durable state.
 
 `tests/public_contract.rs`:
 
@@ -68,10 +72,19 @@ For the durable PostgreSQL proofs of both interruption cases, run:
 cargo test --features postgres -- --nocapture
 ```
 
-With `CRABBER_TEST_POSTGRES_URL` set, the tests use that disposable
-PostgreSQL 14+ database. Without it they start their own `postgres:14`
-container, which needs a running Docker daemon. They never skip: with neither,
-they fail.
+The `interruption` binary then reports 5 passed tests, and each PostgreSQL
+test prints which database it used. With `CRABBER_TEST_POSTGRES_URL` set to a
+non-empty value, the tests use that disposable PostgreSQL 14+ database.
+Without it they start their own `postgres:14` container, which needs a
+reachable Docker daemon; the container is removed when the test ends or the
+run is interrupted. They never skip: with neither, they fail.
+
+The interruption proofs assert the runtime's own bounds: settlement within
+`INTERRUPT_SETTLEMENT_BOUND` (1 second) and accepted final redaction within
+`FINAL_REDACTION_DEADLINE` (500 milliseconds), measured from `interrupt()` to
+the run handle resolving. Use a database on the same host or network; a slow
+link to a remote database can exceed them. The process-gone check uses
+`/proc` and runs on Linux only.
 
 This probe is excluded from `cargo xtask check` and from CI. Run it at the
 merge commit that published the pin, not at the pinned commit itself, whose

@@ -11,7 +11,8 @@ crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "fb179621
 async-trait = "0.1"
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
-testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
+# `watchdog` removes the container when the test run is interrupted (Ctrl-C).
+testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"], optional = true }
 
 [features]
 default = []

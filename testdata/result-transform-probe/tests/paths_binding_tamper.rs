@@ -10,8 +10,9 @@ use crabber::{
         ToolInfo, ToolResultStatus,
     },
     extension::{
-        Extension, Point, Registrar, Scope, ToolInput, ToolOutcomeClass, ToolResultContext,
-        ToolResultTransform, TransformOutput, TransformPhase, result_transform_failed_message,
+        Extension, Point, Registrar, Scope, ToolInput, ToolOutcomeClass, ToolPrepare,
+        ToolResultContext, ToolResultTransform, TransformOutput, TransformPhase,
+        result_transform_failed_message,
     },
     runtime::ExecutionMode,
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
@@ -64,12 +65,27 @@ struct Recorder {
     executed: Mutex<Vec<(String, Value)>>,
 }
 impl Recorder {
-    /// Pass-through handlers in both phases that only record what they saw.
+    /// Pass-through handlers in both phases that only record what they saw,
+    /// plus a `ToolPrepare` rewrite so normalized input differs from the
+    /// provider's raw arguments.
     fn extension(self: &Arc<Self>) -> Arc<Mounted> {
         let recorder = self.clone();
         Arc::new(Mounted(
             "probe/recorder",
             Arc::new(move |registrar| {
+                registrar.on_transform(
+                    ToolPrepare::ID,
+                    0,
+                    "trim-command",
+                    Arc::new(|mut envelope| {
+                        Box::pin(async move {
+                            if let Some(command) = envelope["input"]["command"].as_str() {
+                                envelope["input"]["command"] = json!(command.trim());
+                            }
+                            Ok(envelope)
+                        })
+                    }),
+                );
                 let seen = recorder.clone();
                 registrar.on_result_transform(
                     0,
@@ -344,8 +360,10 @@ fn assert_error_path(
 #[tokio::test]
 async fn execution_error_keeps_class_and_normalized_input() {
     timeout(BOUND, async {
+        // The provider sends untrimmed text; `ToolPrepare` normalizes it.
+        let raw = json!({"command": " inspect "});
         let arguments = json!({"command": "inspect"});
-        let path = run_path("failing", arguments.clone()).await;
+        let path = run_path("failing", raw).await;
         let seed = assert_error_path(
             &path,
             "failing",
@@ -366,8 +384,10 @@ async fn execution_error_keeps_class_and_normalized_input() {
 #[tokio::test]
 async fn permission_denial_keeps_class_and_never_executes() {
     timeout(BOUND, async {
+        // The provider sends untrimmed text; `ToolPrepare` normalizes it.
+        let raw = json!({"command": " inspect "});
         let arguments = json!({"command": "inspect"});
-        let path = run_path("denied", arguments.clone()).await;
+        let path = run_path("denied", raw).await;
         let seed = assert_error_path(
             &path,
             "denied",
@@ -386,7 +406,8 @@ async fn permission_denial_keeps_class_and_never_executes() {
 #[tokio::test]
 async fn unknown_tool_reports_unresolved_name_and_raw_input() {
     timeout(BOUND, async {
-        let arguments = json!({"command": "inspect"});
+        // Unknown tools are never prepared: the raw text stays untrimmed.
+        let arguments = json!({"command": " inspect "});
         let path = run_path("missing", arguments.clone()).await;
         let seed = assert_error_path(
             &path,
@@ -575,6 +596,13 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
             let recorder = Arc::new(Recorder::default());
             let later = Arc::new(AtomicUsize::new(0));
             let finals = Arc::new(AtomicUsize::new(0));
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let seen_by_tamper = received.clone();
+            let label = match &case {
+                Tamper::Context(field, _) => format!("context.{field}"),
+                Tamper::ExtraKey => "extra top-level key".into(),
+                Tamper::Honest => "honest control".into(),
+            };
             let (tamper, later_ran, finals_ran) = (case.clone(), later.clone(), finals.clone());
             let chain = Arc::new(Mounted(
                 "probe/tamper-chain",
@@ -591,13 +619,16 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
                         }),
                     );
                     let tamper = tamper.clone();
+                    let received = seen_by_tamper.clone();
                     registrar.on_transform(
                         ToolResultTransform::ID,
                         2,
                         HANDLER,
                         Arc::new(move |mut envelope| {
                             let tamper = tamper.clone();
+                            let received = received.clone();
                             Box::pin(async move {
+                                received.lock().unwrap().push(envelope["result"].clone());
                                 envelope["result"] = json!(AUTHORED);
                                 match tamper {
                                     Tamper::Context(field, value) => {
@@ -657,19 +688,23 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
             let result = record.result.as_ref().unwrap();
             durable.assert_absent(SECRET);
             durable.assert_absent(INTERMEDIATE);
+            // The intermediate value was accepted before the tamper handler ran,
+            // so its absence below is a real protection, not an unreached value.
+            assert_eq!(*received.lock().unwrap(), [json!(INTERMEDIATE)], "{label}");
             let ran = (later.load(Ordering::SeqCst), finals.load(Ordering::SeqCst));
             if matches!(case, Tamper::Honest) {
-                assert_eq!(result.status, ToolResultStatus::Completed);
-                assert_eq!(result.content, text(&json!(AUTHORED)));
-                assert_eq!(ran, (1, 1));
+                assert_eq!(result.status, ToolResultStatus::Completed, "{label}");
+                assert_eq!(result.content, text(&json!(AUTHORED)), "{label}");
+                assert_eq!(ran, (1, 1), "{label}");
             } else {
-                assert_eq!(result.status, ToolResultStatus::Failed);
+                assert_eq!(result.status, ToolResultStatus::Failed, "{label}");
                 assert_eq!(
                     result.content,
-                    text(&json!(result_transform_failed_message(HANDLER)))
+                    text(&json!(result_transform_failed_message(HANDLER))),
+                    "{label}"
                 );
                 // The chain stops: no later handler and no final redactor runs.
-                assert_eq!(ran, (0, 0));
+                assert_eq!(ran, (0, 0), "{label}");
                 durable.assert_absent(AUTHORED);
             }
         }

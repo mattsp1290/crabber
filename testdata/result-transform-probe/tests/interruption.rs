@@ -147,28 +147,32 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
         assert_eq!(probes.permit_count(), 0);
         let interrupted = Instant::now();
         run.interrupt();
-        timeout(INTERRUPT_SETTLEMENT_BOUND, async {
-            assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
-            assert_settlement(
-                store.as_ref(),
-                &session,
-                &run_id,
-                &probes,
-                if accepted {
-                    REDACTED_OUTPUT
-                } else {
-                    INTERRUPTED_RESULT_TEXT
-                },
-            )
-            .await;
-        })
-        .await
-        .expect("durable interrupt settlement bound");
-        assert!(interrupted.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
-        assert_eq!(probes.redacted.observed(), accepted);
+        let status = timeout(INTERRUPT_SETTLEMENT_BOUND, run.done())
+            .await
+            .expect("durable interrupt settlement bound")
+            .unwrap()
+            .status;
+        // Only the runtime's settlement is timed; the reads below are the
+        // probe's own work and must not count against the runtime's bounds.
+        let settled_after = interrupted.elapsed();
+        assert_eq!(status, RunStatus::Interrupted);
+        assert!(settled_after <= INTERRUPT_SETTLEMENT_BOUND);
         if accepted {
-            assert!(interrupted.elapsed() <= FINAL_REDACTION_DEADLINE);
+            assert!(settled_after <= FINAL_REDACTION_DEADLINE);
         }
+        assert_settlement(
+            store.as_ref(),
+            &session,
+            &run_id,
+            &probes,
+            if accepted {
+                REDACTED_OUTPUT
+            } else {
+                INTERRUPTED_RESULT_TEXT
+            },
+        )
+        .await;
+        assert_eq!(probes.redacted.observed(), accepted);
         let mut live_settlements = 0;
         while let Some(event) = events.recv().await.unwrap() {
             let serialized = serde_json::to_string(&*event).unwrap();
@@ -226,16 +230,26 @@ async fn postgres_interrupt(accepted: bool) {
         testcontainers::{ImageExt, runners::AsyncRunner},
     };
     let mut container = None;
-    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
-        Ok(url) => url,
-        Err(_) => {
+    // An empty value counts as unset rather than as a malformed URL.
+    let configured = std::env::var("CRABBER_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let url = match configured {
+        Some(url) => {
+            println!("PostgreSQL interruption proof: using CRABBER_TEST_POSTGRES_URL");
+            url
+        }
+        None => {
             let node = Postgres::default().with_tag("14").start().await.expect(
                 "set CRABBER_TEST_POSTGRES_URL or run Docker so the probe can start postgres:14",
             );
+            // The Docker host is not always this machine (remote DOCKER_HOST).
+            let host = node.get_host().await.unwrap();
             let port = node.get_host_port_ipv4(5432).await.unwrap();
             container = Some(node);
+            println!("PostgreSQL interruption proof: started postgres:14 on {host}:{port}");
             // Default superuser of the throwaway container, not a credential.
-            format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres")
+            format!("postgres://postgres:postgres@{host}:{port}/postgres")
         }
     };
     crabber::session::PostgresStore::migrate(&url)
