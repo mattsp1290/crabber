@@ -277,3 +277,44 @@ async fn failure_on_retry_makes_no_second_provider_call() {
     assert_eq!(fake.requests().len(), 1);
     assert_eq!(fake.requests()[0].system.as_deref(), Some("base\nfirst"));
 }
+
+struct PanicPayload;
+impl Drop for PanicPayload {
+    fn drop(&mut self) {
+        panic!("secret payload destructor");
+    }
+}
+fn panic_with_payload() -> Result<Option<String>, ExtensionError> {
+    std::panic::panic_any(PanicPayload)
+}
+#[tokio::test]
+async fn panic_payload_destructor_settles_failed_without_provider_call() {
+    let registry = Registry::new();
+    mount(&registry, "payload", Scope::Global, |r| {
+        r.prompt_contributor(
+            0,
+            "payload",
+            Arc::new(|_| Box::pin(async { panic_with_payload() })),
+        );
+    })
+    .await;
+    let store = Arc::new(MemoryStore::new());
+    let fake = FakeProvider::scripted(vec![text_script("unused")]);
+    let handle = runtime(store.clone(), &fake, registry)
+        .start(request())
+        .await
+        .unwrap();
+    let id = handle.run_id().clone();
+    let error = handle.done().await.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "extension: prompt contribution failed: payload"
+    );
+    let run = store.get_run(&id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(
+        run.error.as_deref(),
+        Some("extension: prompt contribution failed: payload")
+    );
+    assert_eq!(fake.requests().len(), 0);
+}

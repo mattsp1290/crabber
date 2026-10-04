@@ -396,9 +396,16 @@ impl<F: Future> Drop for InFlight<F> {
         if let Some(future) = self.0.take()
             && let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(move || drop(future)))
         {
-            // The payload's own destructor may panic too.
-            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || drop(payload)));
+            discard_panic_payload(payload);
         }
+    }
+}
+
+/// A caught extension panic may own a destructor that panics again. Contain
+/// disposal and forget any secondary payload, whose destructor is also untrusted.
+pub(crate) fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
+    if let Err(secondary) = std::panic::catch_unwind(AssertUnwindSafe(move || drop(payload))) {
+        std::mem::forget(secondary);
     }
 }
 

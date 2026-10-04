@@ -1,5 +1,5 @@
 //! Named, bounded native prompt contributions collected anew for each model attempt.
-use crate::dispatch::{InFlight, with_mount};
+use crate::dispatch::{InFlight, discard_panic_payload, with_mount};
 use crate::{CleanupTracker, ExtensionError, WorkspaceContext};
 use crabber_core::{RunId, SessionId, TurnId};
 use futures::{FutureExt, future::BoxFuture};
@@ -184,9 +184,16 @@ pub async fn collect_prompt_contributions(
             () = tokio::time::sleep_until(deadline) => None,
             output = &mut future => Some(output),
         };
+        // Normalize arbitrary panic payloads before any early return can drop
+        // them outside containment, including when completion races cancellation.
+        let output = output.map(|result| result.map_err(discard_panic_payload));
         if parent.is_cancelled() {
             child.cancel();
             return PromptContributionOutcome::Interrupted;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            child.cancel();
+            return failed();
         }
         let Some(output) = output else {
             child.cancel();
@@ -536,5 +543,103 @@ mod tests {
                 failed("close")
             );
         }
+    }
+    struct PanicPayload;
+    struct SecondaryPayload;
+    impl Drop for PanicPayload {
+        fn drop(&mut self) {
+            std::panic::panic_any(SecondaryPayload);
+        }
+    }
+    impl Drop for SecondaryPayload {
+        fn drop(&mut self) {
+            panic!("secondary payload must never be dropped");
+        }
+    }
+    fn panic_with_payload() -> Result<Option<String>, ExtensionError> {
+        std::panic::panic_any(PanicPayload)
+    }
+    #[tokio::test]
+    async fn panic_payload_destructors_cannot_escape_failure_or_cancellation() {
+        for cancelled in [false, true] {
+            let parent = CancellationToken::new();
+            let callback = {
+                let parent = parent.clone();
+                Arc::new(move |_| {
+                    let parent = parent.clone();
+                    Box::pin(async move {
+                        if cancelled {
+                            parent.cancel();
+                        }
+                        panic_with_payload()
+                    }) as BoxFuture<'static, _>
+                })
+            };
+            let result = AssertUnwindSafe(collect_prompt_contributions(
+                &[contributor("payload", callback)],
+                context().with_cancellation(parent),
+            ))
+            .catch_unwind()
+            .await
+            .expect("panic payload escaped collection");
+            assert_eq!(
+                result,
+                if cancelled {
+                    PromptContributionOutcome::Interrupted
+                } else {
+                    failed("payload")
+                }
+            );
+        }
+    }
+    struct PayloadDropFuture;
+    impl Future for PayloadDropFuture {
+        type Output = Result<Option<String>, ExtensionError>;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+    impl Drop for PayloadDropFuture {
+        fn drop(&mut self) {
+            std::panic::panic_any(PanicPayload);
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn panic_payload_from_future_drop_is_contained() {
+        let c = contributor("drop", Arc::new(|_| Box::pin(PayloadDropFuture)));
+        let result = AssertUnwindSafe(collect_prompt_contributions(&[c], context()))
+            .catch_unwind()
+            .await;
+        assert_eq!(result.unwrap(), failed("drop"));
+    }
+    /// The timer arm was polled before advance, but the callback returns Ready
+    /// in the same poll that moves Tokio's paused clock beyond its deadline.
+    struct LateReady {
+        advance: BoxFuture<'static, ()>,
+    }
+    impl Future for LateReady {
+        type Output = Result<Option<String>, ExtensionError>;
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let _ = self.advance.as_mut().poll(cx);
+            Poll::Ready(Ok(Some("expired".into())))
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn late_ready_result_is_rejected_and_child_cancelled() {
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let callback = {
+            let captured = captured.clone();
+            Arc::new(move |context: PromptAttemptContext| {
+                *captured.lock().unwrap() = Some(context.cancellation().clone());
+                Box::pin(LateReady {
+                    advance: Box::pin(tokio::time::advance(PROMPT_CONTRIBUTION_DEADLINE)),
+                }) as BoxFuture<'static, _>
+            })
+        };
+        assert_eq!(
+            collect_prompt_contributions(&[contributor("late", callback)], context()).await,
+            failed("late")
+        );
+        assert!(captured.lock().unwrap().as_ref().unwrap().is_cancelled());
     }
 }
