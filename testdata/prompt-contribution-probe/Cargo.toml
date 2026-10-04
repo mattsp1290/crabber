@@ -1,0 +1,14 @@
+[package]
+name = "prompt-contribution-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+crabber = { git = "ssh://git@github.com/mattsp1290/crabber.git", rev = "0e441d46199f9021f5979b1128e0472220ce2e92" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "test-util"] }
+tempfile = "3"
