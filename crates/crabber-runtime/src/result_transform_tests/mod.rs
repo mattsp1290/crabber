@@ -132,16 +132,23 @@ impl Gate {
     }
     /// Wait for the next handler to park (one per call, in arrival order) and return its key.
     pub(super) async fn entered(&self) -> Value {
-        self.arrivals.acquire().await.unwrap().forget();
+        tokio::time::timeout(crate::INTERRUPT_SETTLEMENT_BOUND, self.arrivals.acquire())
+            .await
+            .expect("handler must reach its gate within the interrupt bound")
+            .unwrap()
+            .forget();
         self.state.lock().unwrap().unseen.pop_front().unwrap()
     }
     /// Number of handlers currently parked.
     pub(super) fn parked(&self) -> usize {
-        self.state.lock().unwrap().parked.len()
+        let mut state = self.state.lock().unwrap();
+        state.parked.retain(|(_, sender)| !sender.is_closed());
+        state.parked.len()
     }
     /// Release every parked entry whose key the predicate accepts; returns how many.
     pub(super) fn release_where(&self, accept: impl Fn(&Value) -> bool) -> usize {
         let mut state = self.state.lock().unwrap();
+        state.parked.retain(|(_, sender)| !sender.is_closed());
         let (release, keep) = std::mem::take(&mut state.parked)
             .into_iter()
             .partition::<Vec<_>, _>(|(key, _)| accept(key));
