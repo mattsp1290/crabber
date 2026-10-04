@@ -426,7 +426,7 @@ dependencies = [
 [[package]]
 name = "crabber"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "async-trait",
  "crabber-core",
@@ -441,7 +441,7 @@ dependencies = [
 [[package]]
 name = "crabber-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "serde",
  "serde_json",
@@ -453,7 +453,7 @@ dependencies = [
 [[package]]
 name = "crabber-extension"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "async-trait",
  "crabber-core",
@@ -470,7 +470,7 @@ dependencies = [
 [[package]]
 name = "crabber-providers"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "async-trait",
  "crabber-core",
@@ -482,7 +482,7 @@ dependencies = [
 [[package]]
 name = "crabber-runtime"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "async-trait",
  "crabber-core",
@@ -503,7 +503,7 @@ dependencies = [
 [[package]]
 name = "crabber-session"
 version = "0.1.0"
-source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=fb179621d61f57c60a420f674c632f8101179a87#fb179621d61f57c60a420f674c632f8101179a87"
+source = "git+ssh://git@github.com/mattsp1290/crabber.git?rev=77069652300201433fa0faa64dfd4c7a9e57197c#77069652300201433fa0faa64dfd4c7a9e57197c"
 dependencies = [
  "async-trait",
  "crabber-core",
