@@ -4,17 +4,20 @@ use crate::dispatch::{
     self, AroundCallback, Callback, Dispatcher, Handler, HandlerFn, Mode, Point,
     ToolResultTransform,
 };
+use crate::prompt_contribution::PromptContributorIdentity;
 use crate::{
     CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError,
     MAX_PROMPT_CONTRIBUTOR_NAME_BYTES, MiddlewareDescriptor, MountedPromptContributor,
     PROMPT_CONTRIBUTION_CONTRACT_VERSION, PromptContributor, PromptSection,
-    ResultTransformCallback, RunPlan, RunPlanProvider, SystemPromptMiddleware, ToolDefinition,
-    TransformPhase, compute_fingerprint, json_result_transform,
+    ResultTransformCallback, RunPlan, RunPlanProvider, SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION,
+    SystemPromptMiddleware, ToolDefinition, TransformPhase, compute_fingerprint,
+    json_result_transform,
 };
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
+use serde::Serialize;
 use std::{
     collections::HashSet,
     panic::AssertUnwindSafe,
@@ -763,25 +766,72 @@ fn finish_contributors(
     components: &mut Vec<ComponentIdentity>,
 ) {
     contributors.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
-    if !contributors.is_empty() {
+    if contributors
+        .iter()
+        .any(|contributor| matches!(contributor.identity, PromptContributorIdentity::Legacy))
+    {
         components.push(ComponentIdentity {
             id: "contract:crabber/prompt/contribution".into(),
             version: PROMPT_CONTRIBUTION_CONTRACT_VERSION.to_string(),
         });
     }
+    if contributors.iter().any(|contributor| {
+        matches!(
+            contributor.identity,
+            PromptContributorIdentity::SystemPrompt(_)
+        )
+    }) {
+        components.push(ComponentIdentity {
+            id: "contract:crabber/model/system-prompt-middleware".into(),
+            version: SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION.to_string(),
+        });
+    }
 }
+
+#[derive(Serialize)]
+struct SystemPromptIdentity<'a> {
+    order: i32,
+    kind: &'a str,
+    version: &'a str,
+    config_hash: &'a str,
+}
+
 fn freeze_contributors(
     registrations: &[MountedPromptContributor],
     contributors: &mut Vec<MountedPromptContributor>,
     components: &mut Vec<ComponentIdentity>,
 ) {
     for contributor in registrations {
-        contributors.retain(|old: &MountedPromptContributor| old.name != contributor.name);
-        contributors.push(contributor.clone());
-        components.push(ComponentIdentity {
-            id: format!("prompt-contributor:{}", contributor.name),
-            version: format!("{}:{}", contributor.order, contributor.mount_seq),
+        let replaced_typed = contributors.iter().any(|old| {
+            old.name == contributor.name
+                && matches!(old.identity, PromptContributorIdentity::SystemPrompt(_))
         });
+        contributors.retain(|old: &MountedPromptContributor| old.name != contributor.name);
+        let legacy_id = format!("prompt-contributor:{}", contributor.name);
+        let typed_id = format!("model-middleware:{}", contributor.name);
+        if replaced_typed {
+            components.retain(|component| component.id != typed_id);
+        }
+        contributors.push(contributor.clone());
+        match &contributor.identity {
+            PromptContributorIdentity::Legacy => components.push(ComponentIdentity {
+                id: legacy_id,
+                version: format!("{}:{}", contributor.order, contributor.mount_seq),
+            }),
+            PromptContributorIdentity::SystemPrompt(descriptor) => {
+                let identity = SystemPromptIdentity {
+                    order: contributor.order,
+                    kind: descriptor.kind(),
+                    version: descriptor.version(),
+                    config_hash: descriptor.config_hash(),
+                };
+                components.push(ComponentIdentity {
+                    id: typed_id,
+                    version: serde_json::to_string(&identity)
+                        .expect("typed middleware identity serializes"),
+                });
+            }
+        }
     }
 }
 fn scopes_overlap(a: &Scope, b: &Scope) -> bool {

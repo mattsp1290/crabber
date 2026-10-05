@@ -129,16 +129,21 @@ pub struct MountedPromptContributor {
     pub(crate) mount_id: u64,
     pub(crate) mount_seq: u64,
     pub(crate) cleanup: CleanupTracker,
+    pub(crate) identity: PromptContributorIdentity,
     callback: MountedPromptCallback,
+}
+
+/// Frozen fingerprint behavior for a mounted prompt registration.
+#[derive(Clone)]
+pub(crate) enum PromptContributorIdentity {
+    Legacy,
+    SystemPrompt(MiddlewareDescriptor),
 }
 
 #[derive(Clone)]
 enum MountedPromptCallback {
     Legacy(PromptContributor),
-    SystemPrompt {
-        descriptor: MiddlewareDescriptor,
-        callback: Arc<dyn SystemPromptMiddleware>,
-    },
+    SystemPrompt(Arc<dyn SystemPromptMiddleware>),
 }
 
 impl MountedPromptContributor {
@@ -149,6 +154,7 @@ impl MountedPromptContributor {
             mount_id: 0,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
+            identity: PromptContributorIdentity::Legacy,
             callback: MountedPromptCallback::Legacy(callback),
         }
     }
@@ -165,18 +171,16 @@ impl MountedPromptContributor {
             mount_id: 0,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
-            callback: MountedPromptCallback::SystemPrompt {
-                descriptor,
-                callback,
-            },
+            identity: PromptContributorIdentity::SystemPrompt(descriptor),
+            callback: MountedPromptCallback::SystemPrompt(callback),
         }
     }
 
     #[allow(dead_code)]
     pub(crate) fn middleware_descriptor(&self) -> Option<&MiddlewareDescriptor> {
-        match &self.callback {
-            MountedPromptCallback::Legacy(_) => None,
-            MountedPromptCallback::SystemPrompt { descriptor, .. } => Some(descriptor),
+        match &self.identity {
+            PromptContributorIdentity::Legacy => None,
+            PromptContributorIdentity::SystemPrompt(descriptor) => Some(descriptor),
         }
     }
 }
@@ -240,7 +244,7 @@ pub async fn collect_prompt_contributions_with_resolver(
                     MountedPromptCallback::Legacy(callback) => {
                         callback(invocation).await.map_err(|_| ())
                     }
-                    MountedPromptCallback::SystemPrompt { callback, .. } => {
+                    MountedPromptCallback::SystemPrompt(callback) => {
                         let typed = ModelAttemptContext::new(
                             invocation.session_id().clone(),
                             invocation.run_id().clone(),

@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
     MAX_PROMPT_CONTRIBUTION_BYTES, MAX_PROMPT_CONTRIBUTIONS_TOTAL_BYTES, MiddlewareDescriptor,
-    ModelAttemptContext, PromptAttemptContext, PromptContributionOutcome, SystemPromptMiddleware,
-    WorkspaceContext, WorkspaceReadError, WorkspaceReader, WorkspaceReaderResolver,
+    ModelAttemptContext, PlanFingerprint, PromptAttemptContext, PromptContributionOutcome,
+    SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION, SystemPromptMiddleware, WorkspaceContext,
+    WorkspaceReadError, WorkspaceReader, WorkspaceReaderResolver,
     collect_prompt_contributions_with_resolver,
 };
 use std::sync::{
@@ -49,6 +50,7 @@ enum Registration {
     Typed {
         order: i32,
         name: String,
+        descriptor: MiddlewareDescriptor,
         callback: Arc<dyn SystemPromptMiddleware>,
     },
 }
@@ -89,11 +91,12 @@ impl Extension for Registered {
                 Registration::Typed {
                     order,
                     name,
+                    descriptor,
                     callback,
                 } => registrar.system_prompt_middleware(
                     name.clone(),
                     *order,
-                    descriptor(),
+                    descriptor.clone(),
                     callback.clone(),
                 )?,
             }
@@ -114,6 +117,7 @@ fn typed(order: i32, name: &str, text: &str) -> Registration {
     Registration::Typed {
         order,
         name: name.into(),
+        descriptor: descriptor(),
         callback: Arc::new(Callback {
             call: Arc::new(move |_| Ok(Some(text.clone()))),
         }),
@@ -155,6 +159,247 @@ fn descriptor_is_validated_and_exposes_only_getters() {
     ] {
         assert!(MiddlewareDescriptor::new(kind, version, hash).is_err());
     }
+
+    let boundary = "x".repeat(crate::MAX_MIDDLEWARE_DESCRIPTOR_FIELD_BYTES);
+    assert!(MiddlewareDescriptor::new(&boundary, &boundary, HASH).is_ok());
+    for control in ["bad\nkind", "bad\rversion", "bad\u{7f}field"] {
+        assert!(MiddlewareDescriptor::new(control, "1", HASH).is_err());
+        assert!(MiddlewareDescriptor::new("kind", control, HASH).is_err());
+    }
+}
+
+fn typed_with_descriptor(order: i32, name: &str, descriptor: MiddlewareDescriptor) -> Registration {
+    Registration::Typed {
+        order,
+        name: name.into(),
+        descriptor,
+        callback: Arc::new(Callback {
+            call: Arc::new(|_| Ok(None)),
+        }),
+    }
+}
+
+async fn fingerprint_for(registrations: Vec<Registration>) -> PlanFingerprint {
+    let registry = Registry::new();
+    registry
+        .mount(extension(registrations), Scope::Global)
+        .await
+        .unwrap();
+    registry.acquire(&"session".into()).fingerprint
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_single_typed_identity_and_contract() {
+    let registry = Registry::new();
+    registry
+        .mount(extension(vec![typed(7, "agents", "unused")]), Scope::Global)
+        .await
+        .unwrap();
+    let plan = registry.acquire(&"session".into());
+
+    assert!(plan.components.contains(&ComponentIdentity {
+        id: "contract:crabber/model/system-prompt-middleware".into(),
+        version: SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION.to_string(),
+    }));
+    let middleware = plan
+        .components
+        .iter()
+        .find(|component| component.id == "model-middleware:agents")
+        .expect("typed identity");
+    assert_eq!(
+        middleware.version,
+        format!(r#"{{"order":7,"kind":"agents-md","version":"1.0.0","config_hash":"{HASH}"}}"#)
+    );
+    assert!(
+        !plan
+            .components
+            .iter()
+            .any(|component| component.id == "prompt-contributor:agents")
+    );
+    assert!(
+        !plan
+            .components
+            .iter()
+            .any(|component| component.id == "contract:crabber/prompt/contribution")
+    );
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_tracks_every_frozen_typed_field() {
+    let base = fingerprint_for(vec![typed_with_descriptor(3, "agents", descriptor())]).await;
+    let variants = [
+        typed_with_descriptor(3, "other-name", descriptor()),
+        typed_with_descriptor(4, "agents", descriptor()),
+        typed_with_descriptor(
+            3,
+            "agents",
+            MiddlewareDescriptor::new("other-kind", "1.0.0", HASH).unwrap(),
+        ),
+        typed_with_descriptor(
+            3,
+            "agents",
+            MiddlewareDescriptor::new("agents-md", "2.0.0", HASH).unwrap(),
+        ),
+        typed_with_descriptor(
+            3,
+            "agents",
+            MiddlewareDescriptor::new(
+                "agents-md",
+                "1.0.0",
+                "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            )
+            .unwrap(),
+        ),
+    ];
+    for variant in variants {
+        assert_ne!(base, fingerprint_for(vec![variant]).await);
+    }
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_ignores_unrelated_mount_sequence_and_callbacks() {
+    let plain = fingerprint_for(vec![typed(3, "agents", "first callback")]).await;
+
+    let registry = Registry::new();
+    for _ in 0..3 {
+        let unrelated = registry
+            .mount(extension(Vec::new()), Scope::Global)
+            .await
+            .unwrap();
+        unrelated.deactivate();
+    }
+    registry
+        .mount(
+            extension(vec![Registration::Typed {
+                order: 3,
+                name: "agents".into(),
+                descriptor: descriptor(),
+                callback: Arc::new(Callback {
+                    call: Arc::new(|_| panic!("callback identity must not be inspected")),
+                }),
+            }]),
+            Scope::Global,
+        )
+        .await
+        .unwrap();
+    let after_unrelated = registry.acquire(&"another-session".into());
+    assert_eq!(plain, after_unrelated.fingerprint);
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_preserves_legacy_fixture() {
+    let registry = Registry::new();
+    registry
+        .mount(
+            extension(vec![Registration::Legacy {
+                order: 4,
+                name: "legacy".into(),
+                text: "contents are not identity".into(),
+            }]),
+            Scope::Global,
+        )
+        .await
+        .unwrap();
+    let plan = registry.acquire(&"session".into());
+    assert!(plan.components.contains(&ComponentIdentity {
+        id: "prompt-contributor:legacy".into(),
+        version: "4:1".into(),
+    }));
+    assert!(
+        !plan
+            .components
+            .iter()
+            .any(|component| component.id == "model-middleware:legacy")
+    );
+    assert_eq!(
+        plan.fingerprint.to_string(),
+        "43138ff5dfdff3bfd4179ede9cb4e5a457a156827be9cf07266033fe0554c8f2"
+    );
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_mixed_contracts_are_unique_and_deterministic() {
+    let registrations = || {
+        vec![
+            typed(2, "typed-b", "b"),
+            Registration::Legacy {
+                order: 1,
+                name: "legacy-a".into(),
+                text: "a".into(),
+            },
+            typed(0, "typed-a", "a"),
+            Registration::Legacy {
+                order: 3,
+                name: "legacy-b".into(),
+                text: "b".into(),
+            },
+        ]
+    };
+    let registry = Registry::new();
+    registry
+        .mount(extension(registrations()), Scope::Global)
+        .await
+        .unwrap();
+    let plan = registry.acquire(&"session".into());
+    for id in [
+        "contract:crabber/model/system-prompt-middleware",
+        "contract:crabber/prompt/contribution",
+    ] {
+        assert_eq!(
+            plan.components
+                .iter()
+                .filter(|component| component.id == id)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(plan.fingerprint, fingerprint_for(registrations()).await);
+}
+
+#[tokio::test]
+async fn model_middleware_fingerprint_scope_resolution_precedes_identity() {
+    let registry = Registry::new();
+    registry
+        .mount(extension(vec![typed(0, "same", "global")]), Scope::Global)
+        .await
+        .unwrap();
+    registry
+        .mount(
+            extension(vec![Registration::Legacy {
+                order: 9,
+                name: "same".into(),
+                text: "session".into(),
+            }]),
+            Scope::Session("target".into()),
+        )
+        .await
+        .unwrap();
+
+    let plan = registry.acquire(&"target".into());
+    assert!(
+        plan.components
+            .iter()
+            .any(|component| component.id == "prompt-contributor:same")
+    );
+    assert!(
+        !plan
+            .components
+            .iter()
+            .any(|component| component.id == "model-middleware:same")
+    );
+    assert!(
+        !plan
+            .components
+            .iter()
+            .any(|component| { component.id == "contract:crabber/model/system-prompt-middleware" })
+    );
+    assert_eq!(
+        plan.components
+            .iter()
+            .filter(|component| component.id == "contract:crabber/prompt/contribution")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -300,6 +545,7 @@ async fn only_typed_callback_receives_resolver_authority() {
                 Registration::Typed {
                     order: 1,
                     name: "typed".into(),
+                    descriptor: descriptor(),
                     callback,
                 },
             ]),
@@ -333,6 +579,7 @@ async fn typed_shares_deadline_cancellation_cleanup_and_sanitized_failure() {
             extension(vec![Registration::Typed {
                 order: 0,
                 name: "public-name".into(),
+                descriptor: descriptor(),
                 callback: Arc::new(Pending {
                     child: child_copy,
                     cleanup: cleanup_copy,
@@ -370,6 +617,7 @@ async fn typed_observes_parent_cancellation_without_invocation() {
             extension(vec![Registration::Typed {
                 order: 0,
                 name: "cancelled".into(),
+                descriptor: descriptor(),
                 callback,
             }]),
             Scope::Global,
@@ -410,6 +658,7 @@ async fn typed_shares_panic_error_and_byte_limits_with_sanitized_name() {
                 extension(vec![Registration::Typed {
                     order: 0,
                     name: "safe-name".into(),
+                    descriptor: descriptor(),
                     callback,
                 }]),
                 Scope::Global,
