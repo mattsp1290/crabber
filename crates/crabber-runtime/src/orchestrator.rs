@@ -19,11 +19,12 @@ use crabber_core::{
 use crabber_extension::{
     ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
     GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
-    ModelRequested, ModelStream as ExtensionModelStream, RunAdmitted, RunBeforeExecute, RunPlan,
-    RunPlanProvider, RunSettled, RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute,
-    ToolInput, ToolOutcomeClass, ToolPrepare, ToolResultContext, ToolResultOutcome,
-    TransformOutput, TurnCompleted, TurnPrepare, TurnStarted, WorkspaceContext,
-    result_transform_failed_message,
+    ModelRequested, ModelStream as ExtensionModelStream, PromptAttemptContext,
+    PromptContributionOutcome, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled,
+    RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass,
+    ToolPrepare, ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare,
+    TurnStarted, WorkspaceContext, collect_prompt_contributions,
+    prompt_contribution_failed_message, result_transform_failed_message,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -2022,6 +2023,7 @@ impl Orchestrator {
                 session_id,
                 &snapshot,
                 plan,
+                &session.workspace,
                 Arc::clone(&streamer),
                 compacted,
                 cancellation,
@@ -2264,6 +2266,7 @@ impl Orchestrator {
         session_id: &SessionId,
         snapshot: &TurnSnapshot,
         plan: &RunPlan,
+        workspace: &WorkspaceContext,
         streamer: Arc<dyn Streamer>,
         mut compacted: bool,
         cancellation: &CancellationToken,
@@ -2271,13 +2274,22 @@ impl Orchestrator {
     ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
         let mut snapshot = snapshot.clone();
         let mut retries = 0u32;
+        let mut attempt = 0u32;
         loop {
+            attempt += 1;
+            let system =
+                Self::attempt_system(plan, &snapshot, workspace, attempt, compacted, cancellation)
+                    .await?;
+            if !plan.prompt_contributors.is_empty() {
+                ensure_lease(lease_lost)?;
+            }
             match self
                 .model_turn(
                     execution,
                     run_id,
                     session_id,
                     &snapshot,
+                    system,
                     plan,
                     Arc::clone(&streamer),
                     cancellation,
@@ -2322,6 +2334,46 @@ impl Orchestrator {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    async fn attempt_system(
+        plan: &RunPlan,
+        snapshot: &TurnSnapshot,
+        workspace: &WorkspaceContext,
+        attempt: u32,
+        compacted: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<String>, RuntimeError> {
+        if plan.prompt_contributors.is_empty() {
+            return Ok(snapshot.system.clone());
+        }
+        let context = PromptAttemptContext::new(
+            snapshot.identity.session_id.clone(),
+            snapshot.identity.run_id.clone(),
+            snapshot.identity.turn_id.clone(),
+            workspace.clone(),
+            snapshot.selection.provider_id.clone(),
+            snapshot.selection.model_id.clone(),
+            attempt,
+            compacted,
+        )
+        .with_cancellation(cancellation.clone());
+        match collect_prompt_contributions(&plan.prompt_contributors, context).await {
+            PromptContributionOutcome::Completed { sections } => {
+                let mut system = snapshot.system.clone().unwrap_or_default();
+                for section in sections {
+                    if !system.is_empty() {
+                        system.push('\n');
+                    }
+                    system.push_str(&section.text);
+                }
+                Ok((!system.is_empty()).then_some(system))
+            }
+            PromptContributionOutcome::Failed { contributor } => Err(RuntimeError::Extension(
+                prompt_contribution_failed_message(&contributor),
+            )),
+            PromptContributionOutcome::Interrupted => Err(RuntimeError::Interrupted),
         }
     }
 
@@ -2718,6 +2770,7 @@ impl Orchestrator {
         run_id: &RunId,
         session_id: &SessionId,
         snapshot: &TurnSnapshot,
+        system: Option<String>,
         plan: &RunPlan,
         streamer: Arc<dyn Streamer>,
         cancellation: &CancellationToken,
@@ -2740,7 +2793,7 @@ impl Orchestrator {
         let request = ModelRequest {
             identity: snapshot.identity.clone(),
             selection: snapshot.selection.clone(),
-            system: snapshot.system.clone(),
+            system,
             messages: snapshot.messages.clone(),
             tools: snapshot.tools.clone(),
             temperature: None,

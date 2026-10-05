@@ -4,6 +4,7 @@ The default facade has no provider credentials, database, WASM, observability or
 AG-UI dependency. Begin with `Agent::builder().memory()` and a FakeProvider;
 subscribe to live events, then await the run's durable completion. Enable only
 capabilities your host uses.
+Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for current native instructions.
 
 | Capability | Code/guide | Runnable command / feature |
 | --- | --- | --- |
@@ -1304,3 +1305,206 @@ and otherwise starts a disposable `postgres:14` container, so it needs Docker
 or a database and never skips. The probe is separate from the path-based
 external consumer that `cargo xtask check` runs, and neither that gate nor CI
 runs it. Publication and acceptance steps remain human-gated.
+
+## Per-attempt prompt contributions
+
+Native extensions can read current instructions immediately before every main
+model attempt. Register a typed callback with `Registrar::prompt_contributor`;
+the runtime freezes its name and order in the acquired `RunPlan`. Its only
+output is optional text. It cannot change session identity, provider selection,
+tools, permissions, leases or durable fences.
+
+### Public API
+
+All items below are available through `crabber::extension`.
+
+| Item | Signature or public shape |
+| --- | --- |
+| `PromptAttemptContext` | `Debug + Clone`; private fields, read-only accessors |
+| `PromptAttemptContext::new` | `(session_id: SessionId, run_id: RunId, turn_id: TurnId, workspace: WorkspaceContext, provider_id: String, model_id: String, attempt: u32, after_compaction: bool) -> Self` |
+| `with_cancellation` | `(self, cancellation: CancellationToken) -> Self` |
+| `with_cleanup` | `(self, cleanup: CleanupTracker) -> Self` |
+| Context identity accessors | `session_id() -> &SessionId`, `run_id() -> &RunId`, `turn_id() -> &TurnId`, `workspace() -> &WorkspaceContext` |
+| Context model accessors | `provider_id() -> &str`, `model_id() -> &str` |
+| Context attempt accessors | `attempt() -> u32`, `after_compaction() -> bool` |
+| Context lifecycle accessors | `cancellation() -> &CancellationToken`, `cleanup() -> &CleanupTracker` |
+| `PromptContributor` | `Arc<dyn Fn(PromptAttemptContext) -> BoxFuture<'static, Result<Option<String>, ExtensionError>> + Send + Sync>` |
+| `Registrar::prompt_contributor` | `(&mut self, order: i32, name: impl Into<String>, cb: PromptContributor)` |
+| `MountedPromptContributor` | `Clone`; public `name: String`, `order: i32`; callback and mount lifecycle fields are crate-private |
+| `RunPlan::prompt_contributors` | `Vec<MountedPromptContributor>` |
+| `PromptContribution` | `{ name: String, text: String }` |
+| `PromptContributionOutcome` | `Completed { sections: Vec<PromptContribution> }`, `Failed { contributor: String }`, `Interrupted` |
+| `collect_prompt_contributions` | `async fn (&[MountedPromptContributor], PromptAttemptContext) -> PromptContributionOutcome` |
+| `prompt_contribution_failed_message` | `fn (name: &str) -> String` |
+| `ExtensionError::PromptContributorCollision` | `(String)`; display `prompt contributor name collision: <name>` |
+| `PROMPT_CONTRIBUTION_CONTRACT_VERSION` | `u32 = 1` |
+| Deadline and byte constants | See the bounds table below |
+
+The runtime derives workspace identity from the persisted session. The callback
+receives a per-invocation child of the run cancellation token and its registering
+mount's cleanup tracker. The context has no JSON form. `Ok(None)` and
+`Ok(Some(String::new()))` add no section; whitespace is preserved.
+
+### Invocation points
+
+| Request | Invokes contributors? |
+| --- | --- |
+| First main-model attempt of a turn | Yes |
+| Provider retry | Yes |
+| Attempt after overflow compaction | Yes |
+| Attempt after proactive compaction | Yes |
+| Later turn | Yes |
+| Resumed run | Yes |
+| Recovered run | Yes |
+| Internal compaction summary request | No |
+
+### Assembly
+
+The stable per-turn base contains the request system prompt, static
+`PromptSection` values, and `ContextAssemble` output, with the existing prelude.
+`ContextAssemble` still runs once per turn. Each attempt starts again from that
+base and appends current non-empty contributions with `\n`, in frozen
+`(order, name)` order. Earlier attempt text never accumulates. With no base,
+only the contributions are joined; if the result is empty, `system` is `None`.
+Plans without contributors retain their existing requests unchanged.
+
+### Names, scope and shadowing
+
+Names must be non-empty, at most 128 UTF-8 bytes, and contain no control
+characters. Invalid names fail mounting with
+`ExtensionError::Plan("invalid prompt contributor name")`. Duplicate names in
+one registrar or two active mounts at equal scope fail atomically with
+`PromptContributorCollision`, running deferred rollback cleanup.
+
+A session registration shadows the global registration with the same name
+regardless of mount order. Another session still sees the global registration.
+Static `PromptSection` names occupy a separate namespace. The acquired plan's
+list stays frozen; later mounts cannot alter its ordering or membership.
+
+### Bounds
+
+| Constant | Type and value |
+| --- | --- |
+| `PROMPT_CONTRIBUTION_DEADLINE` | `Duration`, 5 seconds per callback |
+| `PROMPT_CONTRIBUTIONS_TOTAL_DEADLINE` | `Duration`, 15 seconds per attempt's collection |
+| `MAX_PROMPT_CONTRIBUTION_BYTES` | `usize`, `32 * 1024` UTF-8 bytes per text |
+| `MAX_PROMPT_CONTRIBUTIONS_TOTAL_BYTES` | `usize`, `128 * 1024` accepted text bytes per attempt |
+| `MAX_PROMPT_CONTRIBUTOR_NAME_BYTES` | `usize`, 128 UTF-8 bytes |
+
+Callbacks run sequentially; each deadline is the earlier of its five-second
+bound and the attempt's total deadline. Bounds include no separator or base
+bytes. A violation fails the run rather than truncating text. These fixed
+bounds are not configurable. Like other async extension callbacks, contributors
+must yield to the executor so cancellation and deadline checks can run.
+
+### Failure and cancellation
+
+Callback error, panic, deadline expiry, byte overflow or mount close fails the
+attempt before any provider call for that attempt. Later contributors do not
+run. The returned runtime error is
+`RuntimeError::Extension("prompt contribution failed: <name>")`; the durable
+run status is `Failed` with error
+`extension: prompt contribution failed: <name>`. Callback-authored error text
+is discarded. `RunHandle::done()` returns that runtime error. A failure after a
+provider retry leaves the earlier provider call intact and makes no new call.
+
+Observed parent cancellation takes precedence, cancels the invocation child,
+and returns `RuntimeError::Interrupted`. The stored status is `Interrupted`
+with error `run interrupted`, without the contributor name. Deadline or mount
+close also cancels the child before dropping its future. Success leaves its
+child uncancelled. A callback cannot cancel the parent via its child token.
+
+The runtime rechecks lease ownership after collecting contributions and before
+entering the main-model path. A lost lease stops the provider call with
+`LeaseLost`; the old owner cannot settle the replacement owner's run.
+The contributor phase emits no observer operation or event. Failure occurs
+before `ModelRequested`, model measurement or `MessageStarted` for the attempt.
+The retry sleep remains uncancellable; cancellation is observed before the
+next contribution starts.
+
+### Cleanup
+
+Use `context.cleanup().spawn(...)` for work that must remain tracked after the
+callback future is dropped. The mount's close waits for plan leases and tracked
+work under its existing close deadline; timed-out close retains a reaper.
+Spawn from within the callback, as described in the cleanup tracker contract.
+The runtime retains no concurrency slot itself. A consumer needing a capacity
+limit holds its own semaphore permit in tracked work: that permit stays held
+until the work ends, including after a contribution deadline failure.
+
+### Fingerprint, schema and ABI
+
+Each registration, including a shadowed global registration, contributes
+`prompt-contributor:<name>` with version `<order>:<mount sequence>` to the plan
+fingerprint. A non-empty contributor list also adds
+`contract:crabber/prompt/contribution` at version 1. A plan without contributors
+has no new component and retains its previous fingerprint.
+
+Mounting or unmounting a contributor changes the fingerprint and causes the
+existing strict `RuntimeError::PlanChanged` rejection for paused runs frozen
+under the other plan. Names and ordering participate in this check. The new
+error variant affects exhaustive matches; the new `RunPlan` field is part of
+the native API. There is no store schema change or migration, no WIT or WASM
+ABI change, and WASM guests cannot register these contributors.
+
+### Adoption and rollback
+
+Finish or settle paused/unfinished runs before mounting or unmounting a
+contributor. Upgrade the native host, register named callbacks, and run the
+[standalone consumer probe](../testdata/prompt-contribution-probe/README.md).
+Rollback by pinning the previous revision after settling unfinished runs;
+there is no data migration. A frozen run cannot resume across plan changes.
+
+### Differences from the Eino reference
+
+The context exposes `turn_id` and `after_compaction`, without `EpochID`, `Step`
+or `AgentName`. `attempt` is one-based within the current execution of the
+turn; it and `after_compaction` restart on resume or recovery. Compaction
+already performed in this turn sets `after_compaction` for every subsequent
+attempt, including the first attempt after proactive compaction.
+
+Crabber always places its base first and joins sections with `\n`. Eino sorts
+the base with the contributions and joins with a blank line. Crabber has no
+instance tiebreak because a plan contains one registration per name. “Retained
+capacity” means a permit in tracked work stays held, not that the runtime
+retains a slot. Internal summary requests use their fixed prompt and exclude
+contributors.
+
+### Coverage
+
+Table A1 maps request clauses to credential-free runtime tests in
+[`prompt_contribution_tests/`](../crates/crabber-runtime/src/prompt_contribution_tests/).
+
+| ID | Clause | Runtime test |
+| --- | --- | --- |
+| R1 | Retry refresh once, stable base/static | `retry_rebuilds_dynamic_text_once` |
+| R2 | Later-turn refresh | `later_turn_sees_current_text` |
+| R3 | Post-compaction refresh; summary exclusion | `post_compaction_attempt_refreshes_and_summary_is_excluded` |
+| R4 | Global/session shadow | `session_registration_shadows_global` |
+| R5 | Frozen deterministic order | `order_is_frozen_by_order_then_name` |
+| R6 | Concurrent session/run/workspace isolation | `concurrent_sessions_get_their_own_context` |
+| R7 | Parent cancellation; interrupted settlement | `interrupt_during_contribution_settles_interrupted` |
+| R8 | Individual/total byte limits and boundaries | `oversize_contribution_fails_before_provider` |
+| R9 | Deadline; cancellation and retained capacity | `deadline_failure_keeps_spawned_work_tracked` |
+| R10 | Sanitized error/panic; zero provider calls | `callback_error_and_panic_are_sanitized` |
+| R11 | Failure on retry | `failure_on_retry_makes_no_second_provider_call` |
+| R12 | Resume refresh | `resumed_run_invokes_contributors` |
+| R13 | Fingerprint refusal | `mounting_a_contributor_after_pause_refuses_resume` |
+| R14 | Static-only unchanged | `plan_without_contributors_sends_base_only` |
+| R15 | Proactive compaction | `proactive_compaction_sets_after_compaction_on_first_attempt` |
+| R16 | Durable lease loss | `lease_lost_during_contribution_makes_no_provider_call` |
+| R17 | Runtime system ownership | `model_stream_handler_cannot_change_assembled_system` |
+
+The standalone probe repeats R1–R10 through `crabber::…` only. R11–R17 are
+in-repository-only coverage; the runtime additionally tests fresh-runtime
+recovery and empty-prompt assembly. Extension unit tests cover the context,
+constants, panic/destructor containment, total deadlines, boundary bytes,
+mount close, rollback, shadowing, freezing and fingerprints. Eight isolated
+regression mutations each failed the specified tests before restoration.
+
+The standalone probe's manifest records the full immutable content pin.
+Publication preserves it on `origin/main` through a merge commit. This
+repository is private: fetching the pin requires authorized SSH Git access;
+“credential-free” means test execution needs no provider, API or database
+credential. The probe is a separate workspace and is not run by `cargo xtask
+check` or CI; run its commands explicitly.

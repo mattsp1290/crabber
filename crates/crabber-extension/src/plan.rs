@@ -1,7 +1,7 @@
 use crate::RESULT_TRANSFORM_CONTRACT_VERSION;
-use crate::ToolContext;
 use crate::dispatch::Dispatcher;
 use crate::registry::ToolGuard;
+use crate::{MountedPromptContributor, ToolContext};
 use async_trait::async_trait;
 use crabber_core::{SessionId, ToolInfo};
 use crabber_providers::ProviderAdapter;
@@ -69,6 +69,8 @@ pub enum ExtensionError {
     Rejected(&'static str),
     #[error("tool name collision: {0}")]
     ToolCollision(String),
+    #[error("prompt contributor name collision: {0}")]
+    PromptContributorCollision(String),
     #[error("around handler did not call next")]
     NextNotCalled,
     #[error("around handler called next twice")]
@@ -109,6 +111,7 @@ pub struct RunPlan {
     pub fingerprint: PlanFingerprint,
     pub tools: Vec<Arc<ToolDefinition>>,
     pub prompts: Vec<Arc<PromptSection>>,
+    pub prompt_contributors: Vec<MountedPromptContributor>,
     pub guards: Vec<Arc<dyn ToolGuard>>,
     pub restrictions: Vec<Vec<String>>,
     pub dispatcher: Dispatcher,
@@ -130,6 +133,7 @@ impl RunPlan {
         fingerprint: PlanFingerprint,
         tools: Vec<Arc<ToolDefinition>>,
         prompts: Vec<Arc<PromptSection>>,
+        prompt_contributors: Vec<MountedPromptContributor>,
         guards: Vec<Arc<dyn ToolGuard>>,
         restrictions: Vec<Vec<String>>,
         dispatcher: Dispatcher,
@@ -141,6 +145,7 @@ impl RunPlan {
             fingerprint,
             tools,
             prompts,
+            prompt_contributors,
             guards,
             restrictions,
             dispatcher,
@@ -200,6 +205,7 @@ impl StaticPlanProvider {
                 fingerprint: compute_fingerprint(&identities),
                 tools,
                 prompts,
+                prompt_contributors: Vec::new(),
                 guards: Vec::new(),
                 restrictions: Vec::new(),
                 dispatcher: Dispatcher::new(Vec::new()),
