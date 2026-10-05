@@ -1,0 +1,20 @@
+[package]
+name = "crabber-middleware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crabber-extension = { path = "../crabber-extension" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[lints]
+workspace = true

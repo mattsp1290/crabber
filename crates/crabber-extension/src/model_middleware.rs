@@ -13,6 +13,10 @@ pub const SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION: u32 = 1;
 pub const MAX_MIDDLEWARE_DESCRIPTOR_FIELD_BYTES: usize = 128;
 
 /// Stable metadata describing a typed middleware implementation.
+///
+/// Native registrations are self-attested: the registry validates this shape
+/// but does not recompute `config_hash`. First-party recipes should derive it
+/// directly from their validated private configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MiddlewareDescriptor {
     kind: String,
