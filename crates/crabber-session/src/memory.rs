@@ -630,6 +630,7 @@ impl Store for MemoryStore {
             run.claim_token = uuid::Uuid::new_v4().to_string();
             run.lease_until = now + time::Duration::seconds(30);
             run.updated_at = now;
+            crate::ensure_storable(run)?;
             Ok(RunFence {
                 run_id: id.clone(),
                 claim_token: run.claim_token.clone(),

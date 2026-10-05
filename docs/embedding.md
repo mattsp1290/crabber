@@ -44,7 +44,8 @@ with a model-visible tool error so the run can continue. Other NUL-bearing
 content (including model text, tool output, user input and extension state) and
 unstorable provider state end the current run cleanly while leaving the session
 usable. Encode binary tool output, for example with base64, before returning it.
-Custom stores should call `crabber_session::ensure_storable` and run
+Custom stores should validate JSON records with `crabber_session::ensure_storable`,
+caller-derived relational text values with `ensure_storable_text`, and run
 `storetest::run_storable_record_contract`.
 
 ## Workspace context
