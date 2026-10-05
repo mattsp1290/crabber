@@ -1,6 +1,9 @@
 //! Named, bounded native prompt contributions collected anew for each model attempt.
 use crate::dispatch::{InFlight, discard_panic_payload, with_mount};
-use crate::{CleanupTracker, ExtensionError, WorkspaceContext};
+use crate::{
+    CleanupTracker, ExtensionError, MiddlewareDescriptor, ModelAttemptContext,
+    SystemPromptMiddleware, WorkspaceContext, WorkspaceReaderResolver,
+};
 use crabber_core::{RunId, SessionId, TurnId};
 use futures::{FutureExt, future::BoxFuture};
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
@@ -126,7 +129,56 @@ pub struct MountedPromptContributor {
     pub(crate) mount_id: u64,
     pub(crate) mount_seq: u64,
     pub(crate) cleanup: CleanupTracker,
-    pub(crate) callback: PromptContributor,
+    callback: MountedPromptCallback,
+}
+
+#[derive(Clone)]
+enum MountedPromptCallback {
+    Legacy(PromptContributor),
+    SystemPrompt {
+        descriptor: MiddlewareDescriptor,
+        callback: Arc<dyn SystemPromptMiddleware>,
+    },
+}
+
+impl MountedPromptContributor {
+    pub(crate) fn legacy(name: String, order: i32, callback: PromptContributor) -> Self {
+        Self {
+            name,
+            order,
+            mount_id: 0,
+            mount_seq: 0,
+            cleanup: CleanupTracker::detached(),
+            callback: MountedPromptCallback::Legacy(callback),
+        }
+    }
+
+    pub(crate) fn system_prompt(
+        name: String,
+        order: i32,
+        descriptor: MiddlewareDescriptor,
+        callback: Arc<dyn SystemPromptMiddleware>,
+    ) -> Self {
+        Self {
+            name,
+            order,
+            mount_id: 0,
+            mount_seq: 0,
+            cleanup: CleanupTracker::detached(),
+            callback: MountedPromptCallback::SystemPrompt {
+                descriptor,
+                callback,
+            },
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn middleware_descriptor(&self) -> Option<&MiddlewareDescriptor> {
+        match &self.callback {
+            MountedPromptCallback::Legacy(_) => None,
+            MountedPromptCallback::SystemPrompt { descriptor, .. } => Some(descriptor),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +202,15 @@ pub async fn collect_prompt_contributions(
     contributors: &[MountedPromptContributor],
     context: PromptAttemptContext,
 ) -> PromptContributionOutcome {
+    collect_prompt_contributions_with_resolver(contributors, context, None).await
+}
+
+/// Uses the same bounded collector while granting a resolver only to typed callbacks.
+pub async fn collect_prompt_contributions_with_resolver(
+    contributors: &[MountedPromptContributor],
+    context: PromptAttemptContext,
+    workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
+) -> PromptContributionOutcome {
     let parent = context.cancellation();
     let attempt_deadline = tokio::time::Instant::now() + PROMPT_CONTRIBUTIONS_TOTAL_DEADLINE;
     let mut sections = Vec::new();
@@ -169,11 +230,33 @@ pub async fn collect_prompt_contributions(
             .clone()
             .with_cancellation(child.clone())
             .with_cleanup(contributor.cleanup.clone());
+        let callback = contributor.callback.clone();
+        let resolver = workspace_reader_resolver.clone();
         let deadline =
             attempt_deadline.min(tokio::time::Instant::now() + PROMPT_CONTRIBUTION_DEADLINE);
         let mut future = InFlight::new(
             AssertUnwindSafe(with_mount(contributor.mount_id, async move {
-                (contributor.callback)(invocation).await
+                match callback {
+                    MountedPromptCallback::Legacy(callback) => {
+                        callback(invocation).await.map_err(|_| ())
+                    }
+                    MountedPromptCallback::SystemPrompt { callback, .. } => {
+                        let typed = ModelAttemptContext::new(
+                            invocation.session_id().clone(),
+                            invocation.run_id().clone(),
+                            invocation.turn_id().clone(),
+                            invocation.workspace().clone(),
+                            invocation.provider_id().to_owned(),
+                            invocation.model_id().to_owned(),
+                            invocation.attempt(),
+                            invocation.after_compaction(),
+                            resolver,
+                        )
+                        .with_cancellation(invocation.cancellation().clone())
+                        .with_cleanup(invocation.cleanup().clone());
+                        callback.contribute(typed).await.map_err(|_| ())
+                    }
+                }
             }))
             .catch_unwind(),
         );
@@ -250,14 +333,10 @@ mod tests {
         )
     }
     fn contributor(name: &str, callback: PromptContributor) -> MountedPromptContributor {
-        MountedPromptContributor {
-            name: name.into(),
-            order: 0,
-            mount_id: 42,
-            mount_seq: 42,
-            cleanup: CleanupTracker::detached(),
-            callback,
-        }
+        let mut contributor = MountedPromptContributor::legacy(name.into(), 0, callback);
+        contributor.mount_id = 42;
+        contributor.mount_seq = 42;
+        contributor
     }
     fn text(name: &str, value: Option<String>) -> MountedPromptContributor {
         contributor(

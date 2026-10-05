@@ -7,6 +7,80 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+/// Version of the typed system-prompt middleware registration contract.
+pub const SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION: u32 = 1;
+/// Maximum UTF-8 byte length of descriptor `kind` and `version` values.
+pub const MAX_MIDDLEWARE_DESCRIPTOR_FIELD_BYTES: usize = 128;
+
+/// Stable metadata describing a typed middleware implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MiddlewareDescriptor {
+    kind: String,
+    version: String,
+    config_hash: String,
+}
+
+impl MiddlewareDescriptor {
+    /// Creates validated middleware metadata.
+    ///
+    /// # Errors
+    /// Returns a sanitized validation error when either text field is empty,
+    /// oversized, or contains control characters, or when the configuration
+    /// hash is not exactly 64 lowercase hexadecimal characters.
+    pub fn new(
+        kind: impl Into<String>,
+        version: impl Into<String>,
+        config_hash: impl Into<String>,
+    ) -> Result<Self, String> {
+        let kind = kind.into();
+        let version = version.into();
+        let config_hash = config_hash.into();
+        if !valid_descriptor_field(&kind) {
+            return Err("invalid middleware descriptor kind".into());
+        }
+        if !valid_descriptor_field(&version) {
+            return Err("invalid middleware descriptor version".into());
+        }
+        if config_hash.len() != 64
+            || !config_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("invalid middleware descriptor config hash".into());
+        }
+        Ok(Self {
+            kind,
+            version,
+            config_hash,
+        })
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    #[must_use]
+    pub fn config_hash(&self) -> &str {
+        &self.config_hash
+    }
+}
+
+fn valid_descriptor_field(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_MIDDLEWARE_DESCRIPTOR_FIELD_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+/// Object-safe typed callback invoked once for each physical model attempt.
+#[async_trait]
+pub trait SystemPromptMiddleware: Send + Sync {
+    async fn contribute(&self, context: ModelAttemptContext) -> Result<Option<String>, String>;
+}
+
 /// Sanitized failure classes for workspace reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceReadErrorKind {

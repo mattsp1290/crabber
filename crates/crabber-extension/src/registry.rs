@@ -6,10 +6,10 @@ use crate::dispatch::{
 };
 use crate::{
     CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError,
-    MAX_PROMPT_CONTRIBUTOR_NAME_BYTES, MountedPromptContributor,
+    MAX_PROMPT_CONTRIBUTOR_NAME_BYTES, MiddlewareDescriptor, MountedPromptContributor,
     PROMPT_CONTRIBUTION_CONTRACT_VERSION, PromptContributor, PromptSection,
-    ResultTransformCallback, RunPlan, RunPlanProvider, ToolDefinition, TransformPhase,
-    compute_fingerprint, json_result_transform,
+    ResultTransformCallback, RunPlan, RunPlanProvider, SystemPromptMiddleware, ToolDefinition,
+    TransformPhase, compute_fingerprint, json_result_transform,
 };
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
@@ -87,14 +87,25 @@ impl Registrar {
         name: impl Into<String>,
         cb: PromptContributor,
     ) {
-        self.contributors.push(MountedPromptContributor {
-            name: name.into(),
-            order,
-            callback: cb,
-            mount_id: 0,
-            mount_seq: 0,
-            cleanup: CleanupTracker::detached(),
-        });
+        self.contributors
+            .push(MountedPromptContributor::legacy(name.into(), order, cb));
+    }
+    /// Registers typed system-prompt middleware. Names are validated atomically at mount.
+    pub fn system_prompt_middleware(
+        &mut self,
+        name: impl Into<String>,
+        order: i32,
+        descriptor: MiddlewareDescriptor,
+        callback: Arc<dyn SystemPromptMiddleware>,
+    ) -> Result<(), ExtensionError> {
+        self.contributors
+            .push(MountedPromptContributor::system_prompt(
+                name.into(),
+                order,
+                descriptor,
+                callback,
+            ));
+        Ok(())
     }
     pub fn guard(&mut self, guard: Arc<dyn ToolGuard>) {
         self.guards.push(guard);
@@ -871,6 +882,9 @@ impl MountHandle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod model_middleware_tests;
 
 #[cfg(test)]
 mod tests {
