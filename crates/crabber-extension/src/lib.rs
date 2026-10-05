@@ -1,6 +1,8 @@
 //! Frozen extension plan and tool execution boundary.
 
 mod dispatch;
+mod model_middleware;
+pub use model_middleware::*;
 mod plan;
 mod prompt_contribution;
 mod registry;
