@@ -61,6 +61,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agents-md-middleware"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "crabber-middleware",
+ "tokio",
+]
+
+[[package]]
 name = "agui-sse"
 version = "0.1.0"
 dependencies = [

@@ -38,6 +38,35 @@ run.done().await?;
 # }
 ```
 
+## Host-authorized `AGENTS.md` middleware
+
+Model middleware can append bounded system-prompt text. The first-party recipe has
+no ambient filesystem access: the embedding host must validate the exact persisted
+workspace context and return a rooted, bounded reader. A mount looks like this
+(schematic; the [runnable example](examples/agents-md-middleware/src/main.rs)
+contains the complete deny-by-default in-memory resolver):
+
+```rust,ignore
+use crabber::{Agent, Scope, WorkspaceReaderResolver};
+use crabber_middleware::AgentsMdExtension;
+use std::sync::Arc;
+
+let resolver: Arc<dyn WorkspaceReaderResolver> = host_authorized_resolver();
+let agent = Agent::builder()
+    .memory()
+    .provider(provider)
+    .config(config) // persists the exact workspace ID/directory used for routing
+    .workspace_reader_resolver(resolver)
+    .extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
+    .build()?;
+```
+
+For an authorized `AGENTS.md`, the recipe appends an explicit
+`## Workspace instructions: AGENTS.md` frame with a byte-count marker and closing
+`## End workspace instructions: AGENTS.md` heading. See the [middleware capability,
+framing, and security contract](docs/middleware.md), then run
+`cargo run -p agents-md-middleware` without credentials.
+
 Run the full workspace quality gate with `cargo xtask check`. It checks formatting, Clippy, tests, and that the example's marked embedding glue stays within 60 lines.
 
 ## PostgreSQL persistence
