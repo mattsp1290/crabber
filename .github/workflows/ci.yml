@@ -70,5 +70,7 @@ jobs:
         run: cargo run --quiet -p fenced-abandon --features postgres -- --postgres
       - name: Deeply nested unknown-tool record stays decodable
         run: cargo test -p crabber --features postgres --test unknown_tool_depth -- --nocapture
+      - name: Storable records remain readable
+        run: cargo test -p crabber --features postgres --test storable_records -- --nocapture
       - name: Public workspace context probe and fresh-process resume
         run: cargo test -p workspace-context-probe --features postgres -- --nocapture

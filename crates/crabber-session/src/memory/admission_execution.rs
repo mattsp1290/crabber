@@ -55,6 +55,7 @@ impl MemoryStore {
             run.claim_token = uuid::Uuid::new_v4().to_string();
             run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
             run.updated_at = now;
+            crate::ensure_storable(run).map_err(|_| Error::UnknownStoreFailure)?;
             Ok(ClaimedAdmission {
                 record: record.clone(),
                 run: run.clone(),

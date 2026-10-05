@@ -12,6 +12,7 @@ mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod snapshot;
+mod storable;
 mod store;
 pub use snapshot::{
     SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
@@ -22,6 +23,7 @@ pub mod storetest;
 pub use memory::MemoryStore;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;
+pub use storable::{ensure_storable, ensure_storable_text};
 pub use store::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -43,6 +45,14 @@ mod tests {
     #[tokio::test]
     async fn memory_workspace_identity_contract() {
         crate::storetest::run_workspace_identity_contract(|clock| {
+            crate::MemoryStore::with_clock(clock)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn memory_storable_record_contract() {
+        crate::storetest::run_storable_record_contract(|clock| {
             crate::MemoryStore::with_clock(clock)
         })
         .await;

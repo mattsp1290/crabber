@@ -52,9 +52,7 @@ fn db(error: sqlx::Error) -> StoreError {
     StoreError::Validation("PostgreSQL operation failed".into())
 }
 fn json<T: Serialize>(value: &T) -> Result<Json<serde_json::Value>, StoreError> {
-    serde_json::to_value(value)
-        .map(Json)
-        .map_err(|_| StoreError::Validation("record encoding failed".into()))
+    crate::storable::storable_value(value).map(Json)
 }
 fn decode<T: DeserializeOwned>(value: Json<serde_json::Value>) -> Result<T, StoreError> {
     serde_json::from_value(value.0)
@@ -1130,8 +1128,13 @@ impl ExecutionStore for PostgresExecution {
         extension_id: &str,
         entries: Vec<(String, Option<String>)>,
     ) -> Result<(), StoreError> {
+        crate::storable::ensure_storable_text(extension_id)?;
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
         for (key, value) in entries {
+            crate::storable::ensure_storable_text(&key)?;
+            if let Some(value) = &value {
+                crate::storable::ensure_storable_text(value)?;
+            }
             if let Some(value) = value {
                 sqlx::query("INSERT INTO extension_state(session_id,extension_id,key,value) VALUES($1,$2,$3,$4) ON CONFLICT(session_id,extension_id,key) DO UPDATE SET value=excluded.value")
                     .bind(&run.session_id.0).bind(extension_id).bind(&key).bind(&value).execute(&mut *tx).await.map_err(db)?;
@@ -1255,6 +1258,21 @@ mod tests {
             .unwrap();
         crate::storetest::run_contract(|clock: Arc<ManualClock>| store.clone().with_clock(clock))
             .await;
+    }
+    #[tokio::test]
+    async fn postgres_storable_record_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_storable_record_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
     }
     #[tokio::test]
     async fn postgres_workspace_identity_contract() {

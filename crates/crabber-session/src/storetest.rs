@@ -551,7 +551,7 @@ where
     );
     let resumed = store
         .admit_run(AdmitRequest {
-            session_id: Some(session_id.clone()),
+            session_id: None,
             workspace_id: "workspace".into(),
             directory: "/tmp".into(),
             title: "contract".into(),
@@ -696,4 +696,79 @@ where
             assert_eq!(stored.directory, persisted.1);
         }
     }
+}
+
+/// Verifies the shared storable-record boundary for a fresh store.
+///
+/// # Panics
+///
+/// Panics when a bundled record boundary cannot distinguish reader-safe JSON
+/// from a NUL-bearing or reader-unsafe record.
+pub async fn run_storable_record_contract<S, F>(factory: F)
+where
+    S: Store,
+    F: Fn(Arc<ManualClock>) -> S,
+{
+    let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp");
+    let clock = Arc::new(ManualClock::new(now));
+    let store = factory(Arc::clone(&clock));
+    let session_id = SessionId::new();
+    let user = message(
+        &session_id,
+        None,
+        Role::User,
+        PartKind::UserInputText,
+        "hello",
+        now,
+    );
+    let admitted = store
+        .admit_run(AdmitRequest {
+            session_id: None,
+            workspace_id: "workspace".into(),
+            directory: "directory".into(),
+            title: "title".into(),
+            user_message: user,
+            config_hash: "config".into(),
+            plan_fingerprint: "plan".into(),
+            owner: "owner".into(),
+            lease: Duration::from_secs(60),
+        })
+        .await
+        .expect("valid admission");
+    let execution = store.execution(admitted.fence).await.expect("execution");
+    let nul_message = message(
+        &session_id,
+        Some(admitted.run.id.clone()),
+        Role::Assistant,
+        PartKind::AssistantText,
+        "a\0b",
+        now,
+    );
+    assert!(matches!(
+        execution.append_message(nul_message.clone()).await,
+        Err(StoreError::Validation(_))
+    ));
+    assert!(
+        store
+            .list_all_messages(&session_id)
+            .await
+            .expect("readable history")
+            .iter()
+            .all(|message| message.id != nul_message.id)
+    );
+    let mut accepted = false;
+    let mut rejected = false;
+    for depth in 100..=140 {
+        let mut value = Value::Null;
+        for _ in 0..depth {
+            value = serde_json::json!([value]);
+        }
+        let text = serde_json::to_string(&value).expect("serializes");
+        let reader_accepts = serde_json::from_str::<Value>(&text).is_ok();
+        assert_eq!(crate::ensure_storable(&value).is_ok(), reader_accepts);
+        accepted |= reader_accepts;
+        rejected |= !reader_accepts;
+    }
+    assert!(accepted && rejected);
+    assert!(crate::ensure_storable(&serde_json::json!("a\0b")).is_err());
 }

@@ -108,6 +108,11 @@ pub enum InboxKind {
     FollowUp,
 }
 
+/// Persistence boundary for durable session records. Implementations must
+/// reject, before changing state, any record their readers cannot decode or
+/// which contains a NUL character, using [`StoreError::Validation`]. Bundled
+/// stores use [`crate::ensure_storable`]; custom stores should run
+/// [`crate::storetest::run_storable_record_contract`].
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError>;
@@ -219,6 +224,8 @@ pub trait Store: Send + Sync {
     ) -> Result<(), StoreError>;
 }
 
+/// Fenced write operations. Every persisted record follows the storable-record
+/// contract documented on [`Store`].
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
     /// One-shot fenced start, committed before any execution effects. An unknown

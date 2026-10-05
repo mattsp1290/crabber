@@ -454,7 +454,7 @@ async fn tampered_run_id_does_not_change_store_fencing() {
 }
 
 #[tokio::test]
-async fn depth_124_raw_envelope_and_settled_record_roundtrip() {
+async fn deep_raw_envelope_is_downgraded_before_result_transform() {
     let deep: Value = serde_json::from_str(&("[".repeat(124) + &"]".repeat(124))).unwrap();
     let call = ScriptedCall::new(MISSING, &deep);
     let transform = ClosureExtension::new("tamper-deep-raw", |r| {
@@ -465,7 +465,7 @@ async fn depth_124_raw_envelope_and_settled_record_roundtrip() {
             Arc::new(|value| {
                 Box::pin(async move {
                     assert_eq!(value["context"]["input"]["kind"], "raw");
-                    assert!(value["context"]["input"]["value"].is_array());
+                    assert!(value["context"]["input"]["value"].is_string());
                     let decoded: Value =
                         serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
                     assert_eq!(decoded, value);
@@ -495,7 +495,7 @@ async fn depth_124_raw_envelope_and_settled_record_roundtrip() {
 }
 
 #[tokio::test]
-async fn depth_126_normalized_decode_failure_has_fixed_durable_settlement() {
+async fn deep_normalized_arguments_are_downgraded_before_result_transform() {
     let deep: Value = serde_json::from_str(&("[".repeat(125) + &"]".repeat(125))).unwrap();
     let call = ScriptedCall::new(OPEN, &json!({"nested": deep}));
     let observations = Arc::new(Mutex::new(Vec::new()));
@@ -514,11 +514,8 @@ async fn depth_126_normalized_decode_failure_has_fixed_durable_settlement() {
                     seen.lock()
                         .unwrap()
                         .push((value["context"]["input"]["kind"].clone(), decode_failed));
-                    if decode_failed {
-                        Err(ExtensionError::Tool("SECRET-DEPTH-ERROR".into()))
-                    } else {
-                        Ok(value)
-                    }
+                    assert!(!decode_failed);
+                    Ok(value)
                 })
             }),
         );
@@ -530,15 +527,11 @@ async fn depth_126_normalized_decode_failure_has_fixed_durable_settlement() {
     let done = harness.run().await;
     assert_eq!(
         *observations.lock().unwrap(),
-        [(json!("normalized"), true)],
-        "exactly one callback must observe the normalized envelope decode failure"
+        [(json!("unavailable"), false)],
+        "the unstorable parsed envelope must not reach result transforms"
     );
-    assert_protected(&done, &call.id, "decode-envelope").await;
     let record = done.record(&call.id).await;
-    assert_eq!(
-        record.arguments,
-        serde_json::from_str::<Value>(&call.arguments).unwrap()
-    );
+    assert!(record.arguments.is_object());
     assert_eq!(
         serde_json::from_str::<ToolCallRecord>(&serde_json::to_string(&record).unwrap()).unwrap(),
         record

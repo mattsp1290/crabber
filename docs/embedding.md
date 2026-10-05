@@ -35,6 +35,19 @@ Datadog ingestion are manual external-service steps. Do not run Codex credential
 commands in CI against a user's real store. Never let inherited Datadog keys
 turn an offline example check into an external write. Generated WASM stays local.
 
+## Storable records
+
+Bundled stores reject a record before changing state when their JSON readers
+cannot decode it or it contains U+0000. Tool-call arguments that are too deeply
+nested, or decode to NUL-bearing JSON, are retained as raw JSON text and settle
+with a model-visible tool error so the run can continue. Other NUL-bearing
+content (including model text, tool output, user input and extension state) and
+unstorable provider state end the current run cleanly while leaving the session
+usable. Encode binary tool output, for example with base64, before returning it.
+Custom stores should validate JSON records with `crabber_session::ensure_storable`,
+caller-derived relational text values with `ensure_storable_text`, and run
+`storetest::run_storable_record_contract`.
+
 ## Workspace context
 
 Native extensions can read the workspace identity of the session a run belongs
