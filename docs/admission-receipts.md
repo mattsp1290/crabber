@@ -111,7 +111,8 @@ may mutate its live execution ownership. PostgreSQL claim/begin/renew/writes and
 abandonment serialize on the run row, without session-first lock inversion.
 Retain private capsules and markers for the same session lifetime as receipts.
 Forward the entire contract in wrappers. Run the shared
-`admission_contract::run_contract` and `storetest::run_contract` for implementations.
+`admission_contract::run_contract`, `storetest::run_contract`, and
+`storetest::run_storable_record_contract` for implementations.
 
 ## Request crabber-r-wgh9: assertion map
 

@@ -697,3 +697,34 @@ where
         }
     }
 }
+
+/// Verifies the shared storable-record boundary for a fresh store.
+///
+/// # Panics
+///
+/// Panics when a bundled record boundary cannot distinguish reader-safe JSON
+/// from a NUL-bearing or reader-unsafe record.
+pub async fn run_storable_record_contract<S, F>(factory: F)
+where
+    S: Store,
+    F: Fn(Arc<ManualClock>) -> S,
+{
+    std::future::ready(()).await;
+    let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp");
+    let _store = factory(Arc::new(ManualClock::new(now)));
+    let mut accepted = false;
+    let mut rejected = false;
+    for depth in 100..=140 {
+        let mut value = Value::Null;
+        for _ in 0..depth {
+            value = serde_json::json!([value]);
+        }
+        let text = serde_json::to_string(&value).expect("serializes");
+        let reader_accepts = serde_json::from_str::<Value>(&text).is_ok();
+        assert_eq!(crate::ensure_storable(&value).is_ok(), reader_accepts);
+        accepted |= reader_accepts;
+        rejected |= !reader_accepts;
+    }
+    assert!(accepted && rejected);
+    assert!(crate::ensure_storable(&serde_json::json!("a\0b")).is_err());
+}

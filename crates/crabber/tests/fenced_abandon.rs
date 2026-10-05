@@ -3,6 +3,7 @@ pub use crabber::session::{
     AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission, SnapshotContinuation, SnapshotLimit,
     SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError,
+    ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;

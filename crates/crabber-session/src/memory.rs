@@ -158,6 +158,7 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
             ));
         }
     }
+    crate::ensure_storable(&message)?;
     state.messages.push(message);
     Ok(())
 }
@@ -174,6 +175,7 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
         ));
     }
     event.cursor = Some(EventCursor(state.events.len() as u64 + 1));
+    crate::ensure_storable(&event)?;
     state.events.push(event);
     Ok(())
 }
@@ -363,14 +365,15 @@ fn admit_transaction(
     };
     let mut user_message = request.user_message.clone();
     user_message.run_id = Some(run_id.clone());
+    crate::ensure_storable(&session)?;
+    crate::ensure_storable(&run)?;
     insert_message(state, &run, user_message)?;
     state.sessions.insert(session_id.clone(), session.clone());
     state.runs.insert(run_id.clone(), run.clone());
     state.run_order.push(run_id.clone());
-    state.epochs.insert(
-        epoch_id.clone(),
-        initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch),
-    );
+    let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);
+    crate::ensure_storable(&epoch)?;
+    state.epochs.insert(epoch_id.clone(), epoch);
     Ok(AdmitOutcome {
         session,
         run,
@@ -436,16 +439,18 @@ impl Store for MemoryStore {
                 semantic_digest_version: 1,
                 semantic_digest: digest,
             };
+            crate::ensure_storable(&receipt)?;
             if let Some(capsule) = keyed.execution.clone() {
-                state.admission_executions.insert(
-                    admitted.run.id.clone(),
-                    crate::AdmissionExecutionRecord {
-                        receipt: receipt.clone(),
-                        key: keyed.options.key.clone(),
-                        capsule,
-                        state: crate::AdmissionExecutionState::Unstarted,
-                    },
-                );
+                let execution = crate::AdmissionExecutionRecord {
+                    receipt: receipt.clone(),
+                    key: keyed.options.key.clone(),
+                    capsule,
+                    state: crate::AdmissionExecutionState::Unstarted,
+                };
+                crate::ensure_storable(&execution)?;
+                state
+                    .admission_executions
+                    .insert(admitted.run.id.clone(), execution);
             }
             state.receipts.insert(key, receipt.clone());
             Ok(KeyedAdmitOutcome::Started {
@@ -662,6 +667,7 @@ impl Store for MemoryStore {
                     "inbox message has wrong session".into(),
                 ));
             }
+            crate::ensure_storable(&message)?;
             state.inbox.push(InboxRow {
                 session_id: session.clone(),
                 kind,
@@ -718,6 +724,7 @@ impl ExecutionStore for MemoryExecution {
             }
             message.parts.push(part);
             message.parts.sort_by_key(|entry| entry.ordinal);
+            crate::ensure_storable(message)?;
             *state
                 .snapshot_revisions
                 .entry(run.session_id.clone())
@@ -743,6 +750,7 @@ impl ExecutionStore for MemoryExecution {
             {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
+            crate::ensure_storable(&call)?;
             insert_event(state, run, pending_event)?;
             state.call_order.push(call.id.clone());
             state.calls.insert(call.id.clone(), call);
@@ -797,6 +805,7 @@ impl ExecutionStore for MemoryExecution {
             let call = state.calls.get_mut(id).expect("validated call exists");
             call.status = status;
             call.result = Some(result);
+            crate::ensure_storable(call)?;
             *state.snapshot_revisions.entry(run.session_id.clone()).or_default() += 1;
             Ok(())
         })
@@ -816,6 +825,7 @@ impl ExecutionStore for MemoryExecution {
                 .get_mut(&run.id)
                 .expect("fenced run exists")
                 .epoch_id = epoch.id.clone();
+            crate::ensure_storable(&epoch)?;
             state.epochs.insert(epoch.id.clone(), epoch);
             Ok(())
         })
@@ -860,6 +870,7 @@ impl ExecutionStore for MemoryExecution {
             entry.checkpoint = Some(checkpoint);
             entry.lease_until = now;
             entry.updated_at = now;
+            crate::ensure_storable(entry)?;
             Ok(())
         })
     }
@@ -892,6 +903,7 @@ impl ExecutionStore for MemoryExecution {
             entry.error = error;
             entry.usage = usage;
             entry.updated_at = now;
+            crate::ensure_storable(entry)?;
             Ok(())
         })
     }
@@ -903,6 +915,13 @@ impl ExecutionStore for MemoryExecution {
     ) -> Result<(), StoreError> {
         let limits = self.store.limits.clone();
         self.store.fenced(&self.fence, |state, run| {
+            crate::ensure_storable_text(extension_id)?;
+            for (key, value) in &entries {
+                crate::ensure_storable_text(key)?;
+                if let Some(value) = value {
+                    crate::ensure_storable_text(value)?;
+                }
+            }
             let values = state
                 .extension_values
                 .entry((run.session_id.clone(), extension_id.to_owned()))

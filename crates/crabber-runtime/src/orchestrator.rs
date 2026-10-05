@@ -1163,7 +1163,7 @@ impl Orchestrator {
                         execution
                             .settle_run(
                                 RunStatus::Failed,
-                                Some(error.to_string()),
+                                Some(storable_error_text(&error)),
                                 Usage::default(),
                                 event.clone(),
                             )
@@ -1898,7 +1898,7 @@ impl Orchestrator {
                     && execution
                         .settle_run(
                             status,
-                            Some(error.to_string()),
+                            Some(storable_error_text(&error)),
                             Usage::default(),
                             settled.clone(),
                         )
@@ -3020,10 +3020,10 @@ impl Orchestrator {
                             );
                         };
                         call.args_completed = true;
-                        call.arguments = Some(
-                            serde_json::from_str(&call.raw)
-                                .unwrap_or_else(|_| Value::String(call.raw.clone())),
-                        );
+                        call.arguments = Some(match serde_json::from_str(&call.raw) {
+                            Ok(parsed) => storable_call_arguments(parsed, &call.raw),
+                            Err(_) => Value::String(call.raw.clone()),
+                        });
                         presentation.complete_call(&call_id);
                     }
                     StreamDelta::ProviderState { codec_id, payload } => {
@@ -3213,7 +3213,7 @@ impl Orchestrator {
         event.turn_id = call.turn_id.clone();
         event.payload = json!({"call_id":call.id,"name":call.name,"status":"pending", "message_id":call.message_id});
         event.correlation = Some(call.id.to_string());
-        let record = ToolCallRecord {
+        let mut record = ToolCallRecord {
             id: call.id,
             run_id: run_id.clone(),
             name: call.name,
@@ -3222,6 +3222,9 @@ impl Orchestrator {
             retry_safe: definition.as_ref().is_some_and(|tool| tool.info.retry_safe),
             result: None,
         };
+        if crabber_session::ensure_storable(&record).is_err() {
+            record.arguments = json!({PREPARE_ERROR_KEY: UNSTORABLE_ARGUMENTS_TEXT});
+        }
         execution
             .create_tool_call(record.clone(), event.clone())
             .await?;
@@ -3675,6 +3678,39 @@ const UNKNOWN_TOOL_KEY: &str = "$crabber_unknown_tool";
 const RESERVED_KEY_PREFIX: &str = "$crabber_";
 /// Recorded (and seeded) when prepared arguments would be read back as a runtime sentinel.
 const RESERVED_ARGUMENT_KEY_TEXT: &str = "reserved argument key";
+const UNSTORABLE_ARGUMENTS_TEXT: &str = "unstorable arguments";
+
+fn storable_error_text(error: &RuntimeError) -> String {
+    error.to_string().replace('\0', "\u{fffd}")
+}
+
+fn storable_call_arguments(parsed: Value, raw: &str) -> Value {
+    let message_id = MessageId::new();
+    let probe = Message {
+        id: message_id.clone(),
+        session_id: SessionId::new(),
+        run_id: Some(RunId::new()),
+        role: Role::Assistant,
+        parent_id: None,
+        parts: vec![Part {
+            id: PartId::new(),
+            message_id,
+            ordinal: 0,
+            kind: PartKind::FunctionToolCall,
+            content: ContentBlock::ToolCall {
+                call_id: ToolCallId::new(),
+                name: String::new(),
+                arguments: parsed.clone(),
+            },
+        }],
+        created_at: OffsetDateTime::UNIX_EPOCH,
+    };
+    if crabber_session::ensure_storable(&probe).is_ok() {
+        parsed
+    } else {
+        Value::String(raw.to_owned())
+    }
+}
 
 /// The record arguments for an unknown tool. Stores write records without a depth limit but decode
 /// them with `serde_json::from_str` (128 levels), and both the sentinel and the enclosing
@@ -3692,11 +3728,7 @@ pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
         retry_safe: false,
         result: None,
     };
-    let decodes = serde_json::to_string(&probe)
-        .ok()
-        .and_then(|text| serde_json::from_str::<ToolCallRecord>(&text).ok())
-        .is_some_and(|decoded| decoded.arguments == arguments);
-    if decodes {
+    if crabber_session::ensure_storable(&probe).is_ok() {
         return arguments;
     }
     let text = serde_json::to_string(raw).unwrap_or_default();
