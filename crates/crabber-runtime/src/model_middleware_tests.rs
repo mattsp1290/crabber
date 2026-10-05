@@ -5,7 +5,7 @@ use crate::{
     StaticPolicy,
 };
 use async_trait::async_trait;
-use crabber_core::{RunStatus, ToolCallId, ToolInfo};
+use crabber_core::{RunStatus, ToolCallId, ToolInfo, Usage};
 use crabber_extension::{
     Extension, ExtensionError, MiddlewareDescriptor, ModelAttemptContext, ModelRequestError, Point,
     Registrar, Registry, Scope, SystemPromptMiddleware, ToolDefinition, ToolExecutor,
@@ -13,7 +13,9 @@ use crabber_extension::{
     WorkspaceReaderResolver,
 };
 use crabber_middleware::{AGENTS_MD_MAX_FILE_BYTES, AgentsMdConfig, AgentsMdExtension};
-use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
+use crabber_providers::{
+    FakeProvider, ModelRequest, ProviderError, ProviderErrorKind, Selection, StreamDelta,
+};
 use crabber_session::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::{
@@ -231,6 +233,91 @@ async fn mount_agents(
         .unwrap()
 }
 
+async fn mount_retry_refresh(registry: &Registry, backend: &WorkspaceBackend) {
+    mount_test(registry, "retry-refresh", Scope::Global, {
+        let backend = backend.clone();
+        move |registrar| {
+            let backend = backend.clone();
+            registrar.on_transform(
+                ModelRequestError::ID,
+                0,
+                "refresh",
+                Arc::new(move |input| {
+                    backend.set("AGENTS.md", "v2");
+                    Box::pin(async move { Ok(input) })
+                }),
+            );
+        }
+    })
+    .await;
+}
+
+fn retry_scripts() -> Vec<Vec<StreamDelta>> {
+    vec![
+        error_script(ProviderErrorKind::RateLimited),
+        vec![
+            StreamDelta::TextDelta("done".into()),
+            StreamDelta::Usage(Usage {
+                input_tokens: 7,
+                output_tokens: 3,
+            }),
+            StreamDelta::Completed,
+        ],
+    ]
+}
+
+fn assert_cross_run_request_semantics(baseline: &ModelRequest, with_middleware: &ModelRequest) {
+    assert_eq!(with_middleware.selection, baseline.selection);
+    assert_eq!(with_middleware.messages.len(), baseline.messages.len());
+    for (baseline_message, middleware_message) in
+        baseline.messages.iter().zip(&with_middleware.messages)
+    {
+        // Message/part IDs and creation times are also generated per run. Keep
+        // messages intact and compare every semantic field plus each envelope's
+        // relationship to its own independently allocated request identity.
+        assert_eq!(middleware_message.role, baseline_message.role);
+        assert_eq!(
+            middleware_message.parent_id.is_some(),
+            baseline_message.parent_id.is_some()
+        );
+        assert_eq!(middleware_message.parts.len(), baseline_message.parts.len());
+        assert_eq!(
+            middleware_message.session_id,
+            with_middleware.identity.session_id
+        );
+        assert_eq!(
+            middleware_message.run_id.as_ref(),
+            Some(&with_middleware.identity.run_id)
+        );
+        assert_eq!(baseline_message.session_id, baseline.identity.session_id);
+        assert_eq!(
+            baseline_message.run_id.as_ref(),
+            Some(&baseline.identity.run_id)
+        );
+        for (baseline_part, middleware_part) in
+            baseline_message.parts.iter().zip(&middleware_message.parts)
+        {
+            assert_eq!(middleware_part.ordinal, baseline_part.ordinal);
+            assert_eq!(middleware_part.kind, baseline_part.kind);
+            assert_eq!(middleware_part.content, baseline_part.content);
+            assert_eq!(middleware_part.message_id, middleware_message.id);
+            assert_eq!(baseline_part.message_id, baseline_message.id);
+        }
+    }
+    assert_eq!(with_middleware.tools, baseline.tools);
+    assert_eq!(with_middleware.temperature, baseline.temperature);
+    assert_eq!(with_middleware.max_tokens, baseline.max_tokens);
+    assert_eq!(with_middleware.tool_choice, baseline.tool_choice);
+}
+
+fn assert_retry_changes_only_system(requests: &[ModelRequest]) {
+    let mut first = requests[0].clone();
+    let mut retry = requests[1].clone();
+    first.system = None;
+    retry.system = None;
+    assert_eq!(retry, first);
+}
+
 struct RewriteTool(WorkspaceBackend);
 
 #[async_trait]
@@ -401,27 +488,9 @@ async fn model_middleware_retry_reresolves_refreshes_and_changes_only_system_tex
     let backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
     let registry = Registry::new();
     mount_agents(&registry, Scope::Global, AgentsMdConfig::default(), 0).await;
-    mount_test(&registry, "retry-refresh", Scope::Global, {
-        let backend = backend.clone();
-        move |registrar| {
-            let backend = backend.clone();
-            registrar.on_transform(
-                ModelRequestError::ID,
-                0,
-                "refresh",
-                Arc::new(move |input| {
-                    backend.set("AGENTS.md", "v2");
-                    Box::pin(async move { Ok(input) })
-                }),
-            );
-        }
-    })
-    .await;
+    mount_retry_refresh(&registry, &backend).await;
     let store = Arc::new(MemoryStore::new());
-    let fake = FakeProvider::scripted(vec![
-        error_script(ProviderErrorKind::RateLimited),
-        text_script("done"),
-    ]);
+    let fake = FakeProvider::scripted(retry_scripts());
     let result = runtime(store.clone(), &fake, registry, &backend)
         .start(request())
         .await
@@ -430,9 +499,34 @@ async fn model_middleware_retry_reresolves_refreshes_and_changes_only_system_tex
         .await
         .unwrap();
 
-    assert_eq!(result.status, RunStatus::Completed);
+    // Exercise the same request, provider scripts, and retry transform without
+    // installing AgentsMdExtension. This is the true no-middleware baseline.
+    let baseline_backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
+    let baseline_registry = Registry::new();
+    mount_retry_refresh(&baseline_registry, &baseline_backend).await;
+    let baseline_store = Arc::new(MemoryStore::new());
+    let baseline_fake = FakeProvider::scripted(retry_scripts());
+    let baseline_result = runtime(
+        baseline_store.clone(),
+        &baseline_fake,
+        baseline_registry,
+        &baseline_backend,
+    )
+    .start(request())
+    .await
+    .unwrap()
+    .done()
+    .await
+    .unwrap();
+
     let requests = fake.requests();
+    let baseline_requests = baseline_fake.requests();
     assert_eq!(requests.len(), 2, "two physical provider attempts required");
+    assert_eq!(
+        baseline_requests.len(),
+        2,
+        "the no-middleware baseline must make the same two attempts"
+    );
     assert_eq!(
         requests[0].system.as_deref(),
         Some(format!("base\n{FRAME_V1}").as_str())
@@ -441,21 +535,48 @@ async fn model_middleware_retry_reresolves_refreshes_and_changes_only_system_tex
         requests[1].system.as_deref(),
         Some(format!("base\n{FRAME_V2}").as_str())
     );
-    let mut baseline = requests[0].clone();
-    let mut refreshed = requests[1].clone();
-    baseline.system = None;
-    refreshed.system = None;
-    assert_eq!(
-        refreshed, baseline,
-        "provider selection, messages, tools, request IDs, and tuning must equal the baseline attempt"
-    );
-    assert_eq!(result.run_id, requests[0].identity.run_id);
-    assert_eq!(result.session_id, requests[0].identity.session_id);
+    assert_eq!(baseline_requests[0].system.as_deref(), Some("base"));
+    assert_eq!(baseline_requests[1].system.as_deref(), Some("base"));
+
+    // Retry preserves the complete request identity within each independent run.
+    // Cross-run UUIDs are independently allocated, so compare their relationship
+    // rather than replacing the turn IDs to manufacture equality.
+    assert_eq!(requests[0].identity, requests[1].identity);
+    assert_eq!(baseline_requests[0].identity, baseline_requests[1].identity);
+    assert_retry_changes_only_system(&requests);
+    assert_retry_changes_only_system(&baseline_requests);
+    for (baseline, with_middleware) in baseline_requests.iter().zip(&requests) {
+        assert_cross_run_request_semantics(baseline, with_middleware);
+    }
+
+    assert_eq!(result.status, baseline_result.status);
+    assert_eq!(result.usage, baseline_result.usage);
+    assert_eq!(result.usage.input_tokens, 7);
+    assert_eq!(result.usage.output_tokens, 3);
+    for request in &requests {
+        assert_eq!(result.run_id, request.identity.run_id);
+        assert_eq!(result.session_id, request.identity.session_id);
+    }
+    for request in &baseline_requests {
+        assert_eq!(baseline_result.run_id, request.identity.run_id);
+        assert_eq!(baseline_result.session_id, request.identity.session_id);
+    }
     assert_eq!(backend.resolves.lock().unwrap().len(), 2);
     assert_eq!(backend.reads.lock().unwrap().len(), 2);
+    assert_eq!(baseline_backend.resolves.lock().unwrap().len(), 0);
+    assert_eq!(baseline_backend.reads.lock().unwrap().len(), 0);
     assert_eq!(
         store.get_run(&result.run_id).await.unwrap().unwrap().status,
-        RunStatus::Completed
+        result.status
+    );
+    assert_eq!(
+        baseline_store
+            .get_run(&baseline_result.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        baseline_result.status
     );
 }
 
@@ -737,7 +858,8 @@ async fn model_middleware_resume_rejects_every_sealed_descriptor_change_without_
 
 #[tokio::test]
 async fn model_middleware_resume_keeps_plan_seal_but_refreshes_host_content() {
-    let backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
+    let backend_a = WorkspaceBackend::with_file("AGENTS.md", "v1");
+    let backend_b = WorkspaceBackend::with_file("AGENTS.md", "v2");
     let registry = Registry::new();
     mount_agents(&registry, Scope::Global, AgentsMdConfig::default(), 0).await;
     mount_test(&registry, "pause-tool", Scope::Global, |registrar| {
@@ -746,20 +868,39 @@ async fn model_middleware_resume_keeps_plan_seal_but_refreshes_host_content() {
     .await;
     let store = Arc::new(MemoryStore::new());
     let fake = FakeProvider::scripted(vec![call_script(), text_script("done")]);
-    let runtime = paused_runtime(registry, &backend, &fake, store);
-    let handle = runtime.start(request()).await.unwrap();
+    let runtime_a = paused_runtime(registry.clone(), &backend_a, &fake, store.clone());
+    let handle = runtime_a.start(request()).await.unwrap();
     let run_id = handle.run_id().clone();
     assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
-    backend.set("AGENTS.md", "v2");
 
-    let result = runtime.resume(&run_id).await.unwrap();
+    // A distinct resolver may represent a new authorized host root or policy.
+    // Resolver instance, backing root/policy, and content are intentionally outside
+    // the plan fingerprint; only the middleware config/descriptor is sealed.
+    let runtime_b = paused_runtime(registry, &backend_b, &fake, store);
+    let result = runtime_b.resume(&run_id).await.unwrap();
     assert_eq!(result.status, RunStatus::Completed);
     let requests = fake.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].system.as_deref().unwrap().contains("\nv1\n"));
-    assert!(requests[1].system.as_deref().unwrap().contains("\nv2\n"));
-    assert_eq!(backend.resolves.lock().unwrap().len(), 2);
-    assert_eq!(backend.reads.lock().unwrap().len(), 2);
+    assert_eq!(
+        requests[0].system.as_deref(),
+        Some(format!("base\n{FRAME_V1}").as_str())
+    );
+    assert_eq!(
+        requests[1].system.as_deref(),
+        Some(format!("base\n{FRAME_V2}").as_str())
+    );
+    let resolves_a = backend_a.resolves.lock().unwrap();
+    let resolves_b = backend_b.resolves.lock().unwrap();
+    assert_eq!(resolves_a.len(), 1);
+    assert_eq!(resolves_b.len(), 1);
+    assert_eq!(resolves_a[0], resolves_b[0]);
+    assert_eq!(
+        resolves_a[0],
+        WorkspaceContext::from_persisted("workspace", "/workspace")
+    );
+    let expected_reads = vec![("AGENTS.md".into(), AGENTS_MD_MAX_FILE_BYTES)];
+    assert_eq!(*backend_a.reads.lock().unwrap(), expected_reads);
+    assert_eq!(*backend_b.reads.lock().unwrap(), expected_reads);
 }
 
 // The forged-context authority boundary is intentionally covered by
