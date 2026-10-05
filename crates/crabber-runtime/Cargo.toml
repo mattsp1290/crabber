@@ -21,6 +21,7 @@ time = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+crabber-middleware = { path = "../crabber-middleware" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "test-util"] }
 

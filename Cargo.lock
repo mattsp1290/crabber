@@ -597,6 +597,7 @@ dependencies = [
  "async-trait",
  "crabber-core",
  "crabber-extension",
+ "crabber-middleware",
  "crabber-providers",
  "crabber-session",
  "futures",
