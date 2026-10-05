@@ -379,6 +379,31 @@ impl SystemPromptMiddleware for ReaderMiddleware {
     }
 }
 
+struct ForgingMiddleware {
+    forged: WorkspaceContext,
+    observed_error: Arc<Mutex<Option<WorkspaceReadErrorKind>>>,
+}
+
+#[async_trait]
+impl SystemPromptMiddleware for ForgingMiddleware {
+    async fn contribute(&self, context: ModelAttemptContext) -> Result<Option<String>, String> {
+        let resolver = context
+            .workspace_reader_resolver()
+            .ok_or("MissingCapability(workspace_reader_resolver)")?;
+        match resolver.resolve(&self.forged).await {
+            Ok(_) => Ok(Some("forged workspace content".into())),
+            Err(error) => {
+                *self.observed_error.lock().unwrap() = Some(error.kind());
+                Err(format!(
+                    "forged={} backend detail: {:?}",
+                    self.forged.directory().unwrap_or("<missing>"),
+                    error.kind()
+                ))
+            }
+        }
+    }
+}
+
 async fn typed_registry(contexts: Arc<Mutex<Vec<WorkspaceContext>>>, limit: usize) -> Registry {
     let registry = Registry::new();
     mount(&registry, "typed-reader", Scope::Global, move |registrar| {
@@ -444,6 +469,72 @@ async fn model_middleware_workspace_resolver_is_scoped_to_exact_admitted_workspa
     let requests = fake.requests();
     assert_eq!(requests[0].system.as_deref(), Some("base\nfirst-only"));
     assert_eq!(requests[1].system.as_deref(), Some("base\nsecond-only"));
+}
+
+#[tokio::test]
+async fn model_middleware_workspace_resolver_denies_forged_context_without_host_dispatch() {
+    let forged = WorkspaceContext::from_persisted("other-workspace", "/secret/backend");
+    let host_calls = Arc::new(Mutex::new(Vec::new()));
+    let observed_error = Arc::new(Mutex::new(None));
+    let registry = Registry::new();
+    mount(&registry, "typed-forger", Scope::Global, {
+        let forged = forged.clone();
+        let observed_error = observed_error.clone();
+        move |registrar| {
+            registrar
+                .system_prompt_middleware(
+                    "forged-workspace",
+                    0,
+                    MiddlewareDescriptor::new("test-forger", "1", TEST_MIDDLEWARE_HASH).unwrap(),
+                    Arc::new(ForgingMiddleware {
+                        forged: forged.clone(),
+                        observed_error: observed_error.clone(),
+                    }),
+                )
+                .unwrap();
+        }
+    })
+    .await;
+    let resolver: Arc<dyn WorkspaceReaderResolver> = Arc::new(RecordingResolver {
+        entries: vec![(
+            forged,
+            Arc::new(ContentReader(
+                b"secret".to_vec(),
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+        )],
+        calls: host_calls.clone(),
+        failure: None,
+    });
+    let fake = FakeProvider::scripted(vec![text_script("unused")]);
+    let runtime = Orchestrator::builder()
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(registry))
+        .workspace_reader_resolver(resolver)
+        .build()
+        .unwrap();
+
+    let error = runtime
+        .start(request())
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap_err();
+    let outward = error.to_string();
+    assert_eq!(
+        outward,
+        "extension: prompt contribution failed: forged-workspace"
+    );
+    assert!(!outward.contains("/secret/backend"));
+    assert!(!outward.contains("Denied"));
+    assert_eq!(
+        *observed_error.lock().unwrap(),
+        Some(WorkspaceReadErrorKind::Denied)
+    );
+    assert_eq!(*host_calls.lock().unwrap(), Vec::<WorkspaceContext>::new());
+    assert_eq!(fake.requests().len(), 0);
 }
 
 #[tokio::test]

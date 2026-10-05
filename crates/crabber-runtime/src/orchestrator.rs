@@ -23,9 +23,9 @@ use crabber_extension::{
     PromptContributionOutcome, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled,
     RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass,
     ToolPrepare, ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare,
-    TurnStarted, WorkspaceContext, WorkspaceReaderResolver,
-    collect_prompt_contributions_with_resolver, prompt_contribution_failed_message,
-    result_transform_failed_message,
+    TurnStarted, WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
+    WorkspaceReaderResolver, collect_prompt_contributions_with_resolver,
+    prompt_contribution_failed_message, result_transform_failed_message,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -49,6 +49,24 @@ use std::{
 use time::OffsetDateTime;
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
+
+struct AttemptWorkspaceReaderResolver {
+    admitted: WorkspaceContext,
+    host: Arc<dyn WorkspaceReaderResolver>,
+}
+
+#[async_trait]
+impl WorkspaceReaderResolver for AttemptWorkspaceReaderResolver {
+    async fn resolve(
+        &self,
+        workspace: &WorkspaceContext,
+    ) -> Result<Arc<dyn WorkspaceReader>, WorkspaceReadError> {
+        if workspace != &self.admitted {
+            return Err(WorkspaceReadError::new(WorkspaceReadErrorKind::Denied));
+        }
+        self.host.resolve(workspace).await
+    }
+}
 
 fn admission_error(error: StoreError) -> RuntimeError {
     if error == StoreError::Busy {
@@ -2377,6 +2395,12 @@ impl Orchestrator {
             compacted,
         )
         .with_cancellation(cancellation.clone());
+        let workspace_reader_resolver = workspace_reader_resolver.map(|host| {
+            Arc::new(AttemptWorkspaceReaderResolver {
+                admitted: workspace.clone(),
+                host,
+            }) as Arc<dyn WorkspaceReaderResolver>
+        });
         match collect_prompt_contributions_with_resolver(
             &plan.prompt_contributors,
             context,
