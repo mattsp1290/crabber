@@ -809,8 +809,15 @@ fn freeze_contributors(
         contributors.retain(|old: &MountedPromptContributor| old.name != contributor.name);
         let legacy_id = format!("prompt-contributor:{}", contributor.name);
         let typed_id = format!("model-middleware:{}", contributor.name);
-        if replaced_typed {
-            components.retain(|component| component.id != typed_id);
+        match contributor.identity {
+            PromptContributorIdentity::Legacy if replaced_typed => {
+                components.retain(|component| component.id != typed_id);
+            }
+            PromptContributorIdentity::SystemPrompt(_) => {
+                components
+                    .retain(|component| component.id != legacy_id && component.id != typed_id);
+            }
+            PromptContributorIdentity::Legacy => {}
         }
         contributors.push(contributor.clone());
         match &contributor.identity {

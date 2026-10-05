@@ -356,6 +356,69 @@ async fn model_middleware_fingerprint_mixed_contracts_are_unique_and_determinist
     assert_eq!(plan.fingerprint, fingerprint_for(registrations()).await);
 }
 
+async fn legacy_shadowed_by_session_typed_plan(unrelated_mounts: usize) -> RunPlan {
+    let registry = Registry::new();
+    for _ in 0..unrelated_mounts {
+        let unrelated = registry
+            .mount(extension(Vec::new()), Scope::Global)
+            .await
+            .unwrap();
+        unrelated.deactivate();
+    }
+    registry
+        .mount(
+            extension(vec![Registration::Legacy {
+                order: 4,
+                name: "same".into(),
+                text: "global".into(),
+            }]),
+            Scope::Global,
+        )
+        .await
+        .unwrap();
+    registry
+        .mount(
+            extension(vec![typed(9, "same", "session")]),
+            Scope::Session("target".into()),
+        )
+        .await
+        .unwrap();
+    registry.acquire(&"target".into())
+}
+
+#[tokio::test]
+async fn session_typed_shadow_drops_legacy_identity_and_mount_sequence() {
+    let plain = legacy_shadowed_by_session_typed_plan(0).await;
+    let perturbed = legacy_shadowed_by_session_typed_plan(3).await;
+
+    for plan in [&plain, &perturbed] {
+        assert_eq!(
+            plan.components
+                .iter()
+                .filter(|component| component.id == "model-middleware:same")
+                .count(),
+            1
+        );
+        assert!(
+            !plan
+                .components
+                .iter()
+                .any(|component| component.id == "prompt-contributor:same")
+        );
+        assert!(plan.components.contains(&ComponentIdentity {
+            id: "contract:crabber/model/system-prompt-middleware".into(),
+            version: SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION.to_string(),
+        }));
+        assert!(
+            !plan
+                .components
+                .iter()
+                .any(|component| component.id == "contract:crabber/prompt/contribution")
+        );
+    }
+    assert_eq!(plain.fingerprint, perturbed.fingerprint);
+}
+
 #[tokio::test]
 async fn model_middleware_fingerprint_scope_resolution_precedes_identity() {
     let registry = Registry::new();
