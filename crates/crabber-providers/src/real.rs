@@ -494,6 +494,13 @@ impl HttpAdapter {
         clippy::unused_async_trait_impl
     )]
     async fn headers(&self, request: &ModelRequest) -> Result<HeaderMap, ProviderError> {
+        #[cfg(feature = "custom-http")]
+        if self.kind == AdapterKind::Custom {
+            return self
+                .custom_headers(request)
+                .await
+                .map(|(headers, _)| headers);
+        }
         let mut headers = HeaderMap::new();
         headers.insert("user-agent", HeaderValue::from_static("crabber/0.1"));
         if self.uses_codex_responses_mode() {
@@ -544,7 +551,59 @@ impl HttpAdapter {
         }
         Ok(headers)
     }
+    #[cfg(feature = "custom-http")]
+    async fn custom_headers(
+        &self,
+        request: &ModelRequest,
+    ) -> Result<(HeaderMap, String), ProviderError> {
+        let credential = if let Some(source) = &self.credential_source {
+            source.credential(request).await?
+        } else {
+            self.api_key()?
+        };
+        if credential.is_empty() {
+            return Err(invalid());
+        }
+
+        let mut headers = self.static_headers.clone();
+        if let Some(hook) = &self.request_header_hook {
+            let hook_headers = hook.headers(request)?;
+            if hook_headers.keys().any(is_protected_static_header) {
+                return Err(invalid());
+            }
+            for name in hook_headers.keys() {
+                headers.remove(name);
+                for value in hook_headers.get_all(name) {
+                    headers.append(name, value.clone());
+                }
+            }
+        }
+
+        headers.insert("user-agent", HeaderValue::from_static("crabber/0.1"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        if self.protocol == Protocol::Messages {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        let (name, value) = match self.credential_placement {
+            CredentialPlacement::Bearer => ("authorization", format!("Bearer {credential}")),
+            CredentialPlacement::XApiKey => ("x-api-key", credential.clone()),
+            #[cfg(feature = "opencode-go")]
+            CredentialPlacement::ProtocolDefault => unreachable!(),
+        };
+        let mut value = HeaderValue::from_str(&value).map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static(name), value);
+        Ok((headers, credential))
+    }
     async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        #[cfg(feature = "custom-http")]
+        let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
+            let (headers, credential) = self.custom_headers(&request).await?;
+            (headers, Some(credential))
+        } else {
+            (self.headers(&request).await?, None)
+        };
+        #[cfg(not(feature = "custom-http"))]
         let headers = self.headers(&request).await?;
         let body = match self.protocol {
             Protocol::Responses => {
@@ -558,7 +617,8 @@ impl HttpAdapter {
             self.base_url.trim_end_matches('/'),
             self.protocol.path()
         );
-        let response = self
+        #[allow(unused_mut)]
+        let mut response = self
             .client
             .post(&url)
             .headers(headers.clone())
@@ -566,34 +626,59 @@ impl HttpAdapter {
             .send()
             .await
             .map_err(|_| transport())?;
-        #[cfg(feature = "codex")]
-        let response = {
-            let mut response = response;
-            if self.uses_codex_responses_mode()
-                && response.status() == reqwest::StatusCode::UNAUTHORIZED
+        #[cfg(feature = "custom-http")]
+        if self.kind == AdapterKind::Custom {
+            if let Some(observer) = &self.response_observer {
+                observer.observe(response.status(), response.headers());
+            }
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                && self.credential_source.is_some()
             {
-                let previous = headers
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.strip_prefix("Bearer "))
-                    .ok_or_else(auth)?;
-                self.tokens
-                    .as_ref()
-                    .ok_or_else(auth)?
-                    .force_refresh(previous)
-                    .await
-                    .map_err(|_| auth())?;
+                let stale = custom_credential.as_deref().ok_or_else(auth)?;
+                let source = self.credential_source.as_ref().ok_or_else(auth)?;
+                drop(response);
+                source.invalidate(stale).await;
+                let (retry_headers, _) = self.custom_headers(&request).await?;
                 response = self
                     .client
                     .post(&url)
-                    .headers(self.headers(&request).await?)
+                    .headers(retry_headers)
                     .json(&body)
                     .send()
                     .await
                     .map_err(|_| transport())?;
+                if let Some(observer) = &self.response_observer {
+                    observer.observe(response.status(), response.headers());
+                }
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    return Err(auth());
+                }
             }
-            response
-        };
+        }
+        #[cfg(feature = "codex")]
+        if self.uses_codex_responses_mode()
+            && response.status() == reqwest::StatusCode::UNAUTHORIZED
+        {
+            let previous = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .ok_or_else(auth)?;
+            self.tokens
+                .as_ref()
+                .ok_or_else(auth)?
+                .force_refresh(previous)
+                .await
+                .map_err(|_| auth())?;
+            response = self
+                .client
+                .post(&url)
+                .headers(self.headers(&request).await?)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| transport())?;
+        }
         if !response.status().is_success() {
             return Err(status_error(response.status()));
         }
@@ -865,11 +950,75 @@ impl Resolver for HttpResolver {
 ))]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
     use crate::RequestIdentity;
-    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
     use crabber_core::{RunId, SessionId, TurnId};
     #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    use std::time::Duration;
+    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        time::timeout,
+    };
+
+    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    async fn accept_loopback_request(listener: &TcpListener) -> (TcpStream, String) {
+        let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
+            .await
+            .expect("timed out waiting for provider request")
+            .expect("failed to accept provider request");
+        let mut raw = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let n = timeout(LOOPBACK_TIMEOUT, socket.read(&mut buffer))
+                .await
+                .expect("timed out reading provider request")
+                .expect("failed to read provider request");
+            assert_ne!(n, 0, "request ended before its headers");
+            raw.extend_from_slice(&buffer[..n]);
+            if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8(raw[..header_end].to_vec())
+            .expect("provider request headers were not UTF-8");
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map_or(0, |(_, value)| {
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .expect("invalid request Content-Length")
+            });
+        let request_end = header_end
+            .checked_add(content_length)
+            .expect("request length overflowed");
+        while raw.len() < request_end {
+            let n = timeout(LOOPBACK_TIMEOUT, socket.read(&mut buffer))
+                .await
+                .expect("timed out reading provider request body")
+                .expect("failed to read provider request body");
+            assert_ne!(n, 0, "request ended before its declared body");
+            raw.extend_from_slice(&buffer[..n]);
+        }
+        (socket, headers)
+    }
+
+    #[cfg(any(feature = "codex", feature = "opencode-go"))]
+    async fn write_loopback_response(socket: &mut TcpStream, response: &[u8]) {
+        timeout(LOOPBACK_TIMEOUT, socket.write_all(response))
+            .await
+            .expect("timed out writing provider response")
+            .expect("failed to write provider response");
+    }
+    #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
     fn request(provider: &str) -> ModelRequest {
         ModelRequest {
             identity: RequestIdentity {
@@ -1001,6 +1150,27 @@ mod tests {
         assert!(static_key.credential_source.is_none());
     }
     #[cfg(feature = "custom-http")]
+    #[tokio::test]
+    async fn custom_dynamic_authorization_is_sensitive_before_encoding() {
+        struct Source;
+        #[async_trait]
+        impl CredentialSource for Source {
+            async fn credential(&self, _request: &ModelRequest) -> Result<String, ProviderError> {
+                Ok("raw-secret".into())
+            }
+            async fn invalidate(&self, _stale: &str) {}
+        }
+
+        let headers = HttpAdapter::custom("custom", "https://example.test", Protocol::Responses)
+            .with_credential_source(Arc::new(Source))
+            .headers(&request("custom"))
+            .await
+            .unwrap();
+        let authorization = headers.get("authorization").unwrap();
+        assert_eq!(authorization, "Bearer raw-secret");
+        assert!(authorization.is_sensitive());
+    }
+    #[cfg(feature = "custom-http")]
     #[test]
     fn invalid_proxy_error_does_not_disclose_url_credentials() {
         let error = HttpProxyConfig::all("http://proxy-user:super-secret@[invalid")
@@ -1010,6 +1180,185 @@ mod tests {
         assert!(!rendered.contains("proxy-user"));
         assert!(!rendered.contains("super-secret"));
     }
+    #[cfg(feature = "codex")]
+    #[tokio::test]
+    async fn real_codex_401_refreshes_once_against_loopback() {
+        use crabber_auth::{
+            CredentialStore, MemoryCredentialStore, OAuthCredentials, TokenManager, now_ms,
+        };
+        use std::sync::Mutex;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let server_seen = seen.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut socket, headers) = accept_loopback_request(&listener).await;
+                let first = headers.lines().next().unwrap().to_owned();
+                let authorization = headers
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                    .unwrap_or_default()
+                    .to_owned();
+                server_seen
+                    .lock()
+                    .unwrap()
+                    .push((first.clone(), authorization));
+                let (status, content_type, body) = if first.contains("/token") {
+                    (
+                        "200 OK",
+                        "application/json",
+                        r#"{"access_token":"fresh","refresh_token":"rotated","expires_in":3600}"#,
+                    )
+                } else if server_seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(line, _)| line.contains("/responses"))
+                    .count()
+                    == 1
+                {
+                    ("401 Unauthorized", "text/plain", "no")
+                } else {
+                    (
+                        "200 OK",
+                        "text/event-stream",
+                        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                write_loopback_response(&mut socket, response.as_bytes()).await;
+            }
+        });
+
+        let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
+        store
+            .save(&OAuthCredentials {
+                client_id: "client".into(),
+                host_id: "host".into(),
+                account_id: "account".into(),
+                access_token: "stale".into(),
+                refresh_token: "refresh".into(),
+                id_token: "id".into(),
+                scopes: vec!["chatgpt.tokens.use.direct".into()],
+                expires_unix_ms: now_ms() + 3_600_000,
+            })
+            .unwrap();
+        let mut adapter = HttpAdapter::codex(store.clone()).with_base_url(&base_url);
+        adapter.tokens = Some(Arc::new(
+            TokenManager::new(store).with_token_url(format!("{base_url}/token")),
+        ));
+        let _stream = adapter.stream(request("codex")).await.unwrap();
+        timeout(LOOPBACK_TIMEOUT, server)
+            .await
+            .expect("loopback server did not finish")
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[0].1.ends_with("Bearer stale"));
+        assert!(seen[1].0.contains("/token"));
+        assert!(seen[2].1.ends_with("Bearer fresh"));
+    }
+    #[cfg(feature = "opencode-go")]
+    #[tokio::test]
+    async fn real_opencode_models_use_endpoint_but_custom_same_id_does_not() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, request) = accept_loopback_request(&listener).await;
+            assert!(request.starts_with("GET /models HTTP/1.1"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer key")
+            );
+            let body = r#"{"data":[{"id":"real-model"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            write_loopback_response(&mut socket, response.as_bytes()).await;
+        });
+        let real = HttpAdapter::opencode_go(Protocol::Responses)
+            .with_api_key("key")
+            .with_base_url(&base_url);
+        assert_eq!(real.models().await.unwrap()[0].id, "real-model");
+        timeout(LOOPBACK_TIMEOUT, server)
+            .await
+            .expect("loopback server did not finish")
+            .unwrap();
+
+        #[cfg(feature = "custom-http")]
+        {
+            let custom =
+                HttpAdapter::custom("opencode-go", "http://127.0.0.1:1", Protocol::Responses)
+                    .with_api_key("key");
+            assert_eq!(
+                custom.models().await.unwrap(),
+                Vec::<ModelDescriptor>::new()
+            );
+            let custom_headers = custom.headers(&request("opencode-go")).await.unwrap();
+            assert!(!custom_headers.contains_key("x-opencode-session"));
+        }
+    }
+    #[cfg(all(feature = "custom-http", feature = "opencode-go"))]
+    #[tokio::test]
+    async fn real_opencode_session_header_is_wire_privileged() {
+        use std::sync::Mutex;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let server_seen = seen.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, request) = accept_loopback_request(&listener).await;
+                server_seen.lock().unwrap().push(request);
+                let body = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                write_loopback_response(&mut socket, response.as_bytes()).await;
+            }
+        });
+
+        let real = HttpAdapter::opencode_go(Protocol::Responses)
+            .with_api_key("real-key")
+            .with_base_url(&base_url);
+        let _real_events: Vec<_> = real
+            .stream(request("opencode-go"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        let custom = HttpAdapter::custom("opencode-go", &base_url, Protocol::Responses)
+            .with_api_key("custom-key");
+        let _custom_events: Vec<_> = custom
+            .stream(request("opencode-go"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        timeout(LOOPBACK_TIMEOUT, server)
+            .await
+            .expect("loopback server did not finish")
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[0]
+                .to_ascii_lowercase()
+                .contains("x-opencode-session: session-1")
+        );
+        assert!(!seen[1].to_ascii_lowercase().contains("x-opencode-session:"));
+    }
+
     #[cfg(feature = "opencode-go")]
     #[tokio::test]
     async fn opencode_headers_follow_protocol() {

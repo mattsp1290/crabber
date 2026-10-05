@@ -24,7 +24,11 @@ opencode-go = ["dep:reqwest", "dep:bytes"]
 all-providers = ["anthropic", "openai", "codex", "opencode-go"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[[test]]
+name = "custom_http"
+required-features = ["custom-http"]
 
 [lints]
 workspace = true
