@@ -67,6 +67,9 @@ For an authorized `AGENTS.md`, the recipe appends an explicit
 framing, and security contract](docs/middleware.md), then run
 `cargo run -p agents-md-middleware` without credentials.
 
+`crabber-middleware` is currently distributed as a workspace/path dependency rather
+than as a standalone crates.io package.
+
 Run the full workspace quality gate with `cargo xtask check`. It checks formatting, Clippy, tests, and that the example's marked embedding glue stays within 60 lines.
 
 ## PostgreSQL persistence
