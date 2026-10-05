@@ -28,6 +28,7 @@ fn check() {
     check_wit(workspace);
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
+    check_custom_http(workspace);
     run(
         workspace,
         &[
@@ -81,13 +82,70 @@ fn check() {
             "wasm_roles",
         ],
     );
-    let external = workspace.join("testdata/external-consumer/check.sh");
-    let status = Command::new(&external)
-        .current_dir(workspace)
-        .status()
-        .expect("run external consumer check");
-    assert!(status.success(), "external consumer check failed");
+    run_script(
+        workspace,
+        "external consumer check",
+        "testdata/external-consumer/check.sh",
+    );
     check_glue(workspace);
+}
+
+fn check_custom_http(workspace: &Path) {
+    run(
+        workspace,
+        &[
+            "check",
+            "-p",
+            "crabber",
+            "--no-default-features",
+            "--features",
+            "custom-http",
+        ],
+    );
+    // This script includes the positive probe manifest check before exercising
+    // the negative feature-boundary and raw-escape probes.
+    run_script(
+        workspace,
+        "custom HTTP positive and negative feature-boundary probe",
+        "testdata/custom-http-feature-probe/check.sh",
+    );
+    run(
+        workspace,
+        &[
+            "clippy",
+            "-p",
+            "crabber-providers",
+            "--all-targets",
+            "--features",
+            "all-providers,custom-http",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber-providers",
+            "--no-default-features",
+            "--features",
+            "custom-http",
+            "--test",
+            "custom_http",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber-providers",
+            "--features",
+            "all-providers,custom-http",
+        ],
+    );
 }
 
 fn check_journeys(workspace: &Path) {
@@ -226,6 +284,19 @@ fn run(workspace: &Path, args: &[&str]) {
         .status()
         .expect("failed to launch cargo");
     if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn run_script(workspace: &Path, label: &str, relative: &str) {
+    println!("$ {relative} # {label}");
+    let script = workspace.join(relative);
+    let status = Command::new(&script)
+        .current_dir(workspace)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to launch {label} ({relative}): {error}"));
+    if !status.success() {
+        eprintln!("{label} failed ({relative})");
         std::process::exit(status.code().unwrap_or(1));
     }
 }
