@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+postgres = ["crabber-session/postgres"]
+
 [dependencies]
 serde = "1"
 crabber-core = { path = "../crabber-core" }
@@ -21,6 +25,7 @@ time = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+crabber-middleware = { path = "../crabber-middleware" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "test-util"] }
 

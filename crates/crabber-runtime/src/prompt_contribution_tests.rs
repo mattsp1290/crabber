@@ -7,8 +7,10 @@ use crate::{Orchestrator, PermissionDecision, Request, StaticPolicy};
 use async_trait::async_trait;
 use crabber_core::{RunStatus, ToolCallId, ToolInfo};
 use crabber_extension::{
-    Extension, ExtensionError, ModelRequestError, Point, PromptAttemptContext, PromptContributor,
-    PromptSection, Registrar, Registry, Scope, ToolDefinition, ToolExecutor,
+    Extension, ExtensionError, MiddlewareDescriptor, ModelAttemptContext, ModelRequestError, Point,
+    PromptAttemptContext, PromptContributor, PromptSection, Registrar, Registry, Scope,
+    SystemPromptMiddleware, ToolDefinition, ToolExecutor, WorkspaceContext, WorkspaceReadError,
+    WorkspaceReadErrorKind, WorkspaceReader, WorkspaceReaderResolver,
 };
 use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
 use crabber_session::{MemoryStore, Store};
