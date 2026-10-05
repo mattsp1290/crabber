@@ -4,7 +4,7 @@ use crabber_core::{
 };
 use crabber_extension::{
     Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
-    StaticPlanProvider, ToolDefinition,
+    StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
 };
 use crabber_providers::{Resolver, Selection};
 use crabber_runtime::{
@@ -55,6 +55,7 @@ pub struct AgentBuilder {
     monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
+    workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     config: Option<AgentConfig>,
     tools: Vec<Arc<ToolDefinition>>,
     prompts: Vec<Arc<PromptSection>>,
@@ -140,6 +141,13 @@ impl AgentBuilder {
     #[must_use]
     pub fn provider(mut self, provider: Arc<dyn Resolver>) -> Self {
         self.resolver = Some(provider);
+        self
+    }
+
+    /// Grants typed model middleware host-authorized, per-workspace readers.
+    #[must_use]
+    pub fn workspace_reader_resolver(mut self, resolver: Arc<dyn WorkspaceReaderResolver>) -> Self {
+        self.workspace_reader_resolver = Some(resolver);
         self
     }
 
@@ -245,6 +253,9 @@ impl AgentBuilder {
             .execution_mode(self.execution_mode)
             .compaction(self.compaction)
             .observer(observer);
+        if let Some(workspace_reader_resolver) = self.workspace_reader_resolver {
+            runtime = runtime.workspace_reader_resolver(workspace_reader_resolver);
+        }
         if let Some(clock) = self.monotonic_clock {
             runtime = runtime.monotonic_clock(clock);
         }
@@ -449,6 +460,7 @@ impl Agent {
             monotonic_clock: None,
             store: None,
             resolver: None,
+            workspace_reader_resolver: None,
             config: None,
             tools: Vec::new(),
             prompts: Vec::new(),
@@ -840,7 +852,113 @@ impl Extension for BuiltinExtension {
 mod tests {
     use super::*;
     use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, StreamDelta};
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    struct BuilderReader;
+    #[async_trait]
+    impl crate::WorkspaceReader for BuilderReader {
+        async fn read_limited(
+            &self,
+            _: &str,
+            _: usize,
+        ) -> Result<Vec<u8>, crate::WorkspaceReadError> {
+            Ok(b"builder-reader".to_vec())
+        }
+    }
+    struct BuilderResolver(Arc<AtomicBool>);
+    #[async_trait]
+    impl crate::WorkspaceReaderResolver for BuilderResolver {
+        async fn resolve(
+            &self,
+            _: &crabber_extension::WorkspaceContext,
+        ) -> Result<Arc<dyn crate::WorkspaceReader>, crate::WorkspaceReadError> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(Arc::new(BuilderReader))
+        }
+    }
+    struct BuilderMiddleware;
+    #[async_trait]
+    impl crabber_extension::SystemPromptMiddleware for BuilderMiddleware {
+        async fn contribute(
+            &self,
+            context: crabber_extension::ModelAttemptContext,
+        ) -> Result<Option<String>, String> {
+            let resolver = context.workspace_reader_resolver().ok_or("missing")?;
+            let reader = resolver
+                .resolve(context.workspace())
+                .await
+                .map_err(|_| "resolve")?;
+            let bytes = reader
+                .read_limited("AGENTS.md", 32)
+                .await
+                .map_err(|_| "read")?;
+            String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| "utf8".into())
+        }
+    }
+    struct BuilderExtension;
+    #[async_trait]
+    impl Extension for BuilderExtension {
+        fn id(&self) -> &'static str {
+            "builder-resolver"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn config_hash(&self) -> String {
+            String::new()
+        }
+        async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+            registrar.system_prompt_middleware(
+                "builder-reader",
+                0,
+                crabber_extension::MiddlewareDescriptor::new(
+                    "builder-test",
+                    "1",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                )
+                .unwrap(),
+                Arc::new(BuilderMiddleware),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_builder_workspace_resolver_is_forwarded() {
+        let called = Arc::new(AtomicBool::new(false));
+        let fake = FakeProvider::scripted(vec![vec![
+            StreamDelta::TextDelta("ok".into()),
+            StreamDelta::Completed,
+        ]]);
+        let agent = Agent::builder()
+            .memory()
+            .provider(Arc::new(fake.clone()))
+            .config(AgentConfig::new(Selection {
+                provider_id: "fake".into(),
+                model_id: "scripted".into(),
+            }))
+            .workspace_reader_resolver(Arc::new(BuilderResolver(called.clone())))
+            .extension(Arc::new(BuilderExtension), Scope::Global)
+            .build()
+            .unwrap();
+        agent
+            .prompt(None, "hello")
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap();
+        assert!(called.load(Ordering::SeqCst));
+        assert_eq!(fake.requests()[0].system.as_deref(), Some("builder-reader"));
+        let _: crate::WorkspaceReadErrorKind = crate::WorkspaceReadErrorKind::Io;
+    }
 
     struct CloseProbe {
         ready: Arc<tokio::sync::Semaphore>,

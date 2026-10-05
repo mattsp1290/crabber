@@ -23,8 +23,9 @@ use crabber_extension::{
     PromptContributionOutcome, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled,
     RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass,
     ToolPrepare, ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare,
-    TurnStarted, WorkspaceContext, collect_prompt_contributions,
-    prompt_contribution_failed_message, result_transform_failed_message,
+    TurnStarted, WorkspaceContext, WorkspaceReaderResolver,
+    collect_prompt_contributions_with_resolver, prompt_contribution_failed_message,
+    result_transform_failed_message,
 };
 use crabber_providers::{
     DeltaStream, ModelRequest, ProviderError, RequestIdentity, Resolver, Selection, StreamDelta,
@@ -353,6 +354,7 @@ impl Streamer for SingleUseStreamer {
 pub struct Orchestrator {
     store: Arc<dyn Store>,
     resolver: Arc<dyn Resolver>,
+    workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
     clock: Arc<dyn Clock>,
     monotonic_clock: Arc<dyn MonotonicClock>,
@@ -445,6 +447,7 @@ impl CheckpointRequest {
 pub struct OrchestratorBuilder {
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
+    workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Option<Arc<dyn RunPlanProvider>>,
     clock: Option<Arc<dyn Clock>>,
     monotonic_clock: Option<Arc<dyn MonotonicClock>>,
@@ -478,6 +481,12 @@ impl OrchestratorBuilder {
     #[must_use]
     pub fn resolver(mut self, value: Arc<dyn Resolver>) -> Self {
         self.resolver = Some(value);
+        self
+    }
+    /// Grants typed model middleware host-authorized, per-workspace readers.
+    #[must_use]
+    pub fn workspace_reader_resolver(mut self, value: Arc<dyn WorkspaceReaderResolver>) -> Self {
+        self.workspace_reader_resolver = Some(value);
         self
     }
     #[must_use]
@@ -594,6 +603,7 @@ impl OrchestratorBuilder {
         Ok(Orchestrator {
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
+            workspace_reader_resolver: self.workspace_reader_resolver,
             plan_provider: self
                 .plan_provider
                 .ok_or(RuntimeError::Missing("plan provider"))?,
@@ -2277,9 +2287,16 @@ impl Orchestrator {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
-            let system =
-                Self::attempt_system(plan, &snapshot, workspace, attempt, compacted, cancellation)
-                    .await?;
+            let system = Self::attempt_system(
+                plan,
+                &snapshot,
+                workspace,
+                attempt,
+                compacted,
+                cancellation,
+                self.workspace_reader_resolver.clone(),
+            )
+            .await?;
             if !plan.prompt_contributors.is_empty() {
                 ensure_lease(lease_lost)?;
             }
@@ -2344,6 +2361,7 @@ impl Orchestrator {
         attempt: u32,
         compacted: bool,
         cancellation: &CancellationToken,
+        workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     ) -> Result<Option<String>, RuntimeError> {
         if plan.prompt_contributors.is_empty() {
             return Ok(snapshot.system.clone());
@@ -2359,7 +2377,13 @@ impl Orchestrator {
             compacted,
         )
         .with_cancellation(cancellation.clone());
-        match collect_prompt_contributions(&plan.prompt_contributors, context).await {
+        match collect_prompt_contributions_with_resolver(
+            &plan.prompt_contributors,
+            context,
+            workspace_reader_resolver,
+        )
+        .await
+        {
             PromptContributionOutcome::Completed { sections } => {
                 let mut system = snapshot.system.clone().unwrap_or_default();
                 for section in sections {

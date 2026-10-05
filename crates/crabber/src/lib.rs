@@ -9,7 +9,10 @@ pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
     SessionId, TraceContext, TraceContextError, TraceLink,
 };
-pub use crabber_extension::{ExtensionError, ToolDefinition, ToolExecutor};
+pub use crabber_extension::{
+    ExtensionError, ToolDefinition, ToolExecutor, WorkspaceReadError, WorkspaceReadErrorKind,
+    WorkspaceReader, WorkspaceReaderResolver,
+};
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
     ModelPurpose, MonotonicClock, Observer, OperationKind, OperationalObservation,
