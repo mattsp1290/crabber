@@ -16,6 +16,7 @@ thiserror = "2"
 
 [features]
 default = []
+custom-http = ["dep:reqwest", "dep:bytes"]
 anthropic = ["dep:reqwest", "dep:bytes"]
 openai = ["dep:reqwest", "dep:bytes"]
 codex = ["dep:reqwest", "dep:bytes", "dep:crabber-auth"]

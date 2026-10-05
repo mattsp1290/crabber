@@ -11,6 +11,7 @@ use std::{
 };
 
 #[cfg(any(
+    feature = "custom-http",
     feature = "anthropic",
     feature = "openai",
     feature = "codex",
@@ -18,6 +19,7 @@ use std::{
 ))]
 mod chat;
 #[cfg(any(
+    feature = "custom-http",
     feature = "anthropic",
     feature = "openai",
     feature = "codex",
@@ -25,6 +27,7 @@ mod chat;
 ))]
 mod messages;
 #[cfg(any(
+    feature = "custom-http",
     feature = "anthropic",
     feature = "openai",
     feature = "codex",
@@ -32,6 +35,7 @@ mod messages;
 ))]
 mod real;
 #[cfg(any(
+    feature = "custom-http",
     feature = "anthropic",
     feature = "openai",
     feature = "codex",
@@ -39,7 +43,13 @@ mod real;
 ))]
 mod responses;
 pub mod sse;
+#[cfg(feature = "custom-http")]
+pub use real::{
+    AuthScheme, ChatTokenField, CredentialSource, ErrorClassifier, HttpClientConfig,
+    HttpProxyConfig, RequestHeaderHook, ResponseObserver,
+};
 #[cfg(any(
+    feature = "custom-http",
     feature = "anthropic",
     feature = "openai",
     feature = "codex",
