@@ -100,7 +100,7 @@ impl Registrar {
         order: i32,
         descriptor: MiddlewareDescriptor,
         callback: Arc<dyn SystemPromptMiddleware>,
-    ) -> Result<(), ExtensionError> {
+    ) {
         self.contributors
             .push(MountedPromptContributor::system_prompt(
                 name.into(),
@@ -108,7 +108,6 @@ impl Registrar {
                 descriptor,
                 callback,
             ));
-        Ok(())
     }
     pub fn guard(&mut self, guard: Arc<dyn ToolGuard>) {
         self.guards.push(guard);

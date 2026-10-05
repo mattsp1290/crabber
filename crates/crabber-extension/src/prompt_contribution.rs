@@ -16,6 +16,21 @@ pub const MAX_PROMPT_CONTRIBUTION_BYTES: usize = 32 * 1024;
 pub const MAX_PROMPT_CONTRIBUTIONS_TOTAL_BYTES: usize = 128 * 1024;
 pub const MAX_PROMPT_CONTRIBUTOR_NAME_BYTES: usize = 128;
 
+/// Identity shared by the legacy and typed views of one runtime-owned attempt.
+/// Keeping this private prevents the typed view from widening legacy authority
+/// while ensuring newly added identity fields cannot drift between the views.
+#[derive(Debug, Clone)]
+pub(crate) struct AttemptMetadata {
+    pub(crate) session_id: SessionId,
+    pub(crate) run_id: RunId,
+    pub(crate) turn_id: TurnId,
+    pub(crate) workspace: WorkspaceContext,
+    pub(crate) provider_id: String,
+    pub(crate) model_id: String,
+    pub(crate) attempt: u32,
+    pub(crate) after_compaction: bool,
+}
+
 #[must_use]
 pub fn prompt_contribution_failed_message(name: &str) -> String {
     format!("prompt contribution failed: {name}")
@@ -26,14 +41,7 @@ pub fn prompt_contribution_failed_message(name: &str) -> String {
 /// for each invocation; neither is serialized.
 #[derive(Debug, Clone)]
 pub struct PromptAttemptContext {
-    session_id: SessionId,
-    run_id: RunId,
-    turn_id: TurnId,
-    workspace: WorkspaceContext,
-    provider_id: String,
-    model_id: String,
-    attempt: u32,
-    after_compaction: bool,
+    metadata: Arc<AttemptMetadata>,
     cancellation: CancellationToken,
     cleanup: CleanupTracker,
 }
@@ -51,14 +59,16 @@ impl PromptAttemptContext {
         after_compaction: bool,
     ) -> Self {
         Self {
-            session_id,
-            run_id,
-            turn_id,
-            workspace,
-            provider_id,
-            model_id,
-            attempt,
-            after_compaction,
+            metadata: Arc::new(AttemptMetadata {
+                session_id,
+                run_id,
+                turn_id,
+                workspace,
+                provider_id,
+                model_id,
+                attempt,
+                after_compaction,
+            }),
             cancellation: CancellationToken::new(),
             cleanup: CleanupTracker::detached(),
         }
@@ -75,36 +85,36 @@ impl PromptAttemptContext {
     }
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
-        &self.session_id
+        &self.metadata.session_id
     }
     #[must_use]
     pub fn run_id(&self) -> &RunId {
-        &self.run_id
+        &self.metadata.run_id
     }
     #[must_use]
     pub fn turn_id(&self) -> &TurnId {
-        &self.turn_id
+        &self.metadata.turn_id
     }
     #[must_use]
     pub fn workspace(&self) -> &WorkspaceContext {
-        &self.workspace
+        &self.metadata.workspace
     }
     #[must_use]
     pub fn provider_id(&self) -> &str {
-        &self.provider_id
+        &self.metadata.provider_id
     }
     #[must_use]
     pub fn model_id(&self) -> &str {
-        &self.model_id
+        &self.metadata.model_id
     }
     /// One-based attempt within this execution of the current turn.
     #[must_use]
     pub fn attempt(&self) -> u32 {
-        self.attempt
+        self.metadata.attempt
     }
     #[must_use]
     pub fn after_compaction(&self) -> bool {
-        self.after_compaction
+        self.metadata.after_compaction
     }
     #[must_use]
     pub fn cancellation(&self) -> &CancellationToken {
@@ -113,6 +123,10 @@ impl PromptAttemptContext {
     #[must_use]
     pub fn cleanup(&self) -> &CleanupTracker {
         &self.cleanup
+    }
+
+    pub(crate) fn metadata(&self) -> Arc<AttemptMetadata> {
+        self.metadata.clone()
     }
 }
 
@@ -245,19 +259,9 @@ pub async fn collect_prompt_contributions_with_resolver(
                         callback(invocation).await.map_err(|_| ())
                     }
                     MountedPromptCallback::SystemPrompt(callback) => {
-                        let typed = ModelAttemptContext::new(
-                            invocation.session_id().clone(),
-                            invocation.run_id().clone(),
-                            invocation.turn_id().clone(),
-                            invocation.workspace().clone(),
-                            invocation.provider_id().to_owned(),
-                            invocation.model_id().to_owned(),
-                            invocation.attempt(),
-                            invocation.after_compaction(),
-                            resolver,
-                        )
-                        .with_cancellation(invocation.cancellation().clone())
-                        .with_cleanup(invocation.cleanup().clone());
+                        let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
+                            .with_cancellation(invocation.cancellation().clone())
+                            .with_cleanup(invocation.cleanup().clone());
                         callback.contribute(typed).await.map_err(|_| ())
                     }
                 }

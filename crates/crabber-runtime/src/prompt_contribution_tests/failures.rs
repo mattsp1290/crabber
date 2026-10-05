@@ -407,14 +407,12 @@ impl SystemPromptMiddleware for ForgingMiddleware {
 async fn typed_registry(contexts: Arc<Mutex<Vec<WorkspaceContext>>>, limit: usize) -> Registry {
     let registry = Registry::new();
     mount(&registry, "typed-reader", Scope::Global, move |registrar| {
-        registrar
-            .system_prompt_middleware(
-                "workspace-reader",
-                0,
-                MiddlewareDescriptor::new("test-reader", "1", TEST_MIDDLEWARE_HASH).unwrap(),
-                Arc::new(ReaderMiddleware(contexts.clone(), limit)),
-            )
-            .unwrap();
+        registrar.system_prompt_middleware(
+            "workspace-reader",
+            0,
+            MiddlewareDescriptor::new("test-reader", "1", TEST_MIDDLEWARE_HASH).unwrap(),
+            Arc::new(ReaderMiddleware(contexts.clone(), limit)),
+        );
     })
     .await;
     registry
@@ -481,17 +479,15 @@ async fn model_middleware_workspace_resolver_denies_forged_context_without_host_
         let forged = forged.clone();
         let observed_error = observed_error.clone();
         move |registrar| {
-            registrar
-                .system_prompt_middleware(
-                    "forged-workspace",
-                    0,
-                    MiddlewareDescriptor::new("test-forger", "1", TEST_MIDDLEWARE_HASH).unwrap(),
-                    Arc::new(ForgingMiddleware {
-                        forged: forged.clone(),
-                        observed_error: observed_error.clone(),
-                    }),
-                )
-                .unwrap();
+            registrar.system_prompt_middleware(
+                "forged-workspace",
+                0,
+                MiddlewareDescriptor::new("test-forger", "1", TEST_MIDDLEWARE_HASH).unwrap(),
+                Arc::new(ForgingMiddleware {
+                    forged: forged.clone(),
+                    observed_error: observed_error.clone(),
+                }),
+            );
         }
     })
     .await;

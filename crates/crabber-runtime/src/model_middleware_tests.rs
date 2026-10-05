@@ -16,6 +16,8 @@ use crabber_middleware::{AGENTS_MD_MAX_FILE_BYTES, AgentsMdConfig, AgentsMdExten
 use crabber_providers::{
     FakeProvider, ModelRequest, ProviderError, ProviderErrorKind, Selection, StreamDelta,
 };
+#[cfg(feature = "postgres")]
+use crabber_session::PostgresStore;
 use crabber_session::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::{
@@ -623,7 +625,7 @@ impl SystemPromptMiddleware for AttemptObserver {
 }
 
 #[tokio::test]
-async fn model_middleware_post_compaction_attempt_refreshes_and_sets_context_flag() {
+async fn model_middleware_bypasses_internal_compaction_then_refreshes_agent_turn() {
     let backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
     let contexts = Arc::new(Mutex::new(Vec::new()));
     let registry = Registry::new();
@@ -631,14 +633,12 @@ async fn model_middleware_post_compaction_attempt_refreshes_and_sets_context_fla
     mount_test(&registry, "compaction-observer", Scope::Global, {
         let contexts = contexts.clone();
         move |registrar| {
-            registrar
-                .system_prompt_middleware(
-                    "attempt-observer",
-                    1,
-                    MiddlewareDescriptor::new("test-observer", "1", OBSERVER_HASH).unwrap(),
-                    Arc::new(AttemptObserver(contexts.clone())),
-                )
-                .unwrap();
+            registrar.system_prompt_middleware(
+                "attempt-observer",
+                1,
+                MiddlewareDescriptor::new("test-observer", "1", OBSERVER_HASH).unwrap(),
+                Arc::new(AttemptObserver(contexts.clone())),
+            );
         }
     })
     .await;
@@ -675,12 +675,14 @@ async fn model_middleware_post_compaction_attempt_refreshes_and_sets_context_fla
     let requests = fake.requests();
     assert_eq!(requests.len(), 3);
     assert!(requests[0].system.as_deref().unwrap().contains("\nv1\n"));
+    // Internal compaction keeps its dedicated prompt and bypasses agent-turn middleware.
     assert_eq!(
         requests[1].system.as_deref(),
         Some(
             "Summarize this context for continuation. Preserve every standing instruction and unresolved task from the previous summary and new context."
         )
     );
+    // The agent-turn retry recollects middleware and observes the changed workspace file.
     assert!(requests[2].system.as_deref().unwrap().contains("\nv2\n"));
     assert_eq!(*contexts.lock().unwrap(), vec![(1, false), (2, true)]);
     assert_eq!(backend.resolves.lock().unwrap().len(), 2);
@@ -790,7 +792,7 @@ fn paused_runtime(
     registry: Registry,
     backend: &WorkspaceBackend,
     fake: &FakeProvider,
-    store: Arc<MemoryStore>,
+    store: Arc<dyn Store>,
 ) -> Orchestrator {
     Orchestrator::builder()
         .store(store)
@@ -800,6 +802,17 @@ fn paused_runtime(
         .policy(Arc::new(PausePolicy))
         .build()
         .unwrap()
+}
+
+#[cfg(feature = "postgres")]
+async fn paused_registry(config: AgentsMdConfig) -> Registry {
+    let registry = Registry::new();
+    mount_agents(&registry, Scope::Global, config, 0).await;
+    mount_test(&registry, "pause-tool", Scope::Global, |registrar| {
+        install_tool(registrar, WorkspaceBackend::empty());
+    })
+    .await;
+    registry
 }
 
 #[tokio::test]
@@ -901,6 +914,102 @@ async fn model_middleware_resume_keeps_plan_seal_but_refreshes_host_content() {
     let expected_reads = vec![("AGENTS.md".into(), AGENTS_MD_MAX_FILE_BYTES)];
     assert_eq!(*backend_a.reads.lock().unwrap(), expected_reads);
     assert_eq!(*backend_b.reads.lock().unwrap(), expected_reads);
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn model_middleware_postgres_resume_reconstructs_plan_and_rejects_changes_before_claim() {
+    let url = match std::env::var("CRABBER_TEST_POSTGRES_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_))
+            if std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() == Ok("1") =>
+        {
+            panic!("CRABBER_TEST_POSTGRES_URL is required")
+        }
+        Err(_error) => {
+            eprintln!("skipping PostgreSQL test: CRABBER_TEST_POSTGRES_URL is unset");
+            return;
+        }
+    };
+    PostgresStore::migrate(&url).await.unwrap();
+
+    // Persist a paused run, then let every runtime-owned object used to admit it
+    // fall out of scope. Resume uses a new pool, registry, extension instance,
+    // resolver instance, and orchestrator.
+    let run_id = {
+        let admission_provider = FakeProvider::scripted(vec![call_script()]);
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        let registry = paused_registry(AgentsMdConfig::default()).await;
+        let backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
+        let runtime = paused_runtime(registry, &backend, &admission_provider, store);
+        let handle = runtime.start(request()).await.unwrap();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        assert_eq!(admission_provider.requests().len(), 1);
+        run_id
+    };
+    let resume_provider = FakeProvider::scripted(vec![text_script("done")]);
+    let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let registry = paused_registry(AgentsMdConfig::default()).await;
+    let backend = WorkspaceBackend::with_file("AGENTS.md", "v2");
+    let runtime = paused_runtime(registry, &backend, &resume_provider, store);
+    assert_eq!(
+        runtime.resume(&run_id).await.unwrap().status,
+        RunStatus::Completed
+    );
+    assert_eq!(resume_provider.requests().len(), 1);
+    assert!(
+        resume_provider.requests()[0]
+            .system
+            .as_deref()
+            .unwrap()
+            .contains("\nv2\n")
+    );
+
+    // A second durable run proves a changed reconstruction is refused before
+    // claiming the row or dispatching another provider request.
+    let changed_run_id = {
+        let admission_provider = FakeProvider::scripted(vec![call_script()]);
+        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+        let registry = paused_registry(AgentsMdConfig::default()).await;
+        let backend = WorkspaceBackend::with_file("AGENTS.md", "original");
+        let runtime = paused_runtime(registry, &backend, &admission_provider, store);
+        let handle = runtime.start(request()).await.unwrap();
+        let run_id = handle.run_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+        assert_eq!(admission_provider.requests().len(), 1);
+        run_id
+    };
+    let resume_provider = FakeProvider::scripted(vec![text_script("must-not-run")]);
+    let changed_store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let before = changed_store
+        .get_run(&changed_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let changed_registry =
+        paused_registry(AgentsMdConfig::new(vec!["DIFFERENT.md".into()], false).unwrap()).await;
+    let changed_backend = WorkspaceBackend::with_file("DIFFERENT.md", "changed");
+    let changed_runtime = paused_runtime(
+        changed_registry,
+        &changed_backend,
+        &resume_provider,
+        changed_store.clone(),
+    );
+    assert!(matches!(
+        changed_runtime.resume(&changed_run_id).await,
+        Err(RuntimeError::PlanChanged)
+    ));
+    assert_eq!(
+        changed_store
+            .get_run(&changed_run_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert_eq!(resume_provider.requests().len(), 0);
+    assert_eq!(changed_backend.resolves.lock().unwrap().len(), 0);
 }
 
 // The forged-context authority boundary is intentionally covered by

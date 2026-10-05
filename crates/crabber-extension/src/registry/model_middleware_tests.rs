@@ -98,7 +98,7 @@ impl Extension for Registered {
                     *order,
                     descriptor.clone(),
                     callback.clone(),
-                )?,
+                ),
             }
         }
         Ok(())

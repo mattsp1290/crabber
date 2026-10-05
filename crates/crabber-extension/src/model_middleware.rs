@@ -1,6 +1,7 @@
 //! Typed model-middleware capabilities and per-attempt context.
 
-use crate::{CleanupTracker, WorkspaceContext};
+use crate::prompt_contribution::AttemptMetadata;
+use crate::{CleanupTracker, PromptAttemptContext, WorkspaceContext};
 use async_trait::async_trait;
 use crabber_core::{RunId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
@@ -79,7 +80,10 @@ fn valid_descriptor_field(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// Object-safe typed callback invoked once for each physical model attempt.
+/// Object-safe typed callback invoked once for each agent-turn model attempt.
+///
+/// Internal model requests, including context compaction, do not invoke this
+/// middleware. Retries and post-compaction agent-turn attempts do invoke it.
 #[async_trait]
 pub trait SystemPromptMiddleware: Send + Sync {
     async fn contribute(&self, context: ModelAttemptContext) -> Result<Option<String>, String>;
@@ -144,20 +148,13 @@ pub trait WorkspaceReaderResolver: Send + Sync {
     ) -> Result<Arc<dyn WorkspaceReader>, WorkspaceReadError>;
 }
 
-/// Read-only, runtime-authoritative context for one physical model attempt.
+/// Read-only, runtime-authoritative context for one agent-turn model attempt.
 ///
 /// Unlike [`crate::PromptAttemptContext`], this typed context may carry the
 /// narrowly scoped workspace-reader resolver configured by the host.
 #[derive(Clone)]
 pub struct ModelAttemptContext {
-    session_id: SessionId,
-    run_id: RunId,
-    turn_id: TurnId,
-    workspace: WorkspaceContext,
-    provider_id: String,
-    model_id: String,
-    attempt: u32,
-    after_compaction: bool,
+    metadata: Arc<AttemptMetadata>,
     cancellation: CancellationToken,
     cleanup: CleanupTracker,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
@@ -167,27 +164,12 @@ pub struct ModelAttemptContext {
 // authoritative context. The collector wiring lands separately from this API.
 #[allow(dead_code)]
 impl ModelAttemptContext {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        session_id: SessionId,
-        run_id: RunId,
-        turn_id: TurnId,
-        workspace: WorkspaceContext,
-        provider_id: String,
-        model_id: String,
-        attempt: u32,
-        after_compaction: bool,
+    pub(crate) fn from_prompt_attempt(
+        context: &PromptAttemptContext,
         workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     ) -> Self {
         Self {
-            session_id,
-            run_id,
-            turn_id,
-            workspace,
-            provider_id,
-            model_id,
-            attempt,
-            after_compaction,
+            metadata: context.metadata(),
             cancellation: CancellationToken::new(),
             cleanup: CleanupTracker::detached(),
             workspace_reader_resolver,
@@ -208,43 +190,43 @@ impl ModelAttemptContext {
 
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
-        &self.session_id
+        &self.metadata.session_id
     }
 
     #[must_use]
     pub fn run_id(&self) -> &RunId {
-        &self.run_id
+        &self.metadata.run_id
     }
 
     #[must_use]
     pub fn turn_id(&self) -> &TurnId {
-        &self.turn_id
+        &self.metadata.turn_id
     }
 
     #[must_use]
     pub fn workspace(&self) -> &WorkspaceContext {
-        &self.workspace
+        &self.metadata.workspace
     }
 
     #[must_use]
     pub fn provider_id(&self) -> &str {
-        &self.provider_id
+        &self.metadata.provider_id
     }
 
     #[must_use]
     pub fn model_id(&self) -> &str {
-        &self.model_id
+        &self.metadata.model_id
     }
 
     /// One-based attempt within this execution of the current turn.
     #[must_use]
     pub fn attempt(&self) -> u32 {
-        self.attempt
+        self.metadata.attempt
     }
 
     #[must_use]
     pub fn after_compaction(&self) -> bool {
-        self.after_compaction
+        self.metadata.after_compaction
     }
 
     #[must_use]
@@ -267,14 +249,14 @@ impl fmt::Debug for ModelAttemptContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ModelAttemptContext")
-            .field("session_id", &self.session_id)
-            .field("run_id", &self.run_id)
-            .field("turn_id", &self.turn_id)
-            .field("workspace", &self.workspace)
-            .field("provider_id", &self.provider_id)
-            .field("model_id", &self.model_id)
-            .field("attempt", &self.attempt)
-            .field("after_compaction", &self.after_compaction)
+            .field("session_id", &self.metadata.session_id)
+            .field("run_id", &self.metadata.run_id)
+            .field("turn_id", &self.metadata.turn_id)
+            .field("workspace", &self.metadata.workspace)
+            .field("provider_id", &self.metadata.provider_id)
+            .field("model_id", &self.metadata.model_id)
+            .field("attempt", &self.metadata.attempt)
+            .field("after_compaction", &self.metadata.after_compaction)
             .field("cancellation", &"<redacted>")
             .field("cleanup", &"<redacted>")
             .field("workspace_reader_resolver", &"<redacted>")
@@ -385,8 +367,8 @@ mod tests {
         assert_eq!(&*workspaces.lock().unwrap(), &[workspace]);
     }
 
-    fn context(resolver: Option<Arc<dyn WorkspaceReaderResolver>>) -> ModelAttemptContext {
-        ModelAttemptContext::new(
+    fn prompt_context() -> PromptAttemptContext {
+        PromptAttemptContext::new(
             SessionId::from("session"),
             RunId::from("run"),
             TurnId::from("turn"),
@@ -395,8 +377,38 @@ mod tests {
             "model".into(),
             2,
             true,
-            resolver,
         )
+    }
+
+    fn context(resolver: Option<Arc<dyn WorkspaceReaderResolver>>) -> ModelAttemptContext {
+        ModelAttemptContext::from_prompt_attempt(&prompt_context(), resolver)
+    }
+
+    #[test]
+    fn typed_conversion_preserves_generic_metadata_and_only_adds_typed_capability() {
+        let generic = prompt_context();
+        let reader: Arc<dyn WorkspaceReader> = Arc::new(RecordingReader {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let resolver: Arc<dyn WorkspaceReaderResolver> = Arc::new(RecordingResolver {
+            workspaces: Arc::new(Mutex::new(Vec::new())),
+            reader,
+            _secret: "resolver capability secret",
+        });
+        let typed = ModelAttemptContext::from_prompt_attempt(&generic, Some(resolver.clone()));
+
+        assert_eq!(typed.session_id(), generic.session_id());
+        assert_eq!(typed.run_id(), generic.run_id());
+        assert_eq!(typed.turn_id(), generic.turn_id());
+        assert_eq!(typed.workspace(), generic.workspace());
+        assert_eq!(typed.provider_id(), generic.provider_id());
+        assert_eq!(typed.model_id(), generic.model_id());
+        assert_eq!(typed.attempt(), generic.attempt());
+        assert_eq!(typed.after_compaction(), generic.after_compaction());
+        assert!(Arc::ptr_eq(
+            typed.workspace_reader_resolver().unwrap(),
+            &resolver
+        ));
     }
 
     #[test]

@@ -926,7 +926,8 @@ mod tests {
                 )
                 .unwrap(),
                 Arc::new(BuilderMiddleware),
-            )
+            );
+            Ok(())
         }
     }
 

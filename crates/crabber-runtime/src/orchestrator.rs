@@ -2570,6 +2570,9 @@ impl Orchestrator {
                     "latency_ms":self.monotonic_clock.now().saturating_sub(summary_started).as_millis(),"purpose":"compaction"});
                 self.observer.model_completed(&observed);
             };
+            // Compaction is an internal model request with a dedicated prompt. System-prompt
+            // middleware is intentionally scoped to agent-turn attempts and is not collected
+            // here; the next agent-turn attempt refreshes middleware after compaction.
             let mut stream = tokio::select! {
                 () = cancellation.cancelled() => { observe_summary("error"); return Err(RuntimeError::Interrupted); },
                 result = streamer.stream(request) => match result {

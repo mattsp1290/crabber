@@ -49,6 +49,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: PostgreSQL contracts, concurrency, migration and process durability
         run: cargo test -p crabber-session --features postgres
+      - name: Typed middleware durable resume and plan-seal reconstruction
+        env:
+          CRABBER_REQUIRE_POSTGRES: "1"
+        run: cargo test -p crabber-runtime --features postgres
       - name: Public result-transform interruption and protected durable settlement
         run: cargo test -p crabber --features postgres --test result_transform_interrupt -- --nocapture
       - name: Public facade response-loss and fresh-process reconciliation

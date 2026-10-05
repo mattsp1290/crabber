@@ -183,7 +183,8 @@ impl Extension for AgentsMdExtension {
             Arc::new(AgentsMdMiddleware {
                 config: self.config.clone(),
             }),
-        )
+        );
+        Ok(())
     }
 }
 
