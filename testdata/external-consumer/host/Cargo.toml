@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 crabber-agui = { path = "../../../crates/crabber-agui" }
-crabber = { path = "../../../crates/crabber", features = ["wasm", "datadog"] }
+crabber = { path = "../../../crates/crabber", features = ["wasm", "datadog", "custom-http"] }
+reqwest = { version = "0.12", default-features = false }
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "test-util"] }
 serde_json = { version = "1", features = ["preserve_order"] }

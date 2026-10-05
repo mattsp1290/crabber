@@ -11,6 +11,7 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |
 | Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
+| Host-owned HTTP provider | [custom HTTP contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers) | independent facade `custom-http`; `HttpAdapter::custom` + `HttpResolver::with_adapter`; construction-only external probe is offline |
 | Fenced abandonment | [host protocol](fenced-abandon.md) | `cargo run -p fenced-abandon`; memory default, manual PostgreSQL mode |
 | Native extensions | [native guide](../examples/native-extension/README.md) | `cargo run -p native-extension` |
 | Workspace context for native extensions | [contract](#workspace-context), [in-workspace probe](../examples/workspace-context-probe/README.md), [standalone pinned probe](../testdata/workspace-context-probe/README.md) | `cargo test -p workspace-context-probe`; `cargo test` in `testdata/workspace-context-probe/` |
@@ -26,6 +27,34 @@ provide bounded all-history reads. [Host tracing](../examples/host-trace/README.
 covers explicit context and composed observers; [operational observation](operational-observation.md)
 describes finite run/model/tool reasons and monotonic durations. Use those
 contracts when adopting their corresponding public APIs.
+
+### Custom HTTP provider adoption
+
+`custom-http` can be enabled without any built-in provider feature. It exposes a
+finite host-owned HTTP adapter rather than provider-specific model discovery or
+gateway token minting; those remain the embedder's responsibility. The
+[provider contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers)
+documents the public symbols and contracts, reqwest 0.12 boundary,
+no-redirect client controls,
+auth/header ordering, one dynamic-401 retry, observer/classifier timing,
+bounded error handling, transport classes, and Chat request options. The
+[external consumer](../testdata/external-consumer/host/src/custom_provider.rs)
+exercises a construction and registration path through the
+public `crabber::providers` facade without resolving a model, minting or
+fetching a credential, opening a stream, or contacting the network.
+
+Migration notes for the named downstream consumers:
+
+- **crabber-extensions:** its inspected immutable Crabber pin uses only generic
+  provider contracts, so its existing source needs no change and remains
+  unaffected. To adopt this adapter, advance to an immutable Crabber pin that
+  includes it, enable `custom-http`, and configure/register the custom adapter.
+- **Agentcraft:** local source was unavailable, and the available Beans evidence
+  records a `FakeProvider` journey, so custom HTTP compatibility is unverified.
+  Existing pinned code is unaffected until its Crabber pin advances. Adoption
+  requires advancing to an immutable pin that includes this adapter, replacing
+  or configuring the provider path, and supplying the required host-owned
+  credential and model services.
 
 `cargo xtask check` builds local WASM fixtures, checks formatting/Clippy, runs
 workspace tests, offline host journeys and the external public-API consumer,

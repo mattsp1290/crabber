@@ -29,6 +29,7 @@ enum TransportCause {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Wire protocol implemented by an HTTP adapter.
 pub enum Protocol {
     Responses,
     Messages,
@@ -46,6 +47,11 @@ impl Protocol {
 
 #[cfg(feature = "custom-http")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Placement of the one Crabber-owned credential header.
+///
+/// `Bearer` sends exactly one `Authorization` header whose value is
+/// `Bearer <credential>`, and no `x-api-key`; `XApiKey` sends exactly one
+/// `x-api-key` and no `Authorization`.
 pub enum AuthScheme {
     Bearer,
     XApiKey,
@@ -53,6 +59,7 @@ pub enum AuthScheme {
 
 #[cfg(feature = "custom-http")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Token-limit field used by the Chat Completions request encoder.
 pub enum ChatTokenField {
     MaxTokens,
     MaxCompletionTokens,
@@ -60,12 +67,23 @@ pub enum ChatTokenField {
 
 #[cfg(feature = "custom-http")]
 #[async_trait]
+/// Supplies a custom adapter's credential for each HTTP attempt.
+///
+/// After a 401, Crabber calls `invalidate` with the exact stale credential and
+/// retries once. Implementations own compare-and-invalidate and single-flight
+/// refresh across concurrent requests; stale invalidation must not clear a
+/// newer credential generation.
 pub trait CredentialSource: Send + Sync {
     async fn credential(&self, request: &ModelRequest) -> Result<String, ProviderError>;
     async fn invalidate(&self, stale: &str);
 }
 
 #[cfg(feature = "custom-http")]
+/// Produces host headers for each attempt, after static headers are copied.
+///
+/// Hook values replace all static values of the same name. Authorization,
+/// x-api-key, content-type, user-agent, and anthropic-version are protected and
+/// cause the attempt to fail before it is sent.
 pub trait RequestHeaderHook: Send + Sync {
     /// Produces additional headers for one request.
     ///
@@ -76,15 +94,35 @@ pub trait RequestHeaderHook: Send + Sync {
 }
 
 #[cfg(feature = "custom-http")]
+/// Observes every received HTTP response's raw status and headers.
+///
+/// The callback runs exactly once per received response, including a received
+/// 401, after headers arrive and before retry handling, status classification,
+/// or body consumption. It does not run for an attempt that fails before
+/// response headers arrive.
+///
+/// `headers` is raw and unredacted. It may contain cookies, authentication
+/// challenges, or vendor-specific secrets. Hosts must not indiscriminately log
+/// or export the [`HeaderMap`] and are responsible for their own redaction.
 pub trait ResponseObserver: Send + Sync {
     fn observe(&self, status: reqwest::StatusCode, headers: &HeaderMap);
 }
 
+/// Classifies a non-success custom-adapter response from its status and
+/// sanitized, opaque, at-most-4096-byte excerpt.
+///
+/// The terminal second 401 after a dynamic credential refresh bypasses this
+/// callback and is always a non-retryable authentication error. This callback
+/// is never applied to built-in provider adapters. Hosts should still redact
+/// the resulting error according to their own logging policy.
 pub trait ErrorClassifier: Send + Sync {
     fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool);
 }
 
 #[cfg(feature = "custom-http")]
+/// An all-protocol proxy accepted by [`HttpClientConfig`].
+///
+/// Raw `reqwest::Proxy` conversion is intentionally unavailable.
 pub struct HttpProxyConfig {
     proxy: reqwest::Proxy,
 }
@@ -116,6 +154,14 @@ impl HttpProxyConfig {
 }
 
 #[cfg(feature = "custom-http")]
+/// Finite transport configuration for a custom HTTP adapter.
+///
+/// The allowlist comprises total/connect/read timeouts, idle-pool controls,
+/// [`HttpProxyConfig`] or proxy disabling, root certificates, client identity,
+/// TLS version bounds, and preconfigured TLS state. Redirects are always
+/// disabled. Raw clients/builders/proxies, default headers, redirect policy,
+/// and generic builder callbacks are intentionally unavailable. Public HTTP
+/// and TLS types are from reqwest 0.12.
 pub struct HttpClientConfig {
     builder: reqwest::ClientBuilder,
 }
@@ -253,6 +299,7 @@ enum AdapterKind {
 }
 
 #[derive(Clone)]
+/// HTTP implementation of Crabber's public provider contracts.
 pub struct HttpAdapter {
     id: String,
     base_url: String,
@@ -364,6 +411,11 @@ impl HttpAdapter {
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Creates a host-configured adapter without fetching credentials or
+    /// contacting the network.
+    ///
+    /// Custom adapters return an empty model catalog and do not mint gateway
+    /// tokens; discovery and token minting remain host-owned.
     pub fn custom(id: impl Into<String>, base_url: impl Into<String>, protocol: Protocol) -> Self {
         Self::new(
             id,
@@ -391,6 +443,7 @@ impl HttpAdapter {
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Selects the one Crabber-owned credential header.
     pub fn with_auth_scheme(mut self, scheme: AuthScheme) -> Self {
         self.credential_placement = match scheme {
             AuthScheme::Bearer => CredentialPlacement::Bearer,
@@ -400,12 +453,13 @@ impl HttpAdapter {
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Installs the per-attempt credential source.
     pub fn with_credential_source(mut self, source: Arc<dyn CredentialSource>) -> Self {
         self.credential_source = Some(source);
         self.key_override = None;
         self
     }
-    /// Installs validated static request headers.
+    /// Installs validated static request headers, applied before the request hook.
     ///
     /// # Errors
     ///
@@ -420,6 +474,7 @@ impl HttpAdapter {
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Installs the per-attempt header hook.
     pub fn with_request_header_hook(mut self, hook: Arc<dyn RequestHeaderHook>) -> Self {
         self.request_header_hook = Some(hook);
         self
@@ -439,18 +494,21 @@ impl HttpAdapter {
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Installs an observer called once for every received HTTP response.
     pub fn with_response_observer(mut self, observer: Arc<dyn ResponseObserver>) -> Self {
         self.response_observer = Some(observer);
         self
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Overrides status classification for this custom adapter only.
     pub fn with_error_classifier(mut self, classifier: Arc<dyn ErrorClassifier>) -> Self {
         self.error_classifier = Some(classifier);
         self
     }
     #[cfg(feature = "custom-http")]
     #[must_use]
+    /// Selects the Chat Completions token field; empty tool lists are omitted.
     pub fn with_chat_token_field(mut self, field: ChatTokenField) -> Self {
         self.chat_token_mode = match field {
             ChatTokenField::MaxTokens => crate::chat::TokenMode::MaxTokens,
@@ -1108,6 +1166,7 @@ impl ProviderAdapter for HttpAdapter {
     }
 }
 #[derive(Default)]
+/// Provider resolver populated with HTTP adapters by provider id.
 pub struct HttpResolver {
     adapters: HashMap<String, HttpAdapter>,
 }
@@ -1117,6 +1176,7 @@ impl HttpResolver {
         Self::default()
     }
     #[must_use]
+    /// Registers an adapter. Registration performs no credential or network I/O.
     pub fn with_adapter(mut self, adapter: HttpAdapter) -> Self {
         self.adapters.insert(adapter.id.clone(), adapter);
         self

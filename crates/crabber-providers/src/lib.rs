@@ -1,4 +1,12 @@
-//! Provider contracts and a deterministic scripted provider.
+//! Provider contracts and deterministic or HTTP-backed providers.
+//!
+//! Enable `custom-http` independently of the built-in provider features to use
+//! `HttpAdapter::custom` and register it with `HttpResolver::with_adapter`.
+//! The host supplies credentials, per-attempt headers, observation,
+//! classification, transport policy, model discovery, and any gateway token
+//! minting. See the crate README's custom HTTP section for security and retry
+//! guidance. Public header, status, certificate, identity, and TLS
+//! types come from `reqwest` 0.12.
 
 use async_trait::async_trait;
 use crabber_core::{Message, RunId, SessionId, ToolCallId, ToolInfo, TurnId, Usage};
