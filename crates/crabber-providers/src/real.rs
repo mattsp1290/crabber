@@ -6,7 +6,7 @@ use crate::{
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
 use reqwest::{
-    Client,
+    Client, Response,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde_json::Value;
@@ -16,6 +16,17 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
+
+const ERROR_EXCERPT_MAX_BYTES: usize = 4096;
+/// `"provider HTTP " + 3 status digits + ": "`.
+const ERROR_MESSAGE_PREFIX_BYTES: usize = 19;
+
+#[derive(Clone, Copy)]
+enum TransportCause {
+    Connect,
+    Timeout,
+    Body,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -69,7 +80,6 @@ pub trait ResponseObserver: Send + Sync {
     fn observe(&self, status: reqwest::StatusCode, headers: &HeaderMap);
 }
 
-#[cfg(feature = "custom-http")]
 pub trait ErrorClassifier: Send + Sync {
     fn classify(&self, status: reqwest::StatusCode, excerpt: &str) -> (ProviderErrorKind, bool);
 }
@@ -229,13 +239,6 @@ enum CredentialPlacement {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ChatTokenMode {
-    MaxTokens,
-    #[cfg(feature = "custom-http")]
-    MaxCompletionTokens,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum AdapterKind {
     #[cfg(feature = "anthropic")]
     Anthropic,
@@ -257,7 +260,7 @@ pub struct HttpAdapter {
     kind: AdapterKind,
     credential_placement: CredentialPlacement,
     #[allow(dead_code)]
-    chat_token_mode: ChatTokenMode,
+    chat_token_mode: crate::chat::TokenMode,
     key_env: Option<&'static str>,
     key_override: Option<String>,
     client: Client,
@@ -289,7 +292,7 @@ impl HttpAdapter {
             protocol,
             kind,
             credential_placement,
-            chat_token_mode: ChatTokenMode::MaxTokens,
+            chat_token_mode: crate::chat::TokenMode::MaxTokens,
             key_env,
             key_override: None,
             client: Client::builder()
@@ -450,8 +453,8 @@ impl HttpAdapter {
     #[must_use]
     pub fn with_chat_token_field(mut self, field: ChatTokenField) -> Self {
         self.chat_token_mode = match field {
-            ChatTokenField::MaxTokens => ChatTokenMode::MaxTokens,
-            ChatTokenField::MaxCompletionTokens => ChatTokenMode::MaxCompletionTokens,
+            ChatTokenField::MaxTokens => crate::chat::TokenMode::MaxTokens,
+            ChatTokenField::MaxCompletionTokens => crate::chat::TokenMode::MaxCompletionTokens,
         };
         self
     }
@@ -596,6 +599,7 @@ impl HttpAdapter {
         Ok((headers, credential))
     }
     async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        let url = endpoint_url(&self.base_url, self.protocol)?;
         #[cfg(feature = "custom-http")]
         let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
             let (headers, credential) = self.custom_headers(&request).await?;
@@ -605,27 +609,28 @@ impl HttpAdapter {
         };
         #[cfg(not(feature = "custom-http"))]
         let headers = self.headers(&request).await?;
+        #[allow(unused_mut)]
+        let mut attempt_credentials = credentials_from_headers(&headers);
+        #[cfg(feature = "custom-http")]
+        if let Some(credential) = &custom_credential {
+            attempt_credentials.push(credential.clone());
+        }
         let body = match self.protocol {
             Protocol::Responses => {
                 crate::responses::body(&request, self.uses_codex_responses_mode())
             }
             Protocol::Messages => crate::messages::body(&request),
-            Protocol::ChatCompletions => crate::chat::body(&request),
+            Protocol::ChatCompletions => crate::chat::body(&request, self.chat_token_mode),
         };
-        let url = format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            self.protocol.path()
-        );
         #[allow(unused_mut)]
         let mut response = self
             .client
-            .post(&url)
+            .post(url.clone())
             .headers(headers.clone())
             .json(&body)
             .send()
             .await
-            .map_err(|_| transport())?;
+            .map_err(|error| transport_from_reqwest(&error))?;
         #[cfg(feature = "custom-http")]
         if self.kind == AdapterKind::Custom {
             if let Some(observer) = &self.response_observer {
@@ -638,20 +643,22 @@ impl HttpAdapter {
                 let source = self.credential_source.as_ref().ok_or_else(auth)?;
                 drop(response);
                 source.invalidate(stale).await;
-                let (retry_headers, _) = self.custom_headers(&request).await?;
+                let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
+                attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                attempt_credentials.push(retry_credential);
                 response = self
                     .client
-                    .post(&url)
+                    .post(url.clone())
                     .headers(retry_headers)
                     .json(&body)
                     .send()
                     .await
-                    .map_err(|_| transport())?;
+                    .map_err(|error| transport_from_reqwest(&error))?;
                 if let Some(observer) = &self.response_observer {
                     observer.observe(response.status(), response.headers());
                 }
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                    return Err(auth());
+                    return Err(response_error(response, None, true, &attempt_credentials).await);
                 }
             }
         }
@@ -670,17 +677,25 @@ impl HttpAdapter {
                 .force_refresh(previous)
                 .await
                 .map_err(|_| auth())?;
+            let retry_headers = self.headers(&request).await?;
+            attempt_credentials.extend(credentials_from_headers(&retry_headers));
             response = self
                 .client
-                .post(&url)
-                .headers(self.headers(&request).await?)
+                .post(url.clone())
+                .headers(retry_headers)
                 .json(&body)
                 .send()
                 .await
-                .map_err(|_| transport())?;
+                .map_err(|error| transport_from_reqwest(&error))?;
         }
         if !response.status().is_success() {
-            return Err(status_error(response.status()));
+            #[cfg(feature = "custom-http")]
+            let classifier = (self.kind == AdapterKind::Custom)
+                .then_some(self.error_classifier.as_deref())
+                .flatten();
+            #[cfg(not(feature = "custom-http"))]
+            let classifier = None;
+            return Err(response_error(response, classifier, false, &attempt_credentials).await);
         }
         let codec = match self.protocol {
             Protocol::Responses => Codec::Responses(crate::responses::Codec::new(
@@ -694,7 +709,7 @@ impl HttpAdapter {
             parser: sse::Parser,
             codec: Codec,
             queue: VecDeque<StreamDelta>,
-            complete: bool,
+            protocol_complete: bool,
             ended: bool,
         }
         let state = State {
@@ -702,7 +717,7 @@ impl HttpAdapter {
             parser: sse::Parser::default(),
             codec,
             queue: VecDeque::new(),
-            complete: false,
+            protocol_complete: false,
             ended: false,
         };
         Ok(Box::pin(stream::unfold(state, |mut state| async move {
@@ -715,46 +730,62 @@ impl HttpAdapter {
                 }
                 match state.bytes.next().await {
                     Some(Ok(chunk)) => {
-                        let result = state
-                            .parser
-                            .push(&chunk)
-                            .and_then(|events| decode_events(&mut state.codec, events));
-                        match result {
-                            Ok(items) => {
-                                for item in items {
-                                    if matches!(item, StreamDelta::Completed) {
-                                        state.complete = true;
+                        for segment in chunk.split_inclusive(|byte| *byte == b'\n') {
+                            let result = state
+                                .parser
+                                .push(segment)
+                                .and_then(|events| decode_events(&mut state.codec, events));
+                            match result {
+                                Ok(items) => {
+                                    if queue_items(
+                                        &mut state.queue,
+                                        &mut state.protocol_complete,
+                                        items,
+                                    ) {
+                                        state.ended = true;
                                     }
-                                    state.queue.push_back(item);
+                                }
+                                Err(error) => {
+                                    state.protocol_complete = false;
+                                    state.queue.push_back(StreamDelta::Error(error));
+                                    state.ended = true;
                                 }
                             }
-                            Err(error) => {
-                                state.queue.push_back(StreamDelta::Error(error));
-                                state.ended = true;
+                            if state.ended {
+                                break;
                             }
                         }
                     }
-                    Some(Err(_)) => {
-                        state.queue.push_back(StreamDelta::Error(transport()));
+                    Some(Err(error)) => {
+                        state
+                            .queue
+                            .push_back(StreamDelta::Error(transport_from_reqwest(&error)));
                         state.ended = true;
                     }
                     None => {
-                        let result = state
-                            .parser
-                            .finish()
-                            .and_then(|events| decode_events(&mut state.codec, events));
-                        if let Ok(items) = result {
-                            for item in items {
-                                if matches!(item, StreamDelta::Completed) {
-                                    state.complete = true;
+                        match state.parser.finish() {
+                            Ok(events) => match decode_events(&mut state.codec, events) {
+                                Ok(items) => {
+                                    let protocol_error = queue_items(
+                                        &mut state.queue,
+                                        &mut state.protocol_complete,
+                                        items,
+                                    );
+                                    if !protocol_error {
+                                        if state.protocol_complete {
+                                            state.queue.push_back(StreamDelta::Completed);
+                                        } else {
+                                            state.queue.push_back(StreamDelta::Error(transport(
+                                                TransportCause::Body,
+                                            )));
+                                        }
+                                    }
                                 }
-                                state.queue.push_back(item);
-                            }
-                        } else {
-                            state.queue.push_back(StreamDelta::Error(transport()));
-                        }
-                        if !state.complete && state.queue.is_empty() {
-                            state.queue.push_back(StreamDelta::Error(transport()));
+                                Err(error) => state.queue.push_back(StreamDelta::Error(error)),
+                            },
+                            Err(_) => state
+                                .queue
+                                .push_back(StreamDelta::Error(transport(TransportCause::Body))),
                         }
                         state.ended = true;
                     }
@@ -769,9 +800,36 @@ fn decode_events(
 ) -> Result<Vec<StreamDelta>, ProviderError> {
     let mut out = Vec::new();
     for event in events {
-        out.extend(codec.event(&event)?);
+        for item in codec.event(&event)? {
+            let terminal = matches!(item, StreamDelta::Error(_));
+            out.push(item);
+            if terminal {
+                return Ok(out);
+            }
+        }
     }
     Ok(out)
+}
+fn queue_items(
+    queue: &mut VecDeque<StreamDelta>,
+    protocol_complete: &mut bool,
+    items: Vec<StreamDelta>,
+) -> bool {
+    for item in items {
+        if matches!(item, StreamDelta::Completed) {
+            *protocol_complete = true;
+            continue;
+        }
+        if matches!(item, StreamDelta::Error(_)) {
+            *protocol_complete = false;
+            queue.push_back(item);
+            return true;
+        }
+        if !*protocol_complete {
+            queue.push_back(item);
+        }
+    }
+    false
 }
 enum Codec {
     Responses(crate::responses::Codec),
@@ -819,28 +877,181 @@ fn invalid() -> ProviderError {
         retryable: false,
     }
 }
-fn transport() -> ProviderError {
+fn transport(cause: TransportCause) -> ProviderError {
     ProviderError {
         kind: ProviderErrorKind::Transport,
-        message: "provider stream interrupted".into(),
+        message: match cause {
+            TransportCause::Connect => "provider transport connect",
+            TransportCause::Timeout => "provider transport timeout",
+            TransportCause::Body => "provider transport body",
+        }
+        .into(),
         retryable: true,
     }
 }
-fn status_error(status: reqwest::StatusCode) -> ProviderError {
+fn transport_from_reqwest(error: &reqwest::Error) -> ProviderError {
+    if error.is_timeout() {
+        transport(TransportCause::Timeout)
+    } else if error.is_connect() {
+        transport(TransportCause::Connect)
+    } else {
+        transport(TransportCause::Body)
+    }
+}
+fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, ProviderError> {
+    fn validate(url: &str) -> Result<reqwest::Url, ProviderError> {
+        let url = reqwest::Url::parse(url).map_err(|_| invalid())?;
+        if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
+            return Err(invalid());
+        }
+        Ok(url)
+    }
+
+    let base = validate(base_url)?;
+    if base.query().is_some() || base.fragment().is_some() {
+        return Err(invalid());
+    }
+    let assembled = format!(
+        "{}{path}",
+        base_url.trim_end_matches('/'),
+        path = protocol.path()
+    );
+    validate(&assembled)
+}
+fn credentials_from_headers(headers: &HeaderMap) -> Vec<String> {
+    let mut credentials = Vec::new();
+    for name in headers.keys() {
+        let canonical = name == "authorization" || name == "x-api-key";
+        for value in headers.get_all(name) {
+            if !canonical && !value.is_sensitive() {
+                continue;
+            }
+            let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+            if value.is_empty() {
+                continue;
+            }
+            if let Some(raw) = value.strip_prefix("Bearer ").filter(|raw| !raw.is_empty()) {
+                credentials.push(raw.to_owned());
+            }
+            credentials.push(value);
+        }
+    }
+    credentials
+}
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+}
+fn sanitize_excerpt(source: &[u8], credentials: &[String], may_be_truncated: bool) -> String {
+    let mut representations = credentials
+        .iter()
+        .filter(|value| !value.is_empty())
+        .flat_map(|credential| {
+            let serialized = serde_json::to_string(credential).unwrap_or_default();
+            let escaped_payload = serialized
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .unwrap_or_default()
+                .to_owned();
+            [credential.clone(), serialized, escaped_payload]
+        })
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    representations.sort_unstable();
+    representations.dedup();
+    representations.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+    let terminal_prefix_start = may_be_truncated
+        .then(|| {
+            let terminal_full_match_start = representations
+                .iter()
+                .map(String::as_bytes)
+                .filter(|representation| source.ends_with(representation))
+                .map(|representation| source.len() - representation.len())
+                .min()
+                .unwrap_or(source.len());
+            representations
+                .iter()
+                .map(String::as_bytes)
+                .filter_map(|representation| {
+                    let max_prefix = source.len().min(representation.len().saturating_sub(1));
+                    (1..=max_prefix).rev().find_map(|prefix_len| {
+                        source
+                            .ends_with(&representation[..prefix_len])
+                            .then_some(source.len() - prefix_len)
+                    })
+                })
+                .filter(|start| *start < terminal_full_match_start)
+                .min()
+        })
+        .flatten();
+    let source = terminal_prefix_start.map_or(source, |start| &source[..start]);
+    let mut excerpt = String::from_utf8_lossy(source).into_owned();
+    for representation in &representations {
+        excerpt = excerpt.replace(representation, "[REDACTED]");
+    }
+    if terminal_prefix_start.is_some() {
+        excerpt.push_str("[REDACTED]");
+    }
+    truncate_utf8(&mut excerpt, ERROR_EXCERPT_MAX_BYTES);
+    excerpt
+}
+async fn response_error(
+    response: Response,
+    classifier: Option<&dyn ErrorClassifier>,
+    force_auth: bool,
+    credentials: &[String],
+) -> ProviderError {
+    let status = response.status();
+    let mut source = Vec::with_capacity(ERROR_EXCERPT_MAX_BYTES);
+    let mut stream = response.bytes_stream();
+    while source.len() < ERROR_EXCERPT_MAX_BYTES {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                let remaining = ERROR_EXCERPT_MAX_BYTES - source.len();
+                source.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Some(Err(error)) => return transport_from_reqwest(&error),
+            None => break,
+        }
+    }
+    let excerpt = sanitize_excerpt(
+        &source,
+        credentials,
+        source.len() == ERROR_EXCERPT_MAX_BYTES,
+    );
+    let (kind, retryable) = if force_auth {
+        (ProviderErrorKind::Auth, false)
+    } else if let Some(classifier) = classifier {
+        classifier.classify(status, &excerpt)
+    } else {
+        status_classification(status)
+    };
+    let message = format!("provider HTTP {}: {excerpt}", status.as_u16());
+    debug_assert!(message.len() <= ERROR_MESSAGE_PREFIX_BYTES + ERROR_EXCERPT_MAX_BYTES);
+    ProviderError {
+        kind,
+        message,
+        retryable,
+    }
+}
+fn status_classification(status: reqwest::StatusCode) -> (ProviderErrorKind, bool) {
     let kind = match status.as_u16() {
         401 | 403 => ProviderErrorKind::Auth,
         429 => ProviderErrorKind::RateLimited,
         500..=599 => ProviderErrorKind::Server,
         _ => ProviderErrorKind::Invalid,
     };
-    ProviderError {
-        retryable: matches!(
-            kind,
-            ProviderErrorKind::RateLimited | ProviderErrorKind::Server
-        ),
+    let retryable = matches!(
         kind,
-        message: format!("provider HTTP {}", status.as_u16()),
-    }
+        ProviderErrorKind::RateLimited | ProviderErrorKind::Server
+    );
+    (kind, retryable)
 }
 #[async_trait]
 impl Streamer for HttpAdapter {
@@ -861,17 +1072,22 @@ impl ProviderAdapter for HttpAdapter {
             return Ok(Vec::new());
         }
         let key = self.api_key()?;
+        let credentials = vec![key.clone(), format!("Bearer {key}")];
         let response = self
             .client
             .get(format!("{}/models", self.base_url.trim_end_matches('/')))
             .bearer_auth(key)
             .send()
             .await
-            .map_err(|_| transport())?;
+            .map_err(|error| transport_from_reqwest(&error))?;
         if !response.status().is_success() {
-            return Err(status_error(response.status()));
+            return Err(response_error(response, None, false, &credentials).await);
         }
-        let envelope: Value = response.json().await.map_err(|_| invalid())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| transport_from_reqwest(&error))?;
+        let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         Ok(envelope["data"]
             .as_array()
             .ok_or_else(invalid)?
@@ -1018,6 +1234,71 @@ mod tests {
             .expect("timed out writing provider response")
             .expect("failed to write provider response");
     }
+    #[cfg(feature = "custom-http")]
+    #[test]
+    fn error_excerpts_are_lossy_utf8_redacted_and_byte_bounded() {
+        let below = sanitize_excerpt(b"short error", &[], false);
+        assert_eq!(below, "short error");
+
+        let above = sanitize_excerpt(&vec![b'x'; ERROR_EXCERPT_MAX_BYTES + 100], &[], true);
+        assert_eq!(above.len(), ERROR_EXCERPT_MAX_BYTES);
+
+        let invalid = sanitize_excerpt(&vec![0xff; ERROR_EXCERPT_MAX_BYTES], &[], true);
+        assert!(invalid.len() <= ERROR_EXCERPT_MAX_BYTES);
+        assert!(invalid.is_char_boundary(invalid.len()));
+        assert!(invalid.contains('\u{fffd}'));
+
+        let mut split = vec![b'a'; ERROR_EXCERPT_MAX_BYTES - 1];
+        split.push(0xf0);
+        let split = sanitize_excerpt(&split, &[], true);
+        assert!(split.len() <= ERROR_EXCERPT_MAX_BYTES);
+        assert!(split.is_char_boundary(split.len()));
+
+        let expanded = sanitize_excerpt(
+            &vec![b'k'; ERROR_EXCERPT_MAX_BYTES],
+            &["k".to_owned()],
+            true,
+        );
+        assert!(expanded.len() <= ERROR_EXCERPT_MAX_BYTES);
+        assert!(!expanded.contains('k'));
+        assert!(
+            ERROR_MESSAGE_PREFIX_BYTES + expanded.len()
+                <= ERROR_MESSAGE_PREFIX_BYTES + ERROR_EXCERPT_MAX_BYTES
+        );
+
+        let credential = "sec\"ret\\token";
+        let serialized = serde_json::to_string(credential).unwrap();
+        let redacted = sanitize_excerpt(serialized.as_bytes(), &[credential.to_owned()], false);
+        assert_eq!(redacted, "[REDACTED]");
+        assert!(!redacted.contains(credential));
+        assert!(!redacted.contains(&serialized));
+    }
+
+    #[cfg(feature = "custom-http")]
+    #[test]
+    fn default_status_taxonomy_is_stable() {
+        assert_eq!(
+            status_classification(reqwest::StatusCode::UNAUTHORIZED),
+            (ProviderErrorKind::Auth, false)
+        );
+        assert_eq!(
+            status_classification(reqwest::StatusCode::FORBIDDEN),
+            (ProviderErrorKind::Auth, false)
+        );
+        assert_eq!(
+            status_classification(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            (ProviderErrorKind::RateLimited, true)
+        );
+        assert_eq!(
+            status_classification(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            (ProviderErrorKind::Server, true)
+        );
+        assert_eq!(
+            status_classification(reqwest::StatusCode::BAD_REQUEST),
+            (ProviderErrorKind::Invalid, false)
+        );
+    }
+
     #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
     fn request(provider: &str) -> ModelRequest {
         ModelRequest {
@@ -1137,7 +1418,10 @@ mod tests {
             adapter.credential_placement,
             CredentialPlacement::Bearer
         ));
-        assert!(matches!(adapter.chat_token_mode, ChatTokenMode::MaxTokens));
+        assert!(matches!(
+            adapter.chat_token_mode,
+            crate::chat::TokenMode::MaxTokens
+        ));
 
         let dynamic = adapter
             .with_api_key("static")
@@ -1220,11 +1504,7 @@ mod tests {
                 {
                     ("401 Unauthorized", "text/plain", "no")
                 } else {
-                    (
-                        "200 OK",
-                        "text/event-stream",
-                        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
-                    )
+                    ("500 Server Error", "text/plain", "stale fresh codex-error")
                 };
                 let response = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1251,7 +1531,15 @@ mod tests {
         adapter.tokens = Some(Arc::new(
             TokenManager::new(store).with_token_url(format!("{base_url}/token")),
         ));
-        let _stream = adapter.stream(request("codex")).await.unwrap();
+        let error = adapter
+            .stream(request("codex"))
+            .await
+            .err()
+            .expect("post-refresh 500 should fail");
+        assert_eq!(error.kind, ProviderErrorKind::Server);
+        assert!(!error.message.contains("stale"));
+        assert!(!error.message.contains("fresh"));
+        assert!(error.message.ends_with("[REDACTED] [REDACTED] codex-error"));
         timeout(LOOPBACK_TIMEOUT, server)
             .await
             .expect("loopback server did not finish")
@@ -1303,6 +1591,35 @@ mod tests {
             let custom_headers = custom.headers(&request("opencode-go")).await.unwrap();
             assert!(!custom_headers.contains_key("x-opencode-session"));
         }
+    }
+    #[cfg(feature = "opencode-go")]
+    #[tokio::test]
+    async fn opencode_models_error_redacts_bearer_credential() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, request) = accept_loopback_request(&listener).await;
+            assert!(request.starts_with("GET /models HTTP/1.1"));
+            let body = "model-secret";
+            let response = format!(
+                "HTTP/1.1 500 Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            write_loopback_response(&mut socket, response.as_bytes()).await;
+        });
+        let error = HttpAdapter::opencode_go(Protocol::Responses)
+            .with_api_key("model-secret")
+            .with_base_url(&base_url)
+            .models()
+            .await
+            .expect_err("model endpoint 500 should fail");
+        assert_eq!(error.kind, ProviderErrorKind::Server);
+        assert!(!error.message.contains("model-secret"));
+        assert!(error.message.ends_with("[REDACTED]"));
+        timeout(LOOPBACK_TIMEOUT, server)
+            .await
+            .expect("loopback server did not finish")
+            .unwrap();
     }
     #[cfg(all(feature = "custom-http", feature = "opencode-go"))]
     #[tokio::test]
