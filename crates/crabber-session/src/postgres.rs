@@ -1260,6 +1260,21 @@ mod tests {
             .await;
     }
     #[tokio::test]
+    async fn postgres_storable_record_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        sqlx::query("TRUNCATE sessions CASCADE")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        crate::storetest::run_storable_record_contract(|clock: Arc<ManualClock>| {
+            store.clone().with_clock(clock)
+        })
+        .await;
+    }
+    #[tokio::test]
     async fn postgres_workspace_identity_contract() {
         let Some(url) = test_url() else { return };
         let _guard = TEST_LOCK.lock().await;
