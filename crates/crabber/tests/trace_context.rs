@@ -9,6 +9,7 @@ use crabber::{
     InputFingerprint, Observer, Selection, SessionId, StreamDelta, TraceContext,
     session::{MemoryStore, Store},
 };
+#[cfg(feature = "datadog")]
 use serde_json::Value;
 use std::sync::{
     Arc,
@@ -399,6 +400,45 @@ mod durable_process {
     use crabber::session::PostgresStore;
     use std::{path::Path, process::Command};
 
+    // Hold this lock for every full journey: migration DDL can deadlock with
+    // another journey's live worker. New journeys must use journey_store.
+    static JOURNEY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct Journey {
+        url: String,
+        store: PostgresStore,
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    async fn journey_store() -> Option<Journey> {
+        let guard = JOURNEY_LOCK.lock().await;
+        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+            assert!(
+                std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
+                "CRABBER_TEST_POSTGRES_URL required"
+            );
+            return None;
+        };
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        Some(Journey {
+            url,
+            store,
+            _guard: guard,
+        })
+    }
+
+    #[cfg(feature = "datadog")]
+    struct ChildGuard(std::process::Child);
+
+    #[cfg(feature = "datadog")]
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     async fn spawn(path: &Path, mode: &str) {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "durable_process::worker_child", "--nocapture"])
@@ -443,36 +483,33 @@ mod durable_process {
     #[cfg(feature = "datadog")]
     #[tokio::test]
     async fn killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
-        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-            assert!(
-                std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
-                "CRABBER_TEST_POSTGRES_URL required"
-            );
+        let Some(journey) = journey_store().await else {
             return;
         };
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
+        let store = &journey.store;
         let envelope = durable::Envelope::demo();
         let dir = std::env::temp_dir().join(format!("crabber-loss-{}", envelope.session));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("queue.json");
         durable::enqueue(&path, &envelope);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "durable_process::worker_child", "--nocapture"])
-            .env("CRABBER_TRACE_WORKER", "loss")
-            .env("CRABBER_TRACE_QUEUE", &path)
-            .env("CRABBER_TRACE_CAPTURE_FILE", dir.join("loss-exports.json"))
-            .spawn()
-            .unwrap();
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "durable_process::worker_child", "--nocapture"])
+                .env("CRABBER_TRACE_WORKER", "loss")
+                .env("CRABBER_TRACE_QUEUE", &path)
+                .env("CRABBER_TRACE_CAPTURE_FILE", dir.join("loss-exports.json"))
+                .spawn()
+                .unwrap(),
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !dir.join("loss-ready").exists() {
             if std::time::Instant::now() > deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
+                child.0.kill().unwrap();
+                child.0.wait().unwrap();
                 panic!("loss handshake timeout");
             }
             assert!(
-                child.try_wait().unwrap().is_none(),
+                child.0.try_wait().unwrap().is_none(),
                 "loss worker exited before handshake"
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -484,8 +521,8 @@ mod durable_process {
             .unwrap();
         let before = store.get_run(&receipt.run_id).await.unwrap().unwrap();
         assert_eq!(before.status, crabber::core::RunStatus::Running);
-        child.kill().unwrap();
-        child.wait().unwrap();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
         // Real lease expiry, without SQL mutation or bypassing execution authority.
         tokio::time::sleep(std::time::Duration::from_secs(31)).await;
         spawn(&path, "recover").await;
@@ -522,15 +559,11 @@ mod durable_process {
     }
     #[tokio::test]
     async fn postgres_fresh_workers_preserve_schema5_receipts_sessions_and_cursors() {
-        let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
-            assert!(
-                std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref() != Ok("1"),
-                "CRABBER_TEST_POSTGRES_URL required"
-            );
+        let Some(journey) = journey_store().await else {
             return;
         };
-        PostgresStore::migrate(&url).await.unwrap();
-        let store = PostgresStore::connect(&url).await.unwrap();
+        let store = &journey.store;
+        let url = journey.url.as_str();
         let envelope = durable::Envelope::demo();
         let dir = std::env::temp_dir().join(format!("crabber-trace-{}", envelope.session));
         std::fs::create_dir(&dir).unwrap();
@@ -617,7 +650,7 @@ mod durable_process {
                 .id,
             session.id
         );
-        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let pool = sqlx::PgPool::connect(url).await.unwrap();
         let version: i32 = sqlx::query_scalar("SELECT max(version) FROM schema_version")
             .fetch_one(&pool)
             .await
