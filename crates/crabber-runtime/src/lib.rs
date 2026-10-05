@@ -34,3 +34,6 @@ mod tests;
 
 #[cfg(test)]
 mod prompt_contribution_tests;
+
+#[cfg(test)]
+mod model_middleware_tests;

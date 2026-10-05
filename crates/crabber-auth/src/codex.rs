@@ -1,5 +1,5 @@
 //! Sign in with ChatGPT for open-source agents.
-//! Current protocol: https://developers.openai.com/siwc/token-sharing-open-source/sign-in
+//! Current protocol: <https://developers.openai.com/siwc/token-sharing-open-source/sign-in>
 #![allow(clippy::too_many_lines)]
 use crate::{AuthError, CredentialStore, OAuthCredentials, now_ms, pkce_challenge, random_urlsafe};
 use jsonwebtoken::{
