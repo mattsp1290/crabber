@@ -53,8 +53,8 @@ mod responses;
 pub mod sse;
 #[cfg(feature = "custom-http")]
 pub use real::{
-    AuthScheme, ChatTokenField, CredentialSource, ErrorClassifier, HttpClientConfig,
-    HttpProxyConfig, RequestHeaderHook, ResponseObserver,
+    AuthScheme, ChatTokenField, CredentialSource, CustomHttpAdapter, ErrorClassifier,
+    HttpClientConfig, HttpProxyConfig, RequestHeaderHook, ResponseObserver,
 };
 #[cfg(any(
     feature = "custom-http",

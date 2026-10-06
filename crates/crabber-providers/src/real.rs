@@ -324,6 +324,112 @@ pub struct HttpAdapter {
     #[cfg(feature = "custom-http")]
     error_classifier: Option<Arc<dyn ErrorClassifier>>,
 }
+
+#[cfg(feature = "custom-http")]
+#[derive(Clone)]
+/// A host-configured HTTP adapter with a type-separated configuration surface.
+///
+/// Unlike [`HttpAdapter`], this type exposes custom-only settings. It converts
+/// into the internal adapter only when registered with [`HttpResolver`].
+pub struct CustomHttpAdapter {
+    inner: HttpAdapter,
+}
+
+#[cfg(feature = "custom-http")]
+impl CustomHttpAdapter {
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.inner.base_url = url.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
+        self.inner.key_override = Some(key.into());
+        self.inner.credential_source = None;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_scheme(mut self, scheme: AuthScheme) -> Self {
+        self.inner.credential_placement = match scheme {
+            AuthScheme::Bearer => CredentialPlacement::Bearer,
+            AuthScheme::XApiKey => CredentialPlacement::XApiKey,
+        };
+        self
+    }
+
+    #[must_use]
+    pub fn with_credential_source(mut self, source: Arc<dyn CredentialSource>) -> Self {
+        self.inner.credential_source = Some(source);
+        self.inner.key_override = None;
+        self
+    }
+
+    /// # Errors
+    /// Returns an invalid-provider error when a protected header is present.
+    pub fn try_with_static_headers(mut self, headers: HeaderMap) -> Result<Self, ProviderError> {
+        if headers.keys().any(is_protected_static_header) {
+            return Err(invalid());
+        }
+        self.inner.static_headers = headers;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_request_header_hook(mut self, hook: Arc<dyn RequestHeaderHook>) -> Self {
+        self.inner.request_header_hook = Some(hook);
+        self
+    }
+
+    /// # Errors
+    /// Returns an invalid-provider error when reqwest rejects the configuration.
+    pub fn try_with_client_config(
+        mut self,
+        config: HttpClientConfig,
+    ) -> Result<Self, ProviderError> {
+        self.inner.client = config.build()?;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_response_observer(mut self, observer: Arc<dyn ResponseObserver>) -> Self {
+        self.inner.response_observer = Some(observer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_error_classifier(mut self, classifier: Arc<dyn ErrorClassifier>) -> Self {
+        self.inner.error_classifier = Some(classifier);
+        self
+    }
+
+    #[must_use]
+    pub fn with_chat_token_field(mut self, field: ChatTokenField) -> Self {
+        self.inner.chat_token_mode = match field {
+            ChatTokenField::MaxTokens => crate::chat::TokenMode::MaxTokens,
+            ChatTokenField::MaxCompletionTokens => crate::chat::TokenMode::MaxCompletionTokens,
+        };
+        self
+    }
+}
+
+#[cfg(feature = "custom-http")]
+impl std::ops::Deref for CustomHttpAdapter {
+    type Target = HttpAdapter;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[cfg(feature = "custom-http")]
+impl From<CustomHttpAdapter> for HttpAdapter {
+    fn from(adapter: CustomHttpAdapter) -> Self {
+        adapter.inner
+    }
+}
+
 impl HttpAdapter {
     fn new(
         id: impl Into<String>,
@@ -416,15 +522,21 @@ impl HttpAdapter {
     ///
     /// Custom adapters return an empty model catalog and do not mint gateway
     /// tokens; discovery and token minting remain host-owned.
-    pub fn custom(id: impl Into<String>, base_url: impl Into<String>, protocol: Protocol) -> Self {
-        Self::new(
-            id,
-            base_url,
-            protocol,
-            AdapterKind::Custom,
-            None,
-            CredentialPlacement::Bearer,
-        )
+    pub fn custom(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        protocol: Protocol,
+    ) -> CustomHttpAdapter {
+        CustomHttpAdapter {
+            inner: Self::new(
+                id,
+                base_url,
+                protocol,
+                AdapterKind::Custom,
+                None,
+                CredentialPlacement::Bearer,
+            ),
+        }
     }
     /// Override the base URL for a compatible proxy or local fixture server.
     #[must_use]
@@ -439,81 +551,6 @@ impl HttpAdapter {
         {
             self.credential_source = None;
         }
-        self
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Selects the one Crabber-owned credential header.
-    pub fn with_auth_scheme(mut self, scheme: AuthScheme) -> Self {
-        self.credential_placement = match scheme {
-            AuthScheme::Bearer => CredentialPlacement::Bearer,
-            AuthScheme::XApiKey => CredentialPlacement::XApiKey,
-        };
-        self
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Installs the per-attempt credential source.
-    pub fn with_credential_source(mut self, source: Arc<dyn CredentialSource>) -> Self {
-        self.credential_source = Some(source);
-        self.key_override = None;
-        self
-    }
-    /// Installs validated static request headers, applied before the request hook.
-    ///
-    /// # Errors
-    ///
-    /// Returns a non-retryable invalid-provider error when a protected header name is present.
-    #[cfg(feature = "custom-http")]
-    pub fn try_with_static_headers(mut self, headers: HeaderMap) -> Result<Self, ProviderError> {
-        if headers.keys().any(is_protected_static_header) {
-            return Err(invalid());
-        }
-        self.static_headers = headers;
-        Ok(self)
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Installs the per-attempt header hook.
-    pub fn with_request_header_hook(mut self, hook: Arc<dyn RequestHeaderHook>) -> Self {
-        self.request_header_hook = Some(hook);
-        self
-    }
-    /// Builds and installs the configured HTTP client.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-provider error when reqwest rejects the final client configuration.
-    #[cfg(feature = "custom-http")]
-    pub fn try_with_client_config(
-        mut self,
-        config: HttpClientConfig,
-    ) -> Result<Self, ProviderError> {
-        self.client = config.build()?;
-        Ok(self)
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Installs an observer called once for every received HTTP response.
-    pub fn with_response_observer(mut self, observer: Arc<dyn ResponseObserver>) -> Self {
-        self.response_observer = Some(observer);
-        self
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Overrides status classification for this custom adapter only.
-    pub fn with_error_classifier(mut self, classifier: Arc<dyn ErrorClassifier>) -> Self {
-        self.error_classifier = Some(classifier);
-        self
-    }
-    #[cfg(feature = "custom-http")]
-    #[must_use]
-    /// Selects the Chat Completions token field; empty tool lists are omitted.
-    pub fn with_chat_token_field(mut self, field: ChatTokenField) -> Self {
-        self.chat_token_mode = match field {
-            ChatTokenField::MaxTokens => crate::chat::TokenMode::MaxTokens,
-            ChatTokenField::MaxCompletionTokens => crate::chat::TokenMode::MaxCompletionTokens,
-        };
         self
     }
     #[cfg(feature = "codex")]
@@ -1165,6 +1202,34 @@ impl ProviderAdapter for HttpAdapter {
         Ok(Arc::new(self.clone()))
     }
 }
+
+#[cfg(feature = "custom-http")]
+#[async_trait]
+impl Streamer for CustomHttpAdapter {
+    async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        self.inner.send(request).await
+    }
+}
+
+#[cfg(feature = "custom-http")]
+#[async_trait]
+impl ProviderAdapter for CustomHttpAdapter {
+    fn info(&self) -> ProviderInfo {
+        self.inner.info()
+    }
+
+    async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
+        self.inner.models().await
+    }
+
+    async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
+        if selection.provider_id != self.inner.id {
+            return Err(invalid());
+        }
+        Ok(Arc::new(self.clone()))
+    }
+}
+
 #[derive(Default)]
 /// Provider resolver populated with HTTP adapters by provider id.
 pub struct HttpResolver {
@@ -1177,7 +1242,8 @@ impl HttpResolver {
     }
     #[must_use]
     /// Registers an adapter. Registration performs no credential or network I/O.
-    pub fn with_adapter(mut self, adapter: HttpAdapter) -> Self {
+    pub fn with_adapter(mut self, adapter: impl Into<HttpAdapter>) -> Self {
+        let adapter = adapter.into();
         self.adapters.insert(adapter.id.clone(), adapter);
         self
     }

@@ -49,12 +49,20 @@ Migration notes for the named downstream consumers:
   provider contracts, so its existing source needs no change and remains
   unaffected. To adopt this adapter, advance to an immutable Crabber pin that
   includes it, enable `custom-http`, and configure/register the custom adapter.
-- **Agentcraft:** local source was unavailable, and the available Beans evidence
-  records a `FakeProvider` journey, so custom HTTP compatibility is unverified.
-  Existing pinned code is unaffected until its Crabber pin advances. Adoption
-  requires advancing to an immutable pin that includes this adapter, replacing
-  or configuring the provider path, and supplying the required host-owned
-  credential and model services.
+- **Agentcraft:** inspected checkout `fe08b03d3847690f641a3d2380d973819ac0d8ec`.
+  Its `rust-proof`, `rust-migration-proof`, and `rust-telemetry-proof` manifests
+  all pin Crabber `5e3046a8f959184fd237969705ce922a67252c1f`; the first two enable only
+  `postgres`, while telemetry enables `postgres,datadog`. Source inspection
+  finds generic provider contracts and `FakeProvider`, but no built-in or
+  custom HTTP adapter construction, so the new independent `custom-http`
+  feature does not alter the pinned consumer surface. Reproduce the inspection
+  with `git -C /home/punk1290/git/agentcraft checkout fe08b03d3847690f641a3d2380d973819ac0d8ec`
+  and inspect the three `apps/api/rust-*-proof/Cargo.toml` manifests. Attempts
+  to run `cargo check --locked` in each proof were blocked because the private
+  Crabber Git dependency could not authenticate; this is an explicit compile
+  evidence gap, not source unavailability. Adoption requires advancing to an
+  immutable Crabber revision containing this adapter, enabling `custom-http`,
+  and supplying host-owned credential and model services.
 
 `cargo xtask check` builds local WASM fixtures, checks formatting/Clippy, runs
 workspace tests, offline host journeys and the external public-API consumer,

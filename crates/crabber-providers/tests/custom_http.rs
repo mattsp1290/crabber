@@ -1670,30 +1670,6 @@ async fn custom_chat_wire_body_omits_empty_tools_and_uses_completion_tokens() {
     assert_eq!(body["max_completion_tokens"], 8);
 }
 
-#[cfg(feature = "openai")]
-#[tokio::test]
-async fn built_in_status_mapping_ignores_custom_classifier() {
-    struct PanicClassifier;
-    impl ErrorClassifier for PanicClassifier {
-        fn classify(&self, _: StatusCode, _: &str) -> (ProviderErrorKind, bool) {
-            panic!("built-in adapter must not invoke custom classifier")
-        }
-    }
-    let secret = "built-in-secret";
-    let server = Server::start(vec![Reply::status(400).with_body(secret)]).await;
-    let error = HttpAdapter::openai()
-        .with_base_url(&server.url)
-        .with_api_key(secret)
-        .with_error_classifier(Arc::new(PanicClassifier))
-        .stream(request("openai"))
-        .await
-        .err()
-        .expect("400 should fail");
-    assert_eq!(error.kind, ProviderErrorKind::Invalid);
-    assert!(!error.message.contains(secret));
-    assert!(error.message.ends_with("[REDACTED]"));
-}
-
 struct ConcurrentSource {
     token: tokio::sync::Mutex<Option<String>>,
     refreshes: AtomicUsize,
