@@ -20,3 +20,14 @@ This example demonstrates LLM spans/metrics/logs. For run/model/tool/first-token
 operational distributions, bounded safe queues and offline payload assertions,
 use [operational-telemetry](../operational-telemetry/README.md). See
 [exporter adoption](../../crates/crabber-obs/README.md) and [source](src/main.rs).
+
+For searchable visibility, use `cargo xtask verify-datadog` with environment-only
+`DD_SITE`, `DD_API_KEY` and `DD_APP_KEY` in the same account. The application key
+needs LLM span, metric and log read permissions. The gate generates a unique
+`verify` marker and requires linked agent/workflow/LLM spans, finite marker-filtered
+run/model elapsed and model first-token distributions, run count and safe logs.
+This fake fixture emits no tool timing sample. Intake acceptance alone does not
+pass. Fixed padded UTC bounds and one 120-second polling deadline apply; absent
+signals or read-access failures exit nonzero. Evidence prints only safe status,
+counts and identities. Run against a clean committed checkout so the source SHA
+identifies the tested code. Local tests cannot satisfy the live acceptance gate.

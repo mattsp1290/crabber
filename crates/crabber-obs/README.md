@@ -6,7 +6,7 @@ The original intake acceptance expected gzip for all three signals. In the US3 l
 
 The observer allowlists lifecycle fields before queuing. Prompt and completion text, tool arguments and results, reasoning, and headers are never exported. The bounded queue drops observations when full and reports `crabber.export.dropped`. Call `agent.flush().await` before process exit, or `agent.shutdown().await` to flush and stop the worker.
 
-Run the credential-free example with `cargo run -p datadog-export`. The live gate is `DD_SITE=... DD_API_KEY=... DD_APP_KEY=... cargo xtask verify-datadog`; it submits a marker-tagged fake run, requires LLM Obs intake HTTP 202, and queries metrics and logs for up to two minutes. Verify the spans in Datadog's LLM Observability UI or with an authenticated span search.
+Run the credential-free example with `cargo run -p datadog-export`. The live gate is `DD_SITE=... DD_API_KEY=... DD_APP_KEY=... cargo xtask verify-datadog`; it submits a marker-tagged fake run, waits for successful flush/shutdown, then requires searchable linked LLM spans, operational distributions, run count and logs within a single two-minute deadline. See the searchable visibility gate below.
 
 ## Live verification
 
@@ -176,3 +176,40 @@ and configured tags on every distribution. Clippy passes with the existing
 workspace gate was attempted but is blocked by the pinned Wasmtime 49.0.1
 requiring Rust 1.96 while the installed stable toolchain is 1.95; this local
 telemetry change does not update that unrelated dependency or suppress it.
+
+## Searchable visibility gate
+
+`cargo xtask verify-datadog` is an explicit live command requiring `DD_SITE`,
+`DD_API_KEY`, and `DD_APP_KEY` with metric, log, and LLM span read access in the
+same account/site as export. It launches a fresh marker-tagged fake run and waits
+for flush/shutdown before reading. A successful flush proves transport acceptance;
+HTTP acceptance alone does not prove searchable visibility.
+
+The gate searches [LLM span events](https://docs.datadoghq.com/llm_observability/investigate/export_api/)
+with structured `verify` tags and fixed RFC3339 bounds (start minus ten minutes,
+end plus one minute), following cursors. Returned span attributes must prove
+matching service/application/marker tags, a common trace and agent → workflow →
+LLM parents. Resource IDs and intake `meta.kind` are not read span identities.
+The same marker must yield finite run-count, run/model elapsed and model
+first-token points through the [v1 metric query API](https://docs.datadoghq.com/api/latest/metrics/query-timeseries-points/),
+and safe runtime logs. Metric request bounds use seconds; response point
+and interval units use milliseconds. A rollup bucket overlapping the fixed
+padded window is accepted even if its start precedes the run.
+
+One 120-second deadline covers all reads, request time and sleeps. Responses are
+bounded to 1 MiB each; failed permissions/schema requests fail immediately. Any
+missing required signal gives a nonzero exit. Safe evidence includes site, marker,
+committed source SHA, UTC bounds, statuses/counts and returned trace/span IDs;
+response bodies and content are never printed. The default native span transport
+is preserved; a native intake visibility failure is reported as a failure.
+Offline tests and `cargo xtask check` do not read credentials or prove live results.
+
+Host `DatadogConfig::tags` use the same ASCII filtering and 120-surviving-character
+bound for timing distributions and event tags. Empty entries and duplicates keep
+the established behavior. Tags are added once when a fresh request is built;
+retained split/retry bodies are reused. Hosts own static-tag cardinality; runtime
+provider/model/tool dimensions still have their independent finite bounds.
+
+The earlier consumer report above belongs to PR #12's `0355b83` correction and is
+historical evidence, not verification of this gate. Closing `crabber-9ghg` also
+requires a channels WP0 re-probe against the exact verified correction revision.
