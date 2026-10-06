@@ -116,6 +116,15 @@ struct Measurement {
     samples: Vec<Value>,
 }
 /// Agentless intake settings. The API key is always hidden in `Debug` output.
+/// Span intake protocol. Native v2 supports SDK span links; public v1 is the
+/// documented HTTP API for hosts that do not export native lineage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LlmObsTransport {
+    #[default]
+    NativeV2,
+    PublicV1,
+}
+
 #[derive(Clone)]
 pub struct DatadogConfig {
     pub site: String,
@@ -131,6 +140,7 @@ pub struct DatadogConfig {
     pub max_payload_bytes: usize,
     pub timeout: Duration,
     pub metric_dimensions: MetricDimensions,
+    pub llmobs_transport: LlmObsTransport,
     /// Overrides both metrics and native LLM spans origins for a local intake test.
     pub api_origin: Option<String>,
     /// Overrides the logs origin for a local intake test.
@@ -176,6 +186,7 @@ impl DatadogConfig {
             max_payload_bytes: 512_000,
             timeout: Duration::from_secs(10),
             metric_dimensions: MetricDimensions::default(),
+            llmobs_transport: LlmObsTransport::default(),
             api_origin: None,
             logs_origin: None,
         })
@@ -216,6 +227,8 @@ pub enum ExportError {
     PayloadTooLarge,
     #[error("{signal} intake reported {count} series error(s)")]
     IntakeErrors { signal: &'static str, count: usize },
+    #[error("public LLM Observability transport cannot export native span links")]
+    UnsupportedSpanLinks,
     #[error("invalid or oversized intake acknowledgement")]
     IntakeResponse,
 }
@@ -670,13 +683,17 @@ fn tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
     if let Some(m) = &e.model {
         t.push(format!("model:{m}"));
     }
-    t.extend(c.tags.iter().map(|tag| {
-        tag.chars()
-            .filter(|ch| ch.is_ascii_alphanumeric() || "._:-/".contains(*ch))
-            .take(120)
-            .collect()
-    }));
+    t.extend(sanitized_host_tags(c));
     t
+}
+fn sanitized_host_tags(c: &DatadogConfig) -> Vec<String> {
+    c.tags.iter().map(|tag| sanitize_tag(tag)).collect()
+}
+fn sanitize_tag(tag: &str) -> String {
+    tag.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || "._:-/".contains(*ch))
+        .take(120)
+        .collect()
 }
 fn metric_tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
     let mut event = e.clone();
@@ -905,7 +922,7 @@ fn split_payload(body: &Value) -> Option<(Value, Value)> {
     Some((first, second))
 }
 fn intake_signal(url: &str) -> &'static str {
-    if url.contains("llmobs") {
+    if is_span_intake(url) {
         "llmobs"
     } else if url.contains("distribution_points") {
         "distributions"
@@ -973,7 +990,7 @@ async fn post(
             parts.push(first);
             continue;
         }
-        let is_llmobs = url.contains("llmobs");
+        let is_llmobs = is_span_intake(&url);
         let distribution = url.contains("distribution_points");
         let bytes = if is_llmobs {
             raw.into_bytes()
@@ -1041,6 +1058,45 @@ async fn post(
     }
     Ok(())
 }
+fn span_endpoint(config: &DatadogConfig) -> String {
+    match config.llmobs_transport {
+        LlmObsTransport::NativeV2 => format!(
+            "{}/api/v2/llmobs",
+            config
+                .api_origin
+                .clone()
+                .unwrap_or_else(|| format!("https://llmobs-intake.{}", config.site))
+        ),
+        LlmObsTransport::PublicV1 => {
+            format!("{}/api/intake/llm-obs/v1/trace/spans", config.api_origin())
+        }
+    }
+}
+fn span_batch(config: &DatadogConfig, mut spans: Vec<Value>) -> Result<Value, ExportError> {
+    match config.llmobs_transport {
+        LlmObsTransport::NativeV2 => Ok(json!(spans.into_iter().map(|span|
+            json!({"_dd.stage":"raw","_dd.tracer_version":concat!("crabber-",env!("CARGO_PKG_VERSION")),"event_type":"span","spans":[span]})
+        ).collect::<Vec<_>>())),
+        LlmObsTransport::PublicV1 => {
+            for span in &mut spans {
+                if span.get("span_links").and_then(Value::as_array).is_some_and(|links| !links.is_empty()) {
+                    return Err(ExportError::UnsupportedSpanLinks);
+                }
+                if let Some(trace) = span.pointer("/_dd/apm_trace_id").cloned() {
+                    span["apm_trace_id"] = trace;
+                }
+                span.as_object_mut().expect("span object").remove("_dd");
+            }
+            Ok(json!({"data":{"type":"span","attributes":{
+                "ml_app":config.ml_app,"spans":spans,
+                "tags":config.tags.iter().map(|tag| sanitize_tag(tag)).collect::<Vec<_>>()
+            }}}))
+        }
+    }
+}
+fn is_span_intake(url: &str) -> bool {
+    url.contains("llmobs") || url.contains("llm-obs")
+}
 #[allow(clippy::too_many_lines)] // Preserve ordered stage progress in one state machine.
 async fn export(
     client: &reqwest::Client,
@@ -1064,20 +1120,13 @@ async fn export(
                 })
                 .collect();
             if !spans.is_empty() {
-                let envelopes: Vec<_> = spans.into_iter().map(|span| json!({"_dd.stage":"raw","_dd.tracer_version":concat!("crabber-",env!("CARGO_PKG_VERSION")),"event_type":"span","spans":[span]})).collect();
-                pending.unsent_parts.push(json!(envelopes));
+                pending.unsent_parts.push(span_batch(config, spans)?);
             }
         }
         post(
             client,
             config,
-            format!(
-                "{}/api/v2/llmobs",
-                config
-                    .api_origin
-                    .clone()
-                    .unwrap_or_else(|| format!("https://llmobs-intake.{}", config.site))
-            ),
+            span_endpoint(config),
             &mut pending.unsent_parts,
             health,
         )
@@ -1130,6 +1179,7 @@ async fn export(
                     tags.push(json!(format!("service:{}", config.service)));
                     tags.push(json!(format!("env:{}", config.env)));
                     tags.push(json!(format!("version:{}", config.version)));
+                    tags.extend(sanitized_host_tags(config).into_iter().map(Value::String));
                     sample
                 })
                 .collect();
@@ -1243,6 +1293,7 @@ mod tests {
             max_payload_bytes: 512_000,
             timeout: Duration::from_secs(3),
             metric_dimensions: MetricDimensions::default(),
+            llmobs_transport: LlmObsTransport::default(),
             api_origin: None,
             logs_origin: None,
         }
@@ -1295,7 +1346,7 @@ mod tests {
         let headers = String::from_utf8_lossy(&all[..head_end]).to_ascii_lowercase();
         assert!(headers.contains("dd-api-key: test-key"));
         let mut body_text = String::new();
-        if headers.contains("/api/v2/llmobs") {
+        if is_span_intake(&headers) {
             assert!(!headers.contains("content-encoding: gzip"));
             body_text = String::from_utf8(all[head_end..head_end + length].to_vec()).unwrap();
         } else if headers.contains("distribution_points") {
@@ -1361,6 +1412,73 @@ mod tests {
         let diagnostic = format!("{error} {error:?}");
         assert!(!diagnostic.contains("SECRET"));
         assert!(!diagnostic.contains("http://"));
+    }
+    #[tokio::test]
+    async fn public_transport_emits_documented_wire_shape_and_all_signals() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_request(&mut stream));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            requests
+        });
+        let mut config = config();
+        config.llmobs_transport = LlmObsTransport::PublicV1;
+        config.api_origin = Some(origin.clone());
+        config.logs_origin = Some(origin);
+        let observer = DatadogObserver::new(&config);
+        let session = SessionId::new();
+        let run = RunId::new();
+        for kind in [
+            EventKind::RunAdmitted,
+            EventKind::RunStarted,
+            EventKind::RunSettled,
+        ] {
+            observer.emit(&event(kind, &session, &run, json!({"status":"ok"})));
+        }
+        observer.flush().await.unwrap();
+        observer.shutdown().await.unwrap();
+        let requests = server.join().unwrap();
+        let (headers, body) = &requests[0];
+        assert!(headers.contains("/api/intake/llm-obs/v1/trace/spans"));
+        assert_eq!(body["data"]["type"], "span");
+        assert_eq!(body["data"]["attributes"]["ml_app"], config.ml_app);
+        assert_eq!(body["data"]["attributes"]["tags"], json!(["verify:test"]));
+        let spans = body["data"]["attributes"]["spans"].as_array().unwrap();
+        assert_eq!(spans.len(), 2);
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.get("_dd").is_none() && span.get("apm_trace_id").is_none())
+        );
+        assert!(requests[1].0.contains("/api/v2/series"));
+        assert!(requests[2].0.contains("/api/v2/logs"));
+    }
+    #[test]
+    fn public_transport_preserves_apm_correlation_and_refuses_native_links() {
+        let mut config = config();
+        assert_eq!(config.llmobs_transport, LlmObsTransport::NativeV2);
+        config.llmobs_transport = LlmObsTransport::PublicV1;
+        let span = json!({"name":"fixture","_dd":{"apm_trace_id":"42"}});
+        let body = span_batch(&config, vec![span.clone(), span]).unwrap();
+        assert_eq!(body["data"]["attributes"]["spans"][0]["apm_trace_id"], "42");
+        let (first, second) = split_payload(&body).unwrap();
+        assert_eq!(
+            first["data"]["attributes"]["tags"],
+            second["data"]["attributes"]["tags"]
+        );
+        assert!(matches!(
+            span_batch(&config, vec![json!({"span_links":[{"trace_id":"42"}]})]),
+            Err(ExportError::UnsupportedSpanLinks)
+        ));
     }
     #[test]
     fn context_free_spans_and_logs_do_not_fabricate_host_identity() {
@@ -1684,7 +1802,79 @@ mod tests {
             first_token: first.map(Duration::from_millis),
         }
     }
+    fn assert_configured_tags(series: &[Value], expected: &[&str]) {
+        for sample in series {
+            let tags = sample["tags"].as_array().unwrap();
+            for tag in expected {
+                assert!(tags.iter().any(|value| value == tag));
+            }
+        }
+    }
+    #[test]
+    fn host_tag_sanitation_preserves_empty_duplicates_and_event_policy() {
+        let mut c = config();
+        c.tags = vec![
+            "雪!".into(),
+            "verify:test".into(),
+            "verify:test".into(),
+            format!("{}ok", "雪!".repeat(120)),
+        ];
+        let expected = vec!["", "verify:test", "verify:test", "ok"];
+        assert_eq!(sanitized_host_tags(&c), expected);
+        let e = event(
+            EventKind::RunStarted,
+            &SessionId::new(),
+            &RunId::new(),
+            Value::Null,
+        );
+        let e = SafeEvent::from_event(&e, &c.redaction).unwrap();
+        assert!(tags(&c, &e).ends_with(&sanitized_host_tags(&c)));
+        c.tags.clear();
+        assert_eq!(sanitized_host_tags(&c), Vec::<String>::new());
+        assert_eq!(tags(&c, &e).len(), 3);
+    }
     #[tokio::test]
+    async fn distributions_without_host_tags_keep_standard_dimensions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut distribution = Value::Null;
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (headers, body) = read_request(&mut stream);
+                if headers.contains("distribution_points") {
+                    distribution = body;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            distribution
+        });
+        let mut c = config();
+        c.tags.clear();
+        c.api_origin = Some(origin);
+        let observer = DatadogObserver::new(&c);
+        observer.operational_completed(&measurement(OperationKind::Run, 42, None));
+        observer.flush().await.unwrap();
+        let body = server.join().unwrap();
+        assert_eq!(body["series"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            body["series"][0]["tags"],
+            json!([
+                "reason:cancelled",
+                "service:crabber",
+                "env:test",
+                "version:test"
+            ])
+        );
+        assert_eq!(body["series"][0]["points"][0][1], json!([42.0]));
+        observer.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Wire values and tag assertions share one captured batch.
     async fn typed_distributions_preserve_values_counts_and_finite_dimensions() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -1709,6 +1899,8 @@ mod tests {
         c.metric_dimensions.providers = vec!["fake".into()];
         c.metric_dimensions.models = vec!["demo".into()];
         c.metric_dimensions.tools = vec!["echo".into()];
+        c.tags.push("deploy:branch with spaces\n雪!".into());
+        c.tags.push(format!("long:{}", "a雪!".repeat(130)));
         let observer = DatadogObserver::new(&c);
         observer.operational_completed(&measurement(OperationKind::Run, 50, None));
         observer.operational_completed(&measurement(
@@ -1747,6 +1939,17 @@ mod tests {
         assert!(requests[1].0.contains("/api/v1/distribution_points"));
         let series = requests[1].1["series"].as_array().unwrap();
         assert_eq!(series.len(), 104);
+        assert_configured_tags(
+            series,
+            &[
+                "service:crabber",
+                "env:test",
+                "version:test",
+                "verify:test",
+                "deploy:branchwithspaces",
+                &format!("long:{}", "a".repeat(115)),
+            ],
+        );
         for (name, value, count) in [
             ("crabber.run.elapsed_ms", 50.0, 1),
             ("crabber.tool.elapsed_ms", 10.0, 1),
@@ -1800,6 +2003,17 @@ mod tests {
                 paths.push(path.clone());
                 let status = if path.contains("distribution_points") {
                     step += 1;
+                    for sample in body["series"].as_array().unwrap() {
+                        assert_eq!(
+                            sample["tags"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|t| *t == "verify:test")
+                                .count(),
+                            1
+                        );
+                    }
                     match step {
                         1 => "413 Payload Too Large",
                         3 => "403 Forbidden",
