@@ -683,8 +683,11 @@ fn tags(c: &DatadogConfig, e: &SafeEvent) -> Vec<String> {
     if let Some(m) = &e.model {
         t.push(format!("model:{m}"));
     }
-    t.extend(c.tags.iter().map(|tag| sanitize_tag(tag)));
+    t.extend(sanitized_host_tags(c));
     t
+}
+fn sanitized_host_tags(c: &DatadogConfig) -> Vec<String> {
+    c.tags.iter().map(|tag| sanitize_tag(tag)).collect()
 }
 fn sanitize_tag(tag: &str) -> String {
     tag.chars()
@@ -1176,7 +1179,7 @@ async fn export(
                     tags.push(json!(format!("service:{}", config.service)));
                     tags.push(json!(format!("env:{}", config.env)));
                     tags.push(json!(format!("version:{}", config.version)));
-                    tags.extend(config.tags.iter().map(|tag| json!(sanitize_tag(tag))));
+                    tags.extend(sanitized_host_tags(config).into_iter().map(Value::String));
                     sample
                 })
                 .collect();
@@ -1807,7 +1810,71 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn host_tag_sanitation_preserves_empty_duplicates_and_event_policy() {
+        let mut c = config();
+        c.tags = vec![
+            "雪!".into(),
+            "verify:test".into(),
+            "verify:test".into(),
+            format!("{}ok", "雪!".repeat(120)),
+        ];
+        let expected = vec!["", "verify:test", "verify:test", "ok"];
+        assert_eq!(sanitized_host_tags(&c), expected);
+        let e = event(
+            EventKind::RunStarted,
+            &SessionId::new(),
+            &RunId::new(),
+            Value::Null,
+        );
+        let e = SafeEvent::from_event(&e, &c.redaction).unwrap();
+        assert!(tags(&c, &e).ends_with(&sanitized_host_tags(&c)));
+        c.tags.clear();
+        assert_eq!(sanitized_host_tags(&c), Vec::<String>::new());
+        assert_eq!(tags(&c, &e).len(), 3);
+    }
     #[tokio::test]
+    async fn distributions_without_host_tags_keep_standard_dimensions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut distribution = Value::Null;
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (headers, body) = read_request(&mut stream);
+                if headers.contains("distribution_points") {
+                    distribution = body;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            distribution
+        });
+        let mut c = config();
+        c.tags.clear();
+        c.api_origin = Some(origin);
+        let observer = DatadogObserver::new(&c);
+        observer.operational_completed(&measurement(OperationKind::Run, 42, None));
+        observer.flush().await.unwrap();
+        let body = server.join().unwrap();
+        assert_eq!(body["series"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            body["series"][0]["tags"],
+            json!([
+                "reason:cancelled",
+                "service:crabber",
+                "env:test",
+                "version:test"
+            ])
+        );
+        assert_eq!(body["series"][0]["points"][0][1], json!([42.0]));
+        observer.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Wire values and tag assertions share one captured batch.
     async fn typed_distributions_preserve_values_counts_and_finite_dimensions() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -1832,7 +1899,8 @@ mod tests {
         c.metric_dimensions.providers = vec!["fake".into()];
         c.metric_dimensions.models = vec!["demo".into()];
         c.metric_dimensions.tools = vec!["echo".into()];
-        c.tags.push("deploy:branch with spaces\n".into());
+        c.tags.push("deploy:branch with spaces\n雪!".into());
+        c.tags.push(format!("long:{}", "a雪!".repeat(130)));
         let observer = DatadogObserver::new(&c);
         observer.operational_completed(&measurement(OperationKind::Run, 50, None));
         observer.operational_completed(&measurement(
@@ -1871,7 +1939,17 @@ mod tests {
         assert!(requests[1].0.contains("/api/v1/distribution_points"));
         let series = requests[1].1["series"].as_array().unwrap();
         assert_eq!(series.len(), 104);
-        assert_configured_tags(series, &["verify:test", "deploy:branchwithspaces"]);
+        assert_configured_tags(
+            series,
+            &[
+                "service:crabber",
+                "env:test",
+                "version:test",
+                "verify:test",
+                "deploy:branchwithspaces",
+                &format!("long:{}", "a".repeat(115)),
+            ],
+        );
         for (name, value, count) in [
             ("crabber.run.elapsed_ms", 50.0, 1),
             ("crabber.tool.elapsed_ms", 10.0, 1),
@@ -1925,6 +2003,17 @@ mod tests {
                 paths.push(path.clone());
                 let status = if path.contains("distribution_points") {
                     step += 1;
+                    for sample in body["series"].as_array().unwrap() {
+                        assert_eq!(
+                            sample["tags"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|t| *t == "verify:test")
+                                .count(),
+                            1
+                        );
+                    }
                     match step {
                         1 => "413 Payload Too Large",
                         3 => "403 Forbidden",

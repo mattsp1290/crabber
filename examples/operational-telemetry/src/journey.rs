@@ -341,6 +341,7 @@ impl Intake {
             models: vec!["scripted".into()],
             tools: vec!["echo".into()],
         };
+        config.tags.push("verify:operational-fixture".into());
         config.timeout = Duration::from_secs(2);
         config.batch_size = 1000;
         config.channel_capacity = 4096;
@@ -1066,6 +1067,13 @@ fn validate_requests(requests: &[Request]) {
     }) {
         for series in request.body["series"].as_array().unwrap() {
             validate_tags(series);
+            assert!(
+                series["tags"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tag| tag == "verify:operational-fixture")
+            );
         }
     }
 }

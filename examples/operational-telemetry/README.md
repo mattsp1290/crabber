@@ -80,3 +80,11 @@ Datadog. Local intake acceptance is **UNVERIFIED** evidence of live ingestion or
 percentile visibility; live verification and alerts remain deferred to
 `crabber-jeyl`. Real adoption uses variable names `DD_API_KEY`, `DD_SITE`,
 `DD_SERVICE`, `DD_ENV`, `DD_VERSION`, `DD_LLMOBS_ML_APP`; the fixture never reads them.
+
+Every decoded operational distribution also asserts the static configured tag
+`verify:operational-fixture`. Configured tags share event-tag sanitization and
+are retained once across split/retry requests. Hosts control their static-tag
+cardinality; fixture runtime identity bounds remain unchanged. These loopback
+wire assertions prove tag transport, not live visibility. The explicit
+`cargo xtask verify-datadog` gate searches spans and finite non-percentile
+operational distribution points; percentile setup remains separate.
