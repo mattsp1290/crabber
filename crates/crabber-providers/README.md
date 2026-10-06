@@ -105,6 +105,7 @@ The subscription checks must be run locally with authorized accounts. Criterion 
 
 | Date | Backend | Model | Outcome |
 | --- | --- | --- | --- |
+| 2026-10-06 UTC | OpenCode Go, Chat Completions, tool-free (criterion 2) | `deepseek-v4-flash` | Passed on clean code commit `bba379ab09ee0f3638c2d3a1873599215e71ec8f` (`git status --porcelain` empty). Command: `cargo test -p crabber --features opencode-go --test opencode_go_live -- --ignored`, with `OPENCODE_GO_API_KEY` loaded from the environment. Streamed text, completed run, exactly one successful model operation. Body shape is proven by loopback tests; this accepts the current body and does not reproduce the consumer’s earlier empty-tools-array probe. |
 | 2026-09-29 EDT | OpenCode Go | `gpt-5.6-luna` | Passed on candidate `ada6eb5`: Responses stream replied, `echo` tool settled, final text `Echo`, process exited 0. Command: `cargo run -p minimal-embed -- --provider opencode-go --protocol responses --model gpt-5.6-luna`. |
 | 2026-09-29 EDT | ChatGPT plan / Codex | `gpt-5.5` | Passed on candidate `954146f`: browser OAuth signed in, `auth.json` mode was `0600`, Responses stream replied, `echo` tool settled, final text `Echo tool used.`, process exited 0. Command: `cargo run -p minimal-embed -- --provider codex --model gpt-5.5`. |
 
