@@ -52,9 +52,14 @@ with redacted errors and Debug. Validation does not imply the host-provided dige
 is truthful: the library independently computes a separate semantic digest.
 
 The runtime hashes structured JSON with domain `crabber.runtime.admission.v1`:
-provider and model selection, system prompt, execution mode/concurrency,
+provider and model selection, system prompt, output token cap, execution mode/concurrency,
 compaction ratio/tail count, turn limit, acquired tool schemas/metadata, ordered
 prompt sections, restrictions, component identities, guard IDs and provider IDs/names.
+The runtime admission semantics array has 15 ordered elements. Local capsules
+and pause checkpoints created before the output-cap field was introduced are
+invalid. Reset or re-migrate local PostgreSQL data when applying or reverting
+this change; the admission domain and capsule version remain version 1.
+
 The acquired plan fingerprint is also retained. The store's
 `KeyedAdmitRequest::semantic_digest` hashes domain `crabber.admission.v1`, immutable
 workspace/directory, title, user role/parent, ordered part ordinal/kind/content,

@@ -59,6 +59,18 @@ fn check() {
             "trace_context",
         ],
     );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "opencode-go",
+            "--test",
+            "opencode_go_chat",
+        ],
+    );
     check_journeys(workspace);
     run(
         workspace,

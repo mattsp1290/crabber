@@ -101,7 +101,7 @@ request.
 
 ## Live acceptance record
 
-The subscription checks must be run locally with authorized accounts. A pass requires a streamed reply, an executed `echo` tool round trip, and a settled run. The SSE fixtures and codec tests do not substitute for this gate.
+The subscription checks must be run locally with authorized accounts. Criterion 1 (the existing rows) requires a streamed reply, an executed `echo` tool round trip, and a settled run. Criterion 2 (tool-free Chat Completions) requires streamed text, a completed run, and exactly one successful model operation observed. The SSE fixtures and codec tests do not substitute for this gate.
 
 | Date | Backend | Model | Outcome |
 | --- | --- | --- | --- |
@@ -117,3 +117,31 @@ cargo run -p minimal-embed -- --provider opencode-go --protocol responses --mode
 ```
 
 Set `OPENCODE_GO_API_KEY` in the environment before the OpenCode Go command. No key value belongs in this record.
+
+## Tool-free Chat Completions
+
+`HttpAdapter::opencode_go(Protocol::ChatCompletions)` omits `tools` and
+`tool_choice` when no tools are registered and sends the output cap as
+`max_tokens`. `max_completion_tokens` remains a custom HTTP option through
+`CustomHttpAdapter::with_chat_token_field`.
+
+## Host product token in User-Agent
+
+`HttpAdapter::try_with_user_agent_product("crabber-channels/0.1.0")` sets
+`User-Agent: crabber-channels/0.1.0 crabber/0.1`. The same method is available
+on `CustomHttpAdapter`. It accepts one `name` or `name/version` product: each
+part contains 1–64 ASCII HTTP token characters (letters, digits, and
+`!#$%&'*+-.^_` plus backtick, `|`, and `~`). Whitespace, comments, extra slashes,
+controls, and non-ASCII bytes are invalid. The name `crabber` is reserved,
+ignoring ASCII case. Repeated calls replace the earlier host product.
+
+Rejection is a non-retryable `Invalid` error with the message
+"invalid provider setting", without echoing the input. The composed header
+applies to streams and the OpenCode Go model catalog. The default is
+`crabber/0.1`; custom static headers and hooks still cannot set `user-agent`.
+
+Tool-free live acceptance command (load `OPENCODE_GO_API_KEY` into the environment):
+
+```sh
+cargo test -p crabber --features opencode-go --test opencode_go_live -- --ignored
+```

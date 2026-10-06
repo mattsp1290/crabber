@@ -8,6 +8,7 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 
 | Capability | Code/guide | Runnable command / feature |
 | --- | --- | --- |
+| Output token cap | `AgentConfig::max_output_tokens` | Every model turn, keyed admission identity, pause/resume, and hook precedence; see [Output token cap](#output-token-cap). |
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |
 | Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
@@ -1558,3 +1559,16 @@ repository is private: fetching the pin requires authorized SSH Git access;
 “credential-free” means test execution needs no provider, API or database
 credential. The probe is a separate workspace and is not run by `cargo xtask
 check` or CI; run its commands explicitly.
+
+## Output token cap
+
+`AgentConfig::max_output_tokens` is a public `Option<u32>` field and a builder
+method accepting a `u32`. It defaults to `None`; `Some(0)` fails
+`AgentBuilder::build` with `BuildError::InvalidConfig`. A positive cap becomes
+`ModelRequest::max_tokens` on every turn, including after tool calls and pause
+checkpoint resume. Compaction summaries keep their fixed cap.
+
+The cap is part of admission identity: changing it conflicts on keyed replay
+with the same key. Resume restores the checkpoint value. A
+`crabber/model/stream` around hook sees the cap and may replace it with a number
+or `null`; omitting `max_tokens` retains the facade cap.
