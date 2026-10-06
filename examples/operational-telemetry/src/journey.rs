@@ -819,13 +819,18 @@ async fn partial_recovery() {
     );
     export.flush().await.unwrap();
     let after = intake.requests.lock().unwrap().clone();
+    // Distinct chunks may have identical metric bodies. Recovery must preserve
+    // their accepted multiplicity rather than assume every body is unique.
     for (path, body) in stages {
         assert_eq!(
             after
                 .iter()
                 .filter(|r| r.accepted && r.path == path && r.body == body)
                 .count(),
-            1,
+            first
+                .iter()
+                .filter(|r| r.accepted && r.path == path && r.body == body)
+                .count(),
             "known accepted stage/chunk replayed"
         );
     }
