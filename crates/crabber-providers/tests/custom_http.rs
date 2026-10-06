@@ -214,7 +214,7 @@ impl Drop for Server {
 
 struct RawServer {
     url: String,
-    body: tokio::sync::oneshot::Receiver<Vec<u8>>,
+    body: tokio::sync::oneshot::Receiver<(Headers, Vec<u8>)>,
     task: JoinHandle<()>,
 }
 impl RawServer {
@@ -227,14 +227,18 @@ impl RawServer {
                 .await
                 .expect("timed out accepting raw request")
                 .expect("failed to accept raw request");
-            let (_, request_body) = read_request(&mut socket).await;
-            let _ = sender.send(request_body);
+            let captured = read_request(&mut socket).await;
+            let _ = sender.send(captured);
             let _ = socket.write_all(&response).await;
         });
         Self { url, body, task }
     }
 
     async fn body(self) -> Vec<u8> {
+        self.headers_and_body().await.1
+    }
+
+    async fn headers_and_body(self) -> (Headers, Vec<u8>) {
         let body = timeout(LOOPBACK_TIMEOUT, self.body)
             .await
             .expect("timed out waiting for request body")
@@ -1729,4 +1733,37 @@ async fn concurrent_source_compare_invalidates_and_refreshes_single_flight() {
     assert_eq!(source.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(source.invalidations.lock().unwrap().as_slice(), ["T", "T"]);
     assert_eq!(source.token.lock().await.as_deref(), Some("U"));
+}
+
+#[cfg(feature = "opencode-go")]
+#[tokio::test]
+async fn built_in_opencode_chat_wire_body_is_tool_free_and_caps_max_tokens() {
+    let completed = b"data: [DONE]\n\n";
+    let server = RawServer::start(raw_response("200 OK", completed.len(), completed)).await;
+    let adapter = HttpAdapter::opencode_go(Protocol::ChatCompletions)
+        .with_base_url(&server.url)
+        .with_api_key("key");
+    let mut input = request("opencode-go");
+    input.max_tokens = Some(4096);
+    input.tool_choice = Some("required".into());
+    let deltas = adapter
+        .stream(input)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(deltas.len(), 1);
+    assert!(matches!(deltas[0], StreamDelta::Completed));
+    let (headers, body) = server.headers_and_body().await;
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(body.get("tools").is_none());
+    assert!(body.get("tool_choice").is_none());
+    assert!(body.get("max_completion_tokens").is_none());
+    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["model"], "model");
+    assert_eq!(body["stream"], true);
+    assert_eq!(values(&headers, "authorization"), ["Bearer key"]);
+    assert_eq!(values(&headers, "x-opencode-session"), ["session"]);
+    assert_eq!(values(&headers, "user-agent"), ["crabber/0.1"]);
+    assert_eq!(values(&headers, "x-api-key"), Vec::<String>::new());
 }
