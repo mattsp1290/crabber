@@ -67,6 +67,7 @@ async fn deeply_nested_unknown_tool_arguments_settle_and_stay_decodable() {
                 model_id: "scripted".into(),
             },
             system_prompt: None,
+            max_output_tokens: None,
         })
         .await
         .unwrap();

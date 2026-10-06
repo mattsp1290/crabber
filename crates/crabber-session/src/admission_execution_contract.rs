@@ -11,6 +11,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
         "provider",
         "model",
         "system-secret",
+        null,
         "Sequential",
         0.85,
         8,
@@ -68,6 +69,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
             provider_id: "provider".into(),
             model_id: "model".into(),
             system_prompt: Some("system-secret".into()),
+            max_output_tokens: None,
         },
         runtime_semantics: semantics,
         config_hash: keyed.request.config_hash.clone(),
@@ -211,7 +213,7 @@ async fn denied_writes(
 }
 
 async fn malformed_capsules(store: &impl Store, original: &KeyedAdmitRequest) {
-    for change in 0..9 {
+    for change in 0..10 {
         let mut request = original.clone();
         let capsule = request.execution.as_mut().unwrap();
         match change {
@@ -224,6 +226,7 @@ async fn malformed_capsules(store: &impl Store, original: &KeyedAdmitRequest) {
             6 => capsule.fingerprint = InputFingerprint::new("c".repeat(64)).unwrap(),
             7 => capsule.behavior_fingerprint = InputFingerprint::new("c".repeat(64)).unwrap(),
             8 => capsule.runtime_semantics = serde_json::Value::Null,
+            9 => capsule.request.max_output_tokens = Some(4096),
             _ => unreachable!(),
         }
         assert_eq!(

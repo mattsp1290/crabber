@@ -16,6 +16,7 @@ thiserror = "2"
 
 [features]
 default = []
+custom-http = ["dep:reqwest", "dep:bytes"]
 anthropic = ["dep:reqwest", "dep:bytes"]
 openai = ["dep:reqwest", "dep:bytes"]
 codex = ["dep:reqwest", "dep:bytes", "dep:crabber-auth"]
@@ -23,7 +24,11 @@ opencode-go = ["dep:reqwest", "dep:bytes"]
 all-providers = ["anthropic", "openai", "codex", "opencode-go"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[[test]]
+name = "custom_http"
+required-features = ["custom-http"]
 
 [lints]
 workspace = true

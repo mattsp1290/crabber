@@ -117,13 +117,14 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
         panic!()
     };
     handle.done().await.unwrap();
-    for change in 0..12 {
+    for change in 0..13 {
         let mut config = config();
         let mut text = "hello";
         let mut opts = options();
         match change {
             0 => text = "changed",
             1 => config.system_prompt = Some("changed".into()),
+            12 => config.max_output_tokens = Some(4096),
             2 => config.selection.model_id = "changed".into(),
             3 => config.selection.provider_id = "changed".into(),
             4 => config.title = "changed".into(),

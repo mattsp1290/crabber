@@ -203,6 +203,7 @@ fn request() -> crate::Request {
             model_id: "scripted".into(),
         },
         system_prompt: None,
+        max_output_tokens: None,
     }
 }
 async fn harness(

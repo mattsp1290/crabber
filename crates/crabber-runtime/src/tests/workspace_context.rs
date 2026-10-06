@@ -390,6 +390,7 @@ fn request(session: Option<&SessionId>, workspace_id: &str, directory: &str) -> 
             model_id: "scripted".into(),
         },
         system_prompt: None,
+        max_output_tokens: None,
     }
 }
 

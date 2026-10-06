@@ -8,9 +8,11 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 
 | Capability | Code/guide | Runnable command / feature |
 | --- | --- | --- |
+| Output token cap | `AgentConfig::max_output_tokens` | Every model turn, keyed admission identity, pause/resume, and hook precedence; see [Output token cap](#output-token-cap). |
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |
 | Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
+| Host-owned HTTP provider | [custom HTTP contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers) | independent facade `custom-http`; `HttpAdapter::custom` + `HttpResolver::with_adapter`; construction-only external probe is offline |
 | Fenced abandonment | [host protocol](fenced-abandon.md) | `cargo run -p fenced-abandon`; memory default, manual PostgreSQL mode |
 | Native extensions | [native guide](../examples/native-extension/README.md) | `cargo run -p native-extension` |
 | Workspace context for native extensions | [contract](#workspace-context), [in-workspace probe](../examples/workspace-context-probe/README.md), [standalone pinned probe](../testdata/workspace-context-probe/README.md) | `cargo test -p workspace-context-probe`; `cargo test` in `testdata/workspace-context-probe/` |
@@ -26,6 +28,42 @@ provide bounded all-history reads. [Host tracing](../examples/host-trace/README.
 covers explicit context and composed observers; [operational observation](operational-observation.md)
 describes finite run/model/tool reasons and monotonic durations. Use those
 contracts when adopting their corresponding public APIs.
+
+### Custom HTTP provider adoption
+
+`custom-http` can be enabled without any built-in provider feature. It exposes a
+finite host-owned HTTP adapter rather than provider-specific model discovery or
+gateway token minting; those remain the embedder's responsibility. The
+[provider contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers)
+documents the public symbols and contracts, reqwest 0.12 boundary,
+no-redirect client controls,
+auth/header ordering, one dynamic-401 retry, observer/classifier timing,
+bounded error handling, transport classes, and Chat request options. The
+[external consumer](../testdata/external-consumer/host/src/custom_provider.rs)
+exercises a construction and registration path through the
+public `crabber::providers` facade without resolving a model, minting or
+fetching a credential, opening a stream, or contacting the network.
+
+Migration notes for the named downstream consumers:
+
+- **crabber-extensions:** its inspected immutable Crabber pin uses only generic
+  provider contracts, so its existing source needs no change and remains
+  unaffected. To adopt this adapter, advance to an immutable Crabber pin that
+  includes it, enable `custom-http`, and configure/register the custom adapter.
+- **Agentcraft:** inspected checkout `fe08b03d3847690f641a3d2380d973819ac0d8ec`.
+  Its `rust-proof`, `rust-migration-proof`, and `rust-telemetry-proof` manifests
+  all pin Crabber `5e3046a8f959184fd237969705ce922a67252c1f`; the first two enable only
+  `postgres`, while telemetry enables `postgres,datadog`. Source inspection
+  finds generic provider contracts and `FakeProvider`, but no built-in or
+  custom HTTP adapter construction, so the new independent `custom-http`
+  feature does not alter the pinned consumer surface. Reproduce the inspection
+  with `git -C /home/punk1290/git/agentcraft checkout fe08b03d3847690f641a3d2380d973819ac0d8ec`
+  and inspect the three `apps/api/rust-*-proof/Cargo.toml` manifests. Attempts
+  to run `cargo check --locked` in each proof were blocked because the private
+  Crabber Git dependency could not authenticate; this is an explicit compile
+  evidence gap, not source unavailability. Adoption requires advancing to an
+  immutable Crabber revision containing this adapter, enabling `custom-http`,
+  and supplying host-owned credential and model services.
 
 `cargo xtask check` builds local WASM fixtures, checks formatting/Clippy, runs
 workspace tests, offline host journeys and the external public-API consumer,
@@ -1521,3 +1559,16 @@ repository is private: fetching the pin requires authorized SSH Git access;
 “credential-free” means test execution needs no provider, API or database
 credential. The probe is a separate workspace and is not run by `cargo xtask
 check` or CI; run its commands explicitly.
+
+## Output token cap
+
+`AgentConfig::max_output_tokens` is a public `Option<u32>` field and a builder
+method accepting a `u32`. It defaults to `None`; `Some(0)` fails
+`AgentBuilder::build` with `BuildError::InvalidConfig`. A positive cap becomes
+`ModelRequest::max_tokens` on every turn, including after tool calls and pause
+checkpoint resume. Compaction summaries keep their fixed cap.
+
+The cap is part of admission identity: changing it conflicts on keyed replay
+with the same key. Resume restores the checkpoint value. A
+`crabber/model/stream` around hook sees the cap and may replace it with a number
+or `null`; omitting `max_tokens` retains the facade cap.

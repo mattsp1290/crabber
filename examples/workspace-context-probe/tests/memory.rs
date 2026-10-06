@@ -311,6 +311,7 @@ async fn stale_fence_never_invokes_the_executor() {
             text: "wait".into(),
             selection: config("ws-fence", "/srv/fence").selection,
             system_prompt: None,
+            max_output_tokens: None,
         })
         .await
         .unwrap();

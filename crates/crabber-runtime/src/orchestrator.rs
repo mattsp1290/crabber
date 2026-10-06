@@ -85,6 +85,7 @@ pub struct Request {
     pub text: String,
     pub selection: Selection,
     pub system_prompt: Option<String>,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -108,6 +109,7 @@ impl Request {
             provider_id: self.selection.provider_id.clone(),
             model_id: self.selection.model_id.clone(),
             system_prompt: self.system_prompt.clone(),
+            max_output_tokens: self.max_output_tokens,
         })
     }
     fn from_admission(data: AdmissionRequestData) -> Self {
@@ -122,6 +124,7 @@ impl Request {
                 model_id: data.model_id,
             },
             system_prompt: data.system_prompt,
+            max_output_tokens: data.max_output_tokens,
         }
     }
 }
@@ -215,6 +218,7 @@ pub struct TurnSnapshot {
     pub messages: Vec<Message>,
     pub system: Option<String>,
     pub tools: Vec<ToolInfo>,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -421,6 +425,7 @@ struct CheckpointRequest {
     provider_id: String,
     model_id: String,
     system_prompt: Option<String>,
+    max_output_tokens: Option<u32>,
 }
 impl CheckpointRequest {
     fn new(request: &Request) -> Self {
@@ -432,6 +437,7 @@ impl CheckpointRequest {
             provider_id: request.selection.provider_id.clone(),
             model_id: request.selection.model_id.clone(),
             system_prompt: request.system_prompt.clone(),
+            max_output_tokens: request.max_output_tokens,
         }
     }
     /// `None` when the checkpoint saved no request; a request that does not
@@ -440,8 +446,16 @@ impl CheckpointRequest {
         checkpoint
             .and_then(|checkpoint| checkpoint.get("request"))
             .map(|request| {
-                <Self as serde::Deserialize>::deserialize(request)
-                    .map_err(|_| StoreError::Validation("checkpoint request is invalid".into()))
+                let invalid = || StoreError::Validation("checkpoint request is invalid".into());
+                if request.get("max_output_tokens").is_none() {
+                    return Err(invalid());
+                }
+                let saved =
+                    <Self as serde::Deserialize>::deserialize(request).map_err(|_| invalid())?;
+                if saved.max_output_tokens == Some(0) {
+                    return Err(invalid());
+                }
+                Ok(saved)
             })
             .transpose()
     }
@@ -457,6 +471,7 @@ impl CheckpointRequest {
                 model_id: self.model_id,
             },
             system_prompt: self.system_prompt,
+            max_output_tokens: self.max_output_tokens,
         }
     }
 }
@@ -1684,6 +1699,11 @@ impl Orchestrator {
         &self,
         request: &Request,
     ) -> Result<(RunPlan, AdmitRequest, Value), RuntimeError> {
+        if request.max_output_tokens == Some(0) {
+            return Err(RuntimeError::InvalidConfiguration(
+                "max output tokens must be positive",
+            ));
+        }
         let now = self.clock.now();
         let session_id = request.session_id.clone().unwrap_or_default();
         let plan = self
@@ -1697,6 +1717,7 @@ impl Orchestrator {
             request.selection.provider_id,
             request.selection.model_id,
             request.system_prompt,
+            request.max_output_tokens,
             format!("{:?}", self.execution_mode),
             self.compaction.trigger_ratio,
             self.compaction.keep_tail_messages,
@@ -2274,6 +2295,7 @@ impl Orchestrator {
             selection: request.selection.clone(),
             messages,
             system: (!system.is_empty()).then_some(system),
+            max_output_tokens: request.max_output_tokens,
             tools: plan.tools.iter().map(|tool| tool.info.clone()).collect(),
         })
     }
@@ -2848,7 +2870,7 @@ impl Orchestrator {
             messages: snapshot.messages.clone(),
             tools: snapshot.tools.clone(),
             temperature: None,
-            max_tokens: None,
+            max_tokens: snapshot.max_output_tokens,
             tool_choice: None,
         };
         let calls_to_next = Arc::new(AtomicUsize::new(0));
@@ -2937,7 +2959,7 @@ impl Orchestrator {
         };
         let dispatched = tokio::select! {
             () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
-            dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":null,"tool_choice":null}),terminal) => dispatched,
+            dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),terminal) => dispatched,
         };
         let provider_error = error_slot.lock().unwrap().take();
         if let Some(error) = provider_error {
@@ -3970,6 +3992,32 @@ async fn request_error(
 #[cfg(test)]
 mod recovery_contract_tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_request_requires_present_positive_or_null_cap() {
+        let mut request = json!({"workspace_id":"w","directory":".","title":"t","text":"hi","provider_id":"fake","model_id":"scripted","system_prompt":null});
+        assert!(matches!(
+            CheckpointRequest::from_checkpoint(Some(&json!({"request":request}))),
+            Err(StoreError::Validation(_))
+        ));
+        for cap in [json!(0), Value::Null, json!(4096)] {
+            request["max_output_tokens"] = cap.clone();
+            let saved = CheckpointRequest::from_checkpoint(Some(&json!({"request":request})));
+            if cap == 0 {
+                assert!(matches!(saved, Err(StoreError::Validation(_))));
+            } else {
+                assert_eq!(
+                    saved.unwrap().unwrap().max_output_tokens,
+                    cap.as_u64().map(|v| u32::try_from(v).unwrap())
+                );
+            }
+        }
+        assert!(matches!(
+            CheckpointRequest::from_checkpoint(Some(&json!({"request":"corrupt"}))),
+            Err(StoreError::Validation(_))
+        ));
+    }
+
     use crate::result_transform_tests::{
         ClosureExtension, ECHO, Finished, Harness, ScriptedCall, one_turn,
     };

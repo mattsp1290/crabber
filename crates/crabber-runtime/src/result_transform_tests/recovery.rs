@@ -203,7 +203,7 @@ impl Fixture {
                 .pause_run(
                     json!({"request": {
                         "workspace_id": "test", "directory": ".", "title": "test", "text": "hello",
-                        "provider_id": "fake", "model_id": "scripted", "system_prompt": null
+                        "provider_id": "fake", "model_id": "scripted", "system_prompt": null, "max_output_tokens": null
                     }}),
                     event(EventKind::RunPaused),
                 )

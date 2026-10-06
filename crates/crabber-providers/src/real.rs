@@ -1,21 +1,52 @@
 #![allow(clippy::too_many_lines, clippy::items_after_statements)]
 use crate::{
-    DeltaStream, ModelDescriptor, ModelRequest, ProviderAdapter, ProviderError, ProviderErrorKind,
-    ProviderInfo, Resolver, Selection, StreamDelta, Streamer, sse,
+    DeltaStream, ModelDescriptor, ModelRequest, ProviderAdapter, ProviderError, ProviderInfo,
+    Resolver, Selection, Streamer,
 };
 use async_trait::async_trait;
-use futures::{StreamExt, stream};
 use reqwest::{
-    Client,
+    Client, Response,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde_json::Value;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
+use std::{collections::HashMap, sync::Arc};
+
+#[cfg(feature = "custom-http")]
+mod client;
+#[cfg(feature = "custom-http")]
+mod custom;
+mod errors;
+mod streaming;
+#[cfg(feature = "custom-http")]
+pub use client::{HttpClientConfig, HttpProxyConfig};
+#[cfg(feature = "custom-http")]
+pub use custom::{
+    AuthScheme, ChatTokenField, CredentialSource, CustomHttpAdapter, RequestHeaderHook,
+    ResponseObserver,
 };
+#[cfg(feature = "custom-http")]
+pub use errors::ErrorClassifier;
+use errors::{auth, credentials_from_headers, invalid, response_error, transport_from_reqwest};
+
+const CRABBER_USER_AGENT: &str = "crabber/0.1";
+
+fn user_agent_product_is_valid(product: &str) -> bool {
+    fn part_is_valid(part: &str) -> bool {
+        (1..=64).contains(&part.len())
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+    }
+    let mut parts = product.split('/');
+    let name = parts.next().unwrap_or_default();
+    part_is_valid(name)
+        && !name.eq_ignore_ascii_case("crabber")
+        && parts.next().is_none_or(part_is_valid)
+        && parts.next().is_none()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Wire protocol implemented by an HTTP adapter.
 pub enum Protocol {
     Responses,
     Messages,
@@ -30,33 +61,109 @@ impl Protocol {
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CredentialPlacement {
+    #[cfg_attr(
+        not(any(
+            feature = "custom-http",
+            feature = "openai",
+            feature = "codex",
+            feature = "opencode-go"
+        )),
+        allow(dead_code)
+    )]
+    Bearer,
+    #[cfg_attr(
+        not(any(
+            feature = "custom-http",
+            feature = "anthropic",
+            feature = "opencode-go"
+        )),
+        allow(dead_code)
+    )]
+    XApiKey,
+    #[cfg(feature = "opencode-go")]
+    ProtocolDefault,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdapterKind {
+    #[cfg(feature = "anthropic")]
+    Anthropic,
+    #[cfg(feature = "openai")]
+    OpenAi,
+    #[cfg(feature = "codex")]
+    Codex,
+    #[cfg(feature = "opencode-go")]
+    OpenCode,
+    #[cfg(feature = "custom-http")]
+    Custom,
+}
+
 #[derive(Clone)]
+/// HTTP implementation of Crabber's public provider contracts.
 pub struct HttpAdapter {
-    id: &'static str,
+    id: String,
     base_url: String,
     protocol: Protocol,
+    kind: AdapterKind,
+    credential_placement: CredentialPlacement,
+    #[allow(dead_code)]
+    chat_token_mode: crate::chat::TokenMode,
     key_env: Option<&'static str>,
     key_override: Option<String>,
     client: Client,
+    user_agent: HeaderValue,
     #[cfg(feature = "codex")]
     tokens: Option<Arc<crabber_auth::TokenManager>>,
+    #[cfg(feature = "custom-http")]
+    credential_source: Option<Arc<dyn CredentialSource>>,
+    #[cfg(feature = "custom-http")]
+    static_headers: HeaderMap,
+    #[cfg(feature = "custom-http")]
+    request_header_hook: Option<Arc<dyn RequestHeaderHook>>,
+    #[cfg(feature = "custom-http")]
+    response_observer: Option<Arc<dyn ResponseObserver>>,
+    #[cfg(feature = "custom-http")]
+    error_classifier: Option<Arc<dyn ErrorClassifier>>,
 }
+
 impl HttpAdapter {
     fn new(
-        id: &'static str,
-        base_url: &str,
+        id: impl Into<String>,
+        base_url: impl Into<String>,
         protocol: Protocol,
+        kind: AdapterKind,
         key_env: Option<&'static str>,
+        credential_placement: CredentialPlacement,
     ) -> Self {
         Self {
-            id,
+            id: id.into(),
             base_url: base_url.into(),
             protocol,
+            kind,
+            credential_placement,
+            chat_token_mode: crate::chat::TokenMode::MaxTokens,
             key_env,
             key_override: None,
-            client: Client::new(),
+            user_agent: HeaderValue::from_static(CRABBER_USER_AGENT),
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("default HTTP client configuration must be valid"),
             #[cfg(feature = "codex")]
             tokens: None,
+            #[cfg(feature = "custom-http")]
+            credential_source: None,
+            #[cfg(feature = "custom-http")]
+            static_headers: HeaderMap::new(),
+            #[cfg(feature = "custom-http")]
+            request_header_hook: None,
+            #[cfg(feature = "custom-http")]
+            response_observer: None,
+            #[cfg(feature = "custom-http")]
+            error_classifier: None,
         }
     }
     #[cfg(feature = "anthropic")]
@@ -66,7 +173,9 @@ impl HttpAdapter {
             "anthropic",
             "https://api.anthropic.com/v1",
             Protocol::Messages,
+            AdapterKind::Anthropic,
             Some("ANTHROPIC_API_KEY"),
+            CredentialPlacement::XApiKey,
         )
     }
     #[cfg(feature = "openai")]
@@ -76,7 +185,9 @@ impl HttpAdapter {
             "openai",
             "https://api.openai.com/v1",
             Protocol::Responses,
+            AdapterKind::OpenAi,
             Some("OPENAI_API_KEY"),
+            CredentialPlacement::Bearer,
         )
     }
     #[cfg(feature = "opencode-go")]
@@ -86,7 +197,9 @@ impl HttpAdapter {
             "opencode-go",
             "https://opencode.ai/zen/go/v1",
             protocol,
+            AdapterKind::OpenCode,
             Some("OPENCODE_GO_API_KEY"),
+            CredentialPlacement::ProtocolDefault,
         )
     }
     #[cfg(feature = "codex")]
@@ -95,10 +208,35 @@ impl HttpAdapter {
             "codex",
             "https://api.openai.com/v1",
             Protocol::Responses,
+            AdapterKind::Codex,
             None,
+            CredentialPlacement::Bearer,
         );
         adapter.tokens = Some(Arc::new(crabber_auth::TokenManager::new(store)));
         adapter
+    }
+    #[cfg(feature = "custom-http")]
+    #[must_use]
+    /// Creates a host-configured adapter without fetching credentials or
+    /// contacting the network.
+    ///
+    /// Custom adapters return an empty model catalog and do not mint gateway
+    /// tokens; discovery and token minting remain host-owned.
+    pub fn custom(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        protocol: Protocol,
+    ) -> CustomHttpAdapter {
+        CustomHttpAdapter {
+            inner: Self::new(
+                id,
+                base_url,
+                protocol,
+                AdapterKind::Custom,
+                None,
+                CredentialPlacement::Bearer,
+            ),
+        }
     }
     /// Override the base URL for a compatible proxy or local fixture server.
     #[must_use]
@@ -109,7 +247,49 @@ impl HttpAdapter {
     #[must_use]
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.key_override = Some(key.into());
+        #[cfg(feature = "custom-http")]
+        {
+            self.credential_source = None;
+        }
         self
+    }
+    /// Prepends one host product (`name` or `name/version`) to `crabber/0.1`.
+    /// Each part must contain 1–64 ASCII HTTP token bytes. Replaces any earlier
+    /// host product; the product name `crabber` is reserved (case insensitive).
+    /// # Errors
+    /// Returns a sanitized invalid-provider error when the product is invalid.
+    pub fn try_with_user_agent_product(
+        mut self,
+        product: impl AsRef<str>,
+    ) -> Result<Self, ProviderError> {
+        let product = product.as_ref();
+        if !user_agent_product_is_valid(product) {
+            return Err(invalid());
+        }
+        self.user_agent = HeaderValue::from_str(&format!("{product} {CRABBER_USER_AGENT}"))
+            .map_err(|_| invalid())?;
+        Ok(self)
+    }
+    #[cfg(feature = "codex")]
+    fn uses_codex_responses_mode(&self) -> bool {
+        self.kind == AdapterKind::Codex
+    }
+    #[cfg(not(feature = "codex"))]
+    fn uses_codex_responses_mode(&self) -> bool {
+        let _ = self.kind;
+        false
+    }
+    #[cfg(feature = "opencode-go")]
+    fn uses_opencode_models(&self) -> bool {
+        self.kind == AdapterKind::OpenCode
+    }
+    #[cfg(not(feature = "opencode-go"))]
+    fn uses_opencode_models(&self) -> bool {
+        let _ = self.kind;
+        false
+    }
+    fn uses_opencode_session(&self) -> bool {
+        self.uses_opencode_models()
     }
     fn api_key(&self) -> Result<String, ProviderError> {
         if let Some(key) = &self.key_override {
@@ -123,10 +303,22 @@ impl HttpAdapter {
             .filter(|v| !v.is_empty())
             .ok_or_else(auth)
     }
+    #[allow(
+        clippy::redundant_else,
+        clippy::unused_async,
+        clippy::unused_async_trait_impl
+    )]
     async fn headers(&self, request: &ModelRequest) -> Result<HeaderMap, ProviderError> {
+        #[cfg(feature = "custom-http")]
+        if self.kind == AdapterKind::Custom {
+            return self
+                .custom_headers(request)
+                .await
+                .map(|(headers, _)| headers);
+        }
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", HeaderValue::from_static("crabber/0.1"));
-        if self.id == "codex" {
+        headers.insert("user-agent", self.user_agent.clone());
+        if self.uses_codex_responses_mode() {
             #[cfg(feature = "codex")]
             {
                 let tokens = self.tokens.as_ref().ok_or_else(auth)?;
@@ -145,16 +337,28 @@ impl HttpAdapter {
             }
         } else {
             let key = self.api_key()?;
-            if self.protocol == Protocol::Messages {
-                insert(&mut headers, "x-api-key", &key)?;
-            } else {
-                insert(&mut headers, "authorization", &format!("Bearer {key}"))?;
+            let placement = match self.credential_placement {
+                #[cfg(feature = "opencode-go")]
+                CredentialPlacement::ProtocolDefault if self.protocol == Protocol::Messages => {
+                    CredentialPlacement::XApiKey
+                }
+                #[cfg(feature = "opencode-go")]
+                CredentialPlacement::ProtocolDefault => CredentialPlacement::Bearer,
+                placement => placement,
+            };
+            match placement {
+                CredentialPlacement::XApiKey => insert(&mut headers, "x-api-key", &key)?,
+                CredentialPlacement::Bearer => {
+                    insert(&mut headers, "authorization", &format!("Bearer {key}"))?;
+                }
+                #[cfg(feature = "opencode-go")]
+                CredentialPlacement::ProtocolDefault => unreachable!(),
             }
         }
         if self.protocol == Protocol::Messages {
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         }
-        if self.id == "opencode-go" {
+        if self.uses_opencode_session() {
             let session = &request.identity.session_id.0;
             if session.len() <= 256 && session.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
                 insert(&mut headers, "x-opencode-session", session)?;
@@ -162,28 +366,75 @@ impl HttpAdapter {
         }
         Ok(headers)
     }
-    async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
-        let headers = self.headers(&request).await?;
-        let body = match self.protocol {
-            Protocol::Responses => crate::responses::body(&request, self.id == "codex"),
-            Protocol::Messages => crate::messages::body(&request),
-            Protocol::ChatCompletions => crate::chat::body(&request),
-        };
-        let url = format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            self.protocol.path()
-        );
-        let mut response = self
-            .client
-            .post(&url)
-            .headers(headers.clone())
-            .json(&body)
+    async fn post(
+        &self,
+        url: &reqwest::Url,
+        headers: HeaderMap,
+        body: &Value,
+    ) -> Result<Response, ProviderError> {
+        self.client
+            .post(url.clone())
+            .headers(headers)
+            .json(body)
             .send()
             .await
-            .map_err(|_| transport())?;
+            .map_err(|error| transport_from_reqwest(&error))
+    }
+
+    async fn send(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        let url = endpoint_url(&self.base_url, self.protocol)?;
+        #[cfg(feature = "custom-http")]
+        let (headers, custom_credential) = if self.kind == AdapterKind::Custom {
+            let (headers, credential) = self.custom_headers(&request).await?;
+            (headers, Some(credential))
+        } else {
+            (self.headers(&request).await?, None)
+        };
+        #[cfg(not(feature = "custom-http"))]
+        let headers = self.headers(&request).await?;
+        #[allow(unused_mut)]
+        let mut attempt_credentials = credentials_from_headers(&headers);
+        #[cfg(feature = "custom-http")]
+        if let Some(credential) = &custom_credential {
+            attempt_credentials.push(credential.clone());
+        }
+        let body = match self.protocol {
+            Protocol::Responses => {
+                crate::responses::body(&request, self.uses_codex_responses_mode())
+            }
+            Protocol::Messages => crate::messages::body(&request),
+            Protocol::ChatCompletions => crate::chat::body(&request, self.chat_token_mode),
+        };
+        #[allow(unused_mut)]
+        let mut response = self.post(&url, headers.clone(), &body).await?;
+        #[cfg(feature = "custom-http")]
+        if self.kind == AdapterKind::Custom {
+            if let Some(observer) = &self.response_observer {
+                observer.observe(response.status(), response.headers());
+            }
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                && self.credential_source.is_some()
+            {
+                let stale = custom_credential.as_deref().ok_or_else(auth)?;
+                let source = self.credential_source.as_ref().ok_or_else(auth)?;
+                drop(response);
+                source.invalidate(stale).await;
+                let (retry_headers, retry_credential) = self.custom_headers(&request).await?;
+                attempt_credentials.extend(credentials_from_headers(&retry_headers));
+                attempt_credentials.push(retry_credential);
+                response = self.post(&url, retry_headers, &body).await?;
+                if let Some(observer) = &self.response_observer {
+                    observer.observe(response.status(), response.headers());
+                }
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    return Err(response_error(response, None, true, &attempt_credentials).await);
+                }
+            }
+        }
         #[cfg(feature = "codex")]
-        if self.id == "codex" && response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        if self.uses_codex_responses_mode()
+            && response.status() == reqwest::StatusCode::UNAUTHORIZED
+        {
             let previous = headers
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
@@ -195,121 +446,20 @@ impl HttpAdapter {
                 .force_refresh(previous)
                 .await
                 .map_err(|_| auth())?;
-            response = self
-                .client
-                .post(&url)
-                .headers(self.headers(&request).await?)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|_| transport())?;
+            let retry_headers = self.headers(&request).await?;
+            attempt_credentials.extend(credentials_from_headers(&retry_headers));
+            response = self.post(&url, retry_headers, &body).await?;
         }
         if !response.status().is_success() {
-            return Err(status_error(response.status()));
+            #[cfg(feature = "custom-http")]
+            let classifier = (self.kind == AdapterKind::Custom)
+                .then_some(self.error_classifier.as_deref())
+                .flatten();
+            #[cfg(not(feature = "custom-http"))]
+            let classifier = None;
+            return Err(response_error(response, classifier, false, &attempt_credentials).await);
         }
-        let codec = match self.protocol {
-            Protocol::Responses => {
-                Codec::Responses(crate::responses::Codec::new(self.id == "codex"))
-            }
-            Protocol::Messages => Codec::Messages(crate::messages::Codec::default()),
-            Protocol::ChatCompletions => Codec::Chat(crate::chat::Codec::default()),
-        };
-        struct State {
-            bytes: futures::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>>,
-            parser: sse::Parser,
-            codec: Codec,
-            queue: VecDeque<StreamDelta>,
-            complete: bool,
-            ended: bool,
-        }
-        let state = State {
-            bytes: Box::pin(response.bytes_stream()),
-            parser: sse::Parser::default(),
-            codec,
-            queue: VecDeque::new(),
-            complete: false,
-            ended: false,
-        };
-        Ok(Box::pin(stream::unfold(state, |mut state| async move {
-            loop {
-                if let Some(item) = state.queue.pop_front() {
-                    return Some((item, state));
-                }
-                if state.ended {
-                    return None;
-                }
-                match state.bytes.next().await {
-                    Some(Ok(chunk)) => {
-                        let result = state
-                            .parser
-                            .push(&chunk)
-                            .and_then(|events| decode_events(&mut state.codec, events));
-                        match result {
-                            Ok(items) => {
-                                for item in items {
-                                    if matches!(item, StreamDelta::Completed) {
-                                        state.complete = true;
-                                    }
-                                    state.queue.push_back(item);
-                                }
-                            }
-                            Err(error) => {
-                                state.queue.push_back(StreamDelta::Error(error));
-                                state.ended = true;
-                            }
-                        }
-                    }
-                    Some(Err(_)) => {
-                        state.queue.push_back(StreamDelta::Error(transport()));
-                        state.ended = true;
-                    }
-                    None => {
-                        let result = state
-                            .parser
-                            .finish()
-                            .and_then(|events| decode_events(&mut state.codec, events));
-                        if let Ok(items) = result {
-                            for item in items {
-                                if matches!(item, StreamDelta::Completed) {
-                                    state.complete = true;
-                                }
-                                state.queue.push_back(item);
-                            }
-                        } else {
-                            state.queue.push_back(StreamDelta::Error(transport()));
-                        }
-                        if !state.complete && state.queue.is_empty() {
-                            state.queue.push_back(StreamDelta::Error(transport()));
-                        }
-                        state.ended = true;
-                    }
-                }
-            }
-        })))
-    }
-}
-fn decode_events(
-    codec: &mut Codec,
-    events: Vec<sse::Event>,
-) -> Result<Vec<StreamDelta>, ProviderError> {
-    let mut out = Vec::new();
-    for event in events {
-        out.extend(codec.event(&event)?);
-    }
-    Ok(out)
-}
-enum Codec {
-    Responses(crate::responses::Codec),
-    Messages(crate::messages::Codec),
-    Chat(crate::chat::Codec),
-}
-impl Codec {
-    fn event(&mut self, event: &sse::Event) -> Result<Vec<StreamDelta>, ProviderError> {
-        match self {
-            Self::Responses(c) => c.event(event),
-            Self::Messages(c) => c.event(event),
-            Self::Chat(c) => c.event(event),
-        }
+        Ok(self.response_stream(response))
     }
 }
 fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ProviderError> {
@@ -319,42 +469,36 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<()
     );
     Ok(())
 }
-fn auth() -> ProviderError {
-    ProviderError {
-        kind: ProviderErrorKind::Auth,
-        message: "credentials unavailable".into(),
-        retryable: false,
-    }
+#[cfg(feature = "custom-http")]
+fn is_protected_static_header(name: &HeaderName) -> bool {
+    [
+        HeaderName::from_static("authorization"),
+        HeaderName::from_static("x-api-key"),
+        HeaderName::from_static("content-type"),
+        HeaderName::from_static("user-agent"),
+        HeaderName::from_static("anthropic-version"),
+    ]
+    .contains(name)
 }
-fn invalid() -> ProviderError {
-    ProviderError {
-        kind: ProviderErrorKind::Invalid,
-        message: "invalid provider setting".into(),
-        retryable: false,
+fn endpoint_url(base_url: &str, protocol: Protocol) -> Result<reqwest::Url, ProviderError> {
+    fn validate(url: &str) -> Result<reqwest::Url, ProviderError> {
+        let url = reqwest::Url::parse(url).map_err(|_| invalid())?;
+        if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
+            return Err(invalid());
+        }
+        Ok(url)
     }
-}
-fn transport() -> ProviderError {
-    ProviderError {
-        kind: ProviderErrorKind::Transport,
-        message: "provider stream interrupted".into(),
-        retryable: true,
+
+    let base = validate(base_url)?;
+    if base.query().is_some() || base.fragment().is_some() {
+        return Err(invalid());
     }
-}
-fn status_error(status: reqwest::StatusCode) -> ProviderError {
-    let kind = match status.as_u16() {
-        401 | 403 => ProviderErrorKind::Auth,
-        429 => ProviderErrorKind::RateLimited,
-        500..=599 => ProviderErrorKind::Server,
-        _ => ProviderErrorKind::Invalid,
-    };
-    ProviderError {
-        retryable: matches!(
-            kind,
-            ProviderErrorKind::RateLimited | ProviderErrorKind::Server
-        ),
-        kind,
-        message: format!("provider HTTP {}", status.as_u16()),
-    }
+    let assembled = format!(
+        "{}{path}",
+        base_url.trim_end_matches('/'),
+        path = protocol.path()
+    );
+    validate(&assembled)
 }
 #[async_trait]
 impl Streamer for HttpAdapter {
@@ -366,33 +510,39 @@ impl Streamer for HttpAdapter {
 impl ProviderAdapter for HttpAdapter {
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
-            id: self.id.into(),
-            name: self.id.into(),
+            id: self.id.clone(),
+            name: self.id.clone(),
         }
     }
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError> {
-        if self.id != "opencode-go" {
+        if !self.uses_opencode_models() {
             return Ok(Vec::new());
         }
         let key = self.api_key()?;
+        let credentials = vec![key.clone(), format!("Bearer {key}")];
         let response = self
             .client
             .get(format!("{}/models", self.base_url.trim_end_matches('/')))
             .bearer_auth(key)
+            .header("user-agent", self.user_agent.clone())
             .send()
             .await
-            .map_err(|_| transport())?;
+            .map_err(|error| transport_from_reqwest(&error))?;
         if !response.status().is_success() {
-            return Err(status_error(response.status()));
+            return Err(response_error(response, None, false, &credentials).await);
         }
-        let envelope: Value = response.json().await.map_err(|_| invalid())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| transport_from_reqwest(&error))?;
+        let envelope: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         Ok(envelope["data"]
             .as_array()
             .ok_or_else(invalid)?
             .iter()
             .filter_map(|m| m["id"].as_str())
             .map(|id| ModelDescriptor {
-                provider_id: self.id.into(),
+                provider_id: self.id.clone(),
                 id: id.into(),
                 context_limit: 0,
             })
@@ -405,7 +555,9 @@ impl ProviderAdapter for HttpAdapter {
         Ok(Arc::new(self.clone()))
     }
 }
+
 #[derive(Default)]
+/// Provider resolver populated with HTTP adapters by provider id.
 pub struct HttpResolver {
     adapters: HashMap<String, HttpAdapter>,
 }
@@ -415,12 +567,15 @@ impl HttpResolver {
         Self::default()
     }
     #[must_use]
-    pub fn with_adapter(mut self, adapter: HttpAdapter) -> Self {
-        self.adapters.insert(adapter.id.into(), adapter);
+    /// Registers an adapter. Registration performs no credential or network I/O.
+    pub fn with_adapter(mut self, adapter: impl Into<HttpAdapter>) -> Self {
+        let adapter = adapter.into();
+        self.adapters.insert(adapter.id.clone(), adapter);
         self
     }
     #[must_use]
     pub fn from_env() -> Self {
+        #[allow(unused_mut)]
         let mut resolver = Self::new();
         #[cfg(feature = "anthropic")]
         {
@@ -457,86 +612,8 @@ impl Resolver for HttpResolver {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::RequestIdentity;
-    use crabber_core::{RunId, SessionId, TurnId};
-    fn request(provider: &str) -> ModelRequest {
-        ModelRequest {
-            identity: RequestIdentity {
-                session_id: SessionId::from("session-1"),
-                run_id: RunId::from("run-1"),
-                turn_id: TurnId::from("turn-1"),
-            },
-            selection: Selection {
-                provider_id: provider.into(),
-                model_id: "model".into(),
-            },
-            system: None,
-            messages: vec![],
-            tools: vec![],
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-        }
-    }
-    #[cfg(feature = "opencode-go")]
-    #[tokio::test]
-    async fn opencode_headers_follow_protocol() {
-        let req = request("opencode-go");
-        for protocol in [
-            Protocol::Responses,
-            Protocol::ChatCompletions,
-            Protocol::Messages,
-        ] {
-            let headers = HttpAdapter::opencode_go(protocol)
-                .with_api_key("test-key")
-                .headers(&req)
-                .await
-                .unwrap();
-            assert_eq!(headers["x-opencode-session"], "session-1");
-            if protocol == Protocol::Messages {
-                assert_eq!(headers["x-api-key"], "test-key");
-                assert_eq!(headers["anthropic-version"], "2023-06-01");
-                assert!(!headers.contains_key("authorization"));
-            } else {
-                assert_eq!(headers["authorization"], "Bearer test-key");
-                assert!(!headers.contains_key("x-api-key"));
-            }
-        }
-        let mut invalid = req.clone();
-        invalid.identity.session_id = SessionId::from("session with spaces");
-        let headers = HttpAdapter::opencode_go(Protocol::Responses)
-            .with_api_key("test-key")
-            .headers(&invalid)
-            .await
-            .unwrap();
-        assert!(!headers.contains_key("x-opencode-session"));
-    }
-    #[cfg(feature = "codex")]
-    #[tokio::test]
-    async fn codex_headers_have_exact_session_and_originator() {
-        use crabber_auth::{CredentialStore, MemoryCredentialStore, OAuthCredentials, now_ms};
-        let store: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
-        store
-            .save(&OAuthCredentials {
-                client_id: "client".into(),
-                host_id: "host".into(),
-                account_id: "account".into(),
-                access_token: "test-token".into(),
-                refresh_token: "refresh".into(),
-                id_token: "id".into(),
-                scopes: vec!["chatgpt.tokens.use.direct".into()],
-                expires_unix_ms: now_ms() + 3_600_000,
-            })
-            .unwrap();
-        let headers = HttpAdapter::codex(store)
-            .headers(&request("codex"))
-            .await
-            .unwrap();
-        assert_eq!(headers["authorization"], "Bearer test-token");
-        assert_eq!(headers["originator"], "advisor");
-        assert_eq!(headers["session_id"], "session-1");
-    }
-}
+#[cfg(all(
+    test,
+    any(feature = "custom-http", feature = "codex", feature = "opencode-go")
+))]
+mod tests;

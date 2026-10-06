@@ -39,10 +39,11 @@ pub struct AdmissionRequestData {
     pub provider_id: String,
     pub model_id: String,
     pub system_prompt: Option<String>,
+    pub max_output_tokens: Option<u32>,
 }
 
 /// Version 1 runtime semantics are the existing admission.v1 ordered array:
-/// domain, provider, model, system, execution mode, compaction ratio/tail,
+/// domain, provider, model, system, output cap, execution mode, compaction ratio/tail,
 /// turn limit, tools, prompts, restrictions, components, guards, providers.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdmissionExecutionCapsule {
@@ -111,11 +112,12 @@ impl AdmissionExecutionCapsule {
             || self.semantic_digest != keyed.semantic_digest()?
             || admission_config_hash(&self.runtime_semantics) != self.config_hash
             || !semantics.is_some_and(|s| {
-                s.len() == 14
+                s.len() == 15
                     && s[0] == "crabber.runtime.admission.v1"
                     && s[1] == data.provider_id
                     && s[2] == data.model_id
                     && s[3] == serde_json::json!(data.system_prompt)
+                    && s[4] == serde_json::json!(data.max_output_tokens)
             })
         {
             return Err(StoreError::AdmissionConflict);

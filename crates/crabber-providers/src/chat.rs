@@ -3,7 +3,14 @@ use crabber_core::{ContentBlock, Role, ToolCallId, Usage};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-pub fn body(request: &ModelRequest) -> Value {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenMode {
+    MaxTokens,
+    #[cfg(feature = "custom-http")]
+    MaxCompletionTokens,
+}
+
+pub fn body(request: &ModelRequest, token_mode: TokenMode) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = &request.system {
         messages.push(json!({"role":"system","content":system}));
@@ -31,15 +38,24 @@ pub fn body(request: &ModelRequest) -> Value {
         }
     }
     let tools: Vec<_> = request.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect();
-    let mut body = json!({"model":request.selection.model_id,"messages":messages,"tools":tools,"stream":true,"stream_options":{"include_usage":true}});
+    let mut body = json!({"model":request.selection.model_id,"messages":messages,"stream":true,"stream_options":{"include_usage":true}});
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+        if let Some(tool_choice) = &request.tool_choice {
+            body["tool_choice"] = json!(tool_choice);
+        }
+    }
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
     if let Some(max_tokens) = request.max_tokens {
-        body["max_tokens"] = json!(max_tokens);
-    }
-    if let Some(tool_choice) = &request.tool_choice {
-        body["tool_choice"] = json!(tool_choice);
+        match token_mode {
+            TokenMode::MaxTokens => body["max_tokens"] = json!(max_tokens),
+            #[cfg(feature = "custom-http")]
+            TokenMode::MaxCompletionTokens => {
+                body["max_completion_tokens"] = json!(max_tokens);
+            }
+        }
     }
     body
 }
@@ -98,5 +114,86 @@ impl Codec {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RequestIdentity, Selection};
+    use crabber_core::{RunId, SessionId, ToolInfo, TurnId};
+
+    fn request() -> ModelRequest {
+        ModelRequest {
+            identity: RequestIdentity {
+                session_id: SessionId::from("session"),
+                run_id: RunId::from("run"),
+                turn_id: TurnId::from("turn"),
+            },
+            selection: Selection {
+                provider_id: "custom".into(),
+                model_id: "model".into(),
+            },
+            system: None,
+            messages: vec![],
+            tools: vec![],
+            temperature: None,
+            max_tokens: None,
+            tool_choice: Some("required".into()),
+        }
+    }
+
+    #[test]
+    fn empty_tools_omit_tools_and_tool_choice() {
+        let value = body(&request(), TokenMode::MaxTokens);
+        assert!(value.get("tools").is_none());
+        assert!(value.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn nonempty_tools_preserve_schema_and_optional_choice() {
+        let mut request = request();
+        request.tools.push(ToolInfo {
+            name: "echo".into(),
+            description: "Echo input".into(),
+            parameters: json!({"type":"object"}),
+            retry_safe: true,
+            required_permissions: vec![],
+        });
+        let value = body(&request, TokenMode::MaxTokens);
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["function"]["name"], "echo");
+        assert_eq!(value["tool_choice"], "required");
+
+        request.tool_choice = None;
+        assert!(
+            body(&request, TokenMode::MaxTokens)
+                .get("tool_choice")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn max_tokens_mode_emits_only_max_tokens() {
+        let mut request = request();
+        request.max_tokens = Some(42);
+        let value = body(&request, TokenMode::MaxTokens);
+        assert_eq!(value["max_tokens"], 42);
+        assert!(value.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "custom-http")]
+    fn max_completion_tokens_mode_and_none_are_exact() {
+        let mut request = request();
+        request.max_tokens = Some(42);
+        let value = body(&request, TokenMode::MaxCompletionTokens);
+        assert_eq!(value["max_completion_tokens"], 42);
+        assert!(value.get("max_tokens").is_none());
+
+        request.max_tokens = None;
+        let value = body(&request, TokenMode::MaxCompletionTokens);
+        assert!(value.get("max_completion_tokens").is_none());
+        assert!(value.get("max_tokens").is_none());
     }
 }
