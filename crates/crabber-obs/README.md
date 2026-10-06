@@ -145,3 +145,34 @@ the worker. Cancellation unwinds the worker and records remaining observations
 as dropped, then reports `WorkerStatus::Stopped`. This guarantees eventual
 termination even with offline/slow intake, once the async runtime schedules
 cancellation. Health remains readable after shutdown; later emits are rejected.
+
+## Public HTTP transport for hosts without native lineage
+
+Set `config.llmobs_transport = LlmObsTransport::PublicV1` to export spans to
+`https://api.{DD_SITE}/api/intake/llm-obs/v1/trace/spans`, using the
+[documented LLM Observability HTTP API](https://docs.datadoghq.com/llm_observability/instrument/api/).
+The request contains `data.type = "span"` and `data.attributes` with `ml_app`,
+`spans`, and sanitized configured tags. Public spans carry explicit
+`apm_trace_id` only when a host supplied correlation context. Native SDK fields
+are excluded from this wire format. An observation with native `span_links`
+fails with `ExportError::UnsupportedSpanLinks`; choose `NativeV2` for that host.
+The existing `NativeV2` default and native link transport are preserved.
+
+Configured tags now propagate to duration distributions as well as lifecycle
+counters, logs, and spans, using the same sanitization and 120-character bound.
+
+On 2026-10-06 UTC, the crabber-channels disposable consumer verified a real
+`opencode-go` / `deepseek-v4-flash` run through `PublicV1` on the local
+`fix/channels-telemetry-gate` branch. A marker query through authenticated pup
+returned agent, workflow, and LLM spans, one `crabber.model.elapsed_ms` metric
+series, and two runtime logs. Native v2 intake acknowledged the comparison
+probes but marker searches stayed empty; this does not establish native intake
+visibility. No prompt or completion capture was enabled.
+
+Validation: all 24 observability crate tests pass, including public wire shape,
+APM mapping, refusal of unsupported native links, payload split preservation,
+and configured tags on every distribution. Clippy passes with the existing
+`crabber-session` `duration_suboptimal_units` warning allowed. The default
+workspace gate was attempted but is blocked by the pinned Wasmtime 49.0.1
+requiring Rust 1.96 while the installed stable toolchain is 1.95; this local
+telemetry change does not update that unrelated dependency or suppress it.
