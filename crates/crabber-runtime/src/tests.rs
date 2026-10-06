@@ -1249,6 +1249,7 @@ fn request() -> Request {
             model_id: "scripted".into(),
         },
         system_prompt: None,
+        max_output_tokens: None,
     }
 }
 
@@ -3026,4 +3027,28 @@ async fn pipeline_cleanup_is_joined_by_the_host_owner() {
     owner.join(std::time::Duration::from_secs(1)).await.unwrap();
     completed.notified().await;
     assert_eq!(owner.tracker().pending(), 0);
+}
+
+#[tokio::test]
+async fn zero_output_cap_is_rejected_before_admission() {
+    let store = Arc::new(MemoryStore::new());
+    let runtime = Orchestrator::builder()
+        .store(store.clone())
+        .resolver(Arc::new(FakeProvider::scripted(vec![])))
+        .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
+        .build()
+        .unwrap();
+    let mut input = request();
+    let session = SessionId::new();
+    input.session_id = Some(session.clone());
+    input.max_output_tokens = Some(0);
+    assert!(matches!(
+        runtime.start(input).await,
+        Err(RuntimeError::InvalidConfiguration(_))
+    ));
+    assert_eq!(store.get_session(&session).await.unwrap(), None);
+    assert_eq!(
+        store.list_unfinished_runs().await.unwrap(),
+        Vec::<Run>::new()
+    );
 }

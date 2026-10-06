@@ -1405,6 +1405,7 @@ mod tests {
                         model_id: "scripted".into(),
                     },
                     system_prompt: None,
+                    max_output_tokens: None,
                 })
                 .await
                 .unwrap();

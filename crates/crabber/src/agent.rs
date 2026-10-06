@@ -25,6 +25,7 @@ pub struct AgentConfig {
     pub directory: String,
     pub title: String,
     pub system_prompt: Option<String>,
+    pub max_output_tokens: Option<u32>,
 }
 
 impl AgentConfig {
@@ -36,7 +37,14 @@ impl AgentConfig {
             directory: ".".into(),
             title: "Crabber session".into(),
             system_prompt: None,
+            max_output_tokens: None,
         }
+    }
+    /// Caps output tokens for every model turn; model-stream around hooks may override it.
+    #[must_use]
+    pub fn max_output_tokens(mut self, cap: u32) -> Self {
+        self.max_output_tokens = Some(cap);
+        self
     }
 }
 
@@ -46,6 +54,8 @@ pub enum BuildError {
     NoProvider,
     #[error("an agent needs a configuration")]
     NoConfig,
+    #[error("invalid agent configuration: {0}")]
+    InvalidConfig(&'static str),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
 }
@@ -208,6 +218,11 @@ impl AgentBuilder {
     pub fn build(self) -> Result<Agent, BuildError> {
         let resolver = self.resolver.ok_or(BuildError::NoProvider)?;
         let config = self.config.ok_or(BuildError::NoConfig)?;
+        if config.max_output_tokens == Some(0) {
+            return Err(BuildError::InvalidConfig(
+                "max_output_tokens must be positive",
+            ));
+        }
         let (events, _) = broadcast::channel(256);
         #[cfg(feature = "datadog")]
         let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
@@ -592,6 +607,7 @@ impl Agent {
             title: self.config.title.clone(),
             selection: self.config.selection.clone(),
             system_prompt: self.config.system_prompt.clone(),
+            max_output_tokens: self.config.max_output_tokens,
         }
     }
 

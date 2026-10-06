@@ -571,6 +571,7 @@ async fn lease() -> Vec<OperationalObservation> {
             text: "SECRET prompt".into(),
             selection: selection(),
             system_prompt: None,
+            max_output_tokens: None,
         })
         .await
         .unwrap();

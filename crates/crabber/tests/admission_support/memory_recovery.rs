@@ -525,13 +525,14 @@ async fn semantic_drift_conflicts_before_claim_and_after_terminal_replay() {
         if terminal {
             complete(&host(store.clone(), provider.clone()), &session).await;
         }
-        for change in 0..10 {
+        for change in 0..11 {
             let mut cfg = config();
             let mut text = "hello";
             let mut opts = options();
             match change {
                 0 => text = "changed",
                 1 => cfg.system_prompt = Some("changed".into()),
+                10 => cfg.max_output_tokens = Some(4096),
                 2 => cfg.selection.model_id = "changed".into(),
                 3 => cfg.selection.provider_id = "changed".into(),
                 4 => cfg.title = "changed".into(),

@@ -92,6 +92,7 @@ fn request() -> Request {
             model_id: "scripted".into(),
         },
         system_prompt: Some("base".into()),
+        max_output_tokens: None,
     }
 }
 
