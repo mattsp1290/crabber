@@ -1818,3 +1818,82 @@ async fn custom_adapter_carries_host_product_token() {
     assert_eq!(values(&headers, "user-agent"), ["host/1 crabber/0.1"]);
     assert_eq!(values(&headers, "x-host"), ["harmless"]);
 }
+#[tokio::test]
+async fn second_dynamic_401_body_failures_remain_terminal_auth() {
+    struct PanicClassifier;
+    impl ErrorClassifier for PanicClassifier {
+        fn classify(&self, _: StatusCode, _: &str) -> (ProviderErrorKind, bool) {
+            panic!("second 401 must override the classifier")
+        }
+    }
+    for scheme in [AuthScheme::Bearer, AuthScheme::XApiKey] {
+        for stalled_body in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let mut captured = Vec::new();
+                for attempt in 0..2 {
+                    let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    captured.push(read_request(&mut socket).await.0);
+                    let response = if attempt == 0 {
+                        raw_response("401 Unauthorized", 0, b"")
+                    } else {
+                        raw_response("401 Unauthorized", 100, b"old new cut")
+                    };
+                    socket.write_all(&response).await.unwrap();
+                    if attempt == 1 && stalled_body {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+                captured
+            });
+            let source = Arc::new(SequenceSource::new(["old", "new"]));
+            let hook = Arc::new(SequenceHook {
+                values: Mutex::new([Ok(HeaderMap::new()), Ok(HeaderMap::new())].into()),
+                calls: AtomicUsize::new(0),
+            });
+            let observer = Arc::new(Observer::default());
+            let adapter = HttpAdapter::custom("custom", url, Protocol::Messages)
+                .with_auth_scheme(scheme)
+                .with_credential_source(source.clone())
+                .with_request_header_hook(hook.clone())
+                .with_response_observer(observer.clone())
+                .with_error_classifier(Arc::new(PanicClassifier))
+                .try_with_client_config(
+                    HttpClientConfig::new().read_timeout(Duration::from_millis(50)),
+                )
+                .unwrap();
+            let error = timeout(LOOPBACK_TIMEOUT, adapter.stream(request("custom")))
+                .await
+                .unwrap()
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, ProviderErrorKind::Auth);
+            assert!(!error.retryable);
+            assert_eq!(
+                error.message,
+                "provider HTTP 401: response body unavailable"
+            );
+            let captured = timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+            assert_eq!(captured.len(), 2);
+            assert_eq!(source.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(*source.invalidated.lock().unwrap(), ["old"]);
+            assert_eq!(hook.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                *observer.0.lock().unwrap(),
+                [StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED]
+            );
+            for (headers, key) in captured.iter().zip(["old", "new"]) {
+                match scheme {
+                    AuthScheme::Bearer => {
+                        assert_eq!(values(headers, "authorization"), [format!("Bearer {key}")]);
+                    }
+                    AuthScheme::XApiKey => assert_eq!(values(headers, "x-api-key"), [key]),
+                }
+            }
+        }
+    }
+}

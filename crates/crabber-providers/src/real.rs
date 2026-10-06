@@ -1158,7 +1158,19 @@ async fn response_error(
                 let remaining = ERROR_EXCERPT_MAX_BYTES - source.len();
                 source.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
             }
-            Some(Err(error)) => return transport_from_reqwest(&error),
+            Some(Err(error)) => {
+                if force_auth {
+                    return ProviderError {
+                        kind: ProviderErrorKind::Auth,
+                        message: format!(
+                            "provider HTTP {}: response body unavailable",
+                            status.as_u16()
+                        ),
+                        retryable: false,
+                    };
+                }
+                return transport_from_reqwest(&error);
+            }
             None => break,
         }
     }
