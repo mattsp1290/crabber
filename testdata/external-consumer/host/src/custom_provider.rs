@@ -94,6 +94,7 @@ pub fn run() -> Result<(), ProviderError> {
         "https://example.invalid/v1",
         Protocol::ChatCompletions,
     )
+    .try_with_user_agent_product("external-consumer/0.1")?
     .with_credential_source(Arc::new(SyntheticCredentialSource))
     .try_with_static_headers(static_headers)?
     .with_request_header_hook(Arc::new(SyntheticHeaderHook))

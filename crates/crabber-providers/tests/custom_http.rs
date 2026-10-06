@@ -1767,3 +1767,54 @@ async fn built_in_opencode_chat_wire_body_is_tool_free_and_caps_max_tokens() {
     assert_eq!(values(&headers, "user-agent"), ["crabber/0.1"]);
     assert_eq!(values(&headers, "x-api-key"), Vec::<String>::new());
 }
+
+#[cfg(feature = "opencode-go")]
+#[tokio::test]
+async fn built_in_opencode_chat_wire_carries_host_product_token() {
+    let completed = b"data: [DONE]\n\n";
+    let server = RawServer::start(raw_response("200 OK", completed.len(), completed)).await;
+    let adapter = HttpAdapter::opencode_go(Protocol::ChatCompletions)
+        .with_base_url(&server.url)
+        .with_api_key("key")
+        .try_with_user_agent_product("crabber-channels/0.1.0")
+        .unwrap();
+    let deltas = adapter
+        .stream(request("opencode-go"))
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(deltas.as_slice(), [StreamDelta::Completed]));
+    let (headers, _) = server.headers_and_body().await;
+    assert_eq!(
+        values(&headers, "user-agent"),
+        ["crabber-channels/0.1.0 crabber/0.1"]
+    );
+}
+
+#[tokio::test]
+async fn custom_adapter_carries_host_product_token() {
+    let completed = b"data: [DONE]\n\n";
+    let server = RawServer::start(raw_response("200 OK", completed.len(), completed)).await;
+    let adapter = HttpAdapter::custom("custom", &server.url, Protocol::ChatCompletions)
+        .with_api_key("key")
+        .try_with_user_agent_product("host/1")
+        .unwrap()
+        .with_request_header_hook(Arc::new(SequenceHook {
+            values: Mutex::new(VecDeque::from([Ok(HeaderMap::from_iter([(
+                HeaderName::from_static("x-host"),
+                HeaderValue::from_static("harmless"),
+            )]))])),
+            calls: AtomicUsize::new(0),
+        }));
+    let deltas = adapter
+        .stream(request("custom"))
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(deltas.as_slice(), [StreamDelta::Completed]));
+    let (headers, _) = server.headers_and_body().await;
+    assert_eq!(values(&headers, "user-agent"), ["host/1 crabber/0.1"]);
+    assert_eq!(values(&headers, "x-host"), ["harmless"]);
+}

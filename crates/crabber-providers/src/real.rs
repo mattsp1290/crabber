@@ -17,9 +17,26 @@ use std::{
     sync::Arc,
 };
 
+const CRABBER_USER_AGENT: &str = "crabber/0.1";
+
 const ERROR_EXCERPT_MAX_BYTES: usize = 4096;
 /// `"provider HTTP " + 3 status digits + ": "`.
 const ERROR_MESSAGE_PREFIX_BYTES: usize = 19;
+
+fn user_agent_product_is_valid(product: &str) -> bool {
+    fn part_is_valid(part: &str) -> bool {
+        (1..=64).contains(&part.len())
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+    }
+    let mut parts = product.split('/');
+    let name = parts.next().unwrap_or_default();
+    part_is_valid(name)
+        && !name.eq_ignore_ascii_case("crabber")
+        && parts.next().is_none_or(part_is_valid)
+        && parts.next().is_none()
+}
 
 #[derive(Clone, Copy)]
 enum TransportCause {
@@ -311,6 +328,7 @@ pub struct HttpAdapter {
     key_env: Option<&'static str>,
     key_override: Option<String>,
     client: Client,
+    user_agent: HeaderValue,
     #[cfg(feature = "codex")]
     tokens: Option<Arc<crabber_auth::TokenManager>>,
     #[cfg(feature = "custom-http")]
@@ -337,6 +355,17 @@ pub struct CustomHttpAdapter {
 
 #[cfg(feature = "custom-http")]
 impl CustomHttpAdapter {
+    /// Prepends one validated host product, keeping Crabber's product last.
+    /// # Errors
+    /// Returns a sanitized invalid-provider error for an invalid product.
+    pub fn try_with_user_agent_product(
+        mut self,
+        product: impl AsRef<str>,
+    ) -> Result<Self, ProviderError> {
+        self.inner = self.inner.try_with_user_agent_product(product)?;
+        Ok(self)
+    }
+
     #[must_use]
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.inner.base_url = url.into();
@@ -448,6 +477,7 @@ impl HttpAdapter {
             chat_token_mode: crate::chat::TokenMode::MaxTokens,
             key_env,
             key_override: None,
+            user_agent: HeaderValue::from_static(CRABBER_USER_AGENT),
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -553,6 +583,23 @@ impl HttpAdapter {
         }
         self
     }
+    /// Prepends one host product (`name` or `name/version`) to `crabber/0.1`.
+    /// Each part must contain 1–64 ASCII HTTP token bytes. Replaces any earlier
+    /// host product; the product name `crabber` is reserved (case insensitive).
+    /// # Errors
+    /// Returns a sanitized invalid-provider error when the product is invalid.
+    pub fn try_with_user_agent_product(
+        mut self,
+        product: impl AsRef<str>,
+    ) -> Result<Self, ProviderError> {
+        let product = product.as_ref();
+        if !user_agent_product_is_valid(product) {
+            return Err(invalid());
+        }
+        self.user_agent = HeaderValue::from_str(&format!("{product} {CRABBER_USER_AGENT}"))
+            .map_err(|_| invalid())?;
+        Ok(self)
+    }
     #[cfg(feature = "codex")]
     fn uses_codex_responses_mode(&self) -> bool {
         self.kind == AdapterKind::Codex
@@ -600,7 +647,7 @@ impl HttpAdapter {
                 .map(|(headers, _)| headers);
         }
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", HeaderValue::from_static("crabber/0.1"));
+        headers.insert("user-agent", self.user_agent.clone());
         if self.uses_codex_responses_mode() {
             #[cfg(feature = "codex")]
             {
@@ -677,7 +724,7 @@ impl HttpAdapter {
             }
         }
 
-        headers.insert("user-agent", HeaderValue::from_static("crabber/0.1"));
+        headers.insert("user-agent", self.user_agent.clone());
         headers.insert("content-type", HeaderValue::from_static("application/json"));
         if self.protocol == Protocol::Messages {
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
@@ -1172,6 +1219,7 @@ impl ProviderAdapter for HttpAdapter {
             .client
             .get(format!("{}/models", self.base_url.trim_end_matches('/')))
             .bearer_auth(key)
+            .header("user-agent", self.user_agent.clone())
             .send()
             .await
             .map_err(|error| transport_from_reqwest(&error))?;
@@ -1292,6 +1340,106 @@ impl Resolver for HttpResolver {
 ))]
 mod tests {
     use super::*;
+    #[test]
+    fn user_agent_product_validation_accepts_tokens_and_rejects_others() {
+        for product in [
+            "crabber-channels/0.1.0",
+            "host",
+            "a.b_c~1/2+3",
+            &"a".repeat(64),
+            &format!("{}/{}", "a".repeat(64), "v".repeat(64)),
+        ] {
+            assert!(user_agent_product_is_valid(product), "{product}");
+        }
+        for product in [
+            "",
+            "a b",
+            "a/b/c",
+            "/1.0",
+            "name/",
+            "a(b)/1",
+            "a\u{7f}",
+            "a\r\n",
+            "ünïcode/1",
+            &"a".repeat(65),
+            &format!("a/{}", "v".repeat(65)),
+            "crabber/9.9",
+            "CRABBER",
+        ] {
+            assert!(!user_agent_product_is_valid(product));
+            #[cfg(feature = "custom-http")]
+            {
+                let adapter = HttpAdapter::custom(
+                    "test",
+                    "http://example.invalid",
+                    Protocol::ChatCompletions,
+                );
+                let Err(error) = adapter.try_with_user_agent_product(product) else {
+                    panic!("invalid product accepted");
+                };
+                assert_eq!(error.kind, ProviderErrorKind::Invalid);
+                assert!(!error.retryable);
+                assert_eq!(error.message, "invalid provider setting");
+            }
+        }
+    }
+
+    #[cfg(feature = "opencode-go")]
+    #[tokio::test]
+    async fn opencode_headers_carry_host_product_token() {
+        let adapter = HttpAdapter::opencode_go(Protocol::ChatCompletions).with_api_key("k");
+        assert_eq!(
+            adapter.headers(&request("opencode-go")).await.unwrap()["user-agent"],
+            "crabber/0.1"
+        );
+        let adapter = adapter
+            .try_with_user_agent_product("crabber-channels/0.1.0")
+            .unwrap();
+        let headers = adapter.headers(&request("opencode-go")).await.unwrap();
+        assert_eq!(headers["user-agent"], "crabber-channels/0.1.0 crabber/0.1");
+        assert_eq!(headers.get_all("user-agent").iter().count(), 1);
+        let adapter = adapter.try_with_user_agent_product("other/2").unwrap();
+        assert_eq!(
+            adapter.headers(&request("opencode-go")).await.unwrap()["user-agent"],
+            "other/2 crabber/0.1"
+        );
+    }
+
+    #[cfg(feature = "opencode-go")]
+    #[tokio::test]
+    async fn opencode_models_request_sends_user_agent() {
+        for product in [None, Some("crabber-channels/0.1.0")] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let expected =
+                product.map_or_else(|| "crabber/0.1".to_owned(), |p| format!("{p} crabber/0.1"));
+            let server = tokio::spawn(async move {
+                let (mut socket, request) = accept_loopback_request(&listener).await;
+                let headers: Vec<_> = request
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                    .map(|(_, value)| value.trim())
+                    .collect();
+                assert_eq!(headers, [expected.as_str()]);
+                let body = r#"{"data":[{"id":"m"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                write_loopback_response(&mut socket, response.as_bytes()).await;
+            });
+            let mut adapter = HttpAdapter::opencode_go(Protocol::ChatCompletions)
+                .with_base_url(base_url)
+                .with_api_key("k");
+            if let Some(product) = product {
+                adapter = adapter.try_with_user_agent_product(product).unwrap();
+            }
+            assert_eq!(adapter.models().await.unwrap().len(), 1);
+            timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+        }
+    }
+
     #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
     use crate::RequestIdentity;
     #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
