@@ -139,13 +139,10 @@ fn live() -> Result<(), &'static str> {
         query,
     };
     let mut clock = WallClock(submitted);
-    let evidence = poll(&mut clock, |signal, remaining| {
+    poll(&mut clock, |signal, remaining| {
         reader.probe(signal, remaining)
     })
     .map_err(Failure::category)?;
-    for item in evidence {
-        item.print();
-    }
     println!("visibility=passed");
     Ok(())
 }
@@ -203,6 +200,9 @@ fn poll(
                 .ok_or(Failure::Deadline)?;
             match probe(*signal, remaining) {
                 Ok(evidence) => {
+                    if let Some(item) = &evidence {
+                        item.print();
+                    }
                     *result = evidence;
                     println!(
                         "signal={} status={}",

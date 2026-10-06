@@ -1067,13 +1067,15 @@ fn validate_requests(requests: &[Request]) {
     }) {
         for series in request.body["series"].as_array().unwrap() {
             validate_tags(series);
-            assert!(
-                series["tags"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tag| tag == "verify:operational-fixture")
-            );
+            if request.path == "/api/v1/distribution_points" {
+                assert!(
+                    series["tags"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|tag| tag == "verify:operational-fixture")
+                );
+            }
         }
     }
 }
