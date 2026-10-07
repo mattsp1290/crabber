@@ -16,11 +16,12 @@ time = "0.3"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
 
 [features]
 default = []
 postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
-sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac", "dep:tokio"]
 
 [dev-dependencies]
 tempfile = "3"

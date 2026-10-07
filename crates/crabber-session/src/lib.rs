@@ -14,6 +14,8 @@ mod postgres;
 mod snapshot;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sql_snapshot;
+#[cfg(feature = "sqlite")]
+mod sqlite;
 mod storable;
 mod store;
 pub use snapshot::{
@@ -25,6 +27,8 @@ pub mod storetest;
 pub use memory::MemoryStore;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteStore;
 pub use storable::{ensure_storable, ensure_storable_text};
 pub use store::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,

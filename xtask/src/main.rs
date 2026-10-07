@@ -31,6 +31,7 @@ fn check() {
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
     check_custom_http(workspace);
+    check_sqlite(workspace);
     run(
         workspace,
         &[
@@ -102,6 +103,27 @@ fn check() {
         "testdata/external-consumer/check.sh",
     );
     check_glue(workspace);
+}
+
+fn check_sqlite(workspace: &Path) {
+    run(
+        workspace,
+        &[
+            "clippy",
+            "-p",
+            "crabber-session",
+            "--features",
+            "sqlite",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+    run(
+        workspace,
+        &["test", "-p", "crabber-session", "--features", "sqlite"],
+    );
 }
 
 fn check_custom_http(workspace: &Path) {
