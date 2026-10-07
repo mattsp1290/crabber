@@ -125,7 +125,7 @@ async fn connect_with(
 
 async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
     let mut connection = writer.acquire().await.map_err(db)?;
-    if classify(&mut connection).await? != DatabaseState::Current {
+    if classify_snapshot(&mut connection).await? != DatabaseState::Current {
         return Err(foreign_database());
     }
     let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
@@ -140,10 +140,19 @@ async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
     Ok(())
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum DatabaseState {
     Fresh,
     Current,
+}
+
+// Metadata must come from one snapshot when another process initializes the
+// file concurrently. End this read transaction before attempting a WAL change.
+async fn classify_snapshot(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
+    let mut transaction = connection.begin().await.map_err(classification_error)?;
+    let state = classify(&mut transaction).await;
+    transaction.rollback().await.map_err(db)?;
+    state
 }
 
 async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
@@ -188,7 +197,7 @@ async fn migrate_connection(
     let state = loop {
         // Reclassify on every retry: another process may have initialized the
         // file or installed a different schema while we waited for the lock.
-        let state = classify(connection).await?;
+        let state = classify_snapshot(connection).await?;
         let result = sqlx::query_scalar::<_, String>("PRAGMA journal_mode=WAL")
             .fetch_one(&mut *connection)
             .await;

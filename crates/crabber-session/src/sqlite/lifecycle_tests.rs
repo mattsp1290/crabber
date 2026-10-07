@@ -413,33 +413,70 @@ async fn interrupted_migration_leaves_a_fresh_database() {
 
 #[tokio::test]
 async fn concurrent_migrate_initializes_once() {
+    // Repetition exercises the autocommit boundary that originally failed on
+    // the second run; every iteration uses a distinct fresh database.
+    for _ in 0..32 {
+        let database = Database::fresh();
+        let first_path = database.path.clone();
+        let second_path = database.path.clone();
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let first_start = Arc::clone(&start);
+        let first = tokio::spawn(async move {
+            first_start.wait().await;
+            SqliteStore::migrate(first_path).await
+        });
+        let second = tokio::spawn(async move {
+            start.wait().await;
+            SqliteStore::migrate(second_path).await
+        });
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        let mut connection = database.raw().await;
+        let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_version")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(versions, [1]);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM snapshot_auth")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        connection.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn classification_snapshot_survives_concurrent_initialization() {
     let database = Database::fresh();
-    let first_path = database.path.clone();
-    let second_path = database.path.clone();
-    let start = Arc::new(tokio::sync::Barrier::new(2));
-    let first_start = Arc::clone(&start);
-    let first = tokio::spawn(async move {
-        first_start.wait().await;
-        SqliteStore::migrate(first_path).await
-    });
-    let second = tokio::spawn(async move {
-        start.wait().await;
-        SqliteStore::migrate(second_path).await
-    });
-    first.await.unwrap().unwrap();
-    second.await.unwrap().unwrap();
-    let mut connection = database.raw().await;
-    let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_version")
-        .fetch_all(&mut connection)
+    let mut connection =
+        SqliteConnection::connect_with(&options(&database.path).create_if_missing(true))
+            .await
+            .unwrap();
+    // WAL lets the other connection commit while this read snapshot is held.
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&mut connection)
         .await
         .unwrap();
-    assert_eq!(versions, [1]);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM snapshot_auth")
-        .fetch_one(&mut connection)
+    let mut snapshot = connection.begin().await.unwrap();
+    let application: i32 = sqlx::query_scalar("PRAGMA application_id")
+        .fetch_one(&mut *snapshot)
         .await
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(application, 0);
+    SqliteStore::migrate(&database.path).await.unwrap();
+    // Force the commit between identity and schema reads. The metadata reader
+    // still sees a fully fresh snapshot, then sees Current after rollback.
+    assert_eq!(classify(&mut snapshot).await.unwrap(), DatabaseState::Fresh);
+    snapshot.rollback().await.unwrap();
+    assert_eq!(
+        classify_snapshot(&mut connection).await.unwrap(),
+        DatabaseState::Current
+    );
     connection.close().await.unwrap();
+    let store = SqliteStore::connect(&database.path).await.unwrap();
+    store.writer.close().await;
+    store.readers.close().await;
 }
 
 #[tokio::test]
