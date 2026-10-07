@@ -12,6 +12,8 @@ mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod snapshot;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod sql_snapshot;
 mod storable;
 mod store;
 pub use snapshot::{
