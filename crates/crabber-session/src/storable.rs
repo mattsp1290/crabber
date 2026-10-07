@@ -21,6 +21,17 @@ pub fn ensure_storable<T: Serialize + ?Sized>(record: &T) -> Result<(), StoreErr
 
 /// Produces the checked JSON value used for a JSONB bind.
 pub(crate) fn storable_value<T: Serialize + ?Sized>(record: &T) -> Result<Value, StoreError> {
+    checked_record(record).map(|(_, value)| value)
+}
+
+/// Produces canonical JSON text with the same validation as JSONB binds.
+#[cfg(feature = "sqlite")]
+#[allow(dead_code)] // Removed in W3 when SqliteStore calls these.
+pub(crate) fn storable_text<T: Serialize + ?Sized>(record: &T) -> Result<String, StoreError> {
+    checked_record(record).map(|(text, _)| text)
+}
+
+fn checked_record<T: Serialize + ?Sized>(record: &T) -> Result<(String, Value), StoreError> {
     let text =
         serde_json::to_string(record).map_err(|_| StoreError::Validation(ENCODING_ERROR.into()))?;
     let value = serde_json::from_str::<Value>(&text).map_err(|error| {
@@ -35,7 +46,7 @@ pub(crate) fn storable_value<T: Serialize + ?Sized>(record: &T) -> Result<Value,
         )
     })?;
     ensure_value_has_no_nul(&value)?;
-    Ok(value)
+    Ok((text, value))
 }
 
 /// Verifies text destined for a relational text column.
@@ -86,6 +97,8 @@ mod tests {
             let text = serde_json::to_string(&value).unwrap();
             let reader_accepts = serde_json::from_str::<Value>(&text).is_ok();
             assert_eq!(ensure_storable(&value).is_ok(), reader_accepts);
+            #[cfg(feature = "sqlite")]
+            assert_text_matches_validation(&value);
             accepted |= reader_accepts;
             rejected |= !reader_accepts;
         }
@@ -95,12 +108,25 @@ mod tests {
     #[test]
     fn rejects_nul_without_rejecting_literal_escape() {
         for value in [json!("a\0b"), json!({"a\0b": 1}), json!(["\0"])] {
+            #[cfg(feature = "sqlite")]
+            assert_text_matches_validation(&value);
             assert!(matches!(
                 ensure_storable(&value),
                 Err(StoreError::Validation(_))
             ));
         }
         assert!(ensure_storable(&json!(r"\u0000")).is_ok());
+        #[cfg(feature = "sqlite")]
+        assert_text_matches_validation(&json!(r"\u0000"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn assert_text_matches_validation(value: &Value) {
+        let text = storable_text(value);
+        match ensure_storable(value) {
+            Ok(()) => assert_eq!(text.unwrap(), serde_json::to_string(value).unwrap()),
+            Err(error) => assert_eq!(text.unwrap_err().to_string(), error.to_string()),
+        }
     }
 
     #[test]

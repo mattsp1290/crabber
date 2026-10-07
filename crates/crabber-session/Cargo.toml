@@ -15,13 +15,15 @@ hmac = { version = "0.12", optional = true }
 time = "0.3"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:hmac"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "sqlx/json", "dep:hmac"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 
 [dev-dependencies]
+tempfile = "3"
 allocation-counter = "0.8.1"
 crabber = { path = "../crabber" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
