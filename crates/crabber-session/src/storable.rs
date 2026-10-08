@@ -26,7 +26,6 @@ pub(crate) fn storable_value<T: Serialize + ?Sized>(record: &T) -> Result<Value,
 
 /// Produces canonical JSON text with the same validation as JSONB binds.
 #[cfg(feature = "sqlite")]
-#[allow(dead_code)] // Removed in W3 when SqliteStore calls these.
 pub(crate) fn storable_text<T: Serialize + ?Sized>(record: &T) -> Result<String, StoreError> {
     checked_record(record).map(|(text, _)| text)
 }
