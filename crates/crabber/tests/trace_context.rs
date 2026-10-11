@@ -318,7 +318,7 @@ async fn context_free_and_reused_host_context_resume_have_distinct_closed_graphs
             ..journey::Capture::default()
         });
         let store = Arc::new(MemoryStore::new());
-        let first = durable::agent(store.clone(), capture.clone(), "pause");
+        let first = durable::agent(store.clone(), &capture, "pause");
         let result = first
             .prompt_with_context(None, "safe", context.clone())
             .await
@@ -327,7 +327,7 @@ async fn context_free_and_reused_host_context_resume_have_distinct_closed_graphs
             .await
             .unwrap();
         assert_eq!(result.status, crabber::core::RunStatus::Paused);
-        let second = durable::agent(store, capture, "resume");
+        let second = durable::agent(store, &capture, "resume");
         second
             .resume_with_context(&result.run_id, context.clone())
             .await
@@ -394,22 +394,98 @@ fn predecessor_is_validated_bounded_and_requires_a_new_numeric_trace() {
     }
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod durable_process {
     use super::*;
+    #[cfg(feature = "postgres")]
     use crabber::session::PostgresStore;
+    #[cfg(feature = "sqlite")]
+    use crabber::session::SqliteStore;
     use std::{path::Path, process::Command};
 
     // Hold this lock for every full journey: migration DDL can deadlock with
     // another journey's live worker. New journeys must use journey_store.
+    #[cfg(feature = "postgres")]
     static JOURNEY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    struct Journey {
-        url: String,
-        store: PostgresStore,
-        _guard: tokio::sync::MutexGuard<'static, ()>,
+    enum Backend {
+        #[cfg(feature = "postgres")]
+        Postgres(String),
+        #[cfg(feature = "sqlite")]
+        Sqlite(std::path::PathBuf),
     }
 
+    struct Journey {
+        backend: Backend,
+        store: Arc<dyn Store>,
+        _guard: Option<tokio::sync::MutexGuard<'static, ()>>,
+        _directory: Option<tempfile::TempDir>,
+    }
+
+    impl Journey {
+        fn command(&self, path: &Path, mode: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "durable_process::worker_child", "--nocapture"]);
+            match &self.backend {
+                #[cfg(feature = "postgres")]
+                Backend::Postgres(_) => {
+                    command
+                        .env("CRABBER_TRACE_WORKER", mode)
+                        .env("CRABBER_TRACE_QUEUE", path);
+                    if mode == "loss" {
+                        command.env(
+                            "CRABBER_TRACE_CAPTURE_FILE",
+                            path.parent().unwrap().join("loss-exports.json"),
+                        );
+                    }
+                }
+                #[cfg(feature = "sqlite")]
+                Backend::Sqlite(database) => {
+                    command
+                        .env("CRABBER_SQLITE_CHILD_PATH", database)
+                        .env("CRABBER_SQLITE_TRACE_WORKER", mode)
+                        .env("CRABBER_SQLITE_TRACE_QUEUE", path);
+                    if mode == "loss" {
+                        command.env(
+                            "CRABBER_SQLITE_TRACE_CAPTURE_FILE",
+                            path.parent().unwrap().join("loss-exports.json"),
+                        );
+                    }
+                }
+            }
+            command
+        }
+
+        async fn verify_schema(&self) {
+            match &self.backend {
+                #[cfg(feature = "postgres")]
+                Backend::Postgres(url) => {
+                    let pool = sqlx::PgPool::connect(url).await.unwrap();
+                    let version: i32 =
+                        sqlx::query_scalar("SELECT max(version) FROM schema_version")
+                            .fetch_one(&pool)
+                            .await
+                            .unwrap();
+                    assert_eq!(version, 5);
+                    pool.close().await;
+                }
+                #[cfg(feature = "sqlite")]
+                Backend::Sqlite(path) => {
+                    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(path);
+                    let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+                    let version: i64 =
+                        sqlx::query_scalar("SELECT max(version) FROM schema_version")
+                            .fetch_one(&pool)
+                            .await
+                            .unwrap();
+                    assert_eq!(version, 1);
+                    pool.close().await;
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "postgres")]
     async fn journey_store() -> Option<Journey> {
         let guard = JOURNEY_LOCK.lock().await;
         let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
@@ -422,10 +498,25 @@ mod durable_process {
         PostgresStore::migrate(&url).await.unwrap();
         let store = PostgresStore::connect(&url).await.unwrap();
         Some(Journey {
-            url,
-            store,
-            _guard: guard,
+            backend: Backend::Postgres(url),
+            store: Arc::new(store),
+            _guard: Some(guard),
+            _directory: None,
         })
+    }
+
+    #[cfg(feature = "sqlite")]
+    async fn sqlite_journey_store() -> Journey {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sessions.sqlite");
+        SqliteStore::migrate(&path).await.unwrap();
+        let store = SqliteStore::connect(&path).await.unwrap();
+        Journey {
+            backend: Backend::Sqlite(path),
+            store: Arc::new(store),
+            _guard: None,
+            _directory: Some(directory),
+        }
     }
 
     #[cfg(feature = "datadog")]
@@ -439,13 +530,8 @@ mod durable_process {
         }
     }
 
-    async fn spawn(path: &Path, mode: &str) {
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "durable_process::worker_child", "--nocapture"])
-            .env("CRABBER_TRACE_WORKER", mode)
-            .env("CRABBER_TRACE_QUEUE", path)
-            .spawn()
-            .unwrap();
+    async fn spawn(journey: &Journey, path: &Path, mode: &str) {
+        let mut child = journey.command(path, mode).spawn().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -462,13 +548,35 @@ mod durable_process {
     }
     #[tokio::test]
     async fn worker_child() {
-        let Ok(mode) = std::env::var("CRABBER_TRACE_WORKER") else {
+        #[cfg(feature = "sqlite")]
+        if let Some(database) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
+            let mode = std::env::var("CRABBER_SQLITE_TRACE_WORKER").unwrap();
+            let path =
+                std::path::PathBuf::from(std::env::var_os("CRABBER_SQLITE_TRACE_QUEUE").unwrap());
+            let store = Arc::new(
+                SqliteStore::connect(std::path::PathBuf::from(database))
+                    .await
+                    .unwrap(),
+            );
+            durable::worker(store, &path, &mode, "sqlite").await;
+            worker_source();
+            #[cfg(feature = "postgres")]
             return;
-        };
-        let url = std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap();
-        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-        let path = std::path::PathBuf::from(std::env::var_os("CRABBER_TRACE_QUEUE").unwrap());
-        durable::worker(store, &path, &mode, "postgres").await;
+        }
+        #[cfg(feature = "postgres")]
+        {
+            let Ok(mode) = std::env::var("CRABBER_TRACE_WORKER") else {
+                return;
+            };
+            let url = std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap();
+            let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+            let path = std::path::PathBuf::from(std::env::var_os("CRABBER_TRACE_QUEUE").unwrap());
+            durable::worker(store, &path, &mode, "postgres").await;
+            worker_source();
+        }
+    }
+
+    fn worker_source() {
         let output = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -480,27 +588,31 @@ mod durable_process {
             String::from_utf8(output.stdout).unwrap().trim()
         );
     }
-    #[cfg(feature = "datadog")]
+    #[cfg(all(feature = "datadog", feature = "postgres"))]
     #[tokio::test]
     async fn killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
         let Some(journey) = journey_store().await else {
             return;
         };
+        killed_worker_recovery(&journey).await;
+    }
+
+    #[cfg(all(feature = "datadog", feature = "sqlite"))]
+    #[tokio::test]
+    async fn sqlite_killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
+        let journey = sqlite_journey_store().await;
+        killed_worker_recovery(&journey).await;
+    }
+
+    #[cfg(feature = "datadog")]
+    async fn killed_worker_recovery(journey: &Journey) {
         let store = &journey.store;
         let envelope = durable::Envelope::demo();
         let dir = std::env::temp_dir().join(format!("crabber-loss-{}", envelope.session));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("queue.json");
         durable::enqueue(&path, &envelope);
-        let mut child = ChildGuard(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "durable_process::worker_child", "--nocapture"])
-                .env("CRABBER_TRACE_WORKER", "loss")
-                .env("CRABBER_TRACE_QUEUE", &path)
-                .env("CRABBER_TRACE_CAPTURE_FILE", dir.join("loss-exports.json"))
-                .spawn()
-                .unwrap(),
-        );
+        let mut child = ChildGuard(journey.command(&path, "loss").spawn().unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !dir.join("loss-ready").exists() {
             if std::time::Instant::now() > deadline {
@@ -525,7 +637,7 @@ mod durable_process {
         child.0.wait().unwrap();
         // Real lease expiry, without SQL mutation or bypassing execution authority.
         tokio::time::sleep(std::time::Duration::from_secs(31)).await;
-        spawn(&path, "recover").await;
+        spawn(journey, &path, "recover").await;
         let after = store.get_run(&receipt.run_id).await.unwrap().unwrap();
         assert_ne!(after.claim_token, before.claim_token);
         assert_eq!(after.status, crabber::core::RunStatus::Interrupted);
@@ -557,13 +669,24 @@ mod durable_process {
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn postgres_fresh_workers_preserve_schema5_receipts_sessions_and_cursors() {
         let Some(journey) = journey_store().await else {
             return;
         };
+        fresh_workers(&journey).await;
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn sqlite_fresh_workers_preserve_receipts_sessions_and_cursors() {
+        let journey = sqlite_journey_store().await;
+        fresh_workers(&journey).await;
+    }
+
+    async fn fresh_workers(journey: &Journey) {
         let store = &journey.store;
-        let url = journey.url.as_str();
         let envelope = durable::Envelope::demo();
         let dir = std::env::temp_dir().join(format!("crabber-trace-{}", envelope.session));
         std::fs::create_dir(&dir).unwrap();
@@ -577,7 +700,7 @@ mod durable_process {
                 .is_none(),
             "queue admission precedes Crabber admission"
         );
-        spawn(&path, "pause").await;
+        spawn(journey, &path, "pause").await;
         let receipt = store
             .lookup_admission(&envelope.session, &envelope.key)
             .await
@@ -589,8 +712,8 @@ mod durable_process {
             .await
             .unwrap();
         let session = store.get_session(&envelope.session).await.unwrap().unwrap();
-        spawn(&path, "resume").await;
-        // An already issued schema5 continuation survives a completely fresh
+        spawn(journey, &path, "resume").await;
+        // An already issued continuation survives a completely fresh
         // worker pool and keyed replay, with its original inclusive event cursor.
         let mut request = crabber::SnapshotRequest {
             session_id: envelope.session.clone(),
@@ -617,8 +740,8 @@ mod durable_process {
         .unwrap();
         let journal = std::fs::read(dir.join("attempt.json")).unwrap();
         // Retry the original queue delivery mode, not only a special replay mode.
-        spawn(&path, "pause").await;
-        spawn(&path, "duplicate").await;
+        spawn(journey, &path, "pause").await;
+        spawn(journey, &path, "duplicate").await;
         assert_eq!(std::fs::read(dir.join("attempt.json")).unwrap(), journal);
         assert_eq!(
             store
@@ -650,13 +773,7 @@ mod durable_process {
                 .id,
             session.id
         );
-        let pool = sqlx::PgPool::connect(url).await.unwrap();
-        let version: i32 = sqlx::query_scalar("SELECT max(version) FROM schema_version")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(version, 5);
-        pool.close().await;
+        journey.verify_schema().await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

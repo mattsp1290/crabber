@@ -1,7 +1,8 @@
 use super::*;
 
 pub(super) struct FaultStore {
-    pub(super) inner: Arc<PostgresStore>,
+    pub(super) inner: Arc<dyn Store>,
+    pub(super) failure: &'static str,
     pub(super) mode: String,
     pub(super) dir: PathBuf,
 }
@@ -64,8 +65,8 @@ impl Store for FaultStore {
             if !self.dir.join("text-only").exists() {
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
-            // Same sanitized error category as a real PostgreSQL commit acknowledgement loss.
-            return Err(StoreError::Validation("PostgreSQL operation failed".into()));
+            // Same sanitized error category as a real backend commit acknowledgement loss.
+            return Err(StoreError::Validation(self.failure.into()));
         }
         Ok(outcome)
     }

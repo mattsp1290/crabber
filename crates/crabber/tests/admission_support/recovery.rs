@@ -9,7 +9,7 @@ pub(super) async fn child(
     dir: &Path,
     session: &SessionId,
     agent: &Agent,
-    store: &PostgresStore,
+    store: &dyn Store,
     context: &TraceContext,
 ) {
     if mode.starts_with("unstarted-race-") {
@@ -144,7 +144,7 @@ pub(super) async fn child(
     }
 }
 
-async fn project(store: &PostgresStore, receipt: &AdmissionReceipt) {
+async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
     let run = store.get_run(&receipt.run_id).await.unwrap().unwrap();
     assert_eq!(run.status, RunStatus::Completed);
     let history = store.list_all_messages(&receipt.session_id).await.unwrap();
@@ -225,7 +225,7 @@ async fn project(store: &PostgresStore, receipt: &AdmissionReceipt) {
     }
 }
 
-async fn expired(store: &PostgresStore, receipt: &AdmissionReceipt) {
+async fn expired(store: &dyn Store, receipt: &AdmissionReceipt) {
     let deadline = Instant::now() + Duration::from_secs(40);
     loop {
         let run = store.get_run(&receipt.run_id).await.unwrap().unwrap();
@@ -240,7 +240,7 @@ async fn expired(store: &PostgresStore, receipt: &AdmissionReceipt) {
 fn original(dir: &Path) -> AdmissionReceipt {
     serde_json::from_slice(&fs::read(dir.join("committed.json")).unwrap()).unwrap()
 }
-async fn unstarted(store: &PostgresStore, session: &SessionId) {
+async fn unstarted(store: &dyn Store, session: &SessionId) {
     assert_eq!(
         store
             .load_admission_execution(session, &options().key)
@@ -251,6 +251,7 @@ async fn unstarted(store: &PostgresStore, session: &SessionId) {
         AdmissionExecutionState::Unstarted
     );
 }
+#[cfg(feature = "postgres")]
 fn test_url() -> Option<String> {
     if let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") {
         Some(url)
@@ -264,19 +265,33 @@ fn test_url() -> Option<String> {
     }
 }
 
+#[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
 async fn postgres_unstarted_completion_and_uncertainty_journey() {
     let Some(url) = test_url() else { return };
-    PostgresStore::migrate(&url).await.unwrap();
-    let store = PostgresStore::connect(&url).await.unwrap();
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    unstarted_journey(BackendKind::Postgres(url)).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_unstarted_completion_and_uncertainty_journey() {
+    unstarted_journey(BackendKind::Sqlite).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn unstarted_journey(kind: BackendKind) {
     let (dir, session) = handoff();
+    let backend = kind.prepare(&dir.0).await;
+    let store = backend.connect().await;
     fs::write(dir.0.join("text-only"), "yes").unwrap();
-    finish(spawn(&dir.0, "commit-loss")).await;
+    finish(spawn(&backend, &dir.0, "commit-loss")).await;
     let receipt = original(&dir.0);
-    finish(spawn(&dir.0, "unstarted-live")).await;
-    unstarted(&store, &session).await;
-    evidence(&url, &dir.0, &session, 0, 0).await;
+    finish(spawn(&backend, &dir.0, "unstarted-live")).await;
+    unstarted(store.as_ref(), &session).await;
+    evidence(&backend, &dir.0, &session, 0, 0).await;
     assert_eq!(
         store
             .claim_expired_run(&receipt.run_id, "generic")
@@ -284,10 +299,10 @@ async fn postgres_unstarted_completion_and_uncertainty_journey() {
             .unwrap_err(),
         StoreError::AdmissionRecoveryRequired
     );
-    expired(&store, &receipt).await;
+    expired(store.as_ref(), &receipt).await;
     let old = store.get_run(&receipt.run_id).await.unwrap().unwrap();
-    let first = spawn(&dir.0, "unstarted-race-a");
-    let second = spawn(&dir.0, "unstarted-race-b");
+    let first = spawn(&backend, &dir.0, "unstarted-race-a");
+    let second = spawn(&backend, &dir.0, "unstarted-race-b");
     wait(&dir.0.join("unstarted-race-a")).await;
     wait(&dir.0.join("unstarted-race-b")).await;
     fs::write(dir.0.join("go"), "go").unwrap();
@@ -321,13 +336,13 @@ async fn postgres_unstarted_completion_and_uncertainty_journey() {
         .count();
     assert_eq!(winners, 1);
     let events = store.list_events(&session, None, 1000).await.unwrap();
-    finish(spawn(&dir.0, "unstarted-replay")).await;
-    finish(spawn(&dir.0, "unstarted-replay")).await;
+    finish(spawn(&backend, &dir.0, "unstarted-replay")).await;
+    finish(spawn(&backend, &dir.0, "unstarted-replay")).await;
     assert_eq!(
         events,
         store.list_events(&session, None, 1000).await.unwrap()
     );
-    evidence(&url, &dir.0, &session, 1, 0).await;
+    evidence(&backend, &dir.0, &session, 1, 0).await;
     // Each uncertainty boundary starts from a real committed original admission.
     for mode in [
         "unstarted-claim-loss",
@@ -337,14 +352,16 @@ async fn postgres_unstarted_completion_and_uncertainty_journey() {
         "unstarted-after-begin",
     ] {
         let (dir, session) = handoff();
+        let backend = kind.prepare(&dir.0).await;
+        let store = backend.connect().await;
         fs::write(dir.0.join("text-only"), "yes").unwrap();
         // These cases do not assert live eligibility: shorten the original lease,
         // then wait for its durable real-clock expiry rather than editing SQL state.
         fs::write(dir.0.join("short-admission-lease"), "yes").unwrap();
-        finish(spawn(&dir.0, "commit-loss")).await;
+        finish(spawn(&backend, &dir.0, "commit-loss")).await;
         let receipt = original(&dir.0);
-        expired(&store, &receipt).await;
-        let mut process = spawn(&dir.0, mode);
+        expired(store.as_ref(), &receipt).await;
+        let mut process = spawn(&backend, &dir.0, mode);
         if mode == "unstarted-before-begin" || mode == "unstarted-after-begin" {
             wait(&dir.0.join(if mode == "unstarted-before-begin" {
                 "claimed"
@@ -358,7 +375,7 @@ async fn postgres_unstarted_completion_and_uncertainty_journey() {
             finish(process).await;
         }
         assert_eq!(count(&dir.0.join("ledger"), "provider"), 0);
-        expired(&store, &receipt).await;
+        expired(store.as_ref(), &receipt).await;
         if mode == "unstarted-begin-loss" || mode == "unstarted-after-begin" {
             assert_eq!(
                 store
@@ -369,24 +386,26 @@ async fn postgres_unstarted_completion_and_uncertainty_journey() {
                     .state,
                 AdmissionExecutionState::Started
             );
-            finish(spawn(&dir.0, "unstarted-interrupt")).await;
-            evidence(&url, &dir.0, &session, 0, 0).await;
+            finish(spawn(&backend, &dir.0, "unstarted-interrupt")).await;
+            evidence(&backend, &dir.0, &session, 0, 0).await;
         } else {
-            unstarted(&store, &session).await;
-            finish(spawn(&dir.0, "unstarted-complete")).await;
-            finish(spawn(&dir.0, "unstarted-replay")).await;
-            evidence(&url, &dir.0, &session, 1, 0).await;
+            unstarted(store.as_ref(), &session).await;
+            finish(spawn(&backend, &dir.0, "unstarted-complete")).await;
+            finish(spawn(&backend, &dir.0, "unstarted-replay")).await;
+            evidence(&backend, &dir.0, &session, 1, 0).await;
         }
     }
     // A provider stream actually began before death: Started cannot be retried.
     let (dir, session) = handoff();
+    let backend = kind.prepare(&dir.0).await;
+    let store = backend.connect().await;
     fs::write(dir.0.join("text-only"), "yes").unwrap();
-    let mut process = spawn(&dir.0, "unstarted-provider-loss");
+    let mut process = spawn(&backend, &dir.0, "unstarted-provider-loss");
     wait(&dir.0.join("executing")).await;
     process.0.kill().unwrap();
     process.0.wait().unwrap();
     let receipt = original(&dir.0);
-    expired(&store, &receipt).await;
-    finish(spawn(&dir.0, "unstarted-interrupt")).await;
-    evidence(&url, &dir.0, &session, 1, 0).await;
+    expired(store.as_ref(), &receipt).await;
+    finish(spawn(&backend, &dir.0, "unstarted-interrupt")).await;
+    evidence(&backend, &dir.0, &session, 1, 0).await;
 }

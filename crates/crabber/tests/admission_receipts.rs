@@ -288,7 +288,7 @@ impl crabber::extension::Extension for VersionedExtension {
     }
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "admission_support/process.rs"]
 mod process;
 

@@ -124,6 +124,73 @@ fn check_sqlite(workspace: &Path) {
         workspace,
         &["test", "-p", "crabber-session", "--features", "sqlite"],
     );
+
+    for package in ["crabber", "crabber-runtime"] {
+        run(
+            workspace,
+            &[
+                "clippy",
+                "-p",
+                package,
+                "--features",
+                "sqlite",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        );
+    }
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "sqlite",
+            "--test",
+            "admission_receipts",
+            "--test",
+            "bounded_snapshots",
+            "--test",
+            "fenced_abandon",
+            "--test",
+            "result_transform_interrupt",
+            "--test",
+            "unknown_tool_depth",
+            "--test",
+            "sqlite_builder",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "datadog,sqlite",
+            "--test",
+            "trace_context",
+        ],
+    );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "wasm,sqlite",
+            "--test",
+            "wasm_roles",
+        ],
+    );
+    run(
+        workspace,
+        &["test", "-p", "crabber-runtime", "--features", "sqlite"],
+    );
 }
 
 fn check_custom_http(workspace: &Path) {

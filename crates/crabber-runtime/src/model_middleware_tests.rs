@@ -805,7 +805,7 @@ fn paused_runtime(
         .unwrap()
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 async fn paused_registry(config: AgentsMdConfig) -> Registry {
     let registry = Registry::new();
     mount_agents(&registry, Scope::Global, config, 0).await;
@@ -934,85 +934,28 @@ async fn model_middleware_postgres_resume_reconstructs_plan_and_rejects_changes_
     };
     PostgresStore::migrate(&url).await.unwrap();
 
-    // Persist a paused run, then let every runtime-owned object used to admit it
-    // fall out of scope. Resume uses a new pool, registry, extension instance,
-    // resolver instance, and orchestrator.
-    let run_id = {
-        let admission_provider = FakeProvider::scripted(vec![call_script()]);
-        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-        let registry = paused_registry(AgentsMdConfig::default()).await;
-        let backend = WorkspaceBackend::with_file("AGENTS.md", "v1");
-        let runtime = paused_runtime(registry, &backend, &admission_provider, store);
-        let handle = runtime.start(request()).await.unwrap();
-        let run_id = handle.run_id().clone();
-        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
-        assert_eq!(admission_provider.requests().len(), 1);
-        run_id
-    };
-    let resume_provider = FakeProvider::scripted(vec![text_script("done")]);
-    let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-    let registry = paused_registry(AgentsMdConfig::default()).await;
-    let backend = WorkspaceBackend::with_file("AGENTS.md", "v2");
-    let runtime = paused_runtime(registry, &backend, &resume_provider, store);
-    assert_eq!(
-        runtime.resume(&run_id).await.unwrap().status,
-        RunStatus::Completed
-    );
-    assert_eq!(resume_provider.requests().len(), 1);
-    assert!(
-        resume_provider.requests()[0]
-            .system
-            .as_deref()
-            .unwrap()
-            .contains("\nv2\n")
-    );
-
-    // A second durable run proves a changed reconstruction is refused before
-    // claiming the row or dispatching another provider request.
-    let changed_run_id = {
-        let admission_provider = FakeProvider::scripted(vec![call_script()]);
-        let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-        let registry = paused_registry(AgentsMdConfig::default()).await;
-        let backend = WorkspaceBackend::with_file("AGENTS.md", "original");
-        let runtime = paused_runtime(registry, &backend, &admission_provider, store);
-        let handle = runtime.start(request()).await.unwrap();
-        let run_id = handle.run_id().clone();
-        assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
-        assert_eq!(admission_provider.requests().len(), 1);
-        run_id
-    };
-    let resume_provider = FakeProvider::scripted(vec![text_script("must-not-run")]);
-    let changed_store = Arc::new(PostgresStore::connect(&url).await.unwrap());
-    let before = changed_store
-        .get_run(&changed_run_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let changed_registry =
-        paused_registry(AgentsMdConfig::new(vec!["DIFFERENT.md".into()], false).unwrap()).await;
-    let changed_backend = WorkspaceBackend::with_file("DIFFERENT.md", "changed");
-    let changed_runtime = paused_runtime(
-        changed_registry,
-        &changed_backend,
-        &resume_provider,
-        changed_store.clone(),
-    );
-    assert!(matches!(
-        changed_runtime.resume(&changed_run_id).await,
-        Err(RuntimeError::PlanChanged)
-    ));
-    assert_eq!(
-        changed_store
-            .get_run(&changed_run_id)
-            .await
-            .unwrap()
-            .unwrap(),
-        before
-    );
-    assert_eq!(resume_provider.requests().len(), 0);
-    assert_eq!(changed_backend.resolves.lock().unwrap().len(), 0);
+    durable::verify(|| async {
+        Arc::new(PostgresStore::connect(&url).await.unwrap()) as Arc<dyn Store>
+    })
+    .await;
 }
 
 // The forged-context authority boundary is intentionally covered by
 // `prompt_contribution_tests::failures::model_middleware_workspace_resolver_denies_forged_context_without_host_dispatch`.
 // These tests additionally prove that typed middleware changes only `system` on a physical request.
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[path = "model_middleware_tests/durable.rs"]
+mod durable;
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn model_middleware_sqlite_resume_reconstructs_plan_and_rejects_changes_before_claim() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("middleware.sqlite");
+    crabber_session::SqliteStore::migrate(&path).await.unwrap();
+    durable::verify(|| async {
+        Arc::new(crabber_session::SqliteStore::connect(&path).await.unwrap()) as Arc<dyn Store>
+    })
+    .await;
+}

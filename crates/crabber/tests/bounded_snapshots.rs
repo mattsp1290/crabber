@@ -54,3 +54,28 @@ fn postgres_snapshot_child_process() {
         runtime().block_on(journey::child());
     }
 }
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn sqlite_embedding_independent_stores_and_fresh_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("snapshots.sqlite");
+    let runtime = runtime();
+    let stores = runtime.block_on(journey::sqlite(&path, true));
+    let source = journey::source(false);
+    runtime.block_on(journey::journey(
+        stores.clone(),
+        "sqlite",
+        &source,
+        journey::ChildMode::SqliteTest(path),
+    ));
+    journey::allocation_proof(&runtime, &stores, "sqlite", &source);
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn sqlite_snapshot_child_process() {
+    if std::env::var_os("CRABBER_SQLITE_CHILD_PATH").is_some() {
+        runtime().block_on(journey::child());
+    }
+}

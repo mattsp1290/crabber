@@ -13,6 +13,8 @@ use crabber_runtime::{
 };
 #[cfg(feature = "postgres")]
 use crabber_session::PostgresStore;
+#[cfg(feature = "sqlite")]
+use crabber_session::SqliteStore;
 use crabber_session::{MemoryStore, Store};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OnceCell, broadcast};
@@ -139,6 +141,18 @@ impl AgentBuilder {
     #[cfg(feature = "postgres")]
     pub async fn postgres(mut self, url: &str) -> Result<Self, crabber_session::StoreError> {
         self.store = Some(Arc::new(PostgresStore::connect(url).await?));
+        Ok(self)
+    }
+
+    /// Opens an explicitly migrated SQLite store.
+    /// # Errors
+    /// Returns a sanitized connection or schema error.
+    #[cfg(feature = "sqlite")]
+    pub async fn sqlite(
+        mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, crabber_session::StoreError> {
+        self.store = Some(Arc::new(SqliteStore::connect(path).await?));
         Ok(self)
     }
 
