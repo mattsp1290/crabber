@@ -1,8 +1,16 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
 //! connecting only verifies a version-one Crabber database already using WAL.
 
+mod abandon;
+mod admission_execution;
+mod execution;
+mod records;
+mod snapshot;
+mod store_impl;
+mod transactions;
 use crate::StoreError;
 use crabber_core::{ByteLimits, Clock, SystemClock};
+use execution::SqliteExecution;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
     Connection, Sqlite, SqliteConnection, SqlitePool, Transaction,
@@ -23,12 +31,10 @@ const SCHEMA: &str = include_str!("../migrations/sqlite/0001_initial.sql");
 #[derive(Clone)]
 pub struct SqliteStore {
     writer: SqlitePool,
-    #[allow(dead_code)] // Removed in W3 when Store reads use this pool.
     readers: SqlitePool,
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
     #[cfg(test)]
-    #[allow(dead_code)] // Removed in W3 when abandonment uses fault injection.
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
@@ -69,7 +75,6 @@ impl SqliteStore {
         self
     }
 
-    #[allow(dead_code)] // Removed in W3 when Store writes use this helper.
     async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
         #[cfg(test)]
         self.write_waiters
@@ -299,12 +304,10 @@ fn unsupported_version() -> StoreError {
     StoreError::Validation("unsupported SQLite schema version".into())
 }
 
-#[allow(dead_code)] // Removed in W3 when Store writes use this helper.
 fn text<T: Serialize>(value: &T) -> Result<String, StoreError> {
     crate::storable::storable_text(value)
 }
 
-#[allow(dead_code)] // Removed in W3 when Store reads use this helper.
 fn decode<T: DeserializeOwned>(text: &str) -> Result<T, StoreError> {
     serde_json::from_str(text)
         .map_err(|_| StoreError::Validation("stored record is invalid".into()))
@@ -312,3 +315,8 @@ fn decode<T: DeserializeOwned>(text: &str) -> Result<T, StoreError> {
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(test)]
+mod abandon_tests;
+#[cfg(test)]
+mod tests;

@@ -1,6 +1,4 @@
 //! Canonical record accounting and authenticated continuations for SQL stores.
-// Removed in W3 when SqliteStore calls these.
-#![cfg_attr(not(feature = "postgres"), allow(dead_code))]
 
 use crate::{SnapshotContinuation, StoreError};
 use crabber_core::{EventCursor, Message, ToolCallRecord};
