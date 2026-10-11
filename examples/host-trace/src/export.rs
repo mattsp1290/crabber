@@ -28,7 +28,8 @@ impl ExportCapture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
         let (stop, stopped) = std::sync::mpsc::channel();
-        let capture_file = std::env::var_os("CRABBER_TRACE_CAPTURE_FILE");
+        let capture_file = std::env::var_os("CRABBER_SQLITE_TRACE_CAPTURE_FILE")
+            .or_else(|| std::env::var_os("CRABBER_TRACE_CAPTURE_FILE"));
         let server = std::thread::spawn(move || {
             loop {
                 if stopped.try_recv().is_ok() {

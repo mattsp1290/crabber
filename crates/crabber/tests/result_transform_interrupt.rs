@@ -356,3 +356,24 @@ async fn idle_mount_close_joins_and_returns_ok() {
     assert!(probes.kill_started.observed());
     assert_drained(&probes, pid).await;
 }
+
+#[cfg(feature = "sqlite")]
+async fn sqlite_interrupt(accepted: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("interrupt.sqlite");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    let store = crabber::session::SqliteStore::connect(&path).await.unwrap();
+    interrupt_active_child(Arc::new(store), accepted).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_run_interrupt_drops_reducer_and_settles_fixed_text() {
+    sqlite_interrupt(false).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_run_interrupt_persists_only_accepted_final_redaction() {
+    sqlite_interrupt(true).await;
+}

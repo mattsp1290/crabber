@@ -41,6 +41,23 @@ pub async fn postgres(migrate: bool) -> Stores {
     (Arc::new(reader), Arc::new(writer))
 }
 
+#[cfg(feature = "sqlite")]
+pub async fn sqlite(path: &std::path::Path, migrate: bool) -> Stores {
+    if migrate {
+        crabber::session::SqliteStore::migrate(path).await.unwrap();
+    }
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let reader = crabber::session::SqliteStore::connect(path)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    let writer = crabber::session::SqliteStore::connect(path)
+        .await
+        .unwrap()
+        .with_clock(clock);
+    (Arc::new(reader), Arc::new(writer))
+}
+
 pub fn request(session: &SessionId) -> SnapshotRequest {
     SnapshotRequest {
         session_id: session.clone(),
@@ -237,11 +254,13 @@ pub fn source(require_clean: bool) -> Source {
 }
 
 /// Test helper and demo differ only in their child entrypoint.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ChildMode {
     None,
     Demo(bool),
     Test,
+    #[cfg(feature = "sqlite")]
+    SqliteTest(std::path::PathBuf),
 }
 
 fn verify_child(
@@ -249,29 +268,36 @@ fn verify_child(
     h: EventCursor,
     expected: &[MessageId],
     expected_events: &[EventCursor],
-    mode: ChildMode,
+    mode: &ChildMode,
 ) {
     let mut command = Command::new(std::env::current_exe().unwrap());
+    let encoded = serde_json::to_string(query).unwrap();
     match mode {
         ChildMode::None => return,
         ChildMode::Demo(check) => {
-            command.arg("--postgres-child");
-            if check {
+            command
+                .arg("--postgres-child")
+                .env("CRABBER_BOUNDED_CHILD", &encoded);
+            if *check {
                 command.env("CRABBER_BOUNDED_CHECK", "1");
             }
         }
         ChildMode::Test => {
             command.env("CRABBER_BOUNDED_CHECK", "1");
-            command.args(["--exact", "postgres_snapshot_child_process", "--nocapture"]);
+            command
+                .args(["--exact", "postgres_snapshot_child_process", "--nocapture"])
+                .env("CRABBER_BOUNDED_CHILD", &encoded);
+        }
+        #[cfg(feature = "sqlite")]
+        ChildMode::SqliteTest(path) => {
+            command
+                .args(["--exact", "sqlite_snapshot_child_process", "--nocapture"])
+                .env("CRABBER_SQLITE_CHILD_PATH", path)
+                .env("CRABBER_SQLITE_SNAPSHOT_CHILD", &encoded)
+                .env("CRABBER_SQLITE_SNAPSHOT_CHECK", "1");
         }
     }
-    let output = command
-        .env(
-            "CRABBER_BOUNDED_CHILD",
-            serde_json::to_string(query).unwrap(),
-        )
-        .output()
-        .unwrap();
+    let output = child_output(command);
     assert!(output.status.success(), "fresh-process snapshot failed");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let report = stdout
@@ -293,12 +319,88 @@ fn verify_child(
     );
 }
 
-#[cfg(feature = "postgres")]
+// Drain both pipes concurrently so a verbose snapshot child cannot block on its
+// output buffer. The guard releases the process on every failure path.
+fn child_output(mut command: Command) -> std::process::Output {
+    use std::io::Read;
+    use std::process::{Child, Stdio};
+    struct Guard(Child);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Guard(
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = child.0.stdout.take().unwrap();
+    let mut stderr = child.0.stderr.take().unwrap();
+    let output = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fresh-process snapshot timed out"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::process::Output {
+        status,
+        stdout: output.join().unwrap(),
+        stderr: errors.join().unwrap(),
+    }
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub async fn child() {
-    let input = std::env::var("CRABBER_BOUNDED_CHILD").expect("child request required");
+    #[cfg(feature = "sqlite")]
+    if let Some(path) = std::env::var_os("CRABBER_SQLITE_CHILD_PATH") {
+        let (reader, _) = sqlite(std::path::Path::new(&path), false).await;
+        child_pages(
+            reader,
+            std::env::var("CRABBER_SQLITE_SNAPSHOT_CHILD").unwrap(),
+            "sqlite-child",
+            std::env::var("CRABBER_SQLITE_SNAPSHOT_CHECK").as_deref() == Ok("1"),
+        )
+        .await;
+        return;
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let (reader, _) = postgres(false).await;
+        child_pages(
+            reader,
+            std::env::var("CRABBER_BOUNDED_CHILD").expect("child request required"),
+            "postgres-child",
+            std::env::var("CRABBER_BOUNDED_CHECK").as_deref() == Ok("1"),
+        )
+        .await;
+    }
+    #[cfg(not(feature = "postgres"))]
+    panic!("SQLite child path required");
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+async fn child_pages(reader: Arc<dyn Store>, input: String, label: &str, check: bool) {
     let mut query: SnapshotRequest = serde_json::from_str(&input).unwrap();
     assert!(query.continuation.is_some());
-    let (reader, _) = postgres(false).await; // connect only: no migration in child
     let mut ids = Vec::new();
     let mut h = None;
     let mut number = 1;
@@ -306,13 +408,7 @@ pub async fn child() {
         let page = page(reader.snapshot(query.clone()).await.unwrap());
         check_page(&page, &query);
         assert_eq!(*h.get_or_insert(page.high_water), page.high_water);
-        print_page(
-            &source(std::env::var("CRABBER_BOUNDED_CHECK").as_deref() != Ok("1")),
-            "postgres-child",
-            &query.session_id,
-            number,
-            &page,
-        );
+        print_page(&source(!check), label, &query.session_id, number, &page);
         ids.extend(page.messages.into_iter().map(|message| message.id));
         let Some(token) = page.continuation else {
             break;
@@ -515,7 +611,7 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
             check_page(&probe, &query);
             // The writer captured each committed cursor using bounded metadata
             // outcomes. The host has not consumed any tail events yet.
-            verify_child(&query, h, &expected[observed.len()..], &post_events, mode);
+            verify_child(&query, h, &expected[observed.len()..], &post_events, &mode);
         }
         number += 1;
     }
@@ -587,6 +683,7 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
 /// Measure only reads on a single runtime thread, after fixture writes. Covers
 /// 512 KiB and 32 MiB histories and oversized first/next records for both byte
 /// budgets. No whole-history oracle or allocator instrumentation in server SQL.
+/// SQLite measurements cover the caller thread, excluding `SQLx` worker allocations.
 #[allow(clippy::too_many_lines)]
 pub fn allocation_proof(
     runtime: &tokio::runtime::Runtime,

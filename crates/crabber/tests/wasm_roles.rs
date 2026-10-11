@@ -619,3 +619,16 @@ async fn middleware_rewrites_tool_output() {
             .contains("[REDACTED]")
     );
 }
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn freshly_connected_sqlite_agent_resumes_native_and_wasm_plan() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("wasm.sqlite");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    let first_store: Arc<dyn Store> =
+        Arc::new(crabber::session::SqliteStore::connect(&path).await.unwrap());
+    let second_store: Arc<dyn Store> =
+        Arc::new(crabber::session::SqliteStore::connect(&path).await.unwrap());
+    fresh_agent_resumes_paused_run(first_store, second_store).await;
+}

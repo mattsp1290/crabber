@@ -4,16 +4,15 @@ use super::*;
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_child() {
-    let Ok(mode) = std::env::var("CRABBER_RECEIPT_CHILD") else {
+    let Some((backend, dir, mode)) = Backend::child() else {
         return;
     };
-    let dir = PathBuf::from(std::env::var_os("CRABBER_RECEIPT_HANDOFF").unwrap());
     let session: SessionId =
         serde_json::from_slice(&fs::read(dir.join("session.json")).unwrap()).unwrap();
-    let url = std::env::var("CRABBER_TEST_POSTGRES_URL").unwrap();
-    let store = Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let store = backend.connect().await;
     let wrapped = Arc::new(FaultStore {
         inner: store.clone(),
+        failure: backend.failure(),
         mode: mode.clone(),
         dir: dir.clone(),
     });
@@ -28,7 +27,7 @@ async fn facade_child() {
         mode == "tool-loss",
     );
     if dir.join("text-only").exists() {
-        super::recovery::child(&mode, &dir, &session, &agent, &store, &context).await;
+        super::recovery::child(&mode, &dir, &session, &agent, store.as_ref(), &context).await;
         return;
     }
     if mode.starts_with("race-") {
@@ -120,7 +119,7 @@ async fn facade_child() {
             .unwrap();
         recover(
             &agent,
-            &store,
+            store.as_ref(),
             &session,
             &receipt,
             before.unwrap(),
@@ -162,7 +161,7 @@ async fn facade_child() {
 
 async fn recover(
     agent: &Agent,
-    store: &PostgresStore,
+    store: &dyn Store,
     session: &SessionId,
     receipt: &AdmissionReceipt,
     old: Run,

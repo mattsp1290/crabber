@@ -664,3 +664,7 @@ impl Drop for OwnerProcess {
         }
     }
 }
+
+#[cfg(feature = "sqlite")]
+#[path = "fenced_support/sqlite.rs"]
+mod sqlite;

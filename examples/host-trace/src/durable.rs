@@ -74,7 +74,11 @@ impl ToolExecutor for Effect {
         #[cfg(feature = "datadog")]
         if let Some(exporter) = &self.loss_exporter {
             exporter.flush().await.unwrap();
-            let path = std::path::PathBuf::from(std::env::var_os("CRABBER_TRACE_QUEUE").unwrap());
+            let path = std::path::PathBuf::from(
+                std::env::var_os("CRABBER_SQLITE_TRACE_QUEUE")
+                    .or_else(|| std::env::var_os("CRABBER_TRACE_QUEUE"))
+                    .unwrap(),
+            );
             {
                 let context = self.capture.events.lock().unwrap()[0].1.clone().unwrap();
                 let attempt = self
@@ -101,7 +105,7 @@ impl crabber::runtime::PermissionPolicy for PausePolicy {
         crabber::runtime::InterruptPolicy::Pause
     }
 }
-pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent {
+pub fn agent(store: Arc<dyn Store>, capture: &Arc<Capture>, mode: &str) -> Agent {
     let call = ToolCallId::new();
     let text = vec![
         StreamDelta::TextDelta("done".into()),
@@ -158,7 +162,7 @@ pub fn agent(store: Arc<dyn Store>, capture: Arc<Capture>, mode: &str) -> Agent 
                 #[cfg(feature = "datadog")]
                 loss_exporter,
                 #[cfg(feature = "datadog")]
-                capture,
+                capture: capture.clone(),
             }),
         }))
         .build()
@@ -225,7 +229,7 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         live_exporter: export.live.clone(),
         ..Capture::default()
     });
-    let agent = agent(store.clone(), capture.clone(), mode);
+    let agent = agent(store.clone(), &capture, mode);
     let current = if matches!(mode, "resume" | "recover") {
         let previous = path.parent().unwrap().join("attempt.json");
         let prior: Attempt = serde_json::from_slice(&fs::read(previous).unwrap())
@@ -323,10 +327,10 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
         println!(
             "backend={} schema={} provider=fake session={} run={} attempt_trace={} attempt_span={} observation_attempt={} predecessor={} predecessor_span={} predecessor_attempt={} callbacks={} models={}",
             backend,
-            if backend == "postgres" {
-                "5"
-            } else {
-                "not-applicable"
+            match backend {
+                "postgres" => "5",
+                "sqlite" => "1",
+                _ => "not-applicable",
             },
             envelope.session,
             receipt.run_id,
