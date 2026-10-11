@@ -215,3 +215,19 @@ span decimal). Check the marker-scoped APM spans exist and have the pinned
 `source_sha`. Record returned evidence or UI URLs for all three products. A
 missing product, association, or native link remains an unverified/failed live
 check even if every intake request succeeds. Never paste credential values.
+
+## SQLite workers
+
+```sh
+cargo run -p host-trace --features sqlite -- sqlite
+cargo test -p crabber --features datadog,sqlite --test trace_context
+```
+
+The SQLite command migrates a temporary file and fresh workers reconnect without
+migration. It checks paused resume, duplicate receipt delivery and real captured
+export links; `sqlite_fresh_workers_preserve_receipts_sessions_and_cursors` adds
+session/receipt/cursor assertions. Schema is SQLite version 1, carrying PostgreSQL
+schema-5 semantics. The demo ignores `CRABBER_SQLITE_PATH` and removes its temporary
+queue/database directory on success. No Datadog or provider credentials are needed.
+These are offline assertions; live Datadog correlation remains a separate gate.
+See [SQLite operations](../../docs/sqlite-store.md).

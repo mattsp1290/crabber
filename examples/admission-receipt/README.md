@@ -24,3 +24,11 @@ Schema 5 requires stopping writers, backing up, explicitly migrating and deployi
 matching binaries. No mixed v4/v5 writers or down migration; rollback uses backup
 restore or forward repair. Capsules/receipts remain for the retained session
 lifetime. The example uses fake provider output and requires no credentials.
+
+## SQLite
+
+Run `cargo run -p admission-receipt --features sqlite -- --sqlite` without
+credentials. The command migrates an isolated temporary database and asserts one
+run, one receipt, one user message and one provider execution through the same
+lost-response/recovery journey. It ignores `CRABBER_SQLITE_PATH` and removes its
+directory on success. See [SQLite operations](../../docs/sqlite-store.md).

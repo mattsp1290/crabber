@@ -41,11 +41,24 @@ workspace, and that a fresh host presenting a replacement root is rejected.
 Without the variable they skip; with `CRABBER_REQUIRE_POSTGRES=1` its absence
 is a failure.
 
+The SQLite fresh-process tests in [tests/sqlite.rs](tests/sqlite.rs) need no
+credentials or database variable:
+
+```sh
+cargo test -p workspace-context-probe --features sqlite
+```
+
+`fresh_host_resumes_paused_run_with_the_persisted_workspace` uses a temporary
+SQLite file, re-executes a child, checks stored identity and rejects directory
+drift before tool effects. SQLite tests exist only in this in-workspace probe;
+the standalone pinned probe retains its published revision without a SQLite variant.
+See [SQLite operations](../../docs/sqlite-store.md).
+
 WASM guests do not receive workspace context. See
 [the embedding guide](../../docs/embedding.md#workspace-context).
 
 The [standalone pinned probe](../../testdata/workspace-context-probe/README.md)
 verifies a published revision for consumers; this workspace member guards the
-current source in CI. Their Rust sources are duplicated deliberately and differ
-only in the imported probe crate name. The standalone copy must use only APIs
+current source in CI. Their shared Memory/PostgreSQL Rust sources are duplicated deliberately and differ
+only in the imported probe crate name; the SQLite file is workspace-only. The standalone copy must use only APIs
 available at its pin; update both copies when changing the shared proofs.

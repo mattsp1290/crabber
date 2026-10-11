@@ -49,6 +49,9 @@ No Agentcraft repository changes are included in this milestone.
    settlement, **not** successful abandonment. Inspect history rather than treat
    these denials as success. Error/event payloads are not replay credentials.
 
+SQLite performs these settlement steps in one write transaction
+(`shared_abandonment_contract`, `rollback_unknown_response_and_fresh_process_replay`).
+
 Fence rotation, unfinished-call settlement, the terminal run/event, and private
 `abandonment_commits` provenance publish in one transaction. A stale execution
 handle cannot append messages/parts/events, create/claim/settle tools, renew, change
@@ -74,9 +77,10 @@ provenance.
 cargo run --quiet -p fenced-abandon
 # Configure CRABBER_POSTGRES_URL for a dedicated PostgreSQL 14+ database.
 cargo run --quiet -p fenced-abandon --features postgres -- --postgres
+cargo run --quiet -p fenced-abandon --features sqlite -- --sqlite
 ```
 
-Both modes pause a persisted run containing unsafe Pending and Running tool work
+All modes pause a persisted run containing unsafe Pending and Running tool work
 with unavailable configuration. They demonstrate ordinary live rejection, wait
 for authoritative child exit, administratively abandon and exactly replay. Output
 reports compilation Git SHA and runtime Git SHA (asserted identical), backend, run
@@ -86,6 +90,9 @@ cannot be mounted. PostgreSQL launches a fresh executable process that reads the
 durable Interrupted run, confirms no unfinished calls, retries the saved request,
 and verifies unchanged messages/events. Rebuild after source commits; an identity
 mismatch fails instead of printing a misleading source revision.
+
+SQLite needs no environment variable and uses a temporary database; the
+`--sqlite` command verifies the same fresh-process readback and zero counters.
 
 Tests use `CRABBER_TEST_POSTGRES_URL`; demos use `CRABBER_POSTGRES_URL`. Set
 `CRABBER_REQUIRE_POSTGRES=1` for mandatory service tests. CI provisions a dedicated
@@ -141,3 +148,17 @@ every later attempt. It is not recovered automatically: `recover` lists it as a
 `SkippedRun` in its report, and once its lease has expired, settle it with `abandon`
 under this protocol. See
 [workspace context](embedding.md#workspace-context).
+
+## SQLite evidence
+
+The earlier request map above retains its original evidence. SQLite parity adds:
+
+- `public_sqlite_pending_running_paused_zero_execution`: public state/authority
+  matrix, preserved history and inbox, exact replay and stale-owner fencing.
+- `sqlite_stopped_process_and_error_semantics`: authoritative stop and denials.
+- `rollback_unknown_response_and_fresh_process_replay`: SQL rollback, lost commit
+  reply and original-outcome readback in another process.
+- `public_cross_join_crash_barrier_rolls_back`: physical writer kill before commit.
+
+Run `cargo test -p crabber --features sqlite --test fenced_abandon` and
+`cargo test -p crabber-session --features sqlite`. See [SQLite operations](sqlite-store.md).

@@ -4,9 +4,17 @@ The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It
 
 The host calls `PostgresStore::migrate(url)` before `PostgresStore::connect(url)`. Connect verifies the schema version without changing it. The default build does not include the PostgreSQL driver.
 
+The `sqlite` feature exposes `SqliteStore`. Call `SqliteStore::migrate(path)` then
+`SqliteStore::connect(path)`; connect never creates a file or changes schema
+(`connect_never_creates_a_file`, `connect_is_read_only`). See the
+[SQLite operations guide](../../docs/sqlite-store.md) for lifecycle, file protection,
+backup and restore.
+
 Set `CRABBER_TEST_POSTGRES_URL` to run the live contract tests. Set `CRABBER_REQUIRE_POSTGRES=1` to fail if that URL is missing.
 
 ## Keyed admission (MemoryStore and PostgreSQL)
+
+`SqliteStore` provides the same keyed contract (`sqlite_admission_contract`).
 
 `Store::admit_keyed_run(KeyedAdmitRequest)` atomically creates a session if needed,
 its user message, run/epoch, and immutable `AdmissionReceipt`. The request must
@@ -99,12 +107,18 @@ Existing fenced resume/recover rules remain responsible for execution recovery.
 
 A PostgreSQL transport/commit failure is currently sanitized as
 `StoreError::Validation("PostgreSQL operation failed")`. The `Validation` variant
-alone therefore does **not** establish rejection. Do not classify rejection by
+alone therefore does **not** establish rejection. SQLite database failures use
+`StoreError::Validation("SQLite operation failed")` and require the same unknown-outcome
+handling (`busy_timeout_surfaces_as_sanitized_unknown_outcome`,
+`sqlite_public_facade_fault_restart_journey`). Do not classify rejection by
 matching human-readable error strings. Unless an error has a documented definitive
 semantic outcome, reconcile it as unknown using the original key and payload. See
 [the complete host decision table](../../docs/admission-receipts.md).
 
 ## Fenced abandonment (MemoryStore)
+
+`SqliteStore` provides the same atomic settlement and exact-replay contract
+(`shared_abandonment_contract`).
 
 `Agent::abandon(AbandonRequest { expected, expected_owner, authority })` calls the
 store directly, without resolving providers, mounting extension plans or invoking
@@ -166,6 +180,9 @@ assertion that required-service tests reject a missing database URL.
 
 
 ## Durable unstarted admission execution
+
+`SqliteStore` provides the same retained evidence and fenced-begin contract
+(`sqlite_admission_execution_contract`).
 
 Keyed runtime admission atomically retains a version-1, redacted-Debug execution
 capsule with the receipt, run, original user message and epoch. It includes original
