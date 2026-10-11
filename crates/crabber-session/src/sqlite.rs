@@ -320,3 +320,20 @@ mod lifecycle_tests;
 mod abandon_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod admission_execution_tests;
+#[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
+mod barrier_tests;
+#[cfg(test)]
+mod canonical_tests;
+#[cfg(test)]
+mod durability_tests;
+#[cfg(test)]
+mod process_tests;
+#[cfg(test)]
+mod snapshot_tests;
+#[cfg(test)]
+mod test_support;
