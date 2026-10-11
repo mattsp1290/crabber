@@ -25,6 +25,7 @@ dependencies = [
  "crabber",
  "sha2",
  "sqlx",
+ "tempfile",
  "time",
  "tokio",
 ]
@@ -287,6 +288,7 @@ dependencies = [
  "allocation-counter",
  "crabber",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
 ]
@@ -1029,6 +1031,7 @@ dependencies = [
  "async-trait",
  "crabber",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1963,6 +1966,7 @@ dependencies = [
  "crabber",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
 ]
 
@@ -4534,6 +4538,7 @@ dependencies = [
  "async-trait",
  "crabber",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
 ]

@@ -5,16 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tempfile = "3"
 crabber = { path = "../../crates/crabber" }
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 sha2 = "0.10"
 async-trait = "0.1"
 time = "0.3"
-sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio"] }
 
 [lints]
 workspace = true
 
 [features]
 default = []
-postgres = ["crabber/postgres", "dep:sqlx"]
+postgres = ["crabber/postgres", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls"]
+sqlite = ["crabber/sqlite", "dep:sqlx", "sqlx/sqlite"]

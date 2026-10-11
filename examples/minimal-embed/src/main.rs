@@ -4,7 +4,7 @@ use crabber::{
     StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
     core::{EventRecord, RunId, RunStatus, SessionId, ToolCallId, ToolInfo},
     extension::{Extension, GuardDecision, Registrar, Scope, ToolGuard},
-    session::{MemoryStore, PostgresStore, Store},
+    session::{MemoryStore, PostgresStore, SqliteStore, Store},
     wasm::{InstanceMode, Limits, ModuleConfig},
 };
 use serde_json::{Value, json};
@@ -186,7 +186,14 @@ async fn create_store(store_kind: &str) -> Result<Arc<dyn Store>, Box<dyn Error>
             PostgresStore::migrate(&url).await?;
             Ok(Arc::new(PostgresStore::connect(&url).await?))
         }
-        _ => Err("--store must be memory or postgres".into()),
+        "sqlite" => {
+            let path = std::env::var_os("CRABBER_SQLITE_PATH")
+                .ok_or("CRABBER_SQLITE_PATH is required for --store sqlite")?;
+            let path = PathBuf::from(path);
+            SqliteStore::migrate(&path).await?;
+            Ok(Arc::new(SqliteStore::connect(&path).await?))
+        }
+        _ => Err("--store must be memory, postgres or sqlite".into()),
     }
 }
 

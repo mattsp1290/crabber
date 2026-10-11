@@ -261,6 +261,8 @@ pub enum ChildMode {
     Test,
     #[cfg(feature = "sqlite")]
     SqliteTest(std::path::PathBuf),
+    #[cfg(feature = "sqlite")]
+    SqliteDemo(std::path::PathBuf, bool),
 }
 
 fn verify_child(
@@ -287,6 +289,16 @@ fn verify_child(
             command
                 .args(["--exact", "postgres_snapshot_child_process", "--nocapture"])
                 .env("CRABBER_BOUNDED_CHILD", &encoded);
+        }
+        #[cfg(feature = "sqlite")]
+        ChildMode::SqliteDemo(path, check) => {
+            command
+                .arg("--sqlite-child")
+                .env("CRABBER_SQLITE_CHILD_PATH", path)
+                .env("CRABBER_SQLITE_SNAPSHOT_CHILD", &encoded);
+            if *check {
+                command.env("CRABBER_SQLITE_SNAPSHOT_CHECK", "1");
+            }
         }
         #[cfg(feature = "sqlite")]
         ChildMode::SqliteTest(path) => {

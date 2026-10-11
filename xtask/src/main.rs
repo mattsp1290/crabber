@@ -187,9 +187,17 @@ fn check_sqlite(workspace: &Path) {
             "wasm_roles",
         ],
     );
+    for package in ["crabber-runtime", "workspace-context-probe"] {
+        run(workspace, &["test", "-p", package, "--features", "sqlite"]);
+    }
     run(
         workspace,
-        &["test", "-p", "crabber-runtime", "--features", "sqlite"],
+        &[
+            "test",
+            "-p",
+            "minimal-embed",
+            "sqlite_interrupt_then_fresh_process_continues_session",
+        ],
     );
 }
 
@@ -290,6 +298,27 @@ fn check_journeys(workspace: &Path) {
             "--check",
         ],
     );
+    for (package, argument) in [
+        ("host-trace", "sqlite"),
+        ("admission-receipt", "--sqlite"),
+        ("bounded-snapshot", "--sqlite"),
+        ("fenced-abandon", "--sqlite"),
+    ] {
+        let mut arguments = vec![
+            "run",
+            "--quiet",
+            "-p",
+            package,
+            "--features",
+            "sqlite",
+            "--",
+            argument,
+        ];
+        if package == "bounded-snapshot" {
+            arguments.push("--check");
+        }
+        run(workspace, &arguments);
+    }
 }
 
 fn check_wit(workspace: &Path) {

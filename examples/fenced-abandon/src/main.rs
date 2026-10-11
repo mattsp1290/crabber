@@ -66,8 +66,36 @@ fn event(run: &Run, kind: EventKind) -> EventRecord {
 #[tokio::main(flavor = "current_thread")]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let postgres = std::env::args().any(|arg| arg == "--postgres");
-    let store = connect(postgres).await?;
+    let argument = std::env::args().nth(1).unwrap_or_else(|| "--memory".into());
+    #[cfg(feature = "sqlite")]
+    let directory =
+        if argument == "--sqlite" && std::env::var_os("CRABBER_ABANDON_DEMO_REQUEST").is_none() {
+            Some(
+                tempfile::Builder::new()
+                    .prefix("crabber-abandon-")
+                    .tempdir()?,
+            )
+        } else {
+            None
+        };
+    let mode = match argument.as_str() {
+        "--memory" => Mode::Memory,
+        "--postgres" => Mode::Postgres,
+        #[cfg(feature = "sqlite")]
+        "--sqlite" => {
+            let path = if let Some(directory) = &directory {
+                directory.path().join("session.sqlite")
+            } else {
+                std::path::PathBuf::from(std::env::var_os("CRABBER_SQLITE_CHILD_PATH").ok_or("SQLite child path required")?)
+            };
+            if directory.is_some() {
+                crabber::session::SqliteStore::migrate(&path).await?;
+            }
+            Mode::Sqlite(path)
+        }
+        _ => return Err("usage: fenced-abandon --memory | --postgres | --sqlite (durable modes require their Cargo feature)".into()),
+    };
+    let store = connect(&mode).await?;
     let counters = Arc::new(AtomicUsize::new(0));
     let tool = Arc::new(AtomicUsize::new(0));
     let mount = Arc::new(AtomicUsize::new(0));
@@ -118,7 +146,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             events
         );
         print_identity(
-            postgres,
+            &mode,
             &expected,
             counters.load(Ordering::SeqCst),
             tool.load(Ordering::SeqCst),
@@ -208,21 +236,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(outcome.interrupted_tools.len(), 2);
     assert_eq!(agent.abandon(request).await?, outcome);
     print_identity(
-        postgres,
+        &mode,
         &outcome,
         counters.load(Ordering::SeqCst),
         tool.load(Ordering::SeqCst),
         mount.load(Ordering::SeqCst),
     )?;
-    if postgres {
-        let child = Command::new(std::env::current_exe()?)
-            .arg("--postgres")
+    if !matches!(mode, Mode::Memory) {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.arg(mode.argument());
+        #[cfg(feature = "sqlite")]
+        if let Mode::Sqlite(path) = &mode {
+            command.env("CRABBER_SQLITE_CHILD_PATH", path);
+        }
+        command
             .env("CRABBER_ABANDON_DEMO_REQUEST", persisted_request)
             .env(
                 "CRABBER_ABANDON_DEMO_OUTCOME",
                 serde_json::to_string(&outcome)?,
-            )
-            .output()?;
+            );
+        let child = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::from(command)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| "fresh abandonment process timed out")??;
         assert!(
             child.status.success(),
             "{}",
@@ -232,25 +272,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
-#[cfg_attr(not(feature = "postgres"), allow(clippy::unused_async))]
-async fn connect(postgres: bool) -> Result<Arc<dyn Store>, Box<dyn Error>> {
-    if !postgres {
-        return Ok(Arc::new(MemoryStore::new()));
+enum Mode {
+    Memory,
+    Postgres,
+    #[cfg(feature = "sqlite")]
+    Sqlite(std::path::PathBuf),
+}
+impl Mode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Postgres => "postgres",
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(_) => "sqlite",
+        }
     }
-    #[cfg(feature = "postgres")]
-    {
-        let url = std::env::var("CRABBER_POSTGRES_URL")
-            .map_err(|_| "CRABBER_POSTGRES_URL is required")?;
-        crabber::session::PostgresStore::migrate(&url).await?;
-        Ok(Arc::new(
-            crabber::session::PostgresStore::connect(&url).await?,
-        ))
+    fn argument(&self) -> &'static str {
+        match self {
+            Self::Memory => "--memory",
+            Self::Postgres => "--postgres",
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(_) => "--sqlite",
+        }
     }
-    #[cfg(not(feature = "postgres"))]
-    Err("--postgres requires postgres feature".into())
+}
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "sqlite")),
+    allow(clippy::unused_async)
+)]
+async fn connect(mode: &Mode) -> Result<Arc<dyn Store>, Box<dyn Error>> {
+    match mode {
+        Mode::Memory => Ok(Arc::new(MemoryStore::new())),
+        Mode::Postgres => {
+            #[cfg(feature = "postgres")]
+            {
+                let url = std::env::var("CRABBER_POSTGRES_URL")
+                    .map_err(|_| "CRABBER_POSTGRES_URL is required")?;
+                crabber::session::PostgresStore::migrate(&url).await?;
+                Ok(Arc::new(
+                    crabber::session::PostgresStore::connect(&url).await?,
+                ))
+            }
+            #[cfg(not(feature = "postgres"))]
+            Err("--postgres requires postgres feature".into())
+        }
+        #[cfg(feature = "sqlite")]
+        Mode::Sqlite(path) => Ok(Arc::new(
+            crabber::session::SqliteStore::connect(path).await?,
+        )),
+    }
 }
 fn print_identity(
-    postgres: bool,
+    mode: &Mode,
     outcome: &AbandonOutcome,
     provider: usize,
     tool: usize,
@@ -272,7 +345,7 @@ fn print_identity(
         "compiled_sha={} runtime_sha={} backend={} run={} terminal_event={:?} status=Interrupted provider_counter={} tool_counter={} mount_hook_counter={}",
         env!("CRABBER_COMPILED_SHA"),
         runtime.trim(),
-        if postgres { "postgres" } else { "memory" },
+        mode.label(),
         outcome.run.id,
         outcome.terminal_event.cursor,
         provider,

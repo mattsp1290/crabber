@@ -11,7 +11,9 @@ use std::{error::Error, process::Command, sync::Arc};
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "--memory".into());
-    let store = connect(&mode).await?;
+    let (store, directory) = connect(&mode).await?;
+    #[cfg(not(feature = "sqlite"))]
+    let _ = &directory;
     let provider = Arc::new(FakeProvider::scripted(vec![vec![
         StreamDelta::TextDelta("Done.".into()),
         StreamDelta::Completed,
@@ -81,6 +83,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "postgres")]
     if mode == "--postgres" {
         verify_postgres_counts(&session).await?;
+    }
+    #[cfg(feature = "sqlite")]
+    if let Some(directory) = &directory {
+        verify_sqlite_counts(&directory.path().join("session.sqlite"), &session).await?;
     }
     assert_eq!(result.run_id, receipt.run_id);
     print_source(&mode)?;
@@ -170,8 +176,13 @@ async fn recover_initial(
 }
 
 // PostgreSQL performs asynchronous migration/connect when that mode is enabled.
-#[cfg_attr(not(feature = "postgres"), allow(clippy::unused_async))]
-async fn connect(mode: &str) -> Result<Arc<dyn Store>, Box<dyn Error>> {
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "sqlite")),
+    allow(clippy::unused_async)
+)]
+async fn connect(
+    mode: &str,
+) -> Result<(Arc<dyn Store>, Option<tempfile::TempDir>), Box<dyn Error>> {
     let store: Arc<dyn Store> = match mode {
         "--memory" => Arc::new(MemoryStore::new()),
         #[cfg(feature = "postgres")]
@@ -181,13 +192,23 @@ async fn connect(mode: &str) -> Result<Arc<dyn Store>, Box<dyn Error>> {
             crabber::session::PostgresStore::migrate(&url).await?;
             Arc::new(crabber::session::PostgresStore::connect(&url).await?)
         }
+        #[cfg(feature = "sqlite")]
+        "--sqlite" => {
+            let directory = tempfile::Builder::new()
+                .prefix("crabber-admission-")
+                .tempdir()?;
+            let path = directory.path().join("session.sqlite");
+            crabber::session::SqliteStore::migrate(&path).await?;
+            let store = Arc::new(crabber::session::SqliteStore::connect(&path).await?);
+            return Ok((store, Some(directory)));
+        }
         _ => {
             return Err(
-                "usage: admission-receipt --memory | --postgres (requires postgres feature)".into(),
+                "usage: admission-receipt --memory | --postgres | --sqlite (durable modes require their Cargo feature)".into(),
             );
         }
     };
-    Ok(store)
+    Ok((store, None))
 }
 
 fn print_source(mode: &str) -> Result<(), Box<dyn Error>> {
@@ -203,10 +224,10 @@ fn print_source(mode: &str) -> Result<(), Box<dyn Error>> {
         "source={} store={} schema={} provider=fake/scripted",
         sha.trim(),
         mode.trim_start_matches("--"),
-        if mode == "--postgres" {
-            "5"
-        } else {
-            "admission-v1"
+        match mode {
+            "--postgres" => "5",
+            "--sqlite" => "1",
+            _ => "admission-v1",
         }
     );
     Ok(())
@@ -217,6 +238,34 @@ async fn verify_postgres_counts(session: &SessionId) -> Result<(), Box<dyn Error
     let url = std::env::var("CRABBER_TEST_POSTGRES_URL")
         .map_err(|_| "CRABBER_TEST_POSTGRES_URL is required for --postgres")?;
     let pool = sqlx::PgPool::connect(&url)
+        .await
+        .map_err(|_| "database evidence connection failed")?;
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE session_id=$1")
+        .bind(&session.0)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| "run evidence query failed")?;
+    let receipts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM admission_receipts WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| "receipt evidence query failed")?;
+    assert_eq!((runs, receipts), (1, 1));
+    println!("durable_runs={runs} durable_receipts={receipts} count_assertions=2");
+    pool.close().await;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+async fn verify_sqlite_counts(
+    path: &std::path::Path,
+    session: &SessionId,
+) -> Result<(), Box<dyn Error>> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false);
+    let pool = sqlx::SqlitePool::connect_with(options)
         .await
         .map_err(|_| "database evidence connection failed")?;
     let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE session_id=$1")
