@@ -108,6 +108,44 @@ schema 5 requires a coordinated stop/backup/migrate/deploy, with no mixed writer
 The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.
 
+## SQLite persistence
+
+Enable the facade's `sqlite` feature for `crabber::session::SqliteStore` and
+`AgentBuilder::sqlite(path)`. Call `SqliteStore::migrate(path)` before connecting;
+`connect` never creates a file or changes schema. The
+[SQLite operations guide](docs/sqlite-store.md) maps lifecycle outcomes to tests
+and explains permissions, concurrency, backup and restore. The minimal example
+already enables SQLite and reads `CRABBER_SQLITE_PATH`:
+
+```sh
+# Set CRABBER_SQLITE_PATH to a file in a private, existing local directory.
+cargo run -p minimal-embed -- --store sqlite --interrupt-after-first-delta
+# Retain the printed run ID and the same CRABBER_SQLITE_PATH for the next process.
+cargo run -p minimal-embed -- --store sqlite --resume <run-id>
+```
+
+`sqlite_interrupt_then_fresh_process_continues_session` proves interruption in
+one executable and Completed continuation in a second, with a distinct new run
+in the stored session; it also proves a missing path fails without creating files.
+These fake-provider journeys need no credentials and create isolated temporary
+files without reading `CRABBER_SQLITE_PATH`:
+
+```sh
+cargo run -p admission-receipt --features sqlite -- --sqlite
+cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
+cargo run -p fenced-abandon --features sqlite -- --sqlite
+cargo run -p host-trace --features sqlite -- sqlite
+cargo test -p workspace-context-probe --features sqlite
+```
+
+The admission demo asserts one run/receipt/provider execution, the snapshot demo
+checks fresh-process continuation, abandonment checks exact retry and zero effects,
+and host tracing checks fresh-worker pause/resume/duplicate delivery and captured
+links. The probe's `fresh_host_resumes_paused_run_with_the_persisted_workspace`
+checks persisted identity and rejects directory drift. `cargo xtask check` runs
+all these SQLite paths. The standalone pinned probes under `testdata/` retain
+their published revisions and have no SQLite variant.
+
 ## Bounded embedding history
 
 Use `Store::snapshot(SnapshotRequest)` to page a large session with explicit message,
@@ -120,12 +158,13 @@ once the snapshot is complete. `Limited` supports same-position retry;
 cargo run -p bounded-snapshot -- --memory
 # Set CRABBER_TEST_POSTGRES_URL to a disposable dedicated PostgreSQL 14+ database.
 cargo run -p bounded-snapshot --features postgres -- --postgres
+cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 ```
 
-Run from a clean, committed checkout. Both fake-data modes verify bounded allocation,
+Run from a clean, committed checkout. The fake-data modes verify bounded allocation,
 settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
-process. See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
-for ordering, token durability, errors and schema-4 maintenance requirements.
+process; SQLite does too (`sqlite_embedding_independent_stores_and_fresh_process`). See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
+for ordering, token durability, errors and current schema-5 maintenance requirements.
 
 The [host tracing embedding](examples/host-trace/README.md) demonstrates explicit
 validated 64/128-bit context, composed callbacks and broadcasts, real Datadog
@@ -152,7 +191,9 @@ cover unknown-response retry, authoritative worker stop, retained session/inbox
 behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
 with `CRABBER_POSTGRES_URL` configured, run
 `cargo run --quiet -p fenced-abandon --features postgres -- --postgres` for durable
-fresh-process readback. Both print matching compilation/runtime Git SHAs, durable
+fresh-process readback. SQLite needs no variable:
+`cargo run --quiet -p fenced-abandon --features sqlite -- --sqlite` proves the same
+fresh-process readback, exact replay and zero-effects assertions. All modes print matching compilation/runtime Git SHAs, durable
 run/event IDs and measured zero provider/tool/mount counters.
 
 ## Adoption examples

@@ -15,12 +15,15 @@ Commit changes, then run from the invocation source checkout:
 cargo run -p bounded-snapshot -- --memory
 # CRABBER_TEST_POSTGRES_URL identifies a disposable dedicated PostgreSQL 14+ database.
 CRABBER_REQUIRE_POSTGRES=1 cargo run -p bounded-snapshot --features postgres -- --postgres
+cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 ```
 
 The Memory mode needs no credentials or provider. PostgreSQL uses fake data and
 requires only the dedicated database. The example explicitly migrates that database,
 opens independent reader/writer pools and starts a new child process that connects
 without migrating. Avoid pointing test/demo commands at an application database.
+The SQLite mode creates a temporary file and resumes in a fresh child that
+connects without migrating (`sqlite_embedding_independent_stores_and_fresh_process`).
 The facade and allocation tests use the same journey source as the executable.
 
 Output records the full invocation checkout Git SHA after checking that its tree is
@@ -114,9 +117,19 @@ Store that inherits the fail-closed default and a custom Store delegating snapsh
 to Memory. It runs limits/retry, immutable H, exact compact-byte usage, page completion
 and strict event continuation using public exports with consumer feature unification.
 
+## SQLite maintenance
+
+SQLite continuations are signed with a secret retained in the database file.
+They survive a fresh process (`continuation_survives_fresh_process`) and repeated
+migration keeps the secret (`migrate_is_idempotent_and_keeps_the_snapshot_secret`).
+A restore of the same database retains that secret; subsequent record mutations
+can still invalidate a token (`public_message_claim_and_settlement_mutations_invalidate_authenticated_tokens`).
+Follow the [backup and restore procedure](sqlite-store.md#backup-and-restore);
+`online_backup_during_writes_is_consistent` proves consistent restored history.
+
 ## PostgreSQL maintenance
 
-`PostgresStore::connect` checks schema version 4 and performs no migration writes.
+`PostgresStore::connect` checks the current schema version 5 and performs no migration writes.
 Call `PostgresStore::migrate` explicitly during a maintenance window before opening
 application traffic. The upgrade takes exclusive table locks and adds canonical
 record storage alongside existing JSONB columns, increasing storage usage. It

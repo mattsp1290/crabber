@@ -31,6 +31,9 @@ does not provide a transaction spanning that database and its own store.
 
 Do not classify rejection from error text. In particular PostgreSQL connection and
 commit errors are sanitized as `StoreError::Validation("PostgreSQL operation failed")`.
+SQLite database failures are sanitized as `StoreError::Validation("SQLite operation failed")`
+(`busy_timeout_surfaces_as_sanitized_unknown_outcome`,
+`sqlite_public_facade_fault_restart_journey`); apply the same reconciliation rule.
 Even this `Validation` variant can represent a committed admission whose reply was
 lost. Only typed, documented semantic outcomes justify the corresponding table row;
 a broad `Validation` match is not evidence that nothing committed.
@@ -156,7 +159,8 @@ history, usage, checkpoints, snapshots, inbox and abandonment evidence. It never
 backfills Unstarted from legacy records. Rollback requires restoring the backup
 or forward repair; an old binary cannot connect to v5.
 
-Library proof includes shared Memory/Postgres execution contracts, live process
+Library proof includes shared Memory/Postgres/SQLite execution contracts
+(`sqlite_admission_execution_contract`), live process
 claim/start uncertainty and provider/tool death, delayed old-owner spawn fencing,
 semantic drift and immutable receipt retention. Agentcraft consumer acceptance
 is separately owned: pin the immutable implementing Crabber revision and run the
@@ -175,9 +179,12 @@ CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber-session --features postgres
 CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features postgres --test admission_receipts -- --nocapture
 cargo run -p admission-receipt -- --memory
 cargo run -p admission-receipt --features postgres -- --postgres
+cargo test -p crabber-session --features sqlite
+cargo test -p crabber --features sqlite --test admission_receipts
+cargo run -p admission-receipt --features sqlite -- --sqlite
 ```
 
-`xtask check` runs the memory demo and workspace tests (including stdout tests that
+`xtask check` runs the memory and SQLite demos and workspace tests (including stdout tests that
 execute the existing unkeyed examples), builds workspace targets, runs the
 external-consumer check and enforces the minimal-embed glue limit. CI's PostgreSQL job requires the store suite,
 facade fault/restart journey and PostgreSQL demo. The migration test

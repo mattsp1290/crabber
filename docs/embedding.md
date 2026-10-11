@@ -11,6 +11,7 @@ Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for cu
 | Output token cap | `AgentConfig::max_output_tokens` | Every model turn, keyed admission identity, pause/resume, and hook precedence; see [Output token cap](#output-token-cap). |
 | Memory + fake provider | [minimal embedding](../examples/minimal-embed/src/main.rs) | `cargo run -p minimal-embed` |
 | PostgreSQL persistence | [session store](../crates/crabber-session/README.md) | `cargo run -p minimal-embed -- --store postgres`; set `CRABBER_POSTGRES_URL`, dedicated PostgreSQL 14+; facade `postgres` |
+| SQLite persistence | [SQLite operations](sqlite-store.md) | `cargo run -p minimal-embed -- --store sqlite`; set `CRABBER_SQLITE_PATH`; facade `sqlite`; restart proof `sqlite_interrupt_then_fresh_process_continues_session` |
 | Real providers | [provider usage](../crates/crabber-providers/README.md) | facade `anthropic`, `openai`, `codex`, `opencode-go`; manual service configuration |
 | Host-owned HTTP provider | [custom HTTP contract](../crates/crabber-providers/README.md#host-owned-custom-http-providers) | independent facade `custom-http`; `HttpAdapter::custom` + `HttpResolver::with_adapter`; construction-only external probe is offline |
 | Fenced abandonment | [host protocol](fenced-abandon.md) | `cargo run -p fenced-abandon`; memory default, manual PostgreSQL mode |
@@ -66,7 +67,8 @@ Migration notes for the named downstream consumers:
   and supplying host-owned credential and model services.
 
 `cargo xtask check` builds local WASM fixtures, checks formatting/Clippy, runs
-workspace tests, offline host journeys and the external public-API consumer,
+workspace tests, SQLite probe/restart tests and all four SQLite demo journeys,
+offline host journeys and the external public-API consumer,
 and enforces minimal-embed's 60-line marked glue limit. It requires no credentials
 or external accounts. Real PostgreSQL/provider setup, login/logout and live
 Datadog ingestion are manual external-service steps. Do not run Codex credential
