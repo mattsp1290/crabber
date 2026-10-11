@@ -1,4 +1,4 @@
-use super::records::{call_status, decode_row, insert_event, insert_message, load_run, save_run};
+use super::records::{decode_row, insert_event, insert_message, load_run, save_call, save_run};
 use super::{SqliteStore, db, text};
 use crate::StoreError;
 use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
@@ -87,22 +87,7 @@ async fn settle(
         insert_event(tx, &run, &event).await?;
         call.status = ToolCallStatus::Interrupted;
         call.result = Some(result);
-        text(&call)?;
-        let accounting = super::snapshot::call_record(&call)?;
-        sqlx::query(
-            "UPDATE tool_calls SET \
-                status=$2,data=$3,snapshot_parts=$4,snapshot_text=$5,snapshot_bytes=$6 \
-                WHERE id=$1",
-        )
-        .bind(&call.id.0)
-        .bind(call_status(call.status))
-        .bind(&accounting.record)
-        .bind(accounting.parts)
-        .bind(accounting.text)
-        .bind(accounting.bytes)
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
+        save_call(tx, &call.id, &call).await?;
     }
     run.status = RunStatus::Interrupted;
     save_run(tx, &run).await?;

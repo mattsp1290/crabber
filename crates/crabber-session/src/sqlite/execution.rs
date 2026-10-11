@@ -1,6 +1,7 @@
 //! Fenced execution effects; each call owns one immediate write transaction.
 use super::records::{
-    call_status, decode_row, inbox_kind, insert_event, insert_message, insert_part, save_run,
+    call_status, decode_row, inbox_kind, insert_event, insert_message, insert_part, save_call,
+    save_run,
 };
 use super::transactions::finish;
 use super::{SqliteStore, StoreError, admission_execution, db, snapshot, text};
@@ -158,22 +159,7 @@ impl ExecutionStore for SqliteExecution {
             }
             insert_event(&mut tx, &run, &running_event).await?;
             call.status = ToolCallStatus::Running;
-            text(&call)?;
-            let accounting = snapshot::call_record(&call)?;
-            sqlx::query(
-                "UPDATE tool_calls SET \
-                    status=$2,data=$3,snapshot_parts=$4,snapshot_text=$5,snapshot_bytes=$6 \
-                    WHERE id=$1",
-            )
-            .bind(&id.0)
-            .bind(call_status(call.status))
-            .bind(&accounting.record)
-            .bind(accounting.parts)
-            .bind(accounting.text)
-            .bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+            save_call(&mut tx, id, &call).await?;
             Ok(())
         }
         .await;
@@ -215,22 +201,7 @@ impl ExecutionStore for SqliteExecution {
                 ToolResultStatus::Interrupted => ToolCallStatus::Interrupted,
             };
             call.result = Some(result);
-            text(&call)?;
-            let accounting = snapshot::call_record(&call)?;
-            sqlx::query(
-                "UPDATE tool_calls SET \
-    status=$2,data=$3,snapshot_parts=$4,snapshot_text=$5,snapshot_bytes=$6 \
-    WHERE id=$1",
-            )
-            .bind(&id.0)
-            .bind(call_status(call.status))
-            .bind(&accounting.record)
-            .bind(accounting.parts)
-            .bind(accounting.text)
-            .bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+            save_call(&mut tx, id, &call).await?;
             Ok(())
         }
         .await;

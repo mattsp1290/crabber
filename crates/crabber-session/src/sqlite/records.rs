@@ -4,7 +4,7 @@ use crate::InboxKind;
 use crate::sql_snapshot as snapshot;
 use crabber_core::{
     AdmissionKey, AdmissionReceipt, ContextEpoch, EpochId, EventRecord, Message, Part, PartKind,
-    Run, RunId, RunStatus, SessionId, ToolCallStatus,
+    Run, RunId, RunStatus, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus,
 };
 use serde::de::DeserializeOwned;
 use sqlx::{Row, sqlite::SqliteRow};
@@ -66,6 +66,26 @@ pub(super) async fn save_run(
     .map_err(db)?;
     Ok(())
 }
+pub(super) async fn save_call(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &ToolCallId,
+    call: &ToolCallRecord,
+) -> Result<(), StoreError> {
+    text(call)?;
+    let accounting = snapshot::call_record(call)?;
+    sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_parts=$4,snapshot_text=$5,snapshot_bytes=$6 WHERE id=$1")
+        .bind(&id.0)
+        .bind(call_status(call.status))
+        .bind(&accounting.record)
+        .bind(accounting.parts)
+        .bind(accounting.text)
+        .bind(accounting.bytes)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 pub(super) async fn load_run(
     tx: &mut Transaction<'_, Sqlite>,
     id: &RunId,
