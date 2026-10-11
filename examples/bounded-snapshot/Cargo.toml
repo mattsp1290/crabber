@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tempfile = { version = "3", optional = true }
 crabber = { path = "../../crates/crabber" }
 allocation-counter = "0.8.1"
 serde_json = "1"
@@ -14,7 +15,7 @@ tokio = { version = "1", features = ["macros", "rt", "sync"] }
 [features]
 default = []
 postgres = ["crabber/postgres"]
-sqlite = ["crabber/sqlite"]
+sqlite = ["crabber/sqlite", "dep:tempfile"]
 
 [lints]
 workspace = true

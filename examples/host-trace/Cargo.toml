@@ -19,3 +19,4 @@ workspace = true
 default = ["datadog"]
 datadog = ["crabber/datadog"]
 postgres = ["crabber/postgres"]
+sqlite = ["crabber/sqlite"]

@@ -12,6 +12,22 @@ fn main() {
         runtime.block_on(journey::child());
         return;
     }
+    #[cfg(feature = "sqlite")]
+    if mode == "--sqlite-child" {
+        runtime.block_on(journey::child());
+        return;
+    }
+    #[cfg(feature = "sqlite")]
+    let directory = if mode == "--sqlite" {
+        Some(
+            tempfile::Builder::new()
+                .prefix("crabber-snapshot-")
+                .tempdir()
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     let check = std::env::args().any(|arg| arg == "--check");
     let source = journey::source(!check);
     let (backend, stores, child) = match mode.as_str() {
@@ -22,7 +38,18 @@ fn main() {
             runtime.block_on(journey::postgres(true)),
             journey::ChildMode::Demo(check),
         ),
-        _ => panic!("usage: bounded-snapshot --memory | --postgres (requires postgres feature)"),
+        #[cfg(feature = "sqlite")]
+        "--sqlite" => {
+            let path = directory.as_ref().unwrap().path().join("session.sqlite");
+            (
+                "sqlite",
+                runtime.block_on(journey::sqlite(&path, true)),
+                journey::ChildMode::SqliteDemo(path, check),
+            )
+        }
+        _ => panic!(
+            "usage: bounded-snapshot --memory | --postgres | --sqlite (durable modes require their Cargo feature)"
+        ),
     };
     runtime.block_on(journey::journey(stores.clone(), backend, &source, child));
     journey::allocation_proof(&runtime, &stores, backend, &source);
