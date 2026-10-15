@@ -110,11 +110,20 @@ impl ContextualPlanProvider {
         // A failed attempt's resources remain reachable until cleanup really ends.
         self.clean_records(&slot).await?;
         self.check_slot(&slot)?;
-        let result = match &slot.owner {
-            Owner::Shared => self.install_shared(&slot).await,
-            Owner::Workspace(_) => self.install_factories(&slot, FactoryScope::Workspace).await,
-            Owner::Session(_) => self.install_factories(&slot, FactoryScope::Session).await,
-        };
+        let result = AssertUnwindSafe(async {
+            match &slot.owner {
+                Owner::Shared => self.install_shared(&slot).await,
+                Owner::Workspace(_) => self.install_factories(&slot, FactoryScope::Workspace).await,
+                Owner::Session(_) => self.install_factories(&slot, FactoryScope::Session).await,
+            }
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| {
+            Err(ExtensionError::ContextInitializationFailed {
+                component: "contextual-profile".into(),
+            })
+        });
         if let Err(error) = result {
             self.clean_records(&slot).await?;
             return Err(error);
@@ -154,17 +163,44 @@ impl ContextualPlanProvider {
         for (extension, scope) in &self.inner.shared {
             self.check_slot(slot)?;
             let (index, _) = self.start_record(slot)?;
+            let frozen = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let identity = ComponentIdentity {
+                    id: extension.id().into(),
+                    version: extension.version().into(),
+                };
+                let config_hash = extension.config_hash();
+                if identity.id.is_empty()
+                    || identity.id.len() > 128
+                    || identity.id.chars().any(char::is_control)
+                    || identity.version.is_empty()
+                    || identity.version.len() > 128
+                    || config_hash.len() > 16384
+                {
+                    return None;
+                }
+                Some(FrozenExtension {
+                    identity,
+                    config_hash,
+                    extension: extension.clone(),
+                })
+            }));
+            let Ok(Some(frozen)) = frozen else {
+                Self::signal_records(slot);
+                let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
+                return Err(ExtensionError::ContextInitializationFailed {
+                    component: "shared-component".into(),
+                });
+            };
+            let component = frozen.identity.id.clone();
             let Ok(mount) = self
                 .inner
                 .registry
-                .mount(extension.clone(), scope.clone())
+                .mount(Arc::new(frozen), scope.clone())
                 .await
             else {
                 Self::signal_records(slot);
                 let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
-                return Err(ExtensionError::ContextInitializationFailed {
-                    component: extension.id().into(),
-                });
+                return Err(ExtensionError::ContextInitializationFailed { component });
             };
             slot.state.lock().unwrap().records[index].mount = Some(mount);
         }
