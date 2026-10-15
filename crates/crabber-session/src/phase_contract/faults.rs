@@ -36,6 +36,7 @@ pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoin
             run_case(store, &set_fault, action, point).await;
         }
     }
+    super::controls::faults(store, &set_fault).await;
     super::settlement::faults(store, &set_fault).await;
     super::start::faults(store, &set_fault).await;
     super::resolution::fault_contract(store, &set_fault).await;

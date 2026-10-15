@@ -342,6 +342,27 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::VersionedPhase, crate::PhaseError> {
         Err(crate::PhaseError::Unsupported)
     }
+    /// Mark an exact phase uncertain without acquiring worker authority.
+    async fn mark_phase_uncertain(
+        &self,
+        _request: crate::PhaseUncertainty,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
+    /// Reconcile exact resource cleanup; supplied evidence is a host assertion.
+    async fn record_phase_cleanup(
+        &self,
+        _request: crate::PhaseCleanup,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
+    /// Read bounded coherent phase metadata without output bodies or tokens.
+    async fn list_tool_phases(
+        &self,
+        _request: crate::PhasePageRequest,
+    ) -> Result<crate::PhasePage, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
     /// Reconcile an already uncertain external outcome using the host's asserted
     /// authority and protected output. Preserves cleanup and ownership, including
     /// after lease expiry; grants no worker authority. Identical retries replay.

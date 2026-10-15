@@ -67,3 +67,27 @@ async fn typed_output_and_receipts_are_independent_of_private_authority() {
     .unwrap();
     storage::reject_corrupt_receipt(&store, &fixture).await;
 }
+
+#[tokio::test]
+async fn phase_page_rejects_corrupt_sentinel_instead_of_omitting_it() {
+    use crate::Store;
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let store = store.with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    )));
+    let (mut request, sentinel) = crate::phase_contract::controls::pagination(&store).await;
+    request.limit = 1;
+    let original = store.list_tool_phases(request.clone()).await.unwrap();
+    assert_eq!(original.phases.len(), 1);
+    assert!(original.next_after.is_some());
+    sqlx::query("UPDATE tool_phases SET outcome_json=$2 WHERE id=$1")
+        .bind(&sentinel.0)
+        .bind("{}")
+        .execute(&store.writer)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_tool_phases(request).await.unwrap_err(),
+        crate::PhaseError::UnknownStoreOutcome
+    );
+}

@@ -13,6 +13,10 @@ mod management;
 #[path = "../../crabber-session/src/management_contract.rs"]
 #[allow(dead_code)]
 mod management_contract;
+pub use crabber::session::{
+    PhaseCleanup, PhaseControlOutcome, PhasePage, PhasePageRequest, PhaseUncertainty,
+    PhaseUncertaintyCause,
+};
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionCapsule, AdmissionExecutionError, AdmissionExecutionRecord,

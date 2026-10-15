@@ -1,5 +1,7 @@
 //! Native phase conformance. Dispatch requires a fresh committed Begin;
 //! metadata replay, resolver choices and quiescence never grant dispatch.
+#[path = "phase_contract/controls.rs"]
+pub(crate) mod controls;
 #[path = "phase_contract/faults.rs"]
 mod faults;
 #[path = "phase_contract/guards.rs"]
@@ -37,6 +39,7 @@ use time::OffsetDateTime;
 pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
+    controls::run(&store, &clock).await;
     lifecycle(&store).await;
     settlement::run(&store).await;
     start::run(&store).await;

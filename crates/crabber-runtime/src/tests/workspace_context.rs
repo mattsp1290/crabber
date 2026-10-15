@@ -238,6 +238,24 @@ impl Store for DriftStore {
     ) -> Result<crabber_session::VersionedPhase, crabber_session::PhaseError> {
         self.inner.tool_phase(run, id).await
     }
+    async fn mark_phase_uncertain(
+        &self,
+        request: crabber_session::PhaseUncertainty,
+    ) -> Result<crabber_session::PhaseControlOutcome, crabber_session::PhaseError> {
+        self.inner.mark_phase_uncertain(request).await
+    }
+    async fn record_phase_cleanup(
+        &self,
+        request: crabber_session::PhaseCleanup,
+    ) -> Result<crabber_session::PhaseControlOutcome, crabber_session::PhaseError> {
+        self.inner.record_phase_cleanup(request).await
+    }
+    async fn list_tool_phases(
+        &self,
+        request: crabber_session::PhasePageRequest,
+    ) -> Result<crabber_session::PhasePage, crabber_session::PhaseError> {
+        self.inner.list_tool_phases(request).await
+    }
     async fn resolve_uncertain_phase(
         &self,
         resolution: crabber_session::PhaseResolution,

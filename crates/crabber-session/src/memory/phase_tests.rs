@@ -363,3 +363,28 @@ async fn resolution_rejects_changed_authoritative_call_binding_without_writes() 
     assert_eq!(attempt.run_token, old_attempt.run_token);
     assert_eq!(attempt.lease_until, old_attempt.lease_until);
 }
+
+#[tokio::test]
+async fn phase_page_rejects_corrupt_sentinel_instead_of_omitting_it() {
+    let store = MemoryStore::with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    )));
+    let (mut request, sentinel) = crate::phase_contract::controls::pagination(&store).await;
+    request.limit = 1;
+    let original = store.list_tool_phases(request.clone()).await.unwrap();
+    assert_eq!(original.phases.len(), 1);
+    assert!(original.next_after.is_some());
+    store
+        .state
+        .lock()
+        .unwrap()
+        .phases
+        .get_mut(&sentinel)
+        .unwrap()
+        .snapshot
+        .session_id = crabber_core::SessionId::new();
+    assert_eq!(
+        store.list_tool_phases(request).await.unwrap_err(),
+        crate::PhaseError::UnknownStoreOutcome
+    );
+}

@@ -4,6 +4,10 @@ use crate::{PhaseError, PhaseMutationOutcome, PhaseState, Store};
 use crabber_core::{EventKind, ToolCallRecord, ToolCallStatus};
 
 pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+    if matches!(fixture.mode, Mode::Uncertainty | Mode::Cleanup) {
+        super::controls::verify(store, &fixture).await;
+        return;
+    }
     if matches!(fixture.mode, Mode::Start) {
         verify_start_loss(store, fixture).await;
         return;
@@ -73,7 +77,7 @@ pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
         Mode::Success => PhaseState::Completed,
         Mode::Failure => PhaseState::Failed,
         Mode::Refuse => PhaseState::Uncertain,
-        Mode::Settle | Mode::Start => unreachable!(),
+        Mode::Settle | Mode::Start | Mode::Uncertainty | Mode::Cleanup => unreachable!(),
     };
     assert_eq!(receipt.phase.state, expected);
 }

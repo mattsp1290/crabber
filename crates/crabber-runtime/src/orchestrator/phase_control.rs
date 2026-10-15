@@ -6,6 +6,34 @@ use crabber_session::{
 };
 
 impl Orchestrator {
+    /// Record lost or host-asserted stopped ownership without dispatch.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn mark_phase_uncertain(
+        &self,
+        request: crabber_session::PhaseUncertainty,
+    ) -> Result<crabber_session::PhaseControlOutcome, PhaseError> {
+        self.store.mark_phase_uncertain(request).await
+    }
+    /// Record exact cleanup evidence independently of outcome resolution.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn record_phase_cleanup(
+        &self,
+        request: crabber_session::PhaseCleanup,
+    ) -> Result<crabber_session::PhaseControlOutcome, PhaseError> {
+        self.store.record_phase_cleanup(request).await
+    }
+    /// Read a bounded coherent phase page without tokens or output bodies.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn list_tool_phases(
+        &self,
+        request: crabber_session::PhasePageRequest,
+    ) -> Result<crabber_session::PhasePage, PhaseError> {
+        self.store.list_tool_phases(request).await
+    }
+
     /// Resolve an uncertain outcome after host verification of the resolver and
     /// supplied protected output. Preserves cleanup; never dispatches work.
     /// # Errors

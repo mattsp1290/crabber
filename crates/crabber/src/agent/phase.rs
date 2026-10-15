@@ -6,6 +6,34 @@ use crabber_session::{
 };
 
 impl Agent {
+    /// Record lost or host-asserted stopped ownership without dispatch.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn mark_phase_uncertain(
+        &self,
+        request: crabber_session::PhaseUncertainty,
+    ) -> Result<crabber_session::PhaseControlOutcome, PhaseError> {
+        self.runtime.mark_phase_uncertain(request).await
+    }
+    /// Record exact cleanup evidence independently of outcome resolution.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn record_phase_cleanup(
+        &self,
+        request: crabber_session::PhaseCleanup,
+    ) -> Result<crabber_session::PhaseControlOutcome, PhaseError> {
+        self.runtime.record_phase_cleanup(request).await
+    }
+    /// Read a bounded coherent phase page without tokens or output bodies.
+    /// # Errors
+    /// Returns unsupported, invalid scope, revision, state or storage errors.
+    pub async fn list_tool_phases(
+        &self,
+        request: crabber_session::PhasePageRequest,
+    ) -> Result<crabber_session::PhasePage, PhaseError> {
+        self.runtime.list_tool_phases(request).await
+    }
+
     /// Record the host's verified external outcome and final protected output.
     /// Does not execute tools or result middleware, renew ownership, or assert
     /// resource cleanup. Refusal keeps the phase uncertain; retries replay.

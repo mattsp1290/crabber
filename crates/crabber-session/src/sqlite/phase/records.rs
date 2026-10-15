@@ -215,3 +215,34 @@ pub(super) async fn publish(
         .execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
     Ok(receipt)
 }
+
+pub(super) async fn page(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &crate::PhasePageRequest,
+) -> Result<crate::PhasePage, Error> {
+    let revision:Option<i64>=sqlx::query_scalar("SELECT s.public_revision FROM sessions s JOIN runs r ON r.session_id=s.id WHERE s.id=$1 AND r.id=$2")
+        .bind(&request.session_id.0).bind(&request.run_id.0).fetch_optional(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+    let revision = sql::revision(revision.ok_or(Error::NotFound)?)?;
+    if request
+        .expected_revision
+        .is_some_and(|expected| expected != revision)
+    {
+        return Err(Error::RevisionConflict);
+    }
+    let query = format!(
+        "SELECT CASE WHEN {BOUNDS} AND length(CAST(json_extract(p.outcome_json,'$.call_binding') AS BLOB))<=64 THEN (json_object('version',json_extract(p.outcome_json,'$.version'),'snapshot',{SNAPSHOT})) END AS record FROM tool_phases p LEFT JOIN execution_attempts a ON a.run_id=p.run_id AND a.id=p.attempt_id LEFT JOIN runs r ON r.id=p.run_id LEFT JOIN sessions s ON s.id=r.session_id WHERE p.run_id=$1 AND (CAST($2 AS TEXT) IS NULL OR p.id COLLATE BINARY>$2 COLLATE BINARY) ORDER BY p.id COLLATE BINARY LIMIT $3"
+    );
+    let rows = sqlx::query(&query)
+        .bind(&request.run_id.0)
+        .bind(request.after.as_ref().map(|id| id.0.as_str()))
+        .bind(i64::from(request.limit) + 1)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(db)
+        .map_err(sql::unknown)?;
+    let phases = rows
+        .into_iter()
+        .map(|row| sql::decode_metadata(row.get("record")))
+        .collect::<Result<Vec<_>, _>>()?;
+    request.finish(revision, phases)
+}

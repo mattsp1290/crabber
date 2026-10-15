@@ -79,6 +79,74 @@ async fn closed_host_resolves_once_and_preserves_incomplete_cleanup() {
             .quiescence,
         PhaseQuiescence::Incomplete
     );
+    reconcile_joined_cleanup(&agent, &fixture, &session, &run, &target).await;
+}
+async fn reconcile_joined_cleanup(
+    agent: &Agent,
+    fixture: &Fixture,
+    session: &crabber::SessionId,
+    run: &crabber::core::RunId,
+    target: &crabber::session::PhaseTarget,
+) {
+    use crabber::session::{
+        PhaseCleanup, PhaseControlOutcome, PhasePageRequest, PhaseQuiescenceResult,
+        PhaseUncertainty, PhaseUncertaintyCause,
+    };
+    let page = agent
+        .list_tool_phases(PhasePageRequest {
+            session_id: session.clone(),
+            run_id: run.clone(),
+            limit: 64,
+            after: None,
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.phases.len(), 1);
+    assert_eq!(&page.phases[0].target, target);
+    let stopped = PhaseUncertainty {
+        session_id: session.clone(),
+        run_id: run.clone(),
+        id: ControlId::new(),
+        expected_revision: page.revision,
+        target: target.clone(),
+        cause: PhaseUncertaintyCause::HostStopped {
+            claim: PhaseResolverClaim {
+                resolver_id: "verified-reaper".into(),
+                authority_claim: "exact phase scope joined".into(),
+            },
+        },
+    };
+    assert_eq!(
+        agent
+            .mark_phase_uncertain(stopped.clone())
+            .await
+            .unwrap_err(),
+        PhaseError::InvalidTransition
+    );
+    let request = PhaseCleanup {
+        session_id: session.clone(),
+        run_id: run.clone(),
+        id: ControlId::new(),
+        expected_revision: page.revision,
+        target: target.clone(),
+        result: PhaseQuiescenceResult::Complete,
+        claim: match stopped.cause {
+            PhaseUncertaintyCause::HostStopped { claim } => claim,
+            PhaseUncertaintyCause::ExpiredOrRevokedOwner => unreachable!(),
+        },
+    };
+    let PhaseControlOutcome::Applied(receipt) =
+        agent.record_phase_cleanup(request.clone()).await.unwrap()
+    else {
+        panic!("fresh cleanup")
+    };
+    assert_eq!(receipt.phase.quiescence, PhaseQuiescence::Complete);
+    assert_eq!(
+        agent.record_phase_cleanup(request).await.unwrap(),
+        PhaseControlOutcome::Replayed(receipt)
+    );
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 1);
 }
 
 async fn record_outcome(

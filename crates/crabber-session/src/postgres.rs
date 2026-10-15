@@ -773,6 +773,36 @@ impl Store for PostgresStore {
         true
     }
 
+    async fn mark_phase_uncertain(
+        &self,
+        request: crate::PhaseUncertainty,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        request.fingerprint()?;
+        self.host_phase(
+            &request.run_id,
+            request.mutation(),
+            crate::phase::PhaseEffect::Uncertainty(&request),
+        )
+        .await
+    }
+    async fn record_phase_cleanup(
+        &self,
+        request: crate::PhaseCleanup,
+    ) -> Result<crate::PhaseControlOutcome, crate::PhaseError> {
+        request.fingerprint()?;
+        self.host_phase(
+            &request.run_id,
+            request.mutation(),
+            crate::phase::PhaseEffect::Cleanup(&request),
+        )
+        .await
+    }
+    async fn list_tool_phases(
+        &self,
+        request: crate::PhasePageRequest,
+    ) -> Result<crate::PhasePage, crate::PhaseError> {
+        self.phase_page(&request).await
+    }
     async fn resolve_uncertain_phase(
         &self,
         resolution: crate::PhaseResolution,

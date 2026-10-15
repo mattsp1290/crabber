@@ -213,6 +213,15 @@ external outcome. Supply final protected output for success, select failure, or
 refuse to leave the phase uncertain. Keep the original request and operation key
 for retries. Resolution atomically records its receipt, audit and any logical
 tool result; it preserves resource cleanup and grants no execution handle.
+`Agent::mark_phase_uncertain` separately records loss of the exact original owner
+(using Store-clock expiry or parent-token revocation), or the host's assertion
+that it stopped. Expiry alone supplies no external outcome or cleanup proof.
+`Agent::record_phase_cleanup` records the host's evidence about the exact phase's
+resources after actual joins or external reconciliation. Outcome and cleanup
+can be reconciled in either order; neither retires the parent attempt or run.
+`Agent::list_tool_phases` exposes bounded, coherent metadata pages; carry the
+returned session revision into subsequent pages and restart on revision conflict.
+It returns no output bodies or worker tokens.
 These controls remain available after extensions close. Parent attempt cleanup,
 run retirement and subsequent execution require separate lifecycle controls.
 

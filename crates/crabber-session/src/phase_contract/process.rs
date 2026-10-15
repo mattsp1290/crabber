@@ -2,6 +2,8 @@
 //! process boundary; the writer acquires its own fresh native ownership.
 #[path = "process/child.rs"]
 pub(crate) mod child;
+#[path = "process/controls.rs"]
+mod controls;
 #[path = "process/verify.rs"]
 pub(crate) mod verify;
 use super::{applied, mutation, output, resolver};
@@ -25,9 +27,11 @@ pub(crate) enum Mode {
     Failure,
     Refuse,
     Settle,
+    Uncertainty,
+    Cleanup,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Claim,
         Self::Begin,
         Self::Start,
@@ -35,6 +39,8 @@ impl Mode {
         Self::Failure,
         Self::Refuse,
         Self::Settle,
+        Self::Uncertainty,
+        Self::Cleanup,
     ];
     pub(crate) fn operation(self) -> &'static str {
         match self {
@@ -44,14 +50,16 @@ impl Mode {
             Self::Failure => "resolve_failure",
             Self::Refuse => "resolve_refuse",
             Self::Settle => "complete",
+            Self::Uncertainty => "mark_stopped_uncertain",
+            Self::Cleanup => "quiescence_complete",
         }
     }
     fn preoperations(self) -> usize {
         match self {
             Self::Claim => 2,
             Self::Begin | Self::Start => 3,
-            Self::Settle => 4,
-            Self::Success | Self::Failure | Self::Refuse => 5,
+            Self::Settle | Self::Uncertainty => 4,
+            Self::Cleanup | Self::Success | Self::Failure | Self::Refuse => 5,
         }
     }
 }
@@ -111,6 +119,15 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
     let command = match mode {
         Mode::Claim => PhaseCommand::Claim { target },
         Mode::Begin | Mode::Start => PhaseCommand::Begin { target },
+        Mode::Uncertainty => PhaseCommand::MarkStoppedUncertain {
+            target,
+            claim: resolver(),
+        },
+        Mode::Cleanup => PhaseCommand::RecordQuiescence {
+            target,
+            result: crate::PhaseQuiescenceResult::Complete,
+            host_claim: Some(resolver()),
+        },
         Mode::Settle => PhaseCommand::Complete {
             target,
             output: output(),
@@ -145,7 +162,9 @@ pub(crate) async fn write(
     if lose_ack {
         inject(2);
     }
-    let result = if matches!(fixture.mode, Mode::Start) {
+    let result = if matches!(fixture.mode, Mode::Uncertainty | Mode::Cleanup) {
+        controls::write(store, fixture).await.map(controls::outcome)
+    } else if matches!(fixture.mode, Mode::Start) {
         let Some(PhaseWriteAuthority::Phase(worker)) = authority else {
             panic!("phase worker missing");
         };
@@ -262,6 +281,9 @@ async fn prepare(
             .await
             .unwrap(),
     );
+    if matches!(fixture.mode, Mode::Uncertainty) {
+        return None;
+    }
     execution
         .mutate_phase(
             mutation(
@@ -313,7 +335,12 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         call.status,
         if matches!(
             fixture.mode,
-            Mode::Settle | Mode::Success | Mode::Failure | Mode::Refuse
+            Mode::Settle
+                | Mode::Success
+                | Mode::Failure
+                | Mode::Refuse
+                | Mode::Uncertainty
+                | Mode::Cleanup
         ) {
             ToolCallStatus::Running
         } else {
@@ -343,11 +370,17 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
     match fixture.mode {
         Mode::Claim => assert_eq!(snapshot.unwrap_err(), PhaseError::NotFound),
         Mode::Begin | Mode::Start => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Claimed),
-        Mode::Settle => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Started),
+        Mode::Settle | Mode::Uncertainty => {
+            assert_eq!(snapshot.unwrap().phase.state, PhaseState::Started);
+        }
         _ => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Uncertain),
     }
 }
 pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture) {
+    if matches!(fixture.mode, Mode::Uncertainty | Mode::Cleanup) {
+        controls::recover(store, fixture).await;
+        return;
+    }
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
     if matches!(
         fixture.mode,

@@ -169,3 +169,9 @@ mod abandonment_contract;
 async fn memory_admission_execution_contract() {
     admission_execution_contract::run_contract(|clock| MemoryStore::with_clock(clock)).await;
 }
+
+mod phase_control;
+pub use phase_control::{
+    PhaseCleanup, PhaseControlOutcome, PhasePage, PhasePageRequest, PhaseUncertainty,
+    PhaseUncertaintyCause,
+};

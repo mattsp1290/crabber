@@ -11,7 +11,7 @@ enum PhaseCaller<'a> {
         fence: &'a crabber_core::RunFence,
         authority: Option<&'a PhaseWriteAuthority>,
     },
-    HostResolution,
+    HostControl,
 }
 
 fn revision(state: &State, session: &SessionId) -> SessionRevision {
@@ -32,6 +32,57 @@ fn verify(state: &State, receipt: &PhaseReceipt) -> Result<(), Error> {
     )
 }
 impl MemoryStore {
+    pub(super) fn phase_page(
+        &self,
+        request: &crate::PhasePageRequest,
+    ) -> Result<crate::PhasePage, Error> {
+        request.validate()?;
+        let state = self.state.lock().unwrap();
+        let run = state
+            .runs
+            .get(&request.run_id)
+            .filter(|run| run.session_id == request.session_id)
+            .ok_or(Error::NotFound)?;
+        let mut selected = std::collections::BTreeMap::new();
+        for record in state
+            .phases
+            .values()
+            .filter(|record| record.snapshot.run_id == run.id)
+        {
+            let id = &record.snapshot.target.id.0;
+            if request
+                .after
+                .as_ref()
+                .is_some_and(|after| id.as_bytes() <= after.0.as_bytes())
+            {
+                continue;
+            }
+            selected.insert(id, &record.snapshot);
+            if selected.len() > usize::from(request.limit) + 1 {
+                selected.pop_last();
+            }
+        }
+        let phases = selected.into_values().cloned().collect();
+        request.finish(revision(&state, &run.session_id), phases)
+    }
+
+    pub(super) fn host_phase(
+        &self,
+        run: &RunId,
+        request: PhaseMutation,
+        effect: phase::PhaseEffect<'_>,
+    ) -> Result<crate::PhaseControlOutcome, Error> {
+        match self.apply_phase(run, request, PhaseCaller::HostControl, effect)? {
+            PhaseMutationOutcome::Applied {
+                receipt,
+                authority: None,
+            } => Ok(crate::PhaseControlOutcome::Applied(receipt)),
+            PhaseMutationOutcome::Replayed(receipt) => {
+                Ok(crate::PhaseControlOutcome::Replayed(receipt))
+            }
+            PhaseMutationOutcome::Applied { .. } => Err(Error::UnknownStoreOutcome),
+        }
+    }
     pub(super) fn resolve_phase(
         &self,
         resolution: &crate::PhaseResolution,
@@ -40,7 +91,7 @@ impl MemoryStore {
         match self.apply_phase(
             &resolution.run_id,
             resolution.resolution.clone(),
-            PhaseCaller::HostResolution,
+            PhaseCaller::HostControl,
             phase::PhaseEffect::Resolve(resolution),
         )? {
             PhaseMutationOutcome::Applied {
@@ -162,8 +213,8 @@ impl MemoryStore {
                     crate::attempt::verify_run(&run, fence, now).map_err(|_| Error::StaleOwner)?;
                     authority
                 }
-                PhaseCaller::HostResolution => {
-                    if effect.resolution().is_none() {
+                PhaseCaller::HostControl => {
+                    if !effect.is_host() {
                         return Err(Error::InvalidRequest);
                     }
                     None

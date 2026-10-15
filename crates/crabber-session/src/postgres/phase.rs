@@ -24,6 +24,21 @@ async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> R
     }
 }
 impl PostgresStore {
+    pub(super) async fn phase_page(
+        &self,
+        request: &crate::PhasePageRequest,
+    ) -> Result<crate::PhasePage, Error> {
+        request.validate()?;
+        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
+        let result = records::page(&mut tx, request).await;
+        finish(tx, result).await
+    }
+
     pub(super) async fn read_phase(
         &self,
         run: &RunId,
@@ -101,6 +116,24 @@ impl PostgresExecution {
     }
 }
 impl PostgresStore {
+    pub(super) async fn host_phase(
+        &self,
+        run: &RunId,
+        request: PhaseMutation,
+        effect: phase::PhaseEffect<'_>,
+    ) -> Result<crate::PhaseControlOutcome, Error> {
+        match self
+            .change_phase_transaction(run, request, None, effect, None)
+            .await?
+        {
+            Outcome::Applied {
+                receipt,
+                authority: None,
+            } => Ok(crate::PhaseControlOutcome::Applied(receipt)),
+            Outcome::Replayed(receipt) => Ok(crate::PhaseControlOutcome::Replayed(receipt)),
+            Outcome::Applied { .. } => Err(Error::UnknownStoreOutcome),
+        }
+    }
     pub(super) async fn resolve_phase(
         &self,
         resolution: &crate::PhaseResolution,
@@ -181,9 +214,9 @@ impl PostgresStore {
             return Ok(Outcome::Replayed(receipt));
         }
         let now = self.clock.now();
-        match (effect.resolution(), fence) {
-            (Some(_), None) if authority.is_none() => (),
-            (None, Some(fence)) => {
+        match (effect.is_host(), fence) {
+            (true, None) if authority.is_none() => (),
+            (false, Some(fence)) => {
                 crate::attempt::verify_run(run, fence, now).map_err(|_| Error::StaleOwner)?;
             }
             _ => return Err(Error::InvalidRequest),
