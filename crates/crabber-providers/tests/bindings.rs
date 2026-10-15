@@ -246,3 +246,24 @@ async fn versioned_extension_adapter_freezes_catalog_and_rejects_other_provider_
         Err(ProviderBindingError::Unavailable)
     ));
 }
+
+#[tokio::test]
+async fn bound_stream_rejects_request_route_drift_and_invalid_output_caps() {
+    let resolver = Routing {
+        version: AtomicUsize::new(1),
+        credential: Arc::new(AtomicUsize::new(1)),
+        acquisitions: AtomicUsize::new(0),
+    };
+    let bound = resolver.bind(&selection()).await.unwrap();
+    let mut drift = request();
+    drift.selection.model_id = "other".into();
+    assert!(bound.streamer().stream(drift).await.is_err());
+    for cap in [0, 1025] {
+        let mut invalid = request();
+        invalid.max_tokens = Some(cap);
+        assert!(bound.streamer().stream(invalid).await.is_err());
+    }
+    let mut valid = request();
+    valid.max_tokens = Some(1024);
+    assert!(bound.streamer().stream(valid).await.is_ok());
+}

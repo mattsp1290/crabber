@@ -33,6 +33,10 @@ impl BoundProvider {
         streamer: Arc<dyn Streamer>,
     ) -> Result<Self, ProviderBindingError> {
         validate_selection(selection, &descriptor)?;
+        let streamer = Arc::new(BindingStream {
+            descriptor: descriptor.clone(),
+            inner: streamer,
+        });
         Ok(Self {
             descriptor,
             streamer,
@@ -45,6 +49,30 @@ impl BoundProvider {
     #[must_use]
     pub fn streamer(&self) -> Arc<dyn Streamer> {
         self.streamer.clone()
+    }
+}
+
+struct BindingStream {
+    descriptor: ProviderBindingDescriptor,
+    inner: Arc<dyn Streamer>,
+}
+#[async_trait::async_trait]
+impl Streamer for BindingStream {
+    async fn stream(
+        &self,
+        request: crate::ModelRequest,
+    ) -> Result<crate::DeltaStream, ProviderError> {
+        if validate_selection(&request.selection, &self.descriptor).is_err()
+            || request.max_tokens == Some(0)
+            || matches!((request.max_tokens, self.descriptor.limits().output_tokens), (Some(requested), Some(limit)) if requested > limit)
+        {
+            return Err(ProviderError {
+                kind: crate::ProviderErrorKind::Invalid,
+                message: "request does not match the frozen provider binding".into(),
+                retryable: false,
+            });
+        }
+        self.inner.stream(request).await
     }
 }
 
@@ -129,6 +157,7 @@ fn collect_descriptors(
 /// configuration identity must also cover its provider registration behavior.
 pub struct VersionedAdapter {
     inner: Arc<dyn crate::ProviderAdapter>,
+    info: crate::ProviderInfo,
     descriptors: Descriptors,
 }
 impl VersionedAdapter {
@@ -139,7 +168,8 @@ impl VersionedAdapter {
         inner: Arc<dyn crate::ProviderAdapter>,
         descriptors: Vec<ProviderBindingDescriptor>,
     ) -> Result<Self, ProviderBindingError> {
-        let provider_id = inner.info().id;
+        let info = inner.info();
+        let provider_id = &info.id;
         if descriptors
             .iter()
             .any(|descriptor| descriptor.provider_id() != provider_id)
@@ -148,6 +178,7 @@ impl VersionedAdapter {
         }
         Ok(Self {
             inner,
+            info,
             descriptors: collect_descriptors(descriptors)?,
         })
     }
@@ -155,7 +186,7 @@ impl VersionedAdapter {
 #[async_trait::async_trait]
 impl crate::ProviderAdapter for VersionedAdapter {
     fn info(&self) -> crate::ProviderInfo {
-        self.inner.info()
+        self.info.clone()
     }
     async fn models(&self) -> Result<Vec<crate::ModelDescriptor>, ProviderError> {
         Ok(self
