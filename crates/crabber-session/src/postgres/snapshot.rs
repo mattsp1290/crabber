@@ -104,8 +104,8 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        let revision: i64 =
-            sqlx::query_scalar("SELECT snapshot_revision FROM sessions WHERE id=$1")
+        let (revision, public_revision): (i64, i64) =
+            sqlx::query_as("SELECT snapshot_revision,public_revision FROM sessions WHERE id=$1")
                 .bind(&request.session_id.0)
                 .fetch_optional(&mut *tx)
                 .await
@@ -123,6 +123,7 @@ impl PostgresStore {
             Boundary {
                 session,
                 revision,
+                public_revision,
                 messages: row.get("messages"),
                 calls: row.get("calls"),
                 message_after: 0,
@@ -138,6 +139,8 @@ impl PostgresStore {
             });
         }
         let mut page = SnapshotPage {
+            captured_revision: crate::attempt::sql::revision(b.public_revision)
+                .map_err(|_| invalid())?,
             high_water: b.high_water,
             messages: Vec::new(),
             tool_calls: Vec::new(),

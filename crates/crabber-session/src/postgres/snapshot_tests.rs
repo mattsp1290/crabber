@@ -955,3 +955,14 @@ async fn awkward_float_initial_snapshot_preserves_bits_and_exact_encoded_cap() {
         );
     }
 }
+
+#[tokio::test]
+async fn captured_public_revision_survives_metadata_changes_and_rejects_tampering() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::management_contract::captured_history_revision(&store).await;
+}

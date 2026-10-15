@@ -553,3 +553,9 @@ fn large_sqlite_history_keeps_client_allocation_bounded() {
         "oversized record decoded: {measured:?}"
     );
 }
+
+#[tokio::test]
+async fn captured_public_revision_survives_metadata_changes_and_rejects_tampering() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::management_contract::captured_history_revision(&store).await;
+}

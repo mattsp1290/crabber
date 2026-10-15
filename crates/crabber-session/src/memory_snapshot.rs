@@ -12,6 +12,7 @@ struct Boundary {
     messages: usize,
     calls: usize,
     revision: u64,
+    public_revision: crabber_core::SessionRevision,
     high_water: EventCursor,
     message_offset: usize,
     call_offset: usize,
@@ -92,6 +93,11 @@ impl MemoryStore {
                 messages: state.messages.len(),
                 calls: state.call_order.len(),
                 revision,
+                public_revision: state
+                    .public_revisions
+                    .get(&request.session_id)
+                    .copied()
+                    .unwrap_or(crabber_core::SessionRevision::INITIAL),
                 high_water: state
                     .events
                     .iter()
@@ -127,6 +133,7 @@ impl MemoryStore {
             });
         }
         let mut page = SnapshotPage {
+            captured_revision: boundary.public_revision,
             high_water: boundary.high_water,
             messages: Vec::new(),
             tool_calls: Vec::new(),
@@ -403,4 +410,10 @@ mod snapshot_tests {
         };
         assert_eq!(restarted.messages[0], state.messages[0]);
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn captured_public_revision_survives_metadata_changes_and_rejects_tampering() {
+    crate::management_contract::captured_history_revision(&MemoryStore::new()).await;
 }

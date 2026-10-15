@@ -22,8 +22,8 @@ impl SqliteStore {
         }
         let mut tx = self.readers.begin().await.map_err(db)?;
         let result = async {
-            let revision: i64 =
-                sqlx::query_scalar("SELECT snapshot_revision FROM sessions WHERE id=$1")
+            let (revision, public_revision): (i64, i64) =
+                sqlx::query_as("SELECT snapshot_revision,public_revision FROM sessions WHERE id=$1")
                     .bind(&request.session_id.0)
                     .fetch_optional(&mut *tx)
                     .await
@@ -51,6 +51,7 @@ impl SqliteStore {
                 Boundary {
                     session,
                     revision,
+                public_revision,
                     messages: row.try_get("messages").map_err(db)?,
                     calls: row.try_get("calls").map_err(db)?,
                     message_after: 0,
@@ -67,6 +68,7 @@ impl SqliteStore {
                 });
             }
             let mut page = SnapshotPage {
+            captured_revision: crate::attempt::sql::revision(b.public_revision).map_err(|_| invalid())?,
                 high_water: b.high_water,
                 messages: Vec::new(),
                 tool_calls: Vec::new(),

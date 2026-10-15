@@ -48,6 +48,9 @@ pub enum SnapshotLimit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotPage {
+    /// Public revision captured with the first immutable history boundary.
+    /// Kept inside authenticated continuation tokens across every page.
+    pub captured_revision: crabber_core::SessionRevision,
     /// Immutable inclusive boundary. Read events strictly after this cursor.
     /// Zero represents a snapshot preceding every durable event.
     pub high_water: EventCursor,

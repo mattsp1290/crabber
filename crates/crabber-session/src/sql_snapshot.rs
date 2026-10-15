@@ -50,6 +50,7 @@ pub(crate) fn call_record(call: &ToolCallRecord) -> Result<Accounting, StoreErro
 pub(crate) struct Boundary {
     pub(crate) session: String,
     pub(crate) revision: i64,
+    pub(crate) public_revision: i64,
     pub(crate) messages: i64,
     pub(crate) calls: i64,
     pub(crate) message_after: i64,
@@ -101,6 +102,7 @@ pub(crate) fn parse(
     let b: Boundary = serde_json::from_str(json).map_err(|_| invalid())?;
     if b.session != session
         || b.revision < 0
+        || b.public_revision < 0
         || b.message_after < 0
         || b.call_after < 0
         || b.message_after > b.messages
@@ -118,6 +120,7 @@ mod token_tests {
         let boundary = Boundary {
             session: digest(&["session"]),
             revision: 0,
+            public_revision: 0,
             messages: 1,
             calls: 0,
             message_after: 0,

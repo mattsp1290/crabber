@@ -431,3 +431,83 @@ pub(crate) async fn corrupt_admission_refused(store: &dyn Store, saved: &crate::
         Some(saved.clone())
     );
 }
+
+/// The raw history cursor authenticates its captured public revision even when
+/// unrelated metadata changes leave the immutable history cutoff usable.
+#[cfg(test)]
+pub(crate) async fn captured_history_revision(store: &dyn Store) {
+    use crate::{SnapshotLimits, SnapshotOutcome, SnapshotRequest};
+    let session = SessionId::new();
+    let mut fixture = crate::execution_binding_contract::fixture(
+        &session,
+        time::OffsetDateTime::now_utc(),
+        "captured-revision",
+        'b',
+    );
+    fixture.keyed.request.session_id = None;
+    let admitted = store.admit_run(fixture.keyed.request).await.unwrap();
+    let execution = store.execution(admitted.fence).await.unwrap();
+    let mut message = crate::execution_binding_contract::fixture(
+        &session,
+        time::OffsetDateTime::now_utc(),
+        "captured-revision",
+        'b',
+    )
+    .keyed
+    .request
+    .user_message;
+    message.run_id = Some(admitted.run.id);
+    message.role = crabber_core::Role::Assistant;
+    message.parts[0].kind = crabber_core::PartKind::AssistantText;
+    execution.append_message(message).await.unwrap();
+    let mut request = SnapshotRequest {
+        session_id: session.clone(),
+        continuation: None,
+        limits: SnapshotLimits {
+            messages: 1,
+            tool_calls: 1,
+            parts: 100,
+            text_bytes: 100_000,
+            encoded_bytes: 1_000_000,
+        },
+    };
+    let SnapshotOutcome::Page(first) = store.snapshot(request.clone()).await.unwrap() else {
+        panic!("fixture first page")
+    };
+    assert_eq!(
+        first.captured_revision,
+        store.session_revision(&session).await.unwrap()
+    );
+    assert!(first.continuation.is_some());
+    let changed = store
+        .manage_session(ManageSession {
+            id: ControlId::new(),
+            session_id: session.clone(),
+            expected_revision: first.captured_revision,
+            change: SessionChange::Rename {
+                title: "renamed".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(changed.revision > first.captured_revision);
+    request.continuation = first.continuation;
+    let SnapshotOutcome::Page(second) = store.snapshot(request.clone()).await.unwrap() else {
+        panic!("metadata preserves raw history cutoff")
+    };
+    assert_eq!(second.captured_revision, first.captured_revision);
+    assert_eq!(second.high_water, first.high_water);
+    let original = request.continuation.as_ref().unwrap().0.clone();
+    let (signature, json) = original.split_once(':').unwrap();
+    let mut boundary: serde_json::Value = serde_json::from_str(json).unwrap();
+    boundary["public_revision"] = serde_json::json!(changed.revision);
+    request.continuation = Some(crate::SnapshotContinuation(format!(
+        "{signature}:{boundary}"
+    )));
+    assert!(store.snapshot(request.clone()).await.is_err());
+    request.continuation = None;
+    let SnapshotOutcome::Page(fresh) = store.snapshot(request).await.unwrap() else {
+        panic!("new history capture")
+    };
+    assert_eq!(fresh.captured_revision, changed.revision);
+}
