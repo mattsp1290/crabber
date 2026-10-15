@@ -50,13 +50,15 @@ impl ToolPipeline for ReplayPipeline {
         &self,
         context: &ToolResultContext,
         _: &ToolInfo,
-        value: Value,
+        value: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         self.seen
             .lock()
             .unwrap()
-            .push(("pre-stage", context.clone(), value));
-        Ok(TransformOutput::new(json!("SECRET-PRE-STAGE")))
+            .push(("pre-stage", context.clone(), value.json_value().unwrap()));
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(json!("SECRET-PRE-STAGE"))).unwrap(),
+        ))
     }
 }
 
@@ -73,8 +75,12 @@ fn recording_chain(seen: Observations) -> Arc<ClosureExtension> {
                 Arc::new(move |context, value| {
                     let seen = Arc::clone(&seen);
                     Box::pin(async move {
-                        seen.lock().unwrap().push((label, context, value));
-                        Ok(TransformOutput::new(json!(output)))
+                        seen.lock()
+                            .unwrap()
+                            .push((label, context, (value).json_value().unwrap()));
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(json!(output))).unwrap(),
+                        ))
                     })
                 }),
             );
@@ -87,8 +93,12 @@ fn recording_chain(seen: Observations) -> Arc<ClosureExtension> {
             Arc::new(move |context, value| {
                 let seen = Arc::clone(&seen);
                 Box::pin(async move {
-                    seen.lock().unwrap().push(("final", context, value));
-                    Ok(TransformOutput::new(json!({"safe": true})))
+                    seen.lock()
+                        .unwrap()
+                        .push(("final", context, (value).json_value().unwrap()));
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(json!({"safe": true}))).unwrap(),
+                    ))
                 })
             }),
         );

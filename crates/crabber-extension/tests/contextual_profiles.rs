@@ -232,7 +232,7 @@ fn custom_providers_fail_explicitly_and_static_profiles_track_prompt_data() {
 
 struct Never;
 #[async_trait]
-impl crabber_extension::ToolExecutor for Never {
+impl crabber_extension::JsonToolExecutor for Never {
     async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
         panic!("profile inspection cannot execute a tool");
     }

@@ -9,7 +9,7 @@ use crabber_core::{
     ToolResult, Usage,
 };
 use crabber_extension::{
-    ExtensionError, RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor,
+    ExtensionError, JsonToolExecutor, RunPlanProvider, StaticPlanProvider, ToolDefinition,
 };
 use crabber_providers::{
     DeltaStream, FakeProvider, ModelRequest, ProviderError, Resolver, Selection, StreamDelta,
@@ -73,9 +73,14 @@ impl ToolPipeline for CountingPipeline {
         &self,
         _context: &crabber_extension::ToolResultContext,
         _tool: &crabber_core::ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<crabber_extension::TransformOutput, String> {
-        Ok(crabber_extension::TransformOutput::new(result))
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
+        Ok(crabber_extension::TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 
@@ -910,7 +915,7 @@ async fn second_overflow_fails_after_one_epoch() {
 
 struct BarrierTool(Arc<Barrier>);
 #[async_trait]
-impl ToolExecutor for BarrierTool {
+impl JsonToolExecutor for BarrierTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         self.0.wait().await;
         Ok(arguments)
@@ -1141,7 +1146,7 @@ async fn recover_interrupts_expired_running_call() {
 struct EchoTool(Arc<AtomicUsize>);
 
 #[async_trait]
-impl ToolExecutor for EchoTool {
+impl JsonToolExecutor for EchoTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(arguments)
@@ -1160,7 +1165,7 @@ struct CancellableTool {
 }
 
 #[async_trait]
-impl ToolExecutor for CancellableTool {
+impl JsonToolExecutor for CancellableTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         if let Some(sender) = self.entered.lock().expect("tool gate poisoned").take() {
             let _ = sender.send(());
@@ -1229,7 +1234,7 @@ impl ApprovalRequester for GatedApprover {
 }
 
 #[async_trait]
-impl ToolExecutor for GatedTool {
+impl JsonToolExecutor for GatedTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         if let Some(sender) = self.entered.lock().expect("gate poisoned").take() {
             let _ = sender.send(());
@@ -1239,7 +1244,7 @@ impl ToolExecutor for GatedTool {
     }
 }
 
-fn tool(executor: Arc<dyn ToolExecutor>) -> Arc<ToolDefinition> {
+fn tool(executor: Arc<dyn crabber_extension::ToolExecutor>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: crabber_core::ToolInfo {
             name: "echo".into(),
@@ -1272,7 +1277,7 @@ fn request() -> Request {
 fn orchestrator(
     store: Arc<MemoryStore>,
     fake: FakeProvider,
-    executor: Arc<dyn ToolExecutor>,
+    executor: Arc<dyn crabber_extension::ToolExecutor>,
     observer: Arc<RecordingObserver>,
 ) -> Orchestrator {
     Orchestrator::builder()
@@ -2726,7 +2731,7 @@ fn operational_error(message: &str) -> ProviderError {
 
 struct OperationalFailingTool(Arc<OperationalClock>);
 #[async_trait]
-impl ToolExecutor for OperationalFailingTool {
+impl JsonToolExecutor for OperationalFailingTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         self.0.0.store(15, Ordering::SeqCst);
         Err(ExtensionError::Plan("SECRET tool error".into()))
@@ -3076,15 +3081,20 @@ impl ToolPipeline for PipelineCleanup {
         &self,
         context: &crabber_extension::ToolResultContext,
         _tool: &crabber_core::ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<crabber_extension::TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         let closing = context.cleanup().closing();
         let reaped = self.0.clone();
         context.cleanup().spawn(async move {
             closing.await;
             reaped.notify_one();
         });
-        Ok(crabber_extension::TransformOutput::new(result))
+        Ok(crabber_extension::TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 

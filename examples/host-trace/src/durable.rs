@@ -3,8 +3,8 @@ use crate::journey::Capture;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, FakeProvider, InputFingerprint,
-    PermissionDecision, Selection, SessionId, StaticPolicy, StreamDelta, ToolDefinition,
-    ToolExecutor, TraceContext,
+    JsonToolExecutor, PermissionDecision, Selection, SessionId, StaticPolicy, StreamDelta,
+    ToolDefinition, TraceContext,
     core::{RunStatus, ToolCallId, ToolInfo},
     session::{MemoryStore, Store},
 };
@@ -69,7 +69,7 @@ struct Effect {
     capture: Arc<Capture>,
 }
 #[async_trait]
-impl ToolExecutor for Effect {
+impl JsonToolExecutor for Effect {
     async fn execute(&self, _: Value) -> Result<Value, crabber::ExtensionError> {
         #[cfg(feature = "datadog")]
         if let Some(exporter) = &self.loss_exporter {

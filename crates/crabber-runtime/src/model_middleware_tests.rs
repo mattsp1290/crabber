@@ -7,8 +7,8 @@ use crate::{
 use async_trait::async_trait;
 use crabber_core::{RunStatus, ToolCallId, ToolInfo, Usage};
 use crabber_extension::{
-    Extension, ExtensionError, MiddlewareDescriptor, ModelAttemptContext, ModelRequestError, Point,
-    Registrar, Registry, Scope, SystemPromptMiddleware, ToolDefinition, ToolExecutor,
+    Extension, ExtensionError, JsonToolExecutor, MiddlewareDescriptor, ModelAttemptContext,
+    ModelRequestError, Point, Registrar, Registry, Scope, SystemPromptMiddleware, ToolDefinition,
     WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
     WorkspaceReaderResolver,
 };
@@ -326,7 +326,7 @@ fn assert_retry_changes_only_system(requests: &[ModelRequest]) {
 struct RewriteTool(WorkspaceBackend);
 
 #[async_trait]
-impl ToolExecutor for RewriteTool {
+impl JsonToolExecutor for RewriteTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         self.0.set("AGENTS.md", "v2");
         Ok(json!("rewritten"))

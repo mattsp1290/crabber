@@ -13,8 +13,8 @@ use crabber_core::{
     SessionId, ToolCallId, ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
-    ContextAssemble, Extension, ExtensionError, Point, Registrar, Registry, RunPlan,
-    RunPlanProvider, Scope, ToolContext, ToolDefinition, ToolExecutor, WorkspaceContext,
+    ContextAssemble, Extension, ExtensionError, JsonToolExecutor, Point, Registrar, Registry,
+    RunPlan, RunPlanProvider, Scope, ToolContext, ToolDefinition, WorkspaceContext,
 };
 use crabber_providers::{FakeProvider, Selection, StreamDelta};
 use crabber_session::{
@@ -73,7 +73,7 @@ impl Seen {
 
 struct ProbeTool(Arc<Seen>);
 #[async_trait]
-impl ToolExecutor for ProbeTool {
+impl JsonToolExecutor for ProbeTool {
     async fn execute(&self, _arguments: Value) -> Result<Value, ExtensionError> {
         Err(ExtensionError::Tool("context required".into()))
     }

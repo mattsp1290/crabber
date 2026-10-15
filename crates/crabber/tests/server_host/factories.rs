@@ -2,8 +2,8 @@ use super::{call, context, done, options, selection};
 use async_trait::async_trait;
 use crabber::{
     Admission, Agent, AgentConfig, ExecutionContext, ExtensionError, ExtensionFactory,
-    FactoryContext, FactoryScope, PermissionDecision, RunHandle, StaticPolicy, StreamDelta,
-    ToolDefinition, ToolExecutor,
+    FactoryContext, FactoryScope, JsonToolExecutor, PermissionDecision, RunHandle, StaticPolicy,
+    StreamDelta, ToolDefinition,
     core::{RunStatus, SessionId, ToolInfo},
     extension::{ComponentIdentity, Extension, Registrar, ToolContext},
 };
@@ -46,7 +46,7 @@ impl crabber::extension::Subprocess for SharedProcess {
 }
 struct Counter(Arc<State>);
 #[async_trait]
-impl ToolExecutor for Counter {
+impl JsonToolExecutor for Counter {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         panic!("context required")
     }
@@ -151,12 +151,12 @@ impl ExtensionFactory for Factory {
 }
 struct SharedMarker;
 #[async_trait]
-impl ToolExecutor for SharedMarker {
+impl JsonToolExecutor for SharedMarker {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(true))
     }
 }
-fn tool(name: &str, executor: Arc<dyn ToolExecutor>) -> Arc<ToolDefinition> {
+fn tool(name: &str, executor: Arc<dyn crabber::ToolExecutor>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         info: ToolInfo {
             name: name.into(),

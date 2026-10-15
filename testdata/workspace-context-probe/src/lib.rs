@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use crabber::{
     AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    StaticPolicy, StreamDelta, ToolDefinition, JsonToolExecutor,
     core::{ToolCallId, ToolInfo},
     extension::{
         ContextAssemble, Extension, Point, Registrar, Scope, ToolContext, WorkspaceContext,
@@ -79,7 +79,7 @@ struct WorkspaceTool {
     name: &'static str,
 }
 #[async_trait]
-impl ToolExecutor for WorkspaceTool {
+impl JsonToolExecutor for WorkspaceTool {
     async fn execute(&self, _arguments: Value) -> Result<Value, ExtensionError> {
         Err(ExtensionError::Tool("tool context required".into()))
     }

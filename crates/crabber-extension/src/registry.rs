@@ -1163,12 +1163,12 @@ mod model_middleware_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Point, ToolExecutor};
+    use crate::{JsonToolExecutor, Point};
     use crabber_core::ToolInfo;
     use serde_json::{Value, json};
     struct Echo;
     #[async_trait]
-    impl ToolExecutor for Echo {
+    impl JsonToolExecutor for Echo {
         async fn execute(&self, value: Value) -> Result<Value, ExtensionError> {
             Ok(value)
         }
@@ -1845,7 +1845,7 @@ mod tests {
             )
         }
         fn seed() -> TransformOutput {
-            TransformOutput::new(json!("s"))
+            TransformOutput::new(crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap())
         }
 
         /// Registers two ordinary result handlers that record the tracker they see.
@@ -2268,7 +2268,12 @@ mod tests {
             assert!(tracker.is_closing());
             assert_eq!(
                 plan.dispatcher
-                    .transform_tool_result(context(), crate::TransformOutput::new(json!("s")))
+                    .transform_tool_result(
+                        context(),
+                        crate::TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap()
+                        )
+                    )
                     .await,
                 ToolResultOutcome::Failed {
                     handler: "one-handler".into()
@@ -2792,7 +2797,12 @@ mod tests {
             assert!(handles[1].mount.cleanup.tracker().is_closing());
             assert_eq!(
                 dispatcher
-                    .transform_tool_result(context(), crate::TransformOutput::new(json!("s")))
+                    .transform_tool_result(
+                        context(),
+                        crate::TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap()
+                        )
+                    )
                     .await,
                 ToolResultOutcome::Failed {
                     handler: "a-handler".into()

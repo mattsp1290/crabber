@@ -2,8 +2,8 @@ use crate::{Orchestrator, PermissionDecision, RuntimeError, StaticPolicy};
 use async_trait::async_trait;
 use crabber_core::{Message, Role, ToolCallId, ToolInfo};
 use crabber_extension::{
-    ContextAssemble, Extension, ExtensionError, GuardDecision, ModelRequestError, ModelStream,
-    Next, Point, Registrar, Registry, RunSettled, Scope, ToolDefinition, ToolExecute, ToolExecutor,
+    ContextAssemble, Extension, ExtensionError, GuardDecision, JsonToolExecutor, ModelRequestError,
+    ModelStream, Next, Point, Registrar, Registry, RunSettled, Scope, ToolDefinition, ToolExecute,
     ToolGuard, ToolResultTransform, ToolSettled, ToolStarted,
 };
 use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
@@ -19,7 +19,7 @@ struct CounterTool {
     fail: bool,
 }
 #[async_trait]
-impl ToolExecutor for CounterTool {
+impl JsonToolExecutor for CounterTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
@@ -109,7 +109,11 @@ impl Extension for TestExtension {
                     Arc::new(|mut value| {
                         Box::pin(async move {
                             if value["context"]["is_error"] == true {
-                                value["result"] = "[REDACTED]".into();
+                                value["result"] = serde_json::to_value(
+                                    crabber_core::ToolOutput::from_json(&json!("[REDACTED]"))
+                                        .unwrap(),
+                                )
+                                .unwrap();
                             }
                             Ok(value)
                         })

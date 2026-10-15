@@ -2289,7 +2289,7 @@ mod tests {
     }
     struct EchoTool;
     #[async_trait::async_trait]
-    impl crabber_extension::ToolExecutor for EchoTool {
+    impl crabber_extension::JsonToolExecutor for EchoTool {
         async fn execute(&self, value: Value) -> Result<Value, crabber_extension::ExtensionError> {
             Ok(value)
         }

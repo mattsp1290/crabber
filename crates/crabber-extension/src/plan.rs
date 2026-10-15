@@ -130,8 +130,23 @@ pub enum ExtensionError {
     ContextCleanupIncomplete,
 }
 
+/// An ordinary, run-to-completion tool returning validated ordered content.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError>;
+    async fn execute_with_context(
+        &self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        self.execute(arguments).await
+    }
+}
+
+/// Explicit JSON-to-text adapter. JSON is always literal data; it is never
+/// inspected for media, runtime identity, suspension or authority fields.
+#[async_trait]
+pub trait JsonToolExecutor: Send + Sync {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError>;
     async fn execute_with_context(
         &self,
@@ -139,6 +154,24 @@ pub trait ToolExecutor: Send + Sync {
         arguments: Value,
     ) -> Result<Value, ExtensionError> {
         self.execute(arguments).await
+    }
+}
+
+#[async_trait]
+impl<T: JsonToolExecutor + ?Sized> ToolExecutor for T {
+    async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        let value = JsonToolExecutor::execute(self, arguments).await?;
+        crabber_core::ToolOutput::from_json(&value)
+            .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
+    }
+    async fn execute_with_context(
+        &self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        let value = JsonToolExecutor::execute_with_context(self, context, arguments).await?;
+        crabber_core::ToolOutput::from_json(&value)
+            .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
     }
 }
 
@@ -331,7 +364,7 @@ mod tests {
     struct MetadataOnlyTool;
 
     #[async_trait]
-    impl ToolExecutor for MetadataOnlyTool {
+    impl JsonToolExecutor for MetadataOnlyTool {
         async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
             panic!("metadata test must not execute")
         }
@@ -366,7 +399,7 @@ mod tests {
     }
 
     /// Re-pinned for D9 (epic crabber-miia): the fingerprint covers component
-    /// identities plus the result-transform contract component at version 2,
+    /// identities plus the result-transform contract component at version 3,
     /// so both hashes differ from the pre-contract values (1e222d9f..., 3defff03...,
     /// pinned at 5e3046a). Workspace values are not inputs.
     #[test]
@@ -383,7 +416,7 @@ mod tests {
         ];
         assert_eq!(
             compute_fingerprint(&components).to_string(),
-            "77ef3495189564ce7fadd89fa4b63e88b3dec1b1a92dbad900d4dc81a4cf5025"
+            "c34d593211f3acf1029840a23bb7bb34e1652ae3fe4b4b0a996004801a776ab1"
         );
         let provider = StaticPlanProvider::new(
             Vec::new(),
@@ -395,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             provider.plan.fingerprint.to_string(),
-            "25d4c815b08bdb22373d9e9c93fe71a140279d68feacd4f92c56c43d40e5efce"
+            "fb30525cbcdaccf3f321fde632533a3ccd995ff91bbae316029707372f08ae6d"
         );
     }
 

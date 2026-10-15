@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, EventRecord, FakeProvider, MonotonicClock, Observer,
-    OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, TerminalReason, ToolDefinition, ToolExecutor, TraceContext,
+    Agent, AgentConfig, EventKind, EventRecord, FakeProvider, JsonToolExecutor, MonotonicClock,
+    Observer, OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
+    StreamDelta, TerminalReason, ToolDefinition, TraceContext,
     core::{RunId, ToolCallId, ToolInfo},
 };
 use serde_json::{Value, json};
@@ -38,7 +38,7 @@ impl Observer for Capture {
 }
 struct Echo(Arc<Clock>);
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, value: Value) -> Result<Value, crabber::ExtensionError> {
         self.0.0.store(12, Ordering::SeqCst);
         Ok(value)

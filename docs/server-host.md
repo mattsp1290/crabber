@@ -255,3 +255,25 @@ Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
 preserved custom registrations and defaults, exact retry and root drift,
 unavailable workspace values, terminal ingress closure, and fingerprint ordering.
+
+### Typed tool completions
+
+`ToolExecutor::execute` and `execute_with_context` return validated
+`crabber::core::ToolOutput`: ordered text and explicit media sources, plus a
+self-declared error bit. `JsonToolExecutor` is the deliberate JSON-only adapter;
+its JSON becomes literal text and is never inspected for media or authority.
+Use `ToolOutput::from_json` for a JSON result, or `ToolOutput::new` for content.
+`json_value` explicitly reads a single JSON text block and rejects mixed content.
+
+Execution around-middleware receives and returns a version-1 completion envelope
+through `tool_output_envelope` / `parse_tool_output_envelope`. Result transforms
+receive `ToolOutput` directly; JSON result-transform envelopes carry it in
+`result`. The transform contract fingerprint is version 3. Content passes through
+ordinary and final redactors into durable tool settlement and source events.
+Tool, middleware and transform error escalation cannot be cleared by a later
+stage. Call/session/workspace identity remains runtime-owned.
+
+WASM tools use `crabber:extensions@0.2.0` and return the same versioned completion
+envelope. `crabber_guest::json_tool_output` provides explicit JSON-to-text output;
+`ToolOutput::into_envelope` supports mixed content. Unsupported versions and
+malformed content fail closed. Rebuild guests after this contract change.

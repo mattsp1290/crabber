@@ -6,6 +6,7 @@ license.workspace = true
 include = ["Cargo.toml", "README.md", "src/**", "wit/**"]
 
 [dependencies]
+crabber-core = { path = "../crabber-core" }
 wit-bindgen = "=0.62.0"
 serde_json = "1"
 crabber-guest-macros = { path = "../crabber-guest-macros" }

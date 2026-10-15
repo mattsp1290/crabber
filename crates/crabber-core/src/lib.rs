@@ -19,7 +19,7 @@ pub use public_state::{
 };
 
 mod tool_output;
-pub use tool_output::ToolOutput;
+pub use tool_output::{TOOL_OUTPUT_ENVELOPE_VERSION, ToolOutput};
 
 pub mod input;
 pub use input::{

@@ -561,6 +561,7 @@ dependencies = [
 name = "crabber-guest"
 version = "0.1.0"
 dependencies = [
+ "crabber-core",
  "crabber-guest-macros",
  "serde_json",
  "wit-bindgen 0.62.0",

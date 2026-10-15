@@ -215,10 +215,10 @@ impl Dispatcher {
             return ToolResultOutcome::Interrupted { redacted: None };
         }
         let interrupted = || ToolResultOutcome::Interrupted { redacted: None };
-        let mut is_error = context.class().is_error() || seed.mark_error;
+        let mut is_error = context.class().is_error() || seed.mark_error || seed.result.is_error();
         // The seed is never an accepted value (D6); only a handler's valid
         // output is committed here.
-        let mut accepted: Option<Value> = None;
+        let mut accepted: Option<crabber_core::ToolOutput> = None;
         let handlers: Vec<&Handler> = self
             .matching(ToolResultTransform::ID, Mode::Transform)
             .filter(|h| {
@@ -322,7 +322,7 @@ impl Dispatcher {
             };
             match output {
                 Some(output) => {
-                    is_error |= output.mark_error;
+                    is_error |= output.mark_error || output.result.is_error();
                     accepted = Some(output.result);
                 }
                 None if deadline.is_some() => return interrupted(),
@@ -427,7 +427,7 @@ async fn finish_before<T>(
 async fn invoke_result_handler(
     handler: &Handler,
     context: ToolResultContext,
-    value: Value,
+    value: crabber_core::ToolOutput,
 ) -> Option<TransformOutput> {
     use futures::FutureExt;
     let callback = match &handler.callback {
@@ -1103,8 +1103,8 @@ mod driver_tests {
             class,
         )
     }
-    fn seed(value: Value) -> TransformOutput {
-        TransformOutput::new(value)
+    fn seed(value: &Value) -> TransformOutput {
+        TransformOutput::new(crabber_core::ToolOutput::from_json(value).unwrap())
     }
     fn make(order: i32, id: &str, phase: TransformPhase, callback: HandlerFn) -> Handler {
         Handler {
@@ -1127,7 +1127,9 @@ mod driver_tests {
         + Sync
         + 'static,
     ) -> HandlerFn {
-        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(std::future::ready(f(c, v)))))
+        HandlerFn::ResultTransform(Arc::new(move |c, v| {
+            Box::pin(std::future::ready(f(c, (v).json_value().unwrap())))
+        }))
     }
     fn json_cb(
         f: impl Fn(Value) -> Result<Value, ExtensionError> + Send + Sync + 'static,
@@ -1137,21 +1139,28 @@ mod driver_tests {
     /// Appends `tag` to a string result.
     fn append(tag: &'static str) -> HandlerFn {
         typed(move |_, v| {
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap_or("")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!("{}{tag}", v.as_str().unwrap_or("")))),
+                )
+                .unwrap(),
+            ))
         })
     }
     fn counting(counter: &Arc<AtomicUsize>) -> HandlerFn {
         let counter = Arc::clone(counter);
         typed(move |_, v| {
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         })
     }
-    fn completed(result: Value, is_error: bool) -> ToolResultOutcome {
-        ToolResultOutcome::Completed { result, is_error }
+    fn completed(result: &Value, is_error: bool) -> ToolResultOutcome {
+        ToolResultOutcome::Completed {
+            result: crabber_core::ToolOutput::from_json(result).unwrap(),
+            is_error,
+        }
     }
     const O: TransformPhase = TransformPhase::Ordinary;
     const F: TransformPhase = TransformPhase::FinalRedaction;
@@ -1160,22 +1169,24 @@ mod driver_tests {
     async fn no_handlers_completes_with_seed() {
         let d = Dispatcher::new(Vec::new());
         assert_eq!(
-            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
                 .await,
-            completed(json!("s"), false)
+            completed(&json!("s"), false)
         );
         assert_eq!(
             d.transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                TransformOutput::marked_error(json!("s"))
+                TransformOutput::marked_error(
+                    crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap()
+                )
             )
             .await,
-            completed(json!("s"), true)
+            completed(&json!("s"), true)
         );
         assert_eq!(
-            d.transform_tool_result(context(ToolOutcomeClass::UnknownTool), seed(json!("s")))
+            d.transform_tool_result(context(ToolOutcomeClass::UnknownTool), seed(&json!("s")))
                 .await,
-            completed(json!("s"), true)
+            completed(&json!("s"), true)
         );
     }
 
@@ -1185,9 +1196,12 @@ mod driver_tests {
         let recorder = Arc::clone(&seen);
         let redactor = typed(move |_, v| {
             recorder.lock().unwrap().push(v.clone());
-            Ok(TransformOutput::new(json!(
-                v.as_str().unwrap().replace("secret", "[redacted]")
-            )))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(v.as_str().unwrap().replace("secret", "[redacted]"))),
+                )
+                .unwrap(),
+            ))
         });
         let mut late_mount = make(-100, "reducer", O, append("+secret"));
         late_mount.mount_seq = 9;
@@ -1199,9 +1213,9 @@ mod driver_tests {
             make(100, "second", O, append("+more")),
         ]);
         let out = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("raw")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("raw")))
             .await;
-        assert_eq!(out, completed(json!("raw+[redacted]+more"), false));
+        assert_eq!(out, completed(&json!("raw+[redacted]+more"), false));
         assert_eq!(*seen.lock().unwrap(), [json!("raw+secret+more")]);
     }
 
@@ -1286,7 +1300,7 @@ mod driver_tests {
             let outcome = d
                 .transform_tool_result(
                     context(ToolOutcomeClass::Succeeded),
-                    seed(json!(SEED_SECRET)),
+                    seed(&json!(SEED_SECRET)),
                 )
                 .await;
             assert_eq!(
@@ -1317,7 +1331,7 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1348,12 +1362,17 @@ mod driver_tests {
                 O,
                 typed(move |c, v| {
                     recorder.lock().unwrap().push((c.class(), c.is_error()));
-                    Ok(TransformOutput::new(v))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
                 }),
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::ExecutionFailed), seed(json!("s")))
+            .transform_tool_result(
+                context(ToolOutcomeClass::ExecutionFailed),
+                seed(&json!("s")),
+            )
             .await;
         assert_eq!(
             outcome,
@@ -1377,7 +1396,9 @@ mod driver_tests {
                     let recorder = Arc::clone(&seen);
                     move |c, v| {
                         recorder.lock().unwrap().push(c.is_error());
-                        Ok(TransformOutput::new(v))
+                        Ok(TransformOutput::new(
+                            crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                        ))
                     }
                 }),
             ),
@@ -1385,7 +1406,11 @@ mod driver_tests {
                 1,
                 "marker",
                 O,
-                typed(|_, v| Ok(TransformOutput::marked_error(v))),
+                typed(|_, v| {
+                    Ok(TransformOutput::marked_error(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
             ),
             make(
                 2,
@@ -1408,14 +1433,16 @@ mod driver_tests {
                 F,
                 typed(move |c, v| {
                     recorder.lock().unwrap().push(c.is_error());
-                    Ok(TransformOutput::new(v))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
                 }),
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(outcome, completed(&json!("s"), true));
         assert_eq!(*seen.lock().unwrap(), [false, true, true]);
     }
 
@@ -1429,25 +1456,47 @@ mod driver_tests {
             O,
             typed(move |c, v| {
                 *recorder.lock().unwrap() = Some(c.is_error());
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         )]);
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                TransformOutput::marked_error(json!("s")),
+                TransformOutput::marked_error(
+                    crabber_core::ToolOutput::from_json(&(json!("s"))).unwrap(),
+                ),
             )
             .await;
-        assert_eq!(outcome, completed(json!("s"), true));
+        assert_eq!(outcome, completed(&json!("s"), true));
         assert_eq!(*seen.lock().unwrap(), Some(true));
     }
 
     #[tokio::test]
     async fn error_class_cannot_be_cleared() {
         let d = Dispatcher::new(vec![
-            make(0, "typed", O, typed(|_, v| Ok(TransformOutput::new(v)))),
+            make(
+                0,
+                "typed",
+                O,
+                typed(|_, v| {
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
+            ),
             make(1, "json", O, json_cb(Ok)),
-            make(0, "final", F, typed(|_, v| Ok(TransformOutput::new(v)))),
+            make(
+                0,
+                "final",
+                F,
+                typed(|_, v| {
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                    ))
+                }),
+            ),
         ]);
         for class in [
             ToolOutcomeClass::ExecutionFailed,
@@ -1456,9 +1505,9 @@ mod driver_tests {
             ToolOutcomeClass::PrepareFailed,
         ] {
             assert_eq!(
-                d.transform_tool_result(context(class), seed(json!("s")))
+                d.transform_tool_result(context(class), seed(&json!("s")))
                     .await,
-                completed(json!("s"), true),
+                completed(&json!("s"), true),
                 "{class:?}"
             );
         }
@@ -1490,7 +1539,9 @@ mod driver_tests {
                         let _ = gate.await;
                     });
                 }
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         );
         a.cleanup = tracker_a.clone();
@@ -1518,15 +1569,17 @@ mod driver_tests {
                     .lock()
                     .unwrap()
                     .push((c.phase(), c.cleanup().pending()));
-                Ok(TransformOutput::new(v))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+                ))
             }),
         );
         b.cleanup = tracker_b.clone();
         let d = Dispatcher::new(vec![a, j, b]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(outcome, completed(&json!("s"), false));
         assert_eq!(*phases.lock().unwrap(), [(O, 0), (O, usize::MAX), (F, 0)]);
         assert_eq!(tracker_a.pending(), 1);
         assert_eq!(tracker_b.pending(), 0);
@@ -1541,7 +1594,7 @@ mod driver_tests {
             CleanupTracker::from_parts(tokio_util::task::TaskTracker::new(), closing.clone());
         closing.cancel();
         let outcome = Dispatcher::new(vec![h])
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1575,7 +1628,7 @@ mod driver_tests {
             make(1, "boom", O, typed(|_, _| panic!("{ERROR_SECRET}"))),
         ]);
         let outcome = AssertUnwindSafe(
-            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s"))),
+            d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s"))),
         )
         .catch_unwind()
         .await
@@ -1606,7 +1659,9 @@ mod driver_tests {
         FINAL_REDACTION_DEADLINE * 3 / 5
     }
     fn interrupted(redacted: Option<Value>) -> ToolResultOutcome {
-        ToolResultOutcome::Interrupted { redacted }
+        ToolResultOutcome::Interrupted {
+            redacted: (redacted).map(|value| crabber_core::ToolOutput::from_json(&value).unwrap()),
+        }
     }
     fn async_typed<Fut>(
         f: impl Fn(ToolResultContext, Value) -> Fut + Send + Sync + 'static,
@@ -1614,19 +1669,30 @@ mod driver_tests {
     where
         Fut: Future<Output = Result<TransformOutput, ExtensionError>> + Send + 'static,
     {
-        HandlerFn::ResultTransform(Arc::new(move |c, v| Box::pin(f(c, v))))
+        HandlerFn::ResultTransform(Arc::new(move |c, v| {
+            Box::pin(f(c, (v).json_value().unwrap()))
+        }))
     }
     /// Replaces the value with the (unredacted) accepted marker.
     fn accept() -> HandlerFn {
-        typed(|_, _| Ok(TransformOutput::new(json!(ACCEPTED))))
+        typed(|_, _| {
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(json!(ACCEPTED))).unwrap(),
+            ))
+        })
     }
     /// Redacts the accepted marker and appends `tag`.
     fn redact(tag: &'static str) -> HandlerFn {
         typed(move |_, v| {
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap().replace(ACCEPTED, "[red]")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!(
+                        "{}{tag}",
+                        v.as_str().unwrap().replace(ACCEPTED, "[red]")
+                    ))),
+                )
+                .unwrap(),
+            ))
         })
     }
     struct DropFlag(Arc<AtomicBool>);
@@ -1661,10 +1727,15 @@ mod driver_tests {
                 let _guard = guard;
                 started.notify_one();
                 tokio::time::sleep(delay).await;
-                Ok(TransformOutput::new(json!(format!(
-                    "{}{tag}",
-                    v.as_str().unwrap().replace(ACCEPTED, "[red]")
-                ))))
+                Ok(TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(
+                        &(json!(format!(
+                            "{}{tag}",
+                            v.as_str().unwrap().replace(ACCEPTED, "[red]")
+                        ))),
+                    )
+                    .unwrap(),
+                ))
             }
         })
     }
@@ -1673,17 +1744,21 @@ mod driver_tests {
         let seen = Arc::clone(seen);
         typed(move |c, v| {
             seen.lock().unwrap().push(c.cancellation().is_cancelled());
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         })
     }
     /// Cancels the per-call token and returns immediately in the same poll.
     fn cancel_and_return(tag: &'static str) -> HandlerFn {
         typed(move |c, v| {
             c.cancellation().cancel();
-            Ok(TransformOutput::new(json!(format!(
-                "{}{tag}",
-                v.as_str().unwrap_or("")
-            ))))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(
+                    &(json!(format!("{}{tag}", v.as_str().unwrap_or("")))),
+                )
+                .unwrap(),
+            ))
         })
     }
     fn assert_no_leak(outcome: &ToolResultOutcome) {
@@ -1706,7 +1781,7 @@ mod driver_tests {
     ) -> ToolResultOutcome {
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(seed_value));
+        let driver = d.transform_tool_result(ctx, seed(&seed_value));
         tokio::pin!(driver);
         tokio::select! {
             biased;
@@ -1795,7 +1870,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![hung, make(1, "later", O, counting(&later))]);
         let driver = d.transform_tool_result(
             context(ToolOutcomeClass::Succeeded),
-            seed(json!(SEED_SECRET)),
+            seed(&json!(SEED_SECRET)),
         );
         tokio::pin!(driver);
         park(&mut driver).await;
@@ -1822,7 +1897,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let driver = d.transform_tool_result(
             context(ToolOutcomeClass::Succeeded),
-            seed(json!(SEED_SECRET)),
+            seed(&json!(SEED_SECRET)),
         );
         tokio::pin!(driver);
         park(&mut driver).await;
@@ -1847,7 +1922,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         // Cancellation is observed with the final redactor in flight on an
@@ -1872,7 +1947,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         token.cancel();
@@ -1894,7 +1969,7 @@ mod driver_tests {
         ]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         token.cancel();
@@ -1912,7 +1987,7 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "accept", O, accept()), hung]);
         let token = CancellationToken::new();
         let ctx = context(ToolOutcomeClass::Succeeded).with_cancellation(token.clone());
-        let driver = d.transform_tool_result(ctx, seed(json!(SEED_SECRET)));
+        let driver = d.transform_tool_result(ctx, seed(&json!(SEED_SECRET)));
         tokio::pin!(driver);
         park(&mut driver).await;
         // Both ready at once on a final redactor running on an accepted value:
@@ -1941,7 +2016,7 @@ mod driver_tests {
             make(0, "final", F, redact("+F")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
         assert_eq!(later.load(Ordering::SeqCst), 0);
@@ -1955,7 +2030,7 @@ mod driver_tests {
             make(1, "f2", F, redact("+F2")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -1970,9 +2045,9 @@ mod driver_tests {
         let d = Dispatcher::new(vec![make(0, "last", F, append("+last"))]);
         let ctx = context(ToolOutcomeClass::Succeeded);
         let token = ctx.cancellation().clone();
-        let outcome = d.transform_tool_result(ctx, seed(json!("s"))).await;
+        let outcome = d.transform_tool_result(ctx, seed(&json!("s"))).await;
         token.cancel();
-        assert_eq!(outcome, completed(json!("s+last"), false));
+        assert_eq!(outcome, completed(&json!("s+last"), false));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1984,7 +2059,7 @@ mod driver_tests {
             make(0, "final", F, redact("+F")),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
         // Nothing accepted before the racer: nothing to fall back to.
@@ -1995,7 +2070,7 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded),
-                seed(json!(SEED_SECRET)),
+                seed(&json!(SEED_SECRET)),
             )
             .await;
         assert_eq!(outcome, interrupted(None));
@@ -2199,7 +2274,7 @@ mod driver_tests {
         // Without cancellation the same handlers see a live token.
         seen.lock().unwrap().clear();
         let d = Dispatcher::new(vec![make(0, "f", F, observing(&seen))]);
-        d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+        d.transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(*seen.lock().unwrap(), [false]);
     }
@@ -2219,7 +2294,7 @@ mod driver_tests {
             let outcome = Dispatcher::new(handlers)
                 .transform_tool_result(
                     context(ToolOutcomeClass::Succeeded).with_cancellation(token),
-                    seed(json!(SEED_SECRET)),
+                    seed(&json!(SEED_SECRET)),
                 )
                 .await;
             assert_eq!(outcome, interrupted(None));
@@ -2243,7 +2318,7 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded).with_cancellation(parent.child_token()),
-                seed(json!(SEED_SECRET)),
+                seed(&json!(SEED_SECRET)),
             )
             .await;
         assert_eq!(outcome, interrupted(Some(json!("[red]+F"))));
@@ -2262,7 +2337,7 @@ mod driver_tests {
             }),
         )]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(outcome, interrupted(None));
     }
@@ -2289,10 +2364,10 @@ mod driver_tests {
         let outcome = d
             .transform_tool_result(
                 context(ToolOutcomeClass::Succeeded).with_cancellation(CancellationToken::new()),
-                seed(json!("s")),
+                seed(&json!("s")),
             )
             .await;
-        assert_eq!(outcome, completed(json!("[red]+F"), false));
+        assert_eq!(outcome, completed(&json!("[red]+F"), false));
         // D2 still applies to a failing final redactor.
         let d = Dispatcher::new(vec![
             make(0, "accept", O, accept()),
@@ -2304,7 +2379,7 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
         assert_eq!(
             outcome,
@@ -2334,9 +2409,9 @@ mod driver_tests {
             ),
         ]);
         let outcome = d
-            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s")))
+            .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s")))
             .await;
-        assert_eq!(outcome, completed(json!("s"), false));
+        assert_eq!(outcome, completed(&json!("s"), false));
         assert_eq!(*seen.lock().unwrap(), [json!("final_redaction")]);
     }
 
@@ -2409,7 +2484,9 @@ mod driver_tests {
         let bomb = typed(|_, v| {
             // The bomb is dropped when this (ready) future completes.
             let _bomb = Bomb;
-            Ok(TransformOutput::new(v))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(v)).unwrap(),
+            ))
         });
         let bomb = match bomb {
             HandlerFn::ResultTransform(f) => HandlerFn::ResultTransform(Arc::new(move |c, v| {
@@ -2423,7 +2500,7 @@ mod driver_tests {
         };
         let outcome = AssertUnwindSafe(
             Dispatcher::new(vec![make(0, "bomb", O, bomb)])
-                .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(json!("s"))),
+                .transform_tool_result(context(ToolOutcomeClass::Succeeded), seed(&json!("s"))),
         )
         .catch_unwind()
         .await
@@ -2479,10 +2556,12 @@ mod driver_tests {
                         calls.fetch_add(1, Ordering::SeqCst);
                         async move {
                             tokio::task::yield_now().await;
-                            Ok(TransformOutput::new(json!(format!(
-                                "{}x",
-                                v.as_str().unwrap()
-                            ))))
+                            Ok(TransformOutput::new(
+                                crabber_core::ToolOutput::from_json(
+                                    &(json!(format!("{}x", v.as_str().unwrap()))),
+                                )
+                                .unwrap(),
+                            ))
                         }
                     }),
                 ));
@@ -2494,10 +2573,12 @@ mod driver_tests {
                 F,
                 typed(move |_, v| {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    Ok(TransformOutput::new(json!(format!(
-                        "{}F",
-                        v.as_str().unwrap()
-                    ))))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(
+                            &(json!(format!("{}F", v.as_str().unwrap()))),
+                        )
+                        .unwrap(),
+                    ))
                 }),
             ));
             let d = Dispatcher::new(handlers);
@@ -2510,20 +2591,26 @@ mod driver_tests {
                 }
                 token.cancel();
             });
-            let outcome = d.transform_tool_result(ctx, seed(json!(""))).await;
+            let outcome = d.transform_tool_result(ctx, seed(&json!(""))).await;
             canceller.join().unwrap();
             let ordinary = ordinary_calls.load(Ordering::SeqCst);
             let finals = final_calls.load(Ordering::SeqCst);
             match outcome {
                 ToolResultOutcome::Completed { result, is_error } => {
-                    assert_eq!(result, json!(format!("{}F", "x".repeat(ORDINARY))));
+                    assert_eq!(
+                        result,
+                        crabber_core::ToolOutput::from_json(
+                            &(json!(format!("{}F", "x".repeat(ORDINARY))))
+                        )
+                        .unwrap()
+                    );
                     assert!(!is_error);
                     assert_eq!((ordinary, finals), (ORDINARY, 1));
                 }
                 ToolResultOutcome::Interrupted {
                     redacted: Some(value),
                 } => {
-                    let value = value.as_str().unwrap().to_owned();
+                    let value = value.json_value().unwrap().as_str().unwrap().to_owned();
                     let k = value.len() - 1;
                     assert_eq!(value, format!("{}F", "x".repeat(k)));
                     assert!((1..=ORDINARY).contains(&k), "{value}");

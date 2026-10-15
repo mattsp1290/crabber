@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crabber_core::{
     InputFingerprint, ProviderBindingDescriptor, ProviderBindingLimits, ToolCallId, ToolInfo,
 };
-use crabber_extension::{ExtensionError, StaticPlanProvider, ToolDefinition, ToolExecutor};
+use crabber_extension::{ExtensionError, JsonToolExecutor, StaticPlanProvider, ToolDefinition};
 use crabber_providers::{
     DeltaStream, FakeProvider, ModelRequest, ProviderBindingError, ProviderError, Resolver,
     Selection, StreamDelta, Streamer,
@@ -72,7 +72,7 @@ impl Streamer for MovingStream {
 }
 struct Echo;
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         Ok(arguments)
     }
@@ -420,4 +420,98 @@ async fn compaction_keeps_captured_limits_and_respects_the_request_output_cap() 
         assert_eq!(descriptions.load(Ordering::SeqCst), 3);
         assert_eq!(resolutions.load(Ordering::SeqCst), 1);
     }
+}
+
+struct DeclaredErrorTool;
+#[async_trait]
+impl crabber_extension::ToolExecutor for DeclaredErrorTool {
+    async fn execute(&self, _: Value) -> Result<crabber_core::ToolOutput, ExtensionError> {
+        Ok(crabber_core::ToolOutput::from_json(&json!("kept"))
+            .unwrap()
+            .with_error())
+    }
+}
+struct ClearErrorPipeline;
+#[async_trait]
+impl crate::ToolPipeline for ClearErrorPipeline {
+    async fn prepare(&self, _: &ToolInfo, arguments: Value) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        context: &crabber_extension::ToolResultContext,
+        _: &ToolInfo,
+        output: crabber_core::ToolOutput,
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        assert_eq!(
+            context.class(),
+            crabber_extension::ToolOutcomeClass::Succeeded
+        );
+        assert!(context.is_error());
+        Ok(crabber_extension::TransformOutput::new(
+            crabber_core::ToolOutput::new(output.content().to_vec(), false).unwrap(),
+        ))
+    }
+}
+#[tokio::test]
+async fn host_pre_stage_observes_declared_error_and_cannot_clear_it() {
+    let call = ToolCallId::new();
+    let fake = FakeProvider::scripted(vec![
+        vec![
+            StreamDelta::ToolCallStart {
+                call_id: call.clone(),
+                name: "error".into(),
+            },
+            StreamDelta::ToolCallArgsDelta {
+                call_id: call.clone(),
+                text: "{}".into(),
+            },
+            StreamDelta::ToolCallDone { call_id: call },
+            StreamDelta::Completed,
+        ],
+        vec![
+            StreamDelta::TextDelta("done".into()),
+            StreamDelta::Completed,
+        ],
+    ]);
+    let runtime = Orchestrator::builder()
+        .behavior_version("typed-error-pre-stage.v1")
+        .store(Arc::new(MemoryStore::new()))
+        .resolver(Arc::new(fake.clone()))
+        .tool_pipeline(Arc::new(ClearErrorPipeline))
+        .plan_provider(Arc::new(StaticPlanProvider::new(
+            vec![Arc::new(ToolDefinition {
+                info: ToolInfo {
+                    name: "error".into(),
+                    description: "declares error".into(),
+                    parameters: json!({"type":"object"}),
+                    retry_safe: false,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(DeclaredErrorTool),
+            })],
+            vec![],
+        )))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .build()
+        .unwrap();
+    runtime
+        .start(binding_request())
+        .await
+        .unwrap()
+        .done()
+        .await
+        .unwrap();
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .any(|part| matches!(
+                part.content,
+                crabber_core::ContentBlock::ToolResult { is_error: true, .. }
+            ))
+    );
 }

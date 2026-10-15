@@ -4,7 +4,7 @@ mod process;
 use async_trait::async_trait;
 use crabber::{
     Agent, AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    StaticPolicy, StreamDelta, ToolDefinition, JsonToolExecutor,
     core::{ToolCallId, ToolInfo},
     extension::{Extension, Registrar, Scope, TransformOutput},
     session::Store,
@@ -166,7 +166,7 @@ impl Extension for Reducer {
                         crabber::extension::TransformPhase::FinalRedaction
                     );
                     probes.redacted.set();
-                    Ok(TransformOutput::new(json!(REDACTED_OUTPUT)))
+                    Ok(TransformOutput::new(crabber::core::ToolOutput::from_json(&json!(REDACTED_OUTPUT)).unwrap()))
                 })
             }),
         );
@@ -176,7 +176,7 @@ impl Extension for Reducer {
 
 struct FixtureTool;
 #[async_trait]
-impl ToolExecutor for FixtureTool {
+impl JsonToolExecutor for FixtureTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(RAW_OUTPUT))
     }
@@ -196,7 +196,7 @@ pub fn agent_builder(
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "fixture".into(),
                 description: "source-only reduction fixture".into(),
@@ -206,7 +206,7 @@ pub fn agent_builder(
             },
             executor: Arc::new(FixtureTool),
         }))
-        .extension(
+        .shared_extension(
             Arc::new(Reducer {
                 probes,
                 accept_before_reduction,

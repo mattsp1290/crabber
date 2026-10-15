@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, BuildError, FakeProvider, Selection, StreamDelta, ToolDefinition,
-    ToolExecutor,
+    Agent, AgentConfig, BuildError, FakeProvider, JsonToolExecutor, Selection, StreamDelta,
+    ToolDefinition,
     core::{RunStatus, ToolCallId, ToolInfo},
     extension::{Extension, ExtensionError, ModelStream, Next, Point, Registrar, Scope},
     runtime::{InterruptPolicy, PermissionDecision, PermissionPolicy},
@@ -39,7 +39,7 @@ fn tool_call() -> Vec<StreamDelta> {
 }
 struct Echo;
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         Ok(input)
     }

@@ -2,7 +2,7 @@
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExtensionError, FakeProvider,
     InputFingerprint, RuntimeError, Selection, SessionId, StreamDelta, ToolDefinition,
-    ToolExecutor,
+    JsonToolExecutor,
     core::{CoreError, ToolInfo},
     extension::{Extension, Registrar, Scope},
     session::MemoryStore,
@@ -18,7 +18,7 @@ const REORDERED_CONFIG: &str = r#"{"steps":[{"y":2,"x":1}],"nested":{"b":2,"a":1
 
 struct UnusedTool;
 #[async_trait::async_trait]
-impl ToolExecutor for UnusedTool {
+impl JsonToolExecutor for UnusedTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         panic!("text-only receipt regression must not execute tools")
     }

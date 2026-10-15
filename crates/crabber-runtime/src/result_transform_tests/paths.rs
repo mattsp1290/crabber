@@ -24,7 +24,7 @@ impl PathProbe {
                         .results
                         .lock()
                         .unwrap()
-                        .push((context, result.clone()));
+                        .push((context, (result.clone()).json_value().unwrap()));
                     Box::pin(async move { Ok(TransformOutput::new(result)) })
                 }),
             );
@@ -137,10 +137,15 @@ impl ToolPipeline for PathProbe {
         &self,
         context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         self.pre_stages.lock().unwrap().push(context.clone());
-        Ok(TransformOutput::new(result))
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 

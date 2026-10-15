@@ -313,7 +313,7 @@ async fn model_middleware_fingerprint_pins_canonical_extension_metadata() {
     );
     assert_eq!(
         plan.fingerprint.to_string(),
-        "eb358317ffa9ce0df8045abc851c8de305479c931ed9fbd56ee12c9d479e4f93"
+        "f2ac643506222b960a05165a9ef25d6588c0bb29badcc84ea2824303195b1586"
     );
 }
 

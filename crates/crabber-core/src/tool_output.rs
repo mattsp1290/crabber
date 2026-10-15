@@ -10,6 +10,14 @@ struct WireOutput {
     is_error: bool,
 }
 
+pub const TOOL_OUTPUT_ENVELOPE_VERSION: u32 = 1;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletionEnvelope {
+    version: u32,
+    output: ToolOutput,
+}
+
 /// Ordered typed content and a tool-declared error bit. Unstable until durable
 /// host qualification. Runtime denial/interruption/failure cannot be cleared by
 /// this bit. A suspension is a separate control outcome, never a `ToolOutput`.
@@ -40,6 +48,39 @@ impl ToolOutput {
         input::validate_serialized_bound(value).map_err(|_| invalid())?;
         let text = serde_json::to_string(value).map_err(|_| invalid())?;
         Self::new(vec![MessageContent::Text { text }], false)
+    }
+    /// Encode the declared completion envelope for a JSON/WASM boundary.
+    /// # Panics
+    /// Only if serialization of the fixed envelope or validated content fails.
+    #[must_use]
+    pub fn into_envelope(self) -> Value {
+        serde_json::to_value(CompletionEnvelope {
+            version: TOOL_OUTPUT_ENVELOPE_VERSION,
+            output: self,
+        })
+        .expect("validated tool output serializes")
+    }
+    /// Decode only a supported completion envelope with validated typed data.
+    /// # Errors
+    /// Rejects unknown versions/fields, malformed and oversized content.
+    pub fn from_envelope(value: Value) -> Result<Self, CoreError> {
+        let envelope: CompletionEnvelope = serde_json::from_value(value).map_err(|_| invalid())?;
+        if envelope.version != TOOL_OUTPUT_ENVELOPE_VERSION {
+            return Err(invalid());
+        }
+        Ok(envelope.output)
+    }
+    /// Explicitly read one JSON-to-text result for a JSON-only integration.
+    /// # Errors
+    /// Rejects media, multiple blocks and text that is not a JSON value. This
+    /// conversion never interprets a JSON shape as typed content or authority.
+    pub fn json_value(&self) -> Result<Value, CoreError> {
+        let [MessageContent::Text { text }] = self.content() else {
+            return Err(invalid());
+        };
+        let value = serde_json::from_str(text).map_err(|_| invalid())?;
+        input::validate_json(&value, 0).map_err(|_| invalid())?;
+        Ok(value)
     }
     /// Project validated content into durable `ToolResult` blocks without flattening
     /// media or attaching call/session identity or a runtime outcome class.
@@ -112,6 +153,55 @@ impl std::fmt::Debug for ToolOutput {
 mod tests {
     use super::*;
     use crate::{MediaKind, MediaSource};
+    #[test]
+    fn completion_envelope_is_versioned_and_json_readback_is_explicit() {
+        let output = ToolOutput::from_json(&serde_json::json!({"nested":[null,1]})).unwrap();
+        assert_eq!(
+            output.json_value().unwrap(),
+            serde_json::json!({"nested":[null,1]})
+        );
+        assert_eq!(
+            ToolOutput::from_envelope(output.clone().into_envelope()).unwrap(),
+            output
+        );
+        for malformed in [
+            serde_json::json!({"version":2,"output":output}),
+            serde_json::json!({"version":1,"output":output,"session_id":"SECRET"}),
+            serde_json::json!({"version":1,"output":{"content":[{"type":"tool_call","call_id":"SECRET"}],"is_error":false}}),
+            serde_json::json!({"result":{"type":"image","url":"SECRET"}}),
+        ] {
+            let error = ToolOutput::from_envelope(malformed).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "invalid input: invalid typed tool output"
+            );
+        }
+        for non_json in [
+            vec![MessageContent::Text {
+                text: "ordinary text".into(),
+            }],
+            vec![
+                MessageContent::Text {
+                    text: "null".into(),
+                },
+                MessageContent::Text { text: "1".into() },
+            ],
+            vec![MessageContent::Media {
+                kind: MediaKind::Image,
+                mime_type: "image/png".into(),
+                source: MediaSource::File {
+                    file_id: "opaque".into(),
+                },
+            }],
+        ] {
+            assert!(
+                ToolOutput::new(non_json, false)
+                    .unwrap()
+                    .json_value()
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn media_order_and_error_are_preserved_and_json_stays_literal_text() {
         let content = vec![

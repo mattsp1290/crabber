@@ -3,8 +3,9 @@ mod factories;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,
-    ExtensionError, FakeProvider, InputFingerprint, PermissionDecision, RuntimeError, Scope,
-    Selection, SessionContext, SessionId, StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    ExtensionError, FakeProvider, InputFingerprint, JsonToolExecutor, PermissionDecision,
+    RuntimeError, Scope, Selection, SessionContext, SessionId, StaticPolicy, StreamDelta,
+    ToolDefinition,
     core::{CoreError, RunStatus, ToolCallId, ToolInfo},
     extension::{Extension, Registrar, ToolContext},
     session::{MemoryStore, Store},
@@ -62,7 +63,7 @@ struct IdentityTool {
     together: Arc<tokio::sync::Barrier>,
 }
 #[async_trait]
-impl ToolExecutor for IdentityTool {
+impl JsonToolExecutor for IdentityTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         panic!("runtime must provide contextual execution")
     }

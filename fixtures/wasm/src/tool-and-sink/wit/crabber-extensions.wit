@@ -1,4 +1,4 @@
-package crabber:extensions@0.1.0;
+package crabber:extensions@0.2.0;
 
 interface types {
   record structured-error { code: string, message: string, retryable: bool }

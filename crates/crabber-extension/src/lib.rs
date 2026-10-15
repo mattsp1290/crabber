@@ -37,9 +37,14 @@ pub use registry::{
 pub use state::{StateSink, current_state_sink, with_state_sink};
 
 pub use plan::{
-    ComponentIdentity, ExtensionError, PlanFingerprint, PromptSection, RunPlan, RunPlanProvider,
-    StaticPlanProvider, ToolDefinition, ToolExecutor, compute_fingerprint,
+    ComponentIdentity, ExtensionError, JsonToolExecutor, PlanFingerprint, PromptSection, RunPlan,
+    RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor, compute_fingerprint,
 };
 
 /// Retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-extension";
+
+mod tool_output;
+pub use tool_output::{
+    TOOL_OUTPUT_ENVELOPE_VERSION, parse_tool_output_envelope, tool_output_envelope,
+};

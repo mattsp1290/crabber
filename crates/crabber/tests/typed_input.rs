@@ -7,8 +7,8 @@ use crabber::core::{
 use crabber::session::{MemoryStore, Store, StoreError};
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext, FakeProvider,
-    InputFingerprint, PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition,
-    ToolExecutor,
+    InputFingerprint, JsonToolExecutor, PermissionDecision, Selection, StaticPolicy, StreamDelta,
+    ToolDefinition,
 };
 use serde_json::json;
 use std::sync::{
@@ -18,7 +18,7 @@ use std::sync::{
 
 struct CountedEcho(Arc<AtomicUsize>);
 #[async_trait]
-impl ToolExecutor for CountedEcho {
+impl JsonToolExecutor for CountedEcho {
     async fn execute(
         &self,
         input: serde_json::Value,

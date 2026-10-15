@@ -3631,81 +3631,83 @@ impl Orchestrator {
         let child_cancellation = cancellation.child_token();
         let mut mark_error = false;
         let mut pipeline_failed = false;
-        let (class, input, resolved, outcome): (_, _, _, Result<Value, String>) = match recorded {
-            RecordedCall::Execute(arguments) => {
-                let tool = definition.expect("the record reader executes only calls that resolve");
-                let input = ToolInput::Normalized(arguments.clone());
-                let pipeline_context = ToolResultContext::new(
-                    call.name.clone(),
-                    true,
-                    input.clone(),
-                    record.id.clone(),
-                    session_id.clone(),
-                    run_id.clone(),
-                    ToolOutcomeClass::Succeeded,
-                )
-                .with_cancellation(child_cancellation.clone())
-                .with_cleanup(self.pipeline_cleanup.clone());
-                let run = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => {
-                        measurement.observation.reason = TerminalReason::Cancelled;
-                        return Err(RuntimeError::Interrupted);
-                    },
-                    result = self.permit_and_execute(
-                    execution,
-                    session,
-                    run_id,
-                    &call.id,
-                    plan,
-                    &tool,
-                    arguments,
-                    cancellation,
-                    lease_lost,
-                    &pipeline_context,
-                    ) => result.inspect_err(|error| {
-                        measurement.observation.reason = match error {
-                            RuntimeError::LeaseLost => TerminalReason::LeaseLost,
-                            RuntimeError::Interrupted => TerminalReason::Cancelled,
-                            RuntimeError::Paused => TerminalReason::Paused,
-                            _ => TerminalReason::RuntimeError,
-                        };
-                    })?,
-                };
-                match run {
-                    ToolRun::Output(value) => {
-                        mark_error = value.mark_error;
-                        (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
-                    }
-                    ToolRun::PipelineFailed => {
-                        pipeline_failed = true;
-                        (
-                            ToolOutcomeClass::Succeeded,
+        let (class, input, resolved, outcome): (_, _, _, Result<crabber_core::ToolOutput, String>) =
+            match recorded {
+                RecordedCall::Execute(arguments) => {
+                    let tool =
+                        definition.expect("the record reader executes only calls that resolve");
+                    let input = ToolInput::Normalized(arguments.clone());
+                    let pipeline_context = ToolResultContext::new(
+                        call.name.clone(),
+                        true,
+                        input.clone(),
+                        record.id.clone(),
+                        session_id.clone(),
+                        run_id.clone(),
+                        ToolOutcomeClass::Succeeded,
+                    )
+                    .with_cancellation(child_cancellation.clone())
+                    .with_cleanup(self.pipeline_cleanup.clone());
+                    let run = tokio::select! {
+                        biased;
+                        () = cancellation.cancelled() => {
+                            measurement.observation.reason = TerminalReason::Cancelled;
+                            return Err(RuntimeError::Interrupted);
+                        },
+                        result = self.permit_and_execute(
+                        execution,
+                        session,
+                        run_id,
+                        &call.id,
+                        plan,
+                        &tool,
+                        arguments,
+                        cancellation,
+                        lease_lost,
+                        &pipeline_context,
+                        ) => result.inspect_err(|error| {
+                            measurement.observation.reason = match error {
+                                RuntimeError::LeaseLost => TerminalReason::LeaseLost,
+                                RuntimeError::Interrupted => TerminalReason::Cancelled,
+                                RuntimeError::Paused => TerminalReason::Paused,
+                                _ => TerminalReason::RuntimeError,
+                            };
+                        })?,
+                    };
+                    match run {
+                        ToolRun::Output(value) => {
+                            mark_error = value.mark_error;
+                            (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
+                        }
+                        ToolRun::PipelineFailed => {
+                            pipeline_failed = true;
+                            (
+                                ToolOutcomeClass::Succeeded,
+                                input,
+                                true,
+                                Ok(runtime_error_output(&result_transform_failed_message(
+                                    TOOL_PIPELINE_HANDLER_ID,
+                                ))),
+                            )
+                        }
+                        ToolRun::PermissionDenied => (
+                            ToolOutcomeClass::PermissionDenied,
                             input,
                             true,
-                            Ok(Value::String(result_transform_failed_message(
-                                TOOL_PIPELINE_HANDLER_ID,
-                            ))),
-                        )
-                    }
-                    ToolRun::PermissionDenied => (
-                        ToolOutcomeClass::PermissionDenied,
-                        input,
-                        true,
-                        Err("permission denied".into()),
-                    ),
-                    ToolRun::ExecutionFailed(error) => {
-                        (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
+                            Err("permission denied".into()),
+                        ),
+                        ToolRun::ExecutionFailed(error) => {
+                            (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
+                        }
                     }
                 }
-            }
-            RecordedCall::Settled {
-                class,
-                input,
-                resolved,
-                seed,
-            } => (class, input, resolved, Err(seed)),
-        };
+                RecordedCall::Settled {
+                    class,
+                    input,
+                    resolved,
+                    seed,
+                } => (class, input, resolved, Err(seed)),
+            };
         ensure_lease(lease_lost)?;
         // Built from the stored record only, so a resumed call derives the same context.
         let result_context = ToolResultContext::new(
@@ -3726,7 +3728,7 @@ impl Orchestrator {
         let seed = TransformOutput {
             result: match outcome {
                 Ok(value) => value,
-                Err(error) => Value::String(error),
+                Err(error) => runtime_error_output(&error),
             },
             mark_error,
         };
@@ -3752,7 +3754,7 @@ impl Orchestrator {
             ),
             ToolResultOutcome::Failed { handler } => (
                 ToolResultStatus::Failed,
-                Value::String(result_transform_failed_message(&handler)),
+                runtime_error_output(&result_transform_failed_message(&handler)),
                 true,
             ),
             ToolResultOutcome::Interrupted {
@@ -3773,8 +3775,7 @@ impl Orchestrator {
             TerminalReason::Success
         };
         drop(measurement);
-        let text = serde_json::to_string(&output).expect("JSON value serializes");
-        let content = vec![ContentBlock::Text { text }];
+        let content = output.to_content_blocks();
         let result = ToolResult {
             status,
             content: content.clone(),
@@ -3959,19 +3960,26 @@ impl Orchestrator {
         );
         let executor = Arc::clone(&tool.executor);
         let authorized_arguments = arguments.clone();
+        let declared_error = Arc::new(AtomicBool::new(false));
+        let terminal_error = declared_error.clone();
         let terminal: Callback = Arc::new(move |input| {
             let executor = Arc::clone(&executor);
             let context = context.clone();
             let authorized_arguments = authorized_arguments.clone();
+            let terminal_error = terminal_error.clone();
             Box::pin(async move {
                 if input != authorized_arguments {
                     return Err(crabber_extension::ExtensionError::Tool(
                         "around handler changed immutable tool input".into(),
                     ));
                 }
-                executor
+                let output = executor
                     .execute_with_context(context, authorized_arguments)
-                    .await
+                    .await?;
+                if output.is_error() {
+                    terminal_error.store(true, Ordering::SeqCst);
+                }
+                Ok(crabber_extension::tool_output_envelope(output))
             })
         });
         let output = match plan
@@ -3982,19 +3990,36 @@ impl Orchestrator {
             Ok(output) => output,
             Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
         };
+        let output = match crabber_extension::parse_tool_output_envelope(output) {
+            Ok(output) if declared_error.load(Ordering::SeqCst) => output.with_error(),
+            Ok(output) => output,
+            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
+        };
+        let output_is_error = output.is_error();
+        let pipeline_context = ToolResultContext::for_completion(pipeline_context.clone(), &output);
         ensure_lease(lease_lost)?;
         let transformed = std::panic::AssertUnwindSafe(async {
             self.tool_pipeline
-                .transform_result(pipeline_context, &tool.info, output)
+                .transform_result(&pipeline_context, &tool.info, output)
                 .await
         })
         .catch_unwind()
         .await;
         Ok(match transformed {
-            Ok(Ok(value)) => ToolRun::Output(value),
+            Ok(Ok(mut value)) => {
+                value.mark_error |= output_is_error;
+                ToolRun::Output(value)
+            }
             Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
         })
     }
+}
+
+fn runtime_error_output(error: &str) -> crabber_core::ToolOutput {
+    crabber_core::ToolOutput::from_json(&Value::String(error.into())).unwrap_or_else(|_| {
+        crabber_core::ToolOutput::from_json(&Value::String("tool result unavailable".into()))
+            .expect("fixed runtime error is valid")
+    })
 }
 
 /// Test bound from cancellation to durable settlement; store writes have no timer.
@@ -4305,10 +4330,12 @@ mod recovery_contract_tests {
             &self,
             context: &ToolResultContext,
             _: &ToolInfo,
-            _: Value,
+            _: crabber_core::ToolOutput,
         ) -> Result<TransformOutput, String> {
             self.0.lock().unwrap().push(context.clone());
-            Ok(TransformOutput::new(json!("re-executed pre-stage")))
+            Ok(TransformOutput::new(
+                crabber_core::ToolOutput::from_json(&(json!("re-executed pre-stage"))).unwrap(),
+            ))
         }
     }
 
@@ -4385,8 +4412,17 @@ mod recovery_contract_tests {
                     "final",
                     Arc::new(move |context, value| {
                         final_contexts.lock().unwrap().push(context);
-                        assert_eq!(value, json!("re-executed pre-stage"));
-                        Box::pin(async { Ok(TransformOutput::new(json!("redacted replay"))) })
+                        assert_eq!(
+                            value,
+                            crabber_core::ToolOutput::from_json(&(json!("re-executed pre-stage")))
+                                .unwrap()
+                        );
+                        Box::pin(async {
+                            Ok(TransformOutput::new(
+                                crabber_core::ToolOutput::from_json(&(json!("redacted replay")))
+                                    .unwrap(),
+                            ))
+                        })
                     }),
                 );
             }

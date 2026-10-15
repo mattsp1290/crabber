@@ -1,6 +1,6 @@
 # Crabber extension contract
 
-`crabber:extensions@0.1.0` defines eight extension roles and a `bundle` world.
+`crabber:extensions@0.2.0` defines eight extension roles and a `bundle` world.
 Every component exports `manifest-api`. The host detects roles from exported
 interfaces and requires `describe().roles` to match exactly.
 

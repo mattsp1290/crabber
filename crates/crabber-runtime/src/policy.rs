@@ -91,7 +91,7 @@ pub trait ToolPipeline: Send + Sync {
         &self,
         context: &ToolResultContext,
         tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String>;
 }
 
@@ -106,7 +106,7 @@ impl ToolPipeline for IdentityToolPipeline {
         &self,
         _context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         Ok(TransformOutput::new(result))
     }

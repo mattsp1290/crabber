@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, EventKind, ExtensionError, FakeProvider, JsonToolExecutor,
+    PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{EventRecord, RunId, RunStatus, SessionId, ToolCallId, ToolInfo},
     extension::{Extension, GuardDecision, Registrar, Scope, ToolGuard},
     session::{MemoryStore, PostgresStore, SqliteStore, Store},
@@ -67,7 +67,7 @@ impl Extension for NativeExtension {
 }
 
 #[async_trait]
-impl ToolExecutor for EchoTool {
+impl JsonToolExecutor for EchoTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         if self.delay {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

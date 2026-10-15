@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use crabber::{
     Agent, AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    StaticPolicy, StreamDelta, ToolDefinition, JsonToolExecutor,
     core::{
         ContentBlock, EventKind, Message, RunId, RunStatus, SessionId, ToolCallId, ToolCallRecord,
         ToolInfo, ToolResultStatus,
@@ -94,7 +94,7 @@ impl Recorder {
                         seen.ordinary
                             .lock()
                             .unwrap()
-                            .push((context, result.clone()));
+                            .push((context, result.json_value().unwrap()));
                         Box::pin(async move { Ok(TransformOutput::new(result)) })
                     }),
                 );
@@ -103,7 +103,7 @@ impl Recorder {
                     0,
                     "record-final",
                     Arc::new(move |context, result| {
-                        seen.finals.lock().unwrap().push((context, result.clone()));
+                        seen.finals.lock().unwrap().push((context, result.json_value().unwrap()));
                         Box::pin(async move { Ok(TransformOutput::new(result)) })
                     }),
                 );
@@ -118,7 +118,7 @@ struct NamedTool {
     recorder: Arc<Recorder>,
 }
 #[async_trait]
-impl ToolExecutor for NamedTool {
+impl JsonToolExecutor for NamedTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.recorder
             .executed
@@ -299,10 +299,10 @@ async fn run_path(tool: &'static str, arguments: Value) -> PathRun {
     let policy =
         StaticPolicy::new(PermissionDecision::Allow).with_rule("denied", PermissionDecision::Deny);
     let agent = builder(&store, &provider, policy)
-        .tool(named_tool("output", false, &recorder))
-        .tool(named_tool("failing", true, &recorder))
-        .tool(named_tool("denied", false, &recorder))
-        .extension(recorder.extension(), Scope::Global)
+        .shared_tool(named_tool("output", false, &recorder))
+        .shared_tool(named_tool("failing", true, &recorder))
+        .shared_tool(named_tool("denied", false, &recorder))
+        .shared_extension(recorder.extension(), Scope::Global)
         .build()
         .unwrap();
     let handle = agent.prompt(None, "Exercise one path").await.unwrap();
@@ -472,7 +472,7 @@ async fn parallel_calls_keep_their_own_tool_input_and_ids_under_reverse_completi
                                 .await
                                 .map_err(|_| ExtensionError::Tool("probe gate dropped".into()))?;
                             let _ = completed.send(id);
-                            Ok(TransformOutput::new(own_result(&context)))
+                            Ok(TransformOutput::new(crabber::core::ToolOutput::from_json(&own_result(&context)).unwrap()))
                         })
                     }),
                 );
@@ -495,9 +495,9 @@ async fn parallel_calls_keep_their_own_tool_input_and_ids_under_reverse_completi
             StaticPolicy::new(PermissionDecision::Allow),
         )
         .execution_mode(ExecutionMode::Parallel { max: calls.len() })
-        .tool(named_tool("output", false, &recorder))
-        .tool(named_tool("other-output", false, &recorder))
-        .extension(parking, Scope::Global)
+        .shared_tool(named_tool("output", false, &recorder))
+        .shared_tool(named_tool("other-output", false, &recorder))
+        .shared_extension(parking, Scope::Global)
         .build()
         .unwrap();
         let handle = agent.prompt(None, "Exercise parallel calls").await.unwrap();
@@ -619,7 +619,7 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
                         "accept-intermediate",
                         Arc::new(|mut envelope| {
                             Box::pin(async move {
-                                envelope["result"] = json!(INTERMEDIATE);
+                                envelope["result"] = serde_json::to_value(crabber::core::ToolOutput::from_json(&json!(INTERMEDIATE)).unwrap()).unwrap();
                                 Ok(envelope)
                             })
                         }),
@@ -634,8 +634,8 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
                             let tamper = tamper.clone();
                             let received = received.clone();
                             Box::pin(async move {
-                                received.lock().unwrap().push(envelope["result"].clone());
-                                envelope["result"] = json!(AUTHORED);
+                                received.lock().unwrap().push(serde_json::from_value::<crabber::core::ToolOutput>(envelope["result"].clone()).unwrap().json_value().unwrap());
+                                envelope["result"] = serde_json::to_value(crabber::core::ToolOutput::from_json(&json!(AUTHORED)).unwrap()).unwrap();
                                 match tamper {
                                     Tamper::Context(field, value) => {
                                         envelope["context"][field] = value;
@@ -675,8 +675,8 @@ async fn tampered_envelope_fails_closed_with_fixed_text() {
                 &provider,
                 StaticPolicy::new(PermissionDecision::Allow),
             )
-            .tool(named_tool("output", false, &recorder))
-            .extension(chain, Scope::Global)
+            .shared_tool(named_tool("output", false, &recorder))
+            .shared_extension(chain, Scope::Global)
             .build()
             .unwrap();
             let handle = agent.prompt(None, "Exercise tampering").await.unwrap();

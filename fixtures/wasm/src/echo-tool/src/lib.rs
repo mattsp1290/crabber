@@ -33,7 +33,7 @@ impl tool_api::Guest for Echo {
     ) -> Result<String, types::StructuredError> {
         crabber::host::log::log(crabber::host::log::Level::Info, "echo-called");
         println!("echo-stdout");
-        Ok(input_json)
+        Ok(crabber_guest::json_tool_output(&crabber_guest::serde_json::from_str(&input_json).unwrap()).unwrap())
     }
 }
 

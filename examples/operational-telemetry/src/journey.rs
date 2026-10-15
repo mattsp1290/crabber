@@ -1,9 +1,9 @@
 //! Credential-free public host adoption; shared with the external consumer.
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, MonotonicClock, Observer,
-    OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, TerminalReason, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, JsonToolExecutor, MonotonicClock,
+    Observer, OperationKind, OperationalObservation, PermissionDecision, Selection, StaticPolicy,
+    StreamDelta, TerminalReason, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     obs::{DatadogConfig, DatadogObserver, MetricDimensions, WorkerStatus},
     providers::{DeltaStream, ModelRequest, ProviderError, ProviderErrorKind, Resolver, Streamer},
@@ -129,7 +129,7 @@ struct Echo {
     fail: bool,
 }
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         self.clock.0.fetch_add(15, Ordering::SeqCst);
         if self.fail {

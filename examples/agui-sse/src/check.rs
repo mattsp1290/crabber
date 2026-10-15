@@ -1,8 +1,8 @@
 use crate::host::{AgentFactory, Host};
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ContentBlock, ToolCallId, ToolInfo},
     extension::{Extension, Registrar, Scope, TransformOutput},
     session::{MemoryStore, Store},
@@ -17,7 +17,7 @@ pub type CheckResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 struct Echo;
 #[async_trait]
-impl ToolExecutor for Echo {
+impl JsonToolExecutor for Echo {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         Ok(json!({"echo":input, "private":"SECRET_SENTINEL"}))
     }
@@ -38,12 +38,17 @@ impl Extension for Redact {
         registrar.on_final_redaction(
             0,
             "redact",
-            Arc::new(|_, mut value| {
+            Arc::new(|_, output| {
                 Box::pin(async move {
+                    let mut value = output
+                        .json_value()
+                        .map_err(|_| ExtensionError::Tool("JSON echo result required".into()))?;
                     if let Some(object) = value.as_object_mut() {
                         object.remove("private");
                     }
-                    Ok(TransformOutput::new(value))
+                    let output = crabber::core::ToolOutput::from_json(&value)
+                        .map_err(|_| ExtensionError::Tool("invalid JSON echo result".into()))?;
+                    Ok(TransformOutput::new(output))
                 })
             }),
         );

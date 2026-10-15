@@ -3,8 +3,8 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use crabber::session::PostgresStore;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{
         Clock, ContentBlock, EventKind, EventRecord, ManualClock, Message, MessageId, Part, PartId,
         PartKind, Role, RunId, RunStatus, SessionId, SystemClock, ToolCallId, ToolCallRecord,
@@ -80,7 +80,7 @@ fn config() -> AgentConfig {
 struct CountTool(Arc<AtomicUsize>);
 
 #[async_trait]
-impl ToolExecutor for CountTool {
+impl JsonToolExecutor for CountTool {
     async fn execute(&self, _input: Value) -> Result<Value, ExtensionError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"value":"secret"}))

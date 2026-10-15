@@ -75,7 +75,7 @@ pub struct CounterExtension {
 }
 struct Counter(Arc<AtomicUsize>);
 #[async_trait]
-impl ToolExecutor for Counter {
+impl JsonToolExecutor for Counter {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(self.0.fetch_add(1, Ordering::SeqCst) + 1))
     }
@@ -122,14 +122,17 @@ pub fn context(session: &str, workspace: &str) -> SessionContext {
     SessionContext::new(session.into(), workspace, format!("/admitted/{workspace}"))
 }
 pub async fn count(plan: &RunPlan, name: &str) -> Value {
-    plan.tools
+    (plan
+        .tools
         .iter()
         .find(|tool| tool.info.name == name)
         .unwrap()
         .executor
         .execute(json!({}))
         .await
-        .unwrap()
+        .unwrap())
+    .json_value()
+    .unwrap()
 }
 pub fn provider(factories: Vec<Arc<dyn ExtensionFactory>>) -> ContextualPlanProvider {
     ContextualPlanProvider::new(

@@ -1133,7 +1133,7 @@ mod tests {
 
     struct Uncalled;
     #[async_trait]
-    impl crabber_extension::ToolExecutor for Uncalled {
+    impl crabber_extension::JsonToolExecutor for Uncalled {
         async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
             panic!("metadata must not execute tools");
         }
@@ -1354,7 +1354,9 @@ mod tests {
         plan.dispatcher
             .transform_tool_result(
                 context,
-                crabber_extension::TransformOutput::new(serde_json::Value::Null),
+                crabber_extension::TransformOutput::new(
+                    crabber_core::ToolOutput::from_json(&(serde_json::Value::Null)).unwrap(),
+                ),
             )
             .await;
         let closing = agent.close_extensions();

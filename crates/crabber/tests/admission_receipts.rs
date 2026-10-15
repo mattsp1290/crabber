@@ -262,7 +262,7 @@ fn metadata_validation_and_redaction() {
 
 struct UnusedTool;
 #[async_trait::async_trait]
-impl crabber::ToolExecutor for UnusedTool {
+impl crabber::JsonToolExecutor for UnusedTool {
     async fn execute(
         &self,
         _: serde_json::Value,

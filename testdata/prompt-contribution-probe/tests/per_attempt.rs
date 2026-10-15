@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crabber::core::{RunStatus, ToolCallId, ToolInfo};
 use crabber::extension::{
     Extension, ExtensionError, ModelRequestError, Point, PromptAttemptContext, PromptContributor,
-    PromptSection, Registrar, Registry, Scope, ToolDefinition, ToolExecutor,
+    PromptSection, Registrar, Registry, Scope, ToolDefinition, JsonToolExecutor,
 };
 use crabber::providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
 use crabber::runtime::{Orchestrator, PermissionDecision, Request, StaticPolicy};
@@ -123,7 +123,7 @@ fn constant(value: &str) -> PromptContributor {
 }
 struct RewriteTool(PathBuf);
 #[async_trait]
-impl ToolExecutor for RewriteTool {
+impl JsonToolExecutor for RewriteTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         std::fs::write(&self.0, "v2").unwrap();
         Ok(json!("done"))

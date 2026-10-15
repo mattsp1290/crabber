@@ -3,8 +3,8 @@ mod process;
 
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentBuilder, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor,
+    PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     extension::{Extension, Registrar, Scope, TransformOutput},
     session::Store,
@@ -169,7 +169,9 @@ impl Extension for Reducer {
                         crabber::extension::TransformPhase::FinalRedaction
                     );
                     probes.redacted.set();
-                    Ok(TransformOutput::new(json!(REDACTED_OUTPUT)))
+                    Ok(TransformOutput::new(
+                        crabber::core::ToolOutput::from_json(&json!(REDACTED_OUTPUT)).unwrap(),
+                    ))
                 })
             }),
         );
@@ -179,7 +181,7 @@ impl Extension for Reducer {
 
 struct FixtureTool;
 #[async_trait]
-impl ToolExecutor for FixtureTool {
+impl JsonToolExecutor for FixtureTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         Ok(json!(RAW_OUTPUT))
     }

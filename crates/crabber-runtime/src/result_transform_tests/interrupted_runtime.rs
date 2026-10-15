@@ -139,9 +139,11 @@ async fn accepted_final_redaction_settles_interrupted_with_json_and_notification
             Arc::new(move |context, value| {
                 let gate = gate.clone();
                 Box::pin(async move {
-                    gate.pass(&value).await;
+                    gate.pass(&value.json_value().unwrap()).await;
                     context.cancellation().cancelled().await;
-                    Ok(TransformOutput::new(json!({"redacted": true})))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(json!({"redacted": true}))).unwrap(),
+                    ))
                 })
             }),
         );
@@ -199,7 +201,9 @@ async fn parallel_interruption_settles_out_of_order_without_deadlock() {
                 Box::pin(async move {
                     gate.pass(&json!(context.call_id())).await;
                     context.cancellation().cancelled().await;
-                    Ok(TransformOutput::new(json!("protected")))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(json!("protected"))).unwrap(),
+                    ))
                 })
             }),
         );
@@ -233,7 +237,9 @@ fn cancellation_redactor(first_id: ToolCallId, started: Arc<Semaphore>) -> Arc<C
                     if context.call_id() == &first_id {
                         context.cancellation().cancelled().await;
                     }
-                    Ok(TransformOutput::new(json!("protected")))
+                    Ok(TransformOutput::new(
+                        crabber_core::ToolOutput::from_json(&(json!("protected"))).unwrap(),
+                    ))
                 })
             }),
         );

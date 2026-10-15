@@ -87,7 +87,7 @@ impl Extension for Unmountable {
 
 struct NeverTool(Arc<AtomicUsize>);
 #[async_trait]
-impl crabber::ToolExecutor for NeverTool {
+impl crabber::JsonToolExecutor for NeverTool {
     async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         panic!("abandon must not execute tools")

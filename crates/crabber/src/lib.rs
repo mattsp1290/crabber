@@ -12,8 +12,8 @@ pub use crabber_core::{
     SessionContext, SessionId, TraceContext, TraceContextError, TraceLink,
 };
 pub use crabber_extension::{
-    ExtensionError, ExtensionFactory, FactoryContext, FactoryScope, Scope, ToolDefinition,
-    ToolExecutor, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
+    ExtensionError, ExtensionFactory, FactoryContext, FactoryScope, JsonToolExecutor, Scope,
+    ToolDefinition, ToolExecutor, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
     WorkspaceReaderResolver,
 };
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};

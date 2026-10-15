@@ -33,7 +33,7 @@ impl Streamer for LedgerProvider {
 }
 struct LedgerTool(PathBuf, bool);
 #[async_trait]
-impl crabber::ToolExecutor for LedgerTool {
+impl crabber::JsonToolExecutor for LedgerTool {
     async fn execute(
         &self,
         _: serde_json::Value,

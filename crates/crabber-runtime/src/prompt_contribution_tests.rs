@@ -7,9 +7,9 @@ use crate::{Orchestrator, PermissionDecision, Request, StaticPolicy};
 use async_trait::async_trait;
 use crabber_core::{RunStatus, ToolCallId, ToolInfo};
 use crabber_extension::{
-    Extension, ExtensionError, MiddlewareDescriptor, ModelAttemptContext, ModelRequestError, Point,
-    PromptAttemptContext, PromptContributor, PromptSection, Registrar, Registry, Scope,
-    SystemPromptMiddleware, ToolDefinition, ToolExecutor, WorkspaceContext, WorkspaceReadError,
+    Extension, ExtensionError, JsonToolExecutor, MiddlewareDescriptor, ModelAttemptContext,
+    ModelRequestError, Point, PromptAttemptContext, PromptContributor, PromptSection, Registrar,
+    Registry, Scope, SystemPromptMiddleware, ToolDefinition, WorkspaceContext, WorkspaceReadError,
     WorkspaceReadErrorKind, WorkspaceReader, WorkspaceReaderResolver,
 };
 use crabber_providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
@@ -125,7 +125,7 @@ fn constant(value: &str) -> PromptContributor {
 }
 struct RewriteTool(PathBuf);
 #[async_trait]
-impl ToolExecutor for RewriteTool {
+impl JsonToolExecutor for RewriteTool {
     async fn execute(&self, _: Value) -> Result<Value, ExtensionError> {
         std::fs::write(&self.0, "v2").unwrap();
         Ok(json!("done"))

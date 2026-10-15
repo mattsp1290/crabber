@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, FakeProvider, Observer,
-    PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, EventKind, EventRecord, ExtensionError, FakeProvider, JsonToolExecutor,
+    Observer, PermissionDecision, Selection, StaticPolicy, StreamDelta, ToolDefinition,
     TraceContext,
     core::{RunId, ToolCallId, ToolInfo},
     runtime::ExecutionMode,
@@ -84,7 +84,7 @@ impl Observer for Capture {
 }
 struct ParallelTool(Arc<tokio::sync::Barrier>);
 #[async_trait]
-impl ToolExecutor for ParallelTool {
+impl JsonToolExecutor for ParallelTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
         // This cannot complete under sequential execution: prove parallel task dispatch.
         self.0.wait().await;

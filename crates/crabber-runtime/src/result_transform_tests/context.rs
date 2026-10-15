@@ -208,9 +208,14 @@ impl ToolPipeline for RejectPrepare {
         &self,
         _context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
-        Ok(TransformOutput::new(result))
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 
@@ -627,7 +632,7 @@ impl ToolPipeline for FailResult {
         &self,
         _context: &ToolResultContext,
         _tool: &ToolInfo,
-        _result: Value,
+        _result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         assert!(!self.panic, "private panic text and original output");
         Err("pre-stage failed".into())
@@ -763,12 +768,12 @@ impl ToolPipeline for CaptureResult {
         &self,
         context: &ToolResultContext,
         tool: &ToolInfo,
-        _result: Value,
+        _result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
         assert_eq!(context.tool_name(), tool.name);
         self.contexts.lock().unwrap().push(context.clone());
         Ok(TransformOutput {
-            result: json!("pipeline output"),
+            result: crabber_core::ToolOutput::from_json(&(json!("pipeline output"))).unwrap(),
             mark_error: self.mark_error,
         })
     }
@@ -858,11 +863,16 @@ impl ToolPipeline for ParkResult {
         &self,
         context: &ToolResultContext,
         _tool: &ToolInfo,
-        result: Value,
+        result: crabber_core::ToolOutput,
     ) -> Result<TransformOutput, String> {
+        let result = result
+            .json_value()
+            .map_err(|_| "JSON fixture result required".to_owned())?;
         *self.context.lock().unwrap() = Some(context.clone());
         self.gate.pass(&result).await;
-        Ok(TransformOutput::new(result))
+        Ok(TransformOutput::new(
+            crabber_core::ToolOutput::from_json(&(result)).unwrap(),
+        ))
     }
 }
 

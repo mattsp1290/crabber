@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crabber::{
-    Agent, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection, StaticPolicy,
-    StreamDelta, ToolDefinition, ToolExecutor,
+    Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     extension::{
         EventPublished, Extension, GuardDecision, Point, PromptSection, Registrar,
@@ -19,7 +19,7 @@ use std::{
 
 struct Shell;
 #[async_trait]
-impl ToolExecutor for Shell {
+impl JsonToolExecutor for Shell {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         println!("runtime tool executed: {}", input["command"]);
         Ok(json!({"output":"ok","secret":"private-value"}))
@@ -80,16 +80,21 @@ impl Extension for NativeExtension {
             text: "Use the shell tool carefully.".into(),
         }));
         r.guard(Arc::new(DenyDelete));
-        let redact: ResultTransformCallback = Arc::new(|context, mut result| {
+        let redact: ResultTransformCallback = Arc::new(|context, result| {
             Box::pin(async move {
+                let mut value = result
+                    .json_value()
+                    .map_err(|_| ExtensionError::Tool("JSON shell result required".into()))?;
                 if context.tool_name() == "shell"
                     && let ToolInput::Normalized(input) = context.input()
                     && input["command"] == "echo hello"
-                    && let Some(secret) = result.get_mut("secret")
+                    && let Some(secret) = value.get_mut("secret")
                 {
                     *secret = Value::String("[REDACTED]".into());
                 }
                 println!("redacted tool result");
+                let result = crabber::core::ToolOutput::from_json(&value)
+                    .map_err(|_| ExtensionError::Tool("invalid JSON shell result".into()))?;
                 Ok(TransformOutput::new(result))
             })
         });

@@ -26,8 +26,8 @@ use crabber_core::{
     ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
-    Extension, ExtensionError, Point, Registrar, Registry, RunPlanProvider, Scope, ToolDefinition,
-    ToolExecutor, ToolGuard, ToolPrepare, ToolResultContext, ToolResultTransform,
+    Extension, ExtensionError, JsonToolExecutor, Point, Registrar, Registry, RunPlanProvider,
+    Scope, ToolDefinition, ToolGuard, ToolPrepare, ToolResultContext, ToolResultTransform,
 };
 use crabber_providers::{FakeProvider, ModelRequest, Resolver, Selection, StreamDelta};
 use crabber_session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store};
@@ -35,6 +35,18 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{Semaphore, oneshot};
+
+/// The fixture tools deliberately produce JSON-to-text results. Decode that
+/// content for data assertions without changing the actual typed wire envelope.
+pub(super) fn fixture_envelope(mut envelope: Value) -> Value {
+    let output: crabber_core::ToolOutput =
+        serde_json::from_value(envelope["result"].clone()).unwrap();
+    envelope["result"] = output.json_value().unwrap();
+    envelope
+}
+pub(super) fn fixture_output(value: &Value) -> Value {
+    serde_json::to_value(crabber_core::ToolOutput::from_json(value).unwrap()).unwrap()
+}
 
 /// Tool whose executor echoes its input.
 pub(super) const ECHO: &str = "echo";
@@ -60,7 +72,7 @@ struct TextTool {
     probe: Arc<Probe>,
 }
 #[async_trait]
-impl ToolExecutor for TextTool {
+impl JsonToolExecutor for TextTool {
     async fn execute(&self, input: Value) -> Result<Value, ExtensionError> {
         self.probe
             .executed
@@ -249,10 +261,11 @@ impl Extension for RecordingExtension {
             Arc::new(move |value| {
                 let probe = Arc::clone(&probe);
                 Box::pin(async move {
-                    probe.results.lock().unwrap().push(value.clone());
+                    let observed = fixture_envelope(value.clone());
+                    probe.results.lock().unwrap().push(observed.clone());
                     let gate = probe.gate.lock().unwrap().clone();
                     if let Some(gate) = gate {
-                        gate.pass(&value).await;
+                        gate.pass(&observed).await;
                     }
                     Ok(value)
                 })
@@ -1057,7 +1070,7 @@ async fn typed_result_chain_preserves_structured_output_and_error_classes() {
                     assert_eq!(context.call_id(), &id);
                     Box::pin(async move {
                         Ok(crabber_extension::TransformOutput::marked_error(
-                            json!({"safe": true}),
+                            crabber_core::ToolOutput::from_json(&(json!({"safe": true}))).unwrap(),
                         ))
                     })
                 }),
@@ -1096,7 +1109,7 @@ async fn result_chain_failures_persist_only_fixed_handler_message() {
                             "context" => value["context"]["tool_name"] = json!("SECRET-CONTEXT"),
                             _ => return Ok(json!("SECRET-MALFORMED")),
                         }
-                        value["result"] = json!("SECRET-INTERMEDIATE");
+                        value["result"] = fixture_output(&json!("SECRET-INTERMEDIATE"));
                         Ok(value)
                     })
                 }),
