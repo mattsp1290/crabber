@@ -2708,7 +2708,11 @@ impl Orchestrator {
                     }
                     if retry && decision.retry {
                         retries += 1;
-                        tokio::time::sleep(Duration::from_millis(decision.delay_ms)).await;
+                        tokio::select! {
+                            biased;
+                            () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
+                            () = tokio::time::sleep(Duration::from_millis(decision.delay_ms)) => (),
+                        }
                         continue;
                     }
                     return Err(RuntimeError::Provider(error));

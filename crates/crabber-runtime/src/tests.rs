@@ -3175,3 +3175,58 @@ async fn zero_output_cap_is_rejected_before_admission() {
         Vec::<Run>::new()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn interruption_during_provider_backoff_is_prompt_and_never_retries() {
+    struct BackoffSignal(Mutex<Option<oneshot::Sender<()>>>);
+    impl Observer for BackoffSignal {
+        fn emit(&self, _: &EventRecord) {}
+        fn operational_completed(&self, observation: &crate::OperationalObservation) {
+            if observation.reason == crate::TerminalReason::ProviderError
+                && matches!(
+                    observation.kind,
+                    crate::OperationKind::Model {
+                        purpose: crate::ModelPurpose::Turn,
+                        ..
+                    }
+                )
+                && let Some(sender) = self.0.lock().unwrap().take()
+            {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let (sender, first_error) = oneshot::channel();
+    let fake = FakeProvider::scripted(vec![
+        vec![StreamDelta::Error(ProviderError {
+            kind: crabber_providers::ProviderErrorKind::Server,
+            message: "temporary".into(),
+            retryable: true,
+        })],
+        text_script("must not request"),
+    ]);
+    let store = Arc::new(MemoryStore::new());
+    let runtime = Orchestrator::builder()
+        .behavior_version("retry-cancellation-test.v1")
+        .store(store.clone())
+        .resolver(Arc::new(fake.clone()))
+        .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
+        .observer(Arc::new(BackoffSignal(Mutex::new(Some(sender)))))
+        .build()
+        .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run = handle.run_id().clone();
+    first_error.await.unwrap();
+    handle.interrupt();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(25), handle.done())
+        .await
+        .expect("cancellation must not wait for the 100ms retry backoff")
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
+    assert_eq!(
+        store.get_run(&run).await.unwrap().unwrap().status,
+        RunStatus::Interrupted
+    );
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert_eq!(fake.requests().len(), 1);
+}
