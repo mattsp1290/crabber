@@ -1,13 +1,12 @@
 use super::super::{db, micros};
 use crate::{
     AttemptError as Error, AttemptMutation, AttemptReceipt, AttemptSnapshot, StoreError,
-    attempt::{self, AttemptRecord, sql},
+    attempt::{AttemptRecord, sql},
 };
 use crabber_core::{
     AttemptId, ControlId, EventCursor, InputFingerprint, Run, RunId, SessionId, SessionRevision,
 };
 use sqlx::{Postgres, Row, Transaction};
-use time::OffsetDateTime;
 
 const RECORD: &str = r"SELECT
     s.public_revision,
@@ -206,9 +205,8 @@ pub(super) async fn publish(
     snapshot: &AttemptSnapshot,
     digest: InputFingerprint,
     revision: SessionRevision,
-    now: OffsetDateTime,
+    event: crabber_core::EventRecord,
 ) -> Result<AttemptReceipt, Error> {
-    let event = attempt::event(run, request, snapshot, now)?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )

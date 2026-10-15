@@ -57,6 +57,23 @@ impl PostgresExecution {
         request: AttemptMutation,
         authority: Option<AttemptAuthority>,
     ) -> Result<Outcome, Error> {
+        self.change_attempt_inner(request, authority, None).await
+    }
+    pub(super) async fn conclude_owned_attempt(
+        &self,
+        conclusion: crate::AttemptConclusion,
+        authority: Option<AttemptAuthority>,
+    ) -> Result<Outcome, Error> {
+        conclusion.validate()?;
+        self.change_attempt_inner(conclusion.finish.clone(), authority, Some(conclusion))
+            .await
+    }
+    async fn change_attempt_inner(
+        &self,
+        request: AttemptMutation,
+        authority: Option<AttemptAuthority>,
+        conclusion: Option<crate::AttemptConclusion>,
+    ) -> Result<Outcome, Error> {
         attempt::validate_request(&request)?;
         let (tx, run) = self
             .store
@@ -71,7 +88,13 @@ impl PostgresExecution {
             })?;
         let mut tx = tx;
         let result = self
-            .apply_attempt(&mut tx, &run, &request, authority.as_ref())
+            .apply_attempt(
+                &mut tx,
+                &run,
+                &request,
+                authority.as_ref(),
+                conclusion.as_ref(),
+            )
             .await;
         #[cfg(test)]
         let result = if self
@@ -104,11 +127,19 @@ impl PostgresExecution {
         run: &Run,
         request: &AttemptMutation,
         authority: Option<&AttemptAuthority>,
+        conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<Outcome, Error> {
-        let digest = request.fingerprint(&run.session_id, &run.id)?;
+        let digest = if let Some(conclusion) = conclusion {
+            conclusion.fingerprint(&run.session_id, &run.id)?
+        } else {
+            request.fingerprint(&run.session_id, &run.id)?
+        };
         if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
             if receipt.attempt.run_id != run.id || receipt.semantic_digest != digest {
                 return Err(Error::SemanticConflict);
+            }
+            if let Some(conclusion) = conclusion {
+                conclusion.verify_replay(&receipt)?;
             }
             return Ok(Outcome::Replayed(receipt));
         }
@@ -125,7 +156,9 @@ impl PostgresExecution {
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let revision = current.next().map_err(|_| Error::RevisionExhausted)?;
+        if let Some(conclusion) = conclusion {
+            check_boundary(tx, run, conclusion).await?;
+        }
         let id = &request.command.target().id;
         let insert = matches!(request.command, AttemptCommand::Reserve { .. });
         let (record, grant) = if insert {
@@ -145,12 +178,17 @@ impl PostgresExecution {
             let (mut record, _) = records::load(tx, &run.id, Some(id), true)
                 .await?
                 .ok_or(Error::NotFound)?;
-            let quiet = if matches!(request.command, AttemptCommand::RecordCleanup { .. }) {
+            let quiet = if conclusion.is_some()
+                || matches!(request.command, AttemptCommand::RecordCleanup { .. })
+            {
                 records::quiet(tx, &run.id, id).await?
             } else {
                 true
             };
             let grant = record.change(run, request, authority, now, quiet)?;
+            if conclusion.is_some() {
+                record.cleanup(crate::AttemptCleanupResult::Complete, quiet)?;
+            }
             (record, grant)
         };
         let authority = if grant {
@@ -158,9 +196,34 @@ impl PostgresExecution {
         } else {
             None
         };
+        if let Some(conclusion) = conclusion {
+            let source = conclusion.materialize(run)?;
+            super::insert_event(tx, run, &source)
+                .await
+                .map_err(sql::unknown)?;
+            let mut updated = run.clone();
+            conclusion.apply_run(&mut updated, now)?;
+            super::save_run(tx, &updated).await.map_err(sql::unknown)?;
+        }
+        let revision = records::revision(tx, &run.session_id)
+            .await?
+            .next()
+            .map_err(|_| Error::RevisionExhausted)?;
+        let event = if let Some(conclusion) = conclusion {
+            crate::attempt_conclusion::event(
+                run,
+                conclusion.validate()?,
+                &record.snapshot,
+                &request.id,
+                digest.clone(),
+                now,
+            )?
+        } else {
+            attempt::event(run, request, &record.snapshot, now)?
+        };
         records::save(tx, &record, insert).await?;
         let receipt =
-            records::publish(tx, run, request, &record.snapshot, digest, revision, now).await?;
+            records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }
@@ -188,4 +251,30 @@ pub(super) async fn load_owned(
     records::load(tx, run, Some(id), true)
         .await
         .map(|v| v.map(|(r, _)| r))
+}
+
+async fn check_boundary(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    conclusion: &crate::AttemptConclusion,
+) -> Result<(), Error> {
+    if let crate::RunBoundary::Terminal { status, .. } = &conclusion.boundary {
+        if *status == crabber_core::RunStatus::Completed {
+            sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
+                .bind(&run.session_id.0)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
+            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL)").bind(&run.session_id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+            if pending {
+                return Err(Error::PendingInput);
+            }
+        }
+        let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running'))").bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+        if unfinished {
+            return Err(Error::CleanupBlocked);
+        }
+    }
+    Ok(())
 }

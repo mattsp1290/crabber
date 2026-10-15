@@ -254,6 +254,34 @@ barriers remain under implementation. Custom stores default to
 `Unsupported` and can run `attempt_contract::run_contract` and its commit-fault
 conformance suite.
 
+`ExecutionStore::conclude_attempt` commits a known terminal or suspended logical
+run together with its owned attempt's outcome, complete-cleanup assertion, source
+event, audit event, revision and receipt. The owner must first join all resources;
+the transaction additionally rejects active/unquiesced phases and running calls.
+Terminal outcomes reject pending tool calls too. A completed run with pending
+inbox input returns `AttemptError::PendingInput` without ending its attempt or
+writing a receipt, so the worker can incorporate that input and continue.
+A suspension can retain pending calls and a bounded private checkpoint, with
+usage recorded on the run. Incomplete/uncertain cleanup and the runtime's adoption
+of this operation remain part of the pending attempt driver.
+
+Retain the original `AttemptConclusion` finish key/revision/target and boundary
+after an unknown acknowledgement. Compare `AttemptConclusion::fingerprint` with
+`lookup_attempt_mutation`; a metadata-only `mutate_attempt(Finish)` has a distinct
+digest and cannot replay as a conclusion. Status, error, usage and checkpoint are
+semantic; generated presentation timing/turn identity is excluded. Replays are
+metadata only, including after a later continuation advances the run.
+`RunBoundary` and `AttemptConclusion` redact Debug output. Public attempt audit
+version 2 carries only the finite outcome, digest and attempt metadata; private
+checkpoint/error bodies remain off the source stream. Existing metadata audit
+version 1 is still read without rewriting it. `MAX_RUN_BOUNDARY_BYTES` bounds the
+encoded boundary to 4 MiB, and checkpoint JSON is depth bounded before encoding.
+Custom adapters default to `Unsupported` and can reuse the canonical source/run
+helpers while implementing their own atomic ownership/receipt transaction.
+The shared attempt contract and fault suite cover these boundaries; SQLite and
+PostgreSQL also kill writers before commit and reconcile lost acknowledgements
+from fresh processes without recovering worker authority.
+
 Experimental native phase transitions work in Memory, SQLite and PostgreSQL.
 Custom adapters default to `Unsupported`. `mutate_phase` commits a
 phase record, source event, revision and receipt together. A fresh claim returns

@@ -20,6 +20,8 @@ pub use execution_binding::{
     PROVIDER_BINDING_COMPONENT, RetainedExecutionBinding,
 };
 mod attempt;
+mod attempt_conclusion;
+pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
 mod phase;
 mod phase_settlement;
 pub use phase_settlement::{PhaseSettlement, PhaseSettlementRecords};

@@ -68,6 +68,14 @@ pub(crate) fn verify_receipt(
     {
         return Err(AttemptError::UnknownStoreOutcome);
     }
+    if event
+        .payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        return crate::attempt_conclusion::verify_event(receipt, event);
+    }
     let saved: AttemptEvent = serde_json::from_value(event.payload.clone())
         .map_err(|_| AttemptError::UnknownStoreOutcome)?;
     if saved.version != 1

@@ -1,6 +1,8 @@
 //! Experimental adapter conformance for attempt transitions and dispatch authority.
 #[path = "attempt_contract/cleanup.rs"]
 mod cleanup;
+#[path = "attempt_contract/conclusion.rs"]
+mod conclusion;
 #[path = "attempt_contract/faults.rs"]
 mod faults;
 pub use faults::{FaultPoint, run_fault_contract};
@@ -24,6 +26,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
     lifecycle(&store).await;
+    conclusion::run(&store, &clock).await;
     competing_begin(&store).await;
     cleanup::run(&store, &clock).await;
     recovery::run(&store, &clock).await;

@@ -54,7 +54,7 @@ async fn process_helper() {
     }
 }
 #[tokio::test]
-async fn lost_reserve_and_begin_ack_reconcile_in_fresh_process() {
+async fn lost_attempt_operations_ack_reconcile_in_fresh_process() {
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
@@ -67,7 +67,7 @@ async fn lost_reserve_and_begin_ack_reconcile_in_fresh_process() {
         .await
         .unwrap()
         .with_clock(clock);
-    for mode in [process::Mode::Reserve, process::Mode::Begin] {
+    for mode in process::Mode::ALL {
         let fixture = process::prepare_loss(&store, mode, |point| {
             store
                 .attempt_fault
@@ -86,7 +86,7 @@ async fn lost_reserve_and_begin_ack_reconcile_in_fresh_process() {
 }
 
 #[tokio::test]
-async fn killed_reserve_and_begin_before_commit_leave_no_partial_transition() {
+async fn killed_attempt_operations_before_commit_leave_no_partial_transition() {
     let Some(url) = crate::postgres::tests::test_url() else {
         return;
     };
@@ -99,7 +99,7 @@ async fn killed_reserve_and_begin_before_commit_leave_no_partial_transition() {
         .await
         .unwrap()
         .with_clock(clock.clone());
-    for mode in [process::Mode::Reserve, process::Mode::Begin] {
+    for mode in process::Mode::ALL {
         crash(&store, &clock, mode).await;
     }
 }
@@ -110,11 +110,7 @@ async fn crash(
 ) {
     let fixture = process::pending(store, mode).await;
     let name = format!("attempt_barrier_{}", uuid::Uuid::new_v4().simple());
-    let state = if matches!(mode, process::Mode::Reserve) {
-        "Unstarted"
-    } else {
-        "Started"
-    };
+    let state = mode.state();
     // Session/SQL identifiers are generated UUIDs and state is a fixed test enum.
     sqlx::query(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind='attempt' AND NEW.session_id='{}' AND NEW.data_json::jsonb->'attempt'->>'state'='{state}' THEN PERFORM pg_advisory_xact_lock(751302924); END IF; RETURN NEW; END $$",fixture.session.0))
         .execute(&store.pool).await.unwrap();

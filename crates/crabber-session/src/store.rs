@@ -426,6 +426,17 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Atomically conclude an owned attempt and its terminal/suspended logical
+    /// run, with complete cleanup, events and receipt. The owner must first join
+    /// all attempt resources. `PendingInput` leaves every part unchanged.
+    async fn conclude_attempt(
+        &self,
+        _conclusion: crate::AttemptConclusion,
+        _authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+
     /// Atomically complete a started owned phase, record the worker's assertion
     /// of quiescence, settle its logical call, append protected result history
     /// and events, and retain its receipt. Invoke only after all phase resources

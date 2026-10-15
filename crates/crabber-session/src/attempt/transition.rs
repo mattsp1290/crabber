@@ -148,7 +148,7 @@ impl AttemptRecord {
         }
         Ok(false)
     }
-    fn cleanup(
+    pub(crate) fn cleanup(
         &mut self,
         result: AttemptCleanupResult,
         phases_quiescent: bool,

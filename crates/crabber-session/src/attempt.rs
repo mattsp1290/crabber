@@ -38,6 +38,8 @@ pub enum AttemptError {
     InvalidTransition,
     #[error("execution attempt has unquiesced phases")]
     CleanupBlocked,
+    #[error("pending input requires another active turn")]
+    PendingInput,
     #[error("execution attempt storage outcome is unknown")]
     UnknownStoreOutcome,
 }

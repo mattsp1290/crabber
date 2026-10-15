@@ -74,6 +74,22 @@ impl MemoryExecution {
         request: AttemptMutation,
         authority: Option<&AttemptAuthority>,
     ) -> Result<AttemptMutationOutcome, Error> {
+        self.change_attempt_inner(request, authority, None)
+    }
+    pub(super) fn conclude_owned_attempt(
+        &self,
+        conclusion: &crate::AttemptConclusion,
+        authority: Option<&AttemptAuthority>,
+    ) -> Result<AttemptMutationOutcome, Error> {
+        conclusion.validate()?;
+        self.change_attempt_inner(conclusion.finish.clone(), authority, Some(conclusion))
+    }
+    fn change_attempt_inner(
+        &self,
+        request: AttemptMutation,
+        authority: Option<&AttemptAuthority>,
+        conclusion: Option<&crate::AttemptConclusion>,
+    ) -> Result<AttemptMutationOutcome, Error> {
         attempt::validate_request(&request)?;
         let result = self.store.transact(|state| {
             let run = state
@@ -84,22 +100,14 @@ impl MemoryExecution {
             if run.id != self.fence.run_id {
                 return Err(Error::UnknownStoreOutcome);
             }
-            let digest = request.fingerprint(&run.session_id, &run.id)?;
+            let digest = if let Some(conclusion) = conclusion {
+                conclusion.fingerprint(&run.session_id, &run.id)?
+            } else {
+                request.fingerprint(&run.session_id, &run.id)?
+            };
             let key = (run.session_id.clone(), request.id.clone());
-            if let Some(saved) = state.operation_receipts.get(&key) {
-                let OperationReceipt::Attempt(receipt) = saved else {
-                    return Err(Error::SemanticConflict);
-                };
-                if receipt.attempt.session_id != run.session_id
-                    || receipt.operation_id != request.id
-                {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-                verify(state, receipt)?;
-                if receipt.attempt.run_id != run.id || receipt.semantic_digest != digest {
-                    return Err(Error::SemanticConflict);
-                }
-                return Ok(AttemptMutationOutcome::Replayed(receipt.clone()));
+            if let Some(replayed) = replay(state, &run, &request, &digest, conclusion)? {
+                return Ok(replayed);
             }
             let now = self.store.clock.now();
             attempt::verify_run(&run, &self.fence, now)?;
@@ -114,15 +122,35 @@ impl MemoryExecution {
             if current != request.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let revision = current.next().map_err(|_| Error::RevisionExhausted)?;
+            if let Some(conclusion) = conclusion {
+                check_boundary(state, &run, conclusion)?;
+            }
             let id = &request.command.target().id;
-            let (record, grant) = prepare_record(state, &run, &request, authority, now)?;
+            let (record, grant) =
+                prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
+            if let Some(conclusion) = conclusion {
+                apply_boundary(state, &run, conclusion, now)?;
+            }
+            let revision = revision(state, &run.session_id)
+                .next()
+                .map_err(|_| Error::RevisionExhausted)?;
             let authority = if grant {
                 Some(record.authority()?)
             } else {
                 None
             };
-            let mut event = attempt::event(&run, &request, &record.snapshot, now)?;
+            let mut event = if let Some(conclusion) = conclusion {
+                crate::attempt_conclusion::event(
+                    &run,
+                    conclusion.validate()?,
+                    &record.snapshot,
+                    &request.id,
+                    digest.clone(),
+                    now,
+                )?
+            } else {
+                attempt::event(&run, &request, &record.snapshot, now)?
+            };
             let cursor = EventCursor(state.events.len() as u64 + 1);
             event.cursor = Some(cursor);
             let receipt = AttemptReceipt {
@@ -163,12 +191,81 @@ impl MemoryExecution {
     }
 }
 
+fn replay(
+    state: &State,
+    run: &crabber_core::Run,
+    request: &AttemptMutation,
+    digest: &crabber_core::InputFingerprint,
+    conclusion: Option<&crate::AttemptConclusion>,
+) -> Result<Option<AttemptMutationOutcome>, Error> {
+    let key = (run.session_id.clone(), request.id.clone());
+    if let Some(saved) = state.operation_receipts.get(&key) {
+        let OperationReceipt::Attempt(receipt) = saved else {
+            return Err(Error::SemanticConflict);
+        };
+        if receipt.attempt.session_id != run.session_id || receipt.operation_id != request.id {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        verify(state, receipt)?;
+        if receipt.attempt.run_id != run.id || &receipt.semantic_digest != digest {
+            return Err(Error::SemanticConflict);
+        }
+        if let Some(conclusion) = conclusion {
+            conclusion.verify_replay(receipt)?;
+        }
+        return Ok(Some(AttemptMutationOutcome::Replayed(receipt.clone())));
+    }
+    Ok(None)
+}
+
+fn apply_boundary(
+    state: &mut State,
+    run: &crabber_core::Run,
+    conclusion: &crate::AttemptConclusion,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    super::insert_event(state, run, conclusion.materialize(run)?)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut updated = run.clone();
+    conclusion.apply_run(&mut updated, now)?;
+    state.runs.insert(run.id.clone(), updated);
+    Ok(())
+}
+
+fn check_boundary(
+    state: &State,
+    run: &crabber_core::Run,
+    conclusion: &crate::AttemptConclusion,
+) -> Result<(), Error> {
+    if let crate::RunBoundary::Terminal { status, .. } = &conclusion.boundary {
+        if *status == crabber_core::RunStatus::Completed
+            && state
+                .inbox
+                .iter()
+                .any(|row| row.session_id == run.session_id && row.consumed_by_run.is_none())
+        {
+            return Err(Error::PendingInput);
+        }
+        if state.calls.values().any(|call| {
+            call.run_id == run.id
+                && matches!(
+                    call.status,
+                    ToolCallStatus::Pending | ToolCallStatus::Running
+                )
+        }) {
+            return Err(Error::CleanupBlocked);
+        }
+    }
+    Ok(())
+}
+
 fn prepare_record(
     state: &State,
     run: &crabber_core::Run,
     request: &AttemptMutation,
     authority: Option<&AttemptAuthority>,
     now: time::OffsetDateTime,
+    conclusion: bool,
 ) -> Result<(attempt::AttemptRecord, bool), Error> {
     let id = &request.command.target().id;
     Ok(
@@ -206,6 +303,9 @@ fn prepare_record(
                 .values()
                 .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running);
             let grant = record.change(run, request, authority, now, quiet)?;
+            if conclusion {
+                record.cleanup(crate::AttemptCleanupResult::Complete, quiet)?;
+            }
             (record, grant)
         },
     )

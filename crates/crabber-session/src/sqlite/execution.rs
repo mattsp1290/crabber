@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn conclude_attempt(
+        &self,
+        conclusion: crate::AttemptConclusion,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.conclude_owned_attempt(conclusion, authority).await
+    }
+
     async fn settle_tool_phase(
         &self,
         settlement: crate::PhaseSettlement,

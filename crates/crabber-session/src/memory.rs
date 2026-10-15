@@ -668,6 +668,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn conclude_attempt(
+        &self,
+        conclusion: crate::AttemptConclusion,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.conclude_owned_attempt(&conclusion, authority.as_ref())
+    }
+
     async fn settle_tool_phase(
         &self,
         settlement: crate::PhaseSettlement,

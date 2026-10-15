@@ -1,4 +1,6 @@
 //! Test-only fresh-process attempt reconciliation, never a production fault API.
+#[path = "process/conclusion.rs"]
+mod conclusion;
 use super::{applied, reserve};
 use crate::{
     AttemptCommand, AttemptError as Error, AttemptMutation, AttemptMutationOutcome as Outcome,
@@ -12,6 +14,22 @@ use std::{path::Path, process::Command, time::Duration};
 pub(crate) enum Mode {
     Reserve,
     Begin,
+    Complete,
+    Suspend,
+}
+impl Mode {
+    pub(crate) const ALL: [Self; 4] = [Self::Reserve, Self::Begin, Self::Complete, Self::Suspend];
+    fn conclusion(self) -> bool {
+        matches!(self, Self::Complete | Self::Suspend)
+    }
+    pub(crate) fn state(self) -> &'static str {
+        match self {
+            Self::Reserve => "Unstarted",
+            Self::Begin => "Started",
+            Self::Complete => "Completed",
+            Self::Suspend => "Suspended",
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fixture {
@@ -30,6 +48,17 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
         };
         request.expected_revision = request.expected_revision.next().unwrap();
     }
+    if mode.conclusion() {
+        request.command = AttemptCommand::Finish {
+            target: request.command.target().clone(),
+            outcome: if matches!(mode, Mode::Complete) {
+                crate::AttemptFinish::Completed
+            } else {
+                crate::AttemptFinish::Suspended
+            },
+        };
+        request.expected_revision = request.expected_revision.next().unwrap().next().unwrap();
+    }
     Fixture {
         fence: admitted.fence,
         session: admitted.session.id,
@@ -39,21 +68,60 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
 }
 pub(crate) async fn write(store: &impl Store, fixture: &Fixture) -> Result<Outcome, Error> {
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
-    let authority = if matches!(fixture.mode, Mode::Begin) {
-        let reserve = prior_reserve(fixture);
-        applied(execution.mutate_attempt(reserve, None).await.unwrap()).1
-    } else {
-        None
-    };
-    execution
-        .mutate_attempt(fixture.request.clone(), authority)
-        .await
+    let authority = prepare_authority(execution.as_ref(), fixture).await;
+    apply(execution.as_ref(), fixture, authority).await
 }
+async fn prepare_authority(
+    execution: &dyn crate::ExecutionStore,
+    fixture: &Fixture,
+) -> Option<crate::AttemptAuthority> {
+    if matches!(fixture.mode, Mode::Reserve) {
+        return None;
+    }
+    let (reserved, authority) = applied(
+        execution
+            .mutate_attempt(prior_reserve(fixture), None)
+            .await
+            .unwrap(),
+    );
+    if fixture.mode.conclusion() {
+        execution
+            .mutate_attempt(
+                AttemptMutation {
+                    id: ControlId::new(),
+                    expected_revision: reserved.revision,
+                    command: AttemptCommand::Begin {
+                        target: reserved.attempt.target,
+                    },
+                },
+                authority.clone(),
+            )
+            .await
+            .unwrap();
+    }
+    authority
+}
+async fn apply(
+    execution: &dyn crate::ExecutionStore,
+    fixture: &Fixture,
+    authority: Option<crate::AttemptAuthority>,
+) -> Result<Outcome, Error> {
+    if fixture.mode.conclusion() {
+        execution
+            .conclude_attempt(conclusion::request(fixture), authority)
+            .await
+    } else {
+        execution
+            .mutate_attempt(fixture.request.clone(), authority)
+            .await
+    }
+}
+
 fn prior_reserve(fixture: &Fixture) -> AttemptMutation {
     AttemptMutation {
         id: ControlId::new(),
         expected_revision: crabber_core::SessionRevision::new(
-            fixture.request.expected_revision.get() - 1,
+            fixture.request.expected_revision.get() - if fixture.mode.conclusion() { 2 } else { 1 },
         )
         .unwrap(),
         command: AttemptCommand::Reserve {
@@ -64,21 +132,10 @@ fn prior_reserve(fixture: &Fixture) -> AttemptMutation {
 pub(crate) async fn prepare_loss(store: &impl Store, mode: Mode, inject: impl Fn(u8)) -> Fixture {
     let fixture = pending(store, mode).await;
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
-    let authority = if matches!(mode, Mode::Begin) {
-        applied(
-            execution
-                .mutate_attempt(prior_reserve(&fixture), None)
-                .await
-                .unwrap(),
-        )
-        .1
-    } else {
-        None
-    };
+    let authority = prepare_authority(execution.as_ref(), &fixture).await;
     inject(2);
     assert_eq!(
-        execution
-            .mutate_attempt(fixture.request.clone(), authority)
+        apply(execution.as_ref(), &fixture, authority)
             .await
             .unwrap_err(),
         Error::UnknownStoreOutcome
@@ -87,6 +144,10 @@ pub(crate) async fn prepare_loss(store: &impl Store, mode: Mode, inject: impl Fn
     fixture
 }
 pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+    if fixture.mode.conclusion() {
+        conclusion::verify_loss(store, fixture).await;
+        return;
+    }
     let receipt = store
         .lookup_attempt_mutation(&fixture.session, &fixture.request.id)
         .await
@@ -250,6 +311,12 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
     if matches!(fixture.mode, Mode::Reserve) {
         assert_eq!(snapshot.unwrap_err(), Error::NotFound);
         assert_eq!(count, 0);
+    } else if fixture.mode.conclusion() {
+        assert_eq!(snapshot.unwrap().attempt.state, AttemptState::Started);
+        assert_eq!(count, 2);
+        let run = store.get_run(&fixture.fence.run_id).await.unwrap().unwrap();
+        assert_eq!(run.status, crabber_core::RunStatus::Running);
+        assert!(run.checkpoint.is_none());
     } else {
         assert_eq!(snapshot.unwrap().attempt.state, AttemptState::Unstarted);
         assert_eq!(count, 1);
@@ -260,6 +327,26 @@ pub(crate) async fn retry_crash(
     clock: &crabber_core::ManualClock,
     fixture: &Fixture,
 ) {
+    if fixture.mode.conclusion() {
+        let execution = store.execution(fixture.fence.clone()).await.unwrap();
+        assert_eq!(
+            execution
+                .conclude_attempt(conclusion::request(fixture), None)
+                .await
+                .unwrap_err(),
+            Error::StaleOwner
+        );
+        assert_eq!(
+            store
+                .execution_attempt(&fixture.fence.run_id, &fixture.request.command.target().id)
+                .await
+                .unwrap()
+                .attempt
+                .state,
+            AttemptState::Started
+        );
+        return;
+    }
     if matches!(fixture.mode, Mode::Reserve) {
         let execution = store.execution(fixture.fence.clone()).await.unwrap();
         applied(

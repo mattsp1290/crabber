@@ -1,17 +1,17 @@
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
-    AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptError,
-    AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot,
-    AttemptState, AttemptTarget, BoundAdmitRequest, BoundKeyedAdmitRequest,
+    AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptConclusion,
+    AttemptError, AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt,
+    AttemptSnapshot, AttemptState, AttemptTarget, BoundAdmitRequest, BoundKeyedAdmitRequest,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission, PhaseAuthority, PhaseCommand, PhaseError,
     PhaseMutation, PhaseMutationOutcome, PhaseOperation, PhaseQuiescence, PhaseQuiescenceResult,
     PhaseReceipt, PhaseResolverClaim, PhaseSettlement, PhaseSettlementRecords, PhaseSnapshot,
     PhaseState, PhaseTarget, PhaseWriteAuthority, PublicStateError, PublicStateMutation,
-    PublicStateReceipt, PublicStateSnapshot, RetainedExecutionBinding, SnapshotContinuation,
-    SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
-    StoreError, UncertainPhaseChoice, VersionedAttempt, VersionedPhase, ensure_storable,
-    ensure_storable_text,
+    PublicStateReceipt, PublicStateSnapshot, RetainedExecutionBinding, RunBoundary,
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage, StoreError, UncertainPhaseChoice, VersionedAttempt,
+    VersionedPhase, ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
@@ -20,6 +20,9 @@ mod abandonment_contract;
 #[path = "../../crabber-session/src/attempt/records.rs"]
 #[allow(dead_code)]
 mod attempt;
+#[path = "../../crabber-session/src/attempt_conclusion/audit.rs"]
+#[allow(dead_code)]
+mod attempt_conclusion;
 #[path = "../../crabber-session/src/attempt_contract.rs"]
 #[allow(dead_code)]
 mod attempt_contract;

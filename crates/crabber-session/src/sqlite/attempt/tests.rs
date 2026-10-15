@@ -50,13 +50,13 @@ async fn process_helper() {
     }
 }
 #[tokio::test]
-async fn lost_reserve_and_begin_ack_reconcile_in_fresh_process() {
+async fn lost_attempt_operations_ack_reconcile_in_fresh_process() {
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
     let (store, path, _directory) = crate::sqlite::tests::temp_store().await;
     let store = store.with_clock(clock);
-    for mode in [process::Mode::Reserve, process::Mode::Begin] {
+    for mode in process::Mode::ALL {
         let fixture = process::prepare_loss(&store, mode, |point| {
             store
                 .attempt_fault
@@ -75,23 +75,16 @@ async fn lost_reserve_and_begin_ack_reconcile_in_fresh_process() {
 }
 
 #[tokio::test]
-async fn killed_reserve_and_begin_before_commit_leave_no_partial_transition() {
+async fn killed_attempt_operations_before_commit_leave_no_partial_transition() {
     let _guard = crate::sqlite::test_support::BARRIER_LOCK.lock().await;
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::now_utc(),
     ));
     let (store, path, directory) = crate::sqlite::tests::temp_store().await;
     let store = store.with_clock(clock.clone());
-    for (index, mode) in [process::Mode::Reserve, process::Mode::Begin]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, mode) in process::Mode::ALL.into_iter().enumerate() {
         let fixture = process::pending(&store, mode).await;
-        let state = if matches!(mode, process::Mode::Reserve) {
-            "Unstarted"
-        } else {
-            "Started"
-        };
+        let state = mode.state();
         let marker = directory.path().join(format!("attempt-{index}.marker"));
         sqlx::query(&format!("CREATE TRIGGER attempt_barrier AFTER INSERT ON operation_receipts WHEN NEW.kind='attempt' AND json_extract(NEW.data_json,'$.attempt.state')='{state}' BEGIN SELECT 1 WHERE 'a' < 'b' COLLATE crabber_test_barrier; END"))
             .execute(&store.writer).await.unwrap();
