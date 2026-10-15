@@ -3,7 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod session_context;
 mod trace_context;
+pub use session_context::SessionContext;
 pub use trace_context::{TraceContext, TraceContextError, TraceLink};
 mod abandonment;
 pub use abandonment::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};

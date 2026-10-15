@@ -13,8 +13,8 @@ use crabber_core::event_payload::{self, StreamOutcome};
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, ContextEpoch, EpochId,
     EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunFence, RunId,
-    RunStatus, Session, SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus,
-    ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
+    RunStatus, Session, SessionContext, SessionId, SystemClock, ToolCallId, ToolCallRecord,
+    ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
     ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
@@ -183,6 +183,8 @@ pub struct SkippedRun {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error("agent host is closed")]
+    HostClosed,
     #[error("session is busy")]
     SessionBusy,
     #[error("store: {0}")]
@@ -405,12 +407,14 @@ pub(crate) type ResultContextObserver = Arc<dyn Fn(&ToolResultContext) + Send + 
 struct RunSession {
     id: SessionId,
     workspace: WorkspaceContext,
+    context: SessionContext,
 }
 impl From<&Session> for RunSession {
     fn from(session: &Session) -> Self {
         Self {
             id: session.id.clone(),
             workspace: WorkspaceContext::from_persisted(&session.workspace_id, &session.directory),
+            context: SessionContext::from(session),
         }
     }
 }
@@ -997,7 +1001,7 @@ impl Orchestrator {
         }
         let plan = self
             .plan_provider
-            .acquire_plan(&run.session_id)
+            .acquire_plan_in(&session.context)
             .await
             .map_err(|error| RuntimeError::Extension(error.to_string()))?;
         if plan.fingerprint().to_string() != run.plan_fingerprint {
@@ -1695,6 +1699,20 @@ impl Orchestrator {
         Ok(self.store.lookup_admission(session, key).await?)
     }
 
+    /// Check routing identity before acquiring any contextual plan. Admission
+    /// repeats the check in its transaction to close concurrent-create races.
+    /// # Errors
+    /// Returns identity mismatch or store validation/availability errors.
+    pub async fn validate_context(&self, context: &SessionContext) -> Result<(), RuntimeError> {
+        crabber_session::ensure_storable_text(&context.session_id().0)?;
+        crabber_session::ensure_storable_text(context.workspace_id())?;
+        crabber_session::ensure_storable_text(context.directory())?;
+        if let Some(session) = self.store.get_session(context.session_id()).await? {
+            session.ensure_identity(context.workspace_id(), context.directory())?;
+        }
+        Ok(())
+    }
+
     async fn prepare_admission(
         &self,
         request: &Request,
@@ -1706,9 +1724,15 @@ impl Orchestrator {
         }
         let now = self.clock.now();
         let session_id = request.session_id.clone().unwrap_or_default();
+        let context = SessionContext::new(
+            session_id.clone(),
+            request.workspace_id.clone(),
+            request.directory.clone(),
+        );
+        self.validate_context(&context).await?;
         let plan = self
             .plan_provider
-            .acquire_plan(&session_id)
+            .acquire_plan_in(&context)
             .await
             .map_err(|error| RuntimeError::Extension(error.to_string()))?;
         // Hash structured, independently observed semantics, never a caller's claim.

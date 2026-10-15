@@ -14,7 +14,7 @@ use crate::{
     json_result_transform,
 };
 use async_trait::async_trait;
-use crabber_core::{RunId, SessionId, ToolCallId, ToolInfo};
+use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
 use serde::Serialize;
@@ -31,16 +31,51 @@ use tokio::sync::Notify;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Filtering for explicitly shared registrations. This does not isolate state.
 pub enum Scope {
     Global,
+    Workspace(String),
     Session(SessionId),
+    SessionIn {
+        session_id: SessionId,
+        workspace_id: String,
+    },
 }
 impl Scope {
-    fn applies(&self, session: &SessionId) -> bool {
-        matches!(self, Self::Global) || matches!(self, Self::Session(id) if id == session)
+    fn applies(&self, session: &SessionId, context: Option<&SessionContext>) -> bool {
+        match self {
+            Self::Global => true,
+            Self::Session(id) => id == session,
+            Self::Workspace(id) => {
+                !id.is_empty() && context.is_some_and(|c| c.workspace_id() == id)
+            }
+            Self::SessionIn {
+                session_id,
+                workspace_id,
+            } => session_id == session && context.is_some_and(|c| c.workspace_id() == workspace_id),
+        }
     }
     fn rank(&self) -> u8 {
-        u8::from(!matches!(self, Self::Global))
+        match self {
+            Self::Global => 0,
+            Self::Workspace(_) => 1,
+            Self::Session(_) | Self::SessionIn { .. } => 2,
+        }
+    }
+    fn session_id(&self) -> Option<&SessionId> {
+        match self {
+            Self::Session(id) | Self::SessionIn { session_id: id, .. } => Some(id),
+            Self::Global | Self::Workspace(_) => None,
+        }
+    }
+    fn workspace_id(&self) -> Option<&str> {
+        match self {
+            Self::Workspace(id)
+            | Self::SessionIn {
+                workspace_id: id, ..
+            } => Some(id),
+            Self::Global | Self::Session(_) => None,
+        }
     }
 }
 
@@ -612,7 +647,16 @@ impl Registry {
         if inner.closed {
             return Err(ExtensionError::RegistryClosed);
         }
-        Ok(self.plan_for(&inner, session))
+        Ok(self.plan_for(&inner, session, None))
+    }
+    /// Acquire shared registrations filtered by the supplied authoritative context.
+    /// Scope filtering does not instantiate or isolate mutable extension state.
+    pub fn try_acquire_in(&self, context: &SessionContext) -> Result<RunPlan, ExtensionError> {
+        let inner = self.inner.lock().unwrap();
+        if inner.closed {
+            return Err(ExtensionError::RegistryClosed);
+        }
+        Ok(self.plan_for(&inner, context.session_id(), Some(context)))
     }
     /// `try_acquire` unwrapped.
     ///
@@ -625,11 +669,16 @@ impl Registry {
     }
     // `self` is read only by the test acquire hook.
     #[cfg_attr(not(test), allow(clippy::unused_self))]
-    fn plan_for(&self, inner: &RegistryInner, session: &SessionId) -> RunPlan {
+    fn plan_for(
+        &self,
+        inner: &RegistryInner,
+        session: &SessionId,
+        context: Option<&SessionContext>,
+    ) -> RunPlan {
         let mut mounts = Vec::new();
         for mount in &inner.mounts {
             let active = mount.active.lock().unwrap();
-            if *active && mount.scope.applies(session) {
+            if *active && mount.scope.applies(session, context) {
                 #[cfg(test)]
                 if let Some(hook) = self.acquire_hook.lock().unwrap().as_ref() {
                     hook();
@@ -647,62 +696,27 @@ impl Registry {
         let mut handlers = vec![];
         let mut providers = vec![];
         let mut components = vec![];
-        for mount in &mounts {
+        for (index, mount) in mounts.iter().enumerate() {
+            // Only mounts actually in this plan affect order identity. A new
+            // instance in another workspace/session cannot change recovery hashes.
+            let plan_sequence = u64::try_from(index).expect("plan index fits u64") + 1;
             let r = mount.registrar.lock().unwrap();
             tools.extend(r.tools.iter().cloned());
             for prompt in &r.prompts {
                 prompts.retain(|old: &Arc<PromptSection>| old.name != prompt.name);
                 prompts.push(Arc::clone(prompt));
             }
-            freeze_contributors(&r.contributors, &mut contributors, &mut components);
+            freeze_contributors(
+                &r.contributors,
+                &mut contributors,
+                &mut components,
+                plan_sequence,
+            );
             guards.extend(r.guards.iter().cloned());
             restrictions.extend(r.restrictions.iter().cloned());
             handlers.extend(r.handlers.iter().cloned());
             providers.extend(r.providers.iter().cloned());
-            components.push(ComponentIdentity {
-                id: format!("extension:{}", mount.extension.id()),
-                version: format!(
-                    "{}:{}",
-                    mount.extension.version(),
-                    canonical_hash(&mount.extension.config_hash())
-                ),
-            });
-            for t in &r.tools {
-                components.push(ComponentIdentity {
-                    id: format!("tool:{}", t.info.name),
-                    version: canonical_json(&serde_json::to_value(&t.info).unwrap()).to_string(),
-                });
-            }
-            for p in &r.prompts {
-                components.push(ComponentIdentity {
-                    id: format!("prompt:{}", p.name),
-                    version: format!("{}:{}", p.order, p.text),
-                });
-            }
-            for g in &r.guards {
-                components.push(ComponentIdentity {
-                    id: format!("guard:{}", g.id()),
-                    version: String::new(),
-                });
-            }
-            for h in &r.handlers {
-                components.push(ComponentIdentity {
-                    id: format!("handler:{}:{}", h.point, h.id),
-                    version: handler_version(h, mount.seq),
-                });
-            }
-            for provider in &r.providers {
-                components.push(ComponentIdentity {
-                    id: format!("provider:{}", provider.info().id),
-                    version: provider.info().name,
-                });
-            }
-            for restriction in &r.restrictions {
-                components.push(ComponentIdentity {
-                    id: format!("restriction:{}", restriction.join(",")),
-                    version: String::new(),
-                });
-            }
+            append_mount_components(mount, &r, plan_sequence, &mut components);
         }
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
         finish_contributors(&mut contributors, &mut components);
@@ -727,6 +741,64 @@ impl Registry {
         )
     }
 }
+fn append_mount_components(
+    mount: &Mount,
+    r: &Registrar,
+    plan_sequence: u64,
+    components: &mut Vec<ComponentIdentity>,
+) {
+    components.push(ComponentIdentity {
+        id: format!("extension:{}", mount.extension.id()),
+        version: format!(
+            "{}:{}",
+            mount.extension.version(),
+            canonical_hash(&mount.extension.config_hash())
+        ),
+    });
+    for t in &r.tools {
+        components.push(ComponentIdentity {
+            id: format!("tool:{}", t.info.name),
+            version: canonical_json(&serde_json::to_value(&t.info).unwrap()).to_string(),
+        });
+    }
+    for p in &r.prompts {
+        components.push(ComponentIdentity {
+            id: format!("prompt:{}", p.name),
+            version: format!("{}:{}", p.order, p.text),
+        });
+    }
+    for g in &r.guards {
+        components.push(ComponentIdentity {
+            id: format!("guard:{}", g.id()),
+            version: String::new(),
+        });
+    }
+    for h in &r.handlers {
+        components.push(ComponentIdentity {
+            id: format!(
+                "handler:{}:{}:{}:{}",
+                mount.extension.id(),
+                mount.scope.rank(),
+                h.point,
+                h.id
+            ),
+            version: handler_version(h, plan_sequence),
+        });
+    }
+    for provider in &r.providers {
+        components.push(ComponentIdentity {
+            id: format!("provider:{}", provider.info().id),
+            version: provider.info().name,
+        });
+    }
+    for restriction in &r.restrictions {
+        components.push(ComponentIdentity {
+            id: format!("restriction:{}", restriction.join(",")),
+            version: String::new(),
+        });
+    }
+}
+
 fn validate_contributors(
     registrar: &Registrar,
     inner: &RegistryInner,
@@ -799,6 +871,7 @@ fn freeze_contributors(
     registrations: &[MountedPromptContributor],
     contributors: &mut Vec<MountedPromptContributor>,
     components: &mut Vec<ComponentIdentity>,
+    plan_sequence: u64,
 ) {
     for contributor in registrations {
         let replaced_typed = contributors.iter().any(|old| {
@@ -822,7 +895,7 @@ fn freeze_contributors(
         match &contributor.identity {
             PromptContributorIdentity::Legacy => components.push(ComponentIdentity {
                 id: legacy_id,
-                version: format!("{}:{}", contributor.order, contributor.mount_seq),
+                version: format!("{}:{plan_sequence}", contributor.order),
             }),
             PromptContributorIdentity::SystemPrompt(descriptor) => {
                 let identity = SystemPromptIdentity {
@@ -841,7 +914,18 @@ fn freeze_contributors(
     }
 }
 fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
-    matches!(a, Scope::Global) || matches!(b, Scope::Global) || a == b
+    if matches!(a, Scope::Global) || matches!(b, Scope::Global) {
+        return true;
+    }
+    if let (Some(a), Some(b)) = (a.session_id(), b.session_id()) {
+        return a == b;
+    }
+    if let (Some(a), Some(b)) = (a.workspace_id(), b.workspace_id()) {
+        return a == b;
+    }
+    // Legacy session scopes have no workspace binding. Assume overlap;
+    // never authorize a name collision using unknown routing identity.
+    true
 }
 fn canonical_hash(hash: &str) -> String {
     serde_json::from_str::<serde_json::Value>(hash)
@@ -856,6 +940,9 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
 impl RunPlanProvider for Registry {
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
         self.try_acquire(session)
+    }
+    async fn acquire_plan_in(&self, context: &SessionContext) -> Result<RunPlan, ExtensionError> {
+        self.try_acquire_in(context)
     }
 }
 #[derive(Clone)]

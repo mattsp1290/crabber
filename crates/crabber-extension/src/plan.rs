@@ -3,7 +3,7 @@ use crate::dispatch::Dispatcher;
 use crate::registry::ToolGuard;
 use crate::{MountedPromptContributor, ToolContext};
 use async_trait::async_trait;
-use crabber_core::{SessionId, ToolInfo};
+use crabber_core::{SessionContext, SessionId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -167,6 +167,12 @@ impl RunPlan {
 #[async_trait]
 pub trait RunPlanProvider: Send + Sync {
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError>;
+
+    /// Acquire using the authoritative session identity, or the host-admitted
+    /// identity for a new session. Shared plans may ignore workspace routing.
+    async fn acquire_plan_in(&self, context: &SessionContext) -> Result<RunPlan, ExtensionError> {
+        self.acquire_plan(context.session_id()).await
+    }
 }
 
 #[derive(Clone)]

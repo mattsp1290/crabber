@@ -1,3 +1,4 @@
+use crate::ExecutionContext;
 use async_trait::async_trait;
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
@@ -16,7 +17,13 @@ use crabber_session::PostgresStore;
 #[cfg(feature = "sqlite")]
 use crabber_session::SqliteStore;
 use crabber_session::{MemoryStore, Store};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{OnceCell, broadcast};
 
 /// Host-owned settings frozen into each prompt request.
@@ -300,6 +307,7 @@ impl AgentBuilder {
             registry,
             extensions: mounts,
             mounted: OnceCell::new(),
+            closed: AtomicBool::new(false),
         })
     }
 }
@@ -411,10 +419,14 @@ pub struct Agent {
     registry: Option<Registry>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
     mounted: OnceCell<Vec<MountHandle>>,
+    closed: AtomicBool,
 }
 
 impl Agent {
-    async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
+    pub(crate) async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::HostClosed);
+        }
         if let Some(registry) = &self.registry {
             self.mounted
                 .get_or_try_init(|| async {
@@ -434,17 +446,22 @@ impl Agent {
                 })
                 .await?;
         }
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::HostClosed);
+        }
         Ok(())
     }
 
     /// Terminally closes the extension registry without interrupting live runs.
     /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
     /// retained plan leases keep the detached close task waiting until completion.
-    /// An agent without extensions remains usable.
+    /// New admissions and readiness are rejected once closing starts, including
+    /// for agents with no extensions. This does not join active executions.
     ///
     /// # Errors
     /// Returns the first mount close error after attempting every mount.
     pub async fn close_extensions(&self) -> Result<(), ExtensionError> {
+        self.closed.store(true, Ordering::SeqCst);
         if let Some(registry) = &self.registry {
             registry.close_all().await
         } else {
@@ -525,12 +542,18 @@ impl Agent {
         text: impl Into<String>,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        self.initialize_extensions().await?;
+        let request = self.request(session_id, text.into());
+        self.start_request(request, context).await
+    }
+
+    pub(crate) async fn start_request(
+        &self,
+        request: Request,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        self.prepare_request(&request).await?;
         let receiver = self.events.subscribe();
-        let inner = self
-            .runtime
-            .start_with_context(self.request(session_id, text.into()), context)
-            .await?;
+        let inner = self.runtime.start_with_context(request, context).await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
             completion: inner.completion_signal(),
@@ -563,15 +586,25 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        self.initialize_extensions().await?;
+        self.start_keyed_request(
+            self.request(Some(session_id), text.into()),
+            options,
+            context,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_keyed_request(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        self.prepare_request(&request).await?;
         let receiver = self.events.subscribe();
         let admission = self
             .runtime
-            .start_keyed_with_context(
-                self.request(Some(session_id), text.into()),
-                options,
-                context,
-            )
+            .start_keyed_with_context(request, options, context)
             .await?;
         Ok(Admission::from_runtime(admission, receiver))
     }
@@ -599,27 +632,80 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        self.initialize_extensions().await?;
+        self.recover_request(
+            self.request(Some(session_id), text.into()),
+            options,
+            context,
+        )
+        .await
+    }
+
+    pub(crate) async fn recover_request(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        self.prepare_request(&request).await?;
         let receiver = self.events.subscribe();
         let admission = self
             .runtime
-            .recover_admission_with_context(
-                self.request(Some(session_id), text.into()),
-                options,
-                context,
-            )
+            .recover_admission_with_context(request, options, context)
             .await?;
         Ok(Admission::from_runtime(admission, receiver))
     }
 
+    async fn prepare_request(&self, request: &Request) -> Result<(), RuntimeError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::HostClosed);
+        }
+        if let Some(session_id) = &request.session_id {
+            self.runtime
+                .validate_context(&crabber_core::SessionContext::new(
+                    session_id.clone(),
+                    request.workspace_id.clone(),
+                    request.directory.clone(),
+                ))
+                .await?;
+        }
+        self.initialize_extensions().await
+    }
+
+    pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {
+        self.request_at(
+            Some(context.session().session_id().clone()),
+            text,
+            context.session().workspace_id(),
+            context.session().directory(),
+            context.selection(),
+        )
+    }
+
     fn request(&self, session_id: Option<SessionId>, text: String) -> Request {
+        self.request_at(
+            session_id,
+            text,
+            &self.config.workspace_id,
+            &self.config.directory,
+            &self.config.selection,
+        )
+    }
+
+    fn request_at(
+        &self,
+        session_id: Option<SessionId>,
+        text: String,
+        workspace_id: &str,
+        directory: &str,
+        selection: &Selection,
+    ) -> Request {
         Request {
             session_id,
             text,
-            workspace_id: self.config.workspace_id.clone(),
-            directory: self.config.directory.clone(),
+            workspace_id: workspace_id.to_owned(),
+            directory: directory.to_owned(),
             title: self.config.title.clone(),
-            selection: self.config.selection.clone(),
+            selection: selection.clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_output_tokens: self.config.max_output_tokens,
         }
@@ -1110,7 +1196,7 @@ mod tests {
         }
         assert!(matches!(
             agent.prompt(None, "during close").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
         assert!(
             matches!(closing.await, Err(ExtensionError::MountCloseTimeout { extension }) if extension == "close-probe")
@@ -1125,7 +1211,7 @@ mod tests {
         }
         assert!(matches!(
             agent.prompt(None, "after timeout").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
         assert_eq!(stopped.available_permits(), 0);
         plan.release();
@@ -1140,7 +1226,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_without_extensions_keeps_agent_usable() {
+    async fn close_without_extensions_is_terminal() {
         let agent = Agent::builder()
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
@@ -1154,13 +1240,10 @@ mod tests {
             .build()
             .unwrap();
         agent.close_extensions().await.unwrap();
-        agent
-            .prompt(None, "hello")
-            .await
-            .unwrap()
-            .done()
-            .await
-            .unwrap();
+        assert!(matches!(
+            agent.prompt(None, "after close").await,
+            Err(RuntimeError::HostClosed)
+        ));
     }
 
     #[cfg(feature = "datadog")]

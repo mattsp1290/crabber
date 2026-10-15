@@ -3,11 +3,13 @@
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
 mod agent;
+mod host;
+pub use host::ExecutionContext;
 
 pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
-    SessionId, TraceContext, TraceContextError, TraceLink,
+    SessionContext, SessionId, TraceContext, TraceContextError, TraceLink,
 };
 pub use crabber_extension::{
     ExtensionError, Scope, ToolDefinition, ToolExecutor, WorkspaceReadError,
