@@ -2,6 +2,8 @@
 mod abandon;
 #[path = "memory/admission_execution.rs"]
 mod admission_execution;
+#[path = "memory/public_state.rs"]
+mod public_state;
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -29,6 +31,8 @@ pub struct MemoryStore {
     clock: Arc<dyn Clock>,
     limits: ByteLimits,
     snapshot_key: String,
+    #[cfg(test)]
+    public_state_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
@@ -49,6 +53,9 @@ struct State {
     call_order: Vec<ToolCallId>,
     snapshot_revisions: BTreeMap<SessionId, u64>,
     public_revisions: BTreeMap<SessionId, crabber_core::SessionRevision>,
+    public_contents: BTreeMap<SessionId, crabber_core::PublicStateContents>,
+    public_state_receipts:
+        BTreeMap<(SessionId, crabber_core::ControlId), crate::PublicStateReceipt>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
@@ -87,6 +94,8 @@ impl MemoryStore {
             clock,
             limits: ByteLimits::default(),
             snapshot_key: uuid::Uuid::new_v4().to_string(),
+            #[cfg(test)]
+            public_state_fault: Arc::default(),
         }
     }
 
@@ -178,6 +187,11 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
 }
 
 fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+        return Err(StoreError::Validation(
+            "public state events require atomic state mutation".into(),
+        ));
+    }
     if event.live_only || event.kind.is_live_only() {
         return Err(StoreError::Validation(
             "live-only events cannot be persisted".into(),
@@ -404,6 +418,20 @@ fn admit_transaction(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn public_state(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
+        self.read_public_state(session)
+    }
+    async fn lookup_public_state_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicStateReceipt>, crate::PublicStateError> {
+        self.public_receipt(session, id)
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -712,6 +740,13 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn mutate_public_state(
+        &self,
+        mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.change_public_state(mutation)
+    }
+
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
         self.begin_admission()
     }

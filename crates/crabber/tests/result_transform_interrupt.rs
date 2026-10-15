@@ -220,6 +220,7 @@ async fn run_interrupt_persists_only_accepted_final_redaction() {
 
 #[cfg(feature = "postgres")]
 async fn postgres_interrupt(accepted: bool) {
+    static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
         assert_ne!(
             std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
@@ -229,9 +230,14 @@ async fn postgres_interrupt(accepted: bool) {
         eprintln!("PostgreSQL interruption skipped: CRABBER_TEST_POSTGRES_URL unset");
         return;
     };
-    crabber::session::PostgresStore::migrate(&url)
-        .await
-        .unwrap();
+    // Finish shared DDL before either parallel fixture starts admitting work.
+    MIGRATED
+        .get_or_init(|| async {
+            crabber::session::PostgresStore::migrate(&url)
+                .await
+                .unwrap();
+        })
+        .await;
     let store = crabber::session::PostgresStore::connect(&url)
         .await
         .unwrap();

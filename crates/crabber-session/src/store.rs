@@ -108,13 +108,32 @@ pub enum InboxKind {
     FollowUp,
 }
 
-/// Persistence boundary for durable session records. Implementations must
+/// Persistence boundary for durable session records. For legacy records,
+/// implementations must
 /// reject, before changing state, any record their readers cannot decode or
 /// which contains a NUL character, using [`StoreError::Validation`]. Bundled
 /// stores use [`crate::ensure_storable`]; custom stores should run
 /// [`crate::storetest::run_storable_record_contract`].
+/// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Read one coherent bounded public state/revision snapshot. Experimental.
+    async fn public_state(
+        &self,
+        _session: &SessionId,
+    ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+    /// Metadata-only reconciliation, without granting execution authority.
+    /// Absence does not prove an in-flight operation cannot subsequently commit.
+    async fn lookup_public_state_mutation(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicStateReceipt>, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+
     /// Read the opaque revision of public session state/history. Values may have
     /// gaps; never infer an operation count. Lease/token refresh is private and
     /// does not advance it. Unstable until durable-host qualification.
@@ -235,10 +254,22 @@ pub trait Store: Send + Sync {
     ) -> Result<(), StoreError>;
 }
 
-/// Fenced write operations. Every persisted record follows the storable-record
-/// contract documented on [`Store`].
+/// Fenced write operations. Legacy record operations follow the storable-record
+/// contract documented on [`Store`]. Typed public state uses its own bounded,
+/// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Atomically replace public state/activity, commit its event/revision/receipt.
+    /// Exact receipt replay precedes current ownership and revision checks.
+    /// Experimental. `UnknownStoreOutcome` requires receipt reconciliation using
+    /// the original operation ID and semantics; never invent a new ID to retry.
+    async fn mutate_public_state(
+        &self,
+        _mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+
     /// One-shot fenced start, committed before any execution effects. An unknown
     /// response must never be retried as permission to execute.
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {

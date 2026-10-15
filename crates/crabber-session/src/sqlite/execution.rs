@@ -21,6 +21,13 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn mutate_public_state(
+        &self,
+        mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.change_public_state(mutation).await
+    }
+
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
         admission_execution::begin(self).await
     }

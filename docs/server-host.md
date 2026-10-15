@@ -86,6 +86,25 @@ invalidation counters. Custom stores can run `revision_contract::run_contract`.
 This scalar alone does not validate a separately captured history snapshot;
 coherent public snapshots and conditional admission are still being implemented.
 
+The experimental `Store::public_state` reads state, display activities and their
+revision from one store snapshot. `ExecutionStore::mutate_public_state` replaces
+the complete state/activity set at an expected revision, atomically recording a
+`PublicStateSnapshot` event and operation receipt. Null, scalar and array state,
+embedded NUL and finite JSON numbers retain their meaning in all bundled stores.
+Activities never become model conversation input. These operations are not yet
+wired into runtime tools or the protocol projector.
+
+Retain the original `PublicStateMutation` and its operation ID before writing.
+After `UnknownStoreOutcome`, use `Store::lookup_public_state_mutation` to reconcile
+the original ID. Compare its digest with `mutation.fingerprint(session, run)`;
+exact retry also returns the original receipt after ownership or revision changes.
+A missing lookup does not prove an in-flight write cannot later commit.
+A changed request under that ID conflicts. Receipt reconciliation does not grant
+permission to execute other operations. Custom stores default to `Unsupported`
+and can qualify against `public_state_contract::run_contract` and the injected
+rollback/unknown-response contract. This state snapshot does not include history
+and therefore cannot validate a separately captured history snapshot.
+
 Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
 preserved custom registrations and defaults, exact retry and root drift,

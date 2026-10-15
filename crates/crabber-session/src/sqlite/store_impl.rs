@@ -18,6 +18,20 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn public_state(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
+        self.read_public_state(session).await
+    }
+    async fn lookup_public_state_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicStateReceipt>, crate::PublicStateError> {
+        self.public_receipt(session, id).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,

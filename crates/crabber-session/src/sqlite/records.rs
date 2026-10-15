@@ -174,6 +174,11 @@ pub(super) async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+        return Err(StoreError::Validation(
+            "public state events require atomic state mutation".into(),
+        ));
+    }
     if event.live_only || event.kind.is_live_only() {
         return Err(StoreError::Validation(
             "live-only events cannot be persisted".into(),

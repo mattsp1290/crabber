@@ -9,6 +9,7 @@ mod abandon;
 mod admission_execution;
 #[cfg(test)]
 mod lock_order_tests;
+mod public_state;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -34,6 +35,8 @@ pub struct PostgresStore {
     limits: ByteLimits,
     #[cfg(test)]
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    public_state_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -201,6 +204,11 @@ async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+        return Err(StoreError::Validation(
+            "public state events require atomic state mutation".into(),
+        ));
+    }
     if event.live_only || event.kind.is_live_only() {
         return Err(StoreError::Validation(
             "live-only events cannot be persisted".into(),
@@ -360,6 +368,8 @@ impl PostgresStore {
             limits: ByteLimits::default(),
             #[cfg(test)]
             abandon_fault: Arc::default(),
+            #[cfg(test)]
+            public_state_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -439,7 +449,7 @@ impl PostgresStore {
             .ok_or(StoreError::NotFound)?;
         lock_session(&mut tx, &SessionId(session.clone())).await?;
         let run = load_run(&mut tx, id, true).await?;
-        if run.session_id.0 != session {
+        if run.id != *id || run.session_id.0 != session {
             return Err(StoreError::Validation(
                 "stored run identity is invalid".into(),
             ));
@@ -618,6 +628,20 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn public_state(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
+        self.read_public_state(session).await
+    }
+    async fn lookup_public_state_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicStateReceipt>, crate::PublicStateError> {
+        self.public_receipt(session, id).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -821,7 +845,7 @@ impl Store for PostgresStore {
         .map_err(db)?;
         rows.into_iter()
             .map(|row| {
-                let mut event: EventRecord = decode(row.get("data"))?;
+                let mut event: EventRecord = crate::public_state::decode_event(row.get("data"))?;
                 event.cursor = Some(EventCursor(
                     u64::try_from(row.get::<i64, _>("seq"))
                         .map_err(|_| StoreError::Validation("invalid event cursor".into()))?,
@@ -936,6 +960,13 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn mutate_public_state(
+        &self,
+        mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.change_public_state(mutation).await
+    }
+
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {
         admission_execution::begin(self).await
     }
@@ -1325,6 +1356,14 @@ mod tests {
             owner: "test".into(),
             lease: Duration::from_secs(30),
         }
+    }
+    #[tokio::test]
+    async fn postgres_public_state_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::public_state_contract::run_contract(|clock| store.with_clock(clock)).await;
     }
     #[tokio::test]
     async fn postgres_revision_contract() {

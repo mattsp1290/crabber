@@ -17,12 +17,17 @@ mod admission_execution_contract;
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
+mod public_state;
+pub mod public_state_contract;
 mod snapshot;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sql_snapshot;
 #[cfg(feature = "sqlite")]
 mod sqlite;
 mod storable;
+pub use public_state::{
+    PublicStateError, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
+};
 mod store;
 pub use snapshot::{
     SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
@@ -44,6 +49,11 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_public_state_contract() {
+        crate::public_state_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock))
+            .await;
+    }
     #[tokio::test]
     async fn memory_revision_contract() {
         crate::revision_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;

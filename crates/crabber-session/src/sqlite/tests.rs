@@ -317,3 +317,9 @@ async fn sqlite_revision_contract() {
     let (store, _path, _directory) = temp_store().await;
     crate::revision_contract::run_contract(|clock| store.with_clock(clock)).await;
 }
+
+#[tokio::test]
+async fn sqlite_public_state_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::public_state_contract::run_contract(|clock| store.with_clock(clock)).await;
+}

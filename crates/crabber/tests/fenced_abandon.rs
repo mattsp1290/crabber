@@ -1,9 +1,10 @@
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission, SnapshotContinuation, SnapshotLimit,
-    SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError,
-    ensure_storable, ensure_storable_text,
+    ClaimUnstartedAdmissionRequest, ClaimedAdmission, PublicStateError, PublicStateMutation,
+    PublicStateReceipt, PublicStateSnapshot, SnapshotContinuation, SnapshotLimit, SnapshotLimits,
+    SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError, ensure_storable,
+    ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
@@ -12,6 +13,12 @@ mod abandonment_contract;
 #[path = "../../crabber-session/src/memory.rs"]
 #[allow(dead_code)]
 mod memory;
+#[path = "../../crabber-session/src/public_state/records.rs"]
+#[allow(dead_code)]
+mod public_state;
+#[path = "../../crabber-session/src/public_state_contract.rs"]
+#[allow(dead_code)]
+mod public_state_contract;
 #[path = "../../crabber-session/src/snapshot.rs"]
 #[allow(dead_code)]
 mod snapshot;

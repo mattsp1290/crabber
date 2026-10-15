@@ -12,6 +12,12 @@ pub use continuation::{
     MAX_TOOL_CHECKPOINT_BYTES, ToolCheckpoint, ToolPhaseOutcome, ToolSuspension,
 };
 
+mod public_state;
+pub use public_state::{
+    MAX_ACTIVITY_BYTES, MAX_PUBLIC_CONTENTS_BYTES, MAX_PUBLIC_STATE_BYTES, PublicActivity,
+    PublicStateContents,
+};
+
 mod tool_output;
 pub use tool_output::ToolOutput;
 
@@ -309,6 +315,7 @@ pub struct EventCursor(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    PublicStateSnapshot,
     RunAdmitted,
     RunStarted,
     TurnStarted,
