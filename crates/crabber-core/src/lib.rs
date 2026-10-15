@@ -3,6 +3,12 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+pub mod input;
+pub use input::{
+    AdmissionKind, FrontendTool, InputContent, InputContext, InputEnvelope, InputMessage,
+    InputPart, InputState, MediaKind, MediaSource, MessageContent,
+};
+
 mod execution_identity;
 pub use execution_identity::{
     AttemptGeneration, ContinuationGeneration, PhaseGeneration, SessionRevision,

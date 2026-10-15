@@ -71,6 +71,13 @@ owned initial/resumed execution lifecycle, typed admission, authoritative contro
 and session management remain part of this implementation. Their completion is
 required before claiming the durable server-host contract delivered.
 
+The experimental core `InputEnvelope` validates bounded ordered input and defines
+the versioned canonical hash for typed admission. It preserves supplied message,
+parent and part IDs, explicit media representations, frontend input/output schema
+separation, context, null-versus-absent state, captured revision and continuation
+generation. Construction does not grant role, result or filesystem authority.
+The envelope is not yet wired into Agent admission or durable execution capsules.
+
 Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
 preserved custom registrations and defaults, exact retry and root drift,
