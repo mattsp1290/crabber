@@ -1,7 +1,7 @@
 # Live AG-UI embedding
 
 Add `crabber-agui` alongside `crabber`. The adapter pins `ag-ui-core` 0.2.0 at
-[revision 5cc34b11fb41c6f068c27410b5756dbebcb367dd](https://github.com/mattsp1290/ag-ui/tree/5cc34b11fb41c6f068c27410b5756dbebcb367dd).
+[revision 705303b26b6b900cdf9bdfa456fbd92a7003ca6b](https://github.com/mattsp1290/ag-ui/tree/705303b26b6b900cdf9bdfa456fbd92a7003ca6b).
 The example pins `ag-ui-client` at that same revision. Root Cargo's git/revision
 patch unifies the client's registry dependency with the adapter's core types;
 there are no external checkout paths. See [adapter API usage](../crates/crabber-agui/README.md).
@@ -72,6 +72,17 @@ lag, source-attempt failure and limits -> finite `crabber_*` error codes with a
 generic message. Valid opened boundaries close before terminal when possible.
 If a host cannot deliver a terminal because its socket is closed or exhausted,
 it must report transport failure locally rather than claim delivered success.
+
+## SDK pin verification
+
+At revision `705303b26b6b900cdf9bdfa456fbd92a7003ca6b`, a scratch checkout's
+`cargo test` under `sdks/community/rust` passed the core, encoder and client
+suites on 2026-10-15. Four client tests were marked ignored upstream. This is
+an observation of the pinned SDK suites, not closure of its consumer requests.
+`cargo xtask check` verifies that every AG-UI Git dependency in repository Cargo
+manifests selects this full revision, including independent consumer workspaces.
+The example's client check covers ASCII HTTP runs; its independent byte-first
+decoder checks Crabber framing separately.
 
 ## HTTP example
 

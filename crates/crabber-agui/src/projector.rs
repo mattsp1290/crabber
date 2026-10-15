@@ -387,7 +387,7 @@ impl Projector {
             output.push(Event::TextMessageStart(TextMessageStartEvent {
                 base: base.clone(),
                 message_id: id.to_string().into(),
-                role: Role::Assistant,
+                role: Some(Role::Assistant),
                 name: None,
             }));
         }
