@@ -77,6 +77,7 @@ async fn sqlite_claim_ack_loss() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_claim_ack_loss() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };
@@ -94,6 +95,7 @@ async fn sqlite_claim_worker_death_before_admission_begin() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_claim_worker_death_before_admission_begin() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };
@@ -111,6 +113,7 @@ async fn sqlite_admission_begin_failure() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_admission_begin_failure() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };
@@ -128,6 +131,7 @@ async fn sqlite_admission_begin_ack_loss() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_admission_begin_ack_loss() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };
@@ -145,6 +149,7 @@ async fn sqlite_worker_death_after_admission_begin() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_worker_death_after_admission_begin() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };
@@ -162,6 +167,7 @@ async fn sqlite_started_provider_refuses_reexecution() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_started_provider_refuses_reexecution() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else {
         return;
     };

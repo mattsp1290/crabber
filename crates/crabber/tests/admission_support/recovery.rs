@@ -293,6 +293,7 @@ fn test_url() -> Option<String> {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_unstarted_completion_and_projection_journey() {
+    let _guard = POSTGRES_JOURNEY_LOCK.lock().await;
     let Some(url) = test_url() else { return };
     crabber::session::PostgresStore::migrate(&url)
         .await
