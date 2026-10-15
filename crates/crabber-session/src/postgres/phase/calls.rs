@@ -52,8 +52,29 @@ pub(super) async fn settle(
     run: &Run,
     settlement: &crate::PhaseSettlement,
 ) -> Result<(), Error> {
-    let mut call = load(tx, run, &settlement.completion.command.target().call_id).await?;
+    let call = load(tx, run, &settlement.completion.command.target().call_id).await?;
     let records = settlement.materialize(run, &call)?;
+    apply_result(tx, run, call, records).await
+}
+
+pub(super) async fn resolve(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    resolution: &crate::PhaseResolution,
+) -> Result<(), Error> {
+    let call = load(tx, run, &resolution.resolution.command.target().call_id).await?;
+    if let Some(records) = resolution.materialize(run, &call)? {
+        apply_result(tx, run, call, records).await?;
+    }
+    Ok(())
+}
+
+async fn apply_result(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    mut call: ToolCallRecord,
+    records: crate::PhaseSettlementRecords,
+) -> Result<(), Error> {
     super::super::insert_message(tx, run, &records.message)
         .await
         .map_err(sql::unknown)?;

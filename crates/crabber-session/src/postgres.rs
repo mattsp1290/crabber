@@ -729,6 +729,13 @@ impl Store for PostgresStore {
         true
     }
 
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, crate::PhaseError> {
+        self.resolve_phase(&resolution).await
+    }
+
     async fn tool_phase(
         &self,
         run: &RunId,

@@ -13,13 +13,13 @@ pub use crabber::session::{
     AttemptTarget, BoundAdmitRequest, BoundKeyedAdmitRequest, ClaimUnstartedAdmissionRequest,
     ClaimedAdmission, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT, PROVIDER_BINDING_COMPONENT,
     PhaseAuthority, PhaseCommand, PhaseError, PhaseMutation, PhaseMutationOutcome, PhaseOperation,
-    PhaseQuiescence, PhaseQuiescenceResult, PhaseReceipt, PhaseResolverClaim, PhaseSettlement,
-    PhaseSettlementRecords, PhaseSnapshot, PhaseStart, PhaseState, PhaseTarget,
-    PhaseWriteAuthority, PublicStateError, PublicStateMutation, PublicStateReceipt,
-    PublicStateSnapshot, RetainedExecutionBinding, RunBoundary, SnapshotContinuation,
-    SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
-    StoreError, UncertainPhaseChoice, VersionedAttempt, VersionedPhase, admission_config_hash,
-    ensure_storable, ensure_storable_text,
+    PhaseQuiescence, PhaseQuiescenceResult, PhaseReceipt, PhaseResolution, PhaseResolutionOutcome,
+    PhaseResolverClaim, PhaseSettlement, PhaseSettlementRecords, PhaseSnapshot, PhaseStart,
+    PhaseState, PhaseTarget, PhaseWriteAuthority, PublicStateError, PublicStateMutation,
+    PublicStateReceipt, PublicStateSnapshot, RetainedExecutionBinding, RunBoundary,
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage, StoreError, UncertainPhaseChoice, VersionedAttempt,
+    VersionedPhase, admission_config_hash, ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;

@@ -9,6 +9,8 @@ mod guards;
 pub(crate) mod process;
 #[path = "phase_contract/recovery.rs"]
 mod recovery;
+#[path = "phase_contract/resolution.rs"]
+mod resolution;
 #[path = "phase_contract/settlement.rs"]
 mod settlement;
 #[path = "phase_contract/start.rs"]
@@ -20,7 +22,7 @@ use crate::{
     AttemptAuthority, AttemptCommand, AttemptMutation, AttemptMutationOutcome, PhaseAuthority,
     PhaseCommand, PhaseError as Error, PhaseMutation, PhaseMutationOutcome as Outcome,
     PhaseQuiescence, PhaseReceipt, PhaseResolverClaim, PhaseState, PhaseTarget,
-    PhaseWriteAuthority, Store, UncertainPhaseChoice,
+    PhaseWriteAuthority, Store,
 };
 use crabber_core::{
     ControlId, EventKind, EventRecord, ManualClock, PhaseGeneration, PhaseId, SessionRevision,
@@ -38,16 +40,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     lifecycle(&store).await;
     settlement::run(&store).await;
     start::run(&store).await;
-    for choice in [
-        UncertainPhaseChoice::Refuse,
-        UncertainPhaseChoice::Success { output: output() },
-        UncertainPhaseChoice::Failure { output: None },
-        UncertainPhaseChoice::Failure {
-            output: Some(output()),
-        },
-    ] {
-        resolution(&store, choice).await;
-    }
+    resolution::run(&store, &clock).await;
     guards::run(&store).await;
     recovery::run(&store, &clock).await;
 }
@@ -226,90 +219,6 @@ pub(crate) fn resolver() -> PhaseResolverClaim {
         authority_claim: "domain owner reconciled external effect".into(),
     }
 }
-async fn resolution(store: &impl Store, choice: UncertainPhaseChoice) {
-    let (admitted, execution, owner, claim) = fixture(store).await;
-    let (claimed, phase_owner) = applied(
-        execution
-            .mutate_phase(claim, Some(PhaseWriteAuthority::Attempt(owner)))
-            .await
-            .unwrap(),
-    );
-    let expired = mutation(
-        claimed.revision,
-        PhaseCommand::MarkExpiredUncertain {
-            target: claimed.phase.target.clone(),
-        },
-    );
-    assert_eq!(
-        execution.mutate_phase(expired, None).await.unwrap_err(),
-        Error::LiveOwner
-    );
-    let stopped = mutation(
-        claimed.revision,
-        PhaseCommand::MarkStoppedUncertain {
-            target: claimed.phase.target.clone(),
-            claim: resolver(),
-        },
-    );
-    let (uncertain, _) = applied(execution.mutate_phase(stopped, None).await.unwrap());
-    let old_begin = mutation(
-        uncertain.revision,
-        PhaseCommand::Begin {
-            target: uncertain.phase.target.clone(),
-        },
-    );
-    assert_eq!(
-        execution
-            .mutate_phase(
-                old_begin,
-                Some(PhaseWriteAuthority::Phase(phase_owner.unwrap()))
-            )
-            .await
-            .unwrap_err(),
-        Error::StaleOwner
-    );
-    let resolve = mutation(
-        uncertain.revision,
-        PhaseCommand::ResolveUncertain {
-            target: uncertain.phase.target.clone(),
-            claim: resolver(),
-            choice: choice.clone(),
-        },
-    );
-    let (resolved, no_grant) =
-        applied(execution.mutate_phase(resolve.clone(), None).await.unwrap());
-    assert!(no_grant.is_none());
-    assert_eq!(resolved.phase.quiescence, PhaseQuiescence::Pending);
-    assert_eq!(resolved.resolver, Some(resolver()));
-    let expected = match choice {
-        UncertainPhaseChoice::Success { .. } => PhaseState::Completed,
-        UncertainPhaseChoice::Failure { .. } => PhaseState::Failed,
-        UncertainPhaseChoice::Refuse => PhaseState::Uncertain,
-    };
-    assert_eq!(resolved.phase.state, expected);
-    assert!(
-        matches!(execution.mutate_phase(resolve.clone(), None).await.unwrap(), Outcome::Replayed(r) if r == resolved)
-    );
-    reject_changed_choice(execution.as_ref(), &resolve).await;
-    let mut changed = resolve;
-    changed.command = PhaseCommand::ResolveUncertain {
-        target: resolved.phase.target.clone(),
-        claim: PhaseResolverClaim {
-            authority_claim: "changed assertion".into(),
-            ..resolver()
-        },
-        choice,
-    };
-    assert_eq!(
-        execution.mutate_phase(changed, None).await.unwrap_err(),
-        Error::SemanticConflict
-    );
-    assert_eq!(
-        store.session_revision(&admitted.session.id).await.unwrap(),
-        resolved.revision
-    );
-}
-
 async fn competing_begin(
     execution: &dyn crate::ExecutionStore,
     begin: &PhaseMutation,
@@ -345,33 +254,5 @@ async fn competing_begin(
             .filter(|o| matches!(o, Outcome::Replayed(_)))
             .count(),
         1
-    );
-}
-
-async fn reject_changed_choice(execution: &dyn crate::ExecutionStore, original: &PhaseMutation) {
-    let PhaseCommand::ResolveUncertain {
-        target,
-        claim,
-        choice,
-    } = &original.command
-    else {
-        unreachable!()
-    };
-    let changed = match choice {
-        UncertainPhaseChoice::Success { .. } => UncertainPhaseChoice::Failure {
-            output: Some(output()),
-        },
-        UncertainPhaseChoice::Failure { .. } => UncertainPhaseChoice::Refuse,
-        UncertainPhaseChoice::Refuse => UncertainPhaseChoice::Success { output: output() },
-    };
-    let mut request = original.clone();
-    request.command = PhaseCommand::ResolveUncertain {
-        target: target.clone(),
-        claim: claim.clone(),
-        choice: changed,
-    };
-    assert_eq!(
-        execution.mutate_phase(request, None).await.unwrap_err(),
-        Error::SemanticConflict
     );
 }

@@ -1,7 +1,7 @@
 //! Test-only fixtures for private SQL payload/receipt integrity checks.
 use super::{applied, fixture, mutation, resolver};
 use crate::{
-    AdmitOutcome, PhaseCommand, PhaseError, PhaseMutation, PhaseMutationOutcome, PhaseReceipt,
+    AdmitOutcome, PhaseCommand, PhaseError, PhaseMutation, PhaseReceipt, PhaseResolutionOutcome,
     PhaseWriteAuthority, Store, UncertainPhaseChoice,
 };
 use crabber_core::{MessageContent, ToolOutput};
@@ -52,7 +52,16 @@ pub(crate) async fn completed(store: &impl Store) -> Fixture {
             },
         },
     );
-    let (receipt, _) = applied(execution.mutate_phase(request.clone(), None).await.unwrap());
+    let receipt = super::resolution::fresh(
+        store
+            .resolve_uncertain_phase(super::resolution::descriptor(
+                admitted.session.id.clone(),
+                admitted.run.id.clone(),
+                request.clone(),
+            ))
+            .await
+            .unwrap(),
+    );
     Fixture {
         admitted,
         request,
@@ -67,12 +76,9 @@ pub(crate) async fn isolated_receipt(store: &impl Store, fixture: &Fixture) {
         .unwrap()
         .unwrap();
     assert_eq!(receipt, fixture.receipt);
-    let execution = store
-        .execution(fixture.admitted.fence.clone())
-        .await
-        .unwrap();
     assert!(
-        matches!(execution.mutate_phase(fixture.request.clone(), None).await.unwrap(), PhaseMutationOutcome::Replayed(r) if r == receipt)
+        matches!(store.resolve_uncertain_phase(descriptor(fixture)).await.unwrap(),
+        PhaseResolutionOutcome::Replayed(r) if r == receipt)
     );
     assert_eq!(
         store
@@ -90,13 +96,9 @@ pub(crate) async fn reject_corrupt_receipt(store: &impl Store, fixture: &Fixture
             .unwrap_err(),
         PhaseError::UnknownStoreOutcome
     );
-    let execution = store
-        .execution(fixture.admitted.fence.clone())
-        .await
-        .unwrap();
     assert_eq!(
-        execution
-            .mutate_phase(fixture.request.clone(), None)
+        store
+            .resolve_uncertain_phase(descriptor(fixture))
             .await
             .unwrap_err(),
         PhaseError::UnknownStoreOutcome
@@ -108,4 +110,12 @@ pub(crate) async fn reject_corrupt_receipt(store: &impl Store, fixture: &Fixture
             .unwrap(),
         fixture.receipt.revision
     );
+}
+
+fn descriptor(fixture: &Fixture) -> crate::PhaseResolution {
+    super::resolution::descriptor(
+        fixture.admitted.session.id.clone(),
+        fixture.admitted.run.id.clone(),
+        fixture.request.clone(),
+    )
 }

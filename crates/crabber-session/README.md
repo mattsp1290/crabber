@@ -282,3 +282,33 @@ payload before decoding. Both writers and readers cap private encoded records at
 public `execution_binding_contract::run_contract` qualifies adapters; bundled
 fault/process tests cover rollback, lost acknowledgement and killed writers for
 both keyed and unkeyed admission, without dispatching a provider or tool.
+
+### Experimental uncertain phase resolution
+
+`Store::resolve_uncertain_phase(PhaseResolution)` targets an exact session, run,
+call, phase and generation at the captured session revision. The request embeds
+`PhaseCommand::ResolveUncertain`, including the host's asserted resolver identity
+and authority claim. The library records that assertion; the host verifies it.
+Success requires a supplied non-error `ToolOutput`. Failure records the supplied
+output as an error, or an empty error when omitted. Refusal leaves the phase and
+logical call uncertain. Supplied output must already satisfy host protection
+policy: resolution never executes tools or reruns result middleware.
+
+Memory, PostgreSQL and SQLite commit the native outcome, canonical logical tool
+result/message/source event when applicable, audit, revision and receipt in one
+transaction. They reconcile the original operation key before fresh eligibility
+checks. Identical retries return metadata, including after lease expiry or later
+cleanup; changed scope, choice, output or authority claim conflicts. Generated
+message/part/turn IDs and timing do not change retry semantics. Retain the entire
+original request when an acknowledgement is lost. The shared operation-key
+namespace distinguishes this compound control from historical metadata writes;
+fresh metadata-only `ResolveUncertain` requests are rejected.
+
+This host control requires no worker fence and returns no execution authority.
+It accepts only an already uncertain exact phase and preserves its current
+quiescence, parent attempt, run ownership and approval barrier. A known outcome
+with incomplete cleanup remains incomplete; resolution neither releases retained
+resources nor resumes or retires the run. `PhaseResolution::fingerprint`,
+`materialize` and `verify_replay` support custom transactional adapters, whose
+default Store method remains explicitly Unsupported. Receipt verification also
+requires its persisted audit event. No schema migration is introduced.

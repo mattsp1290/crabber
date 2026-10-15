@@ -31,6 +31,12 @@ impl Store for LostAdmissionReply {
     ) -> Result<crabber::session::VersionedPhase, crabber::session::PhaseError> {
         self.inner.tool_phase(run, id).await
     }
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crabber::session::PhaseResolution,
+    ) -> Result<crabber::session::PhaseResolutionOutcome, crabber::session::PhaseError> {
+        self.inner.resolve_uncertain_phase(resolution).await
+    }
     async fn lookup_phase_mutation(
         &self,
         session: &crabber::core::SessionId,

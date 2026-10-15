@@ -50,12 +50,14 @@ impl Mode {
         match self {
             Self::Claim => 2,
             Self::Begin | Self::Start => 3,
-            _ => 4,
+            Self::Settle => 4,
+            Self::Success | Self::Failure | Self::Refuse => 5,
         }
     }
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fixture {
+    pub initial_run: crabber_core::Run,
     pub fence: RunFence,
     pub session: SessionId,
     pub base_revision: SessionRevision,
@@ -124,6 +126,7 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
         },
     };
     Fixture {
+        initial_run: admitted.run,
         fence: admitted.fence,
         session: admitted.session.id,
         base_revision,
@@ -156,6 +159,19 @@ pub(crate) async fn write(
         execution
             .settle_tool_phase(settlement(fixture), Some(worker))
             .await
+    } else if matches!(fixture.mode, Mode::Success | Mode::Failure | Mode::Refuse) {
+        store
+            .resolve_uncertain_phase(resolution(fixture))
+            .await
+            .map(|outcome| match outcome {
+                crate::PhaseResolutionOutcome::Applied(receipt) => PhaseMutationOutcome::Applied {
+                    receipt,
+                    authority: None,
+                },
+                crate::PhaseResolutionOutcome::Replayed(receipt) => {
+                    PhaseMutationOutcome::Replayed(receipt)
+                }
+            })
     } else {
         execution
             .mutate_phase(fixture.request.clone(), authority)
@@ -232,10 +248,24 @@ async fn prepare(
             .unwrap();
         return Some(PhaseWriteAuthority::Phase(worker.unwrap()));
     }
+    let (started, _) = applied(
+        execution
+            .mutate_phase(
+                mutation(
+                    claimed.revision,
+                    PhaseCommand::Begin {
+                        target: target.clone(),
+                    },
+                ),
+                Some(PhaseWriteAuthority::Phase(worker.unwrap())),
+            )
+            .await
+            .unwrap(),
+    );
     execution
         .mutate_phase(
             mutation(
-                claimed.revision,
+                started.revision,
                 PhaseCommand::MarkStoppedUncertain {
                     target: target.clone(),
                     claim: resolver(),
@@ -248,6 +278,18 @@ async fn prepare(
     None
 }
 pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
+    assert_eq!(
+        store.get_run(&fixture.fence.run_id).await.unwrap(),
+        Some(fixture.initial_run.clone())
+    );
+    let attempt = store
+        .latest_execution_attempt(&fixture.fence.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(attempt.state, crate::AttemptState::Started);
+    assert_eq!(attempt.cleanup, crate::AttemptCleanup::Pending);
     assert_eq!(
         store
             .lookup_phase_mutation(&fixture.session, &fixture.request.id)
@@ -269,7 +311,10 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         .unwrap();
     assert_eq!(
         call.status,
-        if matches!(fixture.mode, Mode::Settle) {
+        if matches!(
+            fixture.mode,
+            Mode::Settle | Mode::Success | Mode::Failure | Mode::Refuse
+        ) {
             ToolCallStatus::Running
         } else {
             ToolCallStatus::Pending
@@ -336,20 +381,24 @@ pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture)
             assert_eq!(uncertain.phase.quiescence, crate::PhaseQuiescence::Pending);
         }
     } else {
-        // Only the original, explicit host resolution is retried here.
-        let (receipt, authority) = applied(
-            execution
-                .mutate_phase(fixture.request.clone(), None)
+        // Only the original explicit Store control is retried; no worker
+        // authority is recovered or needed to select this host outcome.
+        let receipt = super::resolution::fresh(
+            store
+                .resolve_uncertain_phase(resolution(fixture))
                 .await
                 .unwrap(),
         );
-        assert!(authority.is_none());
         assert_eq!(
             receipt.revision,
-            fixture.request.expected_revision.next().unwrap()
+            super::resolution::result_revision(&resolution(fixture))
         );
-        assert!(
-            matches!(execution.mutate_phase(fixture.request.clone(), None).await.unwrap(), PhaseMutationOutcome::Replayed(r) if r == receipt)
+        assert_eq!(
+            store
+                .resolve_uncertain_phase(resolution(fixture))
+                .await
+                .unwrap(),
+            crate::PhaseResolutionOutcome::Replayed(receipt)
         );
     }
 }
@@ -377,4 +426,12 @@ fn start(fixture: &Fixture) -> crate::PhaseStart {
         turn_id: None,
         created_at: time::OffsetDateTime::UNIX_EPOCH,
     }
+}
+
+fn resolution(fixture: &Fixture) -> crate::PhaseResolution {
+    super::resolution::descriptor(
+        fixture.session.clone(),
+        fixture.fence.run_id.clone(),
+        fixture.request.clone(),
+    )
 }

@@ -1,4 +1,6 @@
 //! Public ownership probes; logical outcome and native resource cleanup differ.
+#[path = "tool_resources/resolution.rs"]
+mod resolution;
 use async_trait::async_trait;
 use crabber::{
     Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
@@ -21,6 +23,7 @@ struct Fixture {
     entered: Notify,
     release: Notify,
     resources: Mutex<Option<ToolResources>>,
+    invocations: std::sync::atomic::AtomicUsize,
 }
 struct ResourceTool(Arc<Fixture>);
 #[async_trait]
@@ -33,6 +36,9 @@ impl JsonToolExecutor for ResourceTool {
         context: ToolContext,
         input: Value,
     ) -> Result<Value, ExtensionError> {
+        self.0
+            .invocations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let fixture = self.0.clone();
         let mode = input["mode"].as_str().unwrap().to_owned();
         let closing = context.resources().closing().unwrap();

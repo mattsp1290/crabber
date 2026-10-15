@@ -412,6 +412,12 @@ impl Store for MemoryStore {
     ) -> Result<crate::VersionedPhase, crate::PhaseError> {
         self.read_phase(run, id)
     }
+    async fn resolve_uncertain_phase(
+        &self,
+        resolution: crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, crate::PhaseError> {
+        self.resolve_phase(&resolution)
+    }
     async fn lookup_phase_mutation(
         &self,
         session: &SessionId,

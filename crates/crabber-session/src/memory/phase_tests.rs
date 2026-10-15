@@ -42,27 +42,48 @@ async fn resolution_retains_typed_output_without_acknowledging_cleanup() {
                 output: Some(value.clone()),
             }
         };
-        let (resolved, _) = applied(
-            execution
-                .mutate_phase(
-                    mutation(
-                        uncertain.revision,
-                        PhaseCommand::ResolveUncertain {
-                            target: uncertain.phase.target,
-                            claim: resolver(),
-                            choice,
-                        },
-                    ),
-                    None,
-                )
-                .await
-                .unwrap(),
-        );
+        let crate::PhaseResolutionOutcome::Applied(resolved) = store
+            .resolve_uncertain_phase(crate::PhaseResolution {
+                session_id: admitted.session.id.clone(),
+                run_id: admitted.run.id.clone(),
+                resolution: mutation(
+                    uncertain.revision,
+                    PhaseCommand::ResolveUncertain {
+                        target: uncertain.phase.target,
+                        claim: resolver(),
+                        choice,
+                    },
+                ),
+                message_id: crabber_core::MessageId::new(),
+                part_id: crabber_core::PartId::new(),
+                turn_id: None,
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                duration_ms: 0,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("fresh resolution");
+        };
         let state = store.state.lock().unwrap();
         let record = state.phases.get(&resolved.phase.target.id).unwrap();
         assert_eq!(record.output.as_ref().unwrap().content(), value.content());
         assert_eq!(record.output.as_ref().unwrap().is_error(), !success);
         assert_eq!(record.snapshot.quiescence, PhaseQuiescence::Pending);
+        let call = state.calls.get(&resolved.phase.target.call_id).unwrap();
+        assert_eq!(
+            call.result.as_ref().unwrap().content,
+            value.to_content_blocks()
+        );
+        assert_eq!(
+            call.status,
+            if success {
+                crabber_core::ToolCallStatus::Completed
+            } else {
+                crabber_core::ToolCallStatus::Failed
+            }
+        );
+
         let receipt = serde_json::to_string(&resolved).unwrap();
         assert!(!receipt.contains("private result"));
         let event = state
@@ -240,4 +261,105 @@ async fn memory_phase_commit_faults() {
         },
     )
     .await;
+}
+
+#[tokio::test]
+async fn resolution_rejects_changed_authoritative_call_binding_without_writes() {
+    let store = MemoryStore::with_clock(std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    )));
+    let (admitted, execution, owner, claim) = fixture(&store).await;
+    let (claimed, _) = applied(
+        execution
+            .mutate_phase(claim, Some(PhaseWriteAuthority::Attempt(owner)))
+            .await
+            .unwrap(),
+    );
+    let (uncertain, _) = applied(
+        execution
+            .mutate_phase(
+                mutation(
+                    claimed.revision,
+                    PhaseCommand::MarkStoppedUncertain {
+                        target: claimed.phase.target,
+                        claim: resolver(),
+                    },
+                ),
+                None,
+            )
+            .await
+            .unwrap(),
+    );
+    let request = crate::PhaseResolution {
+        session_id: admitted.session.id.clone(),
+        run_id: admitted.run.id.clone(),
+        resolution: mutation(
+            uncertain.revision,
+            PhaseCommand::ResolveUncertain {
+                target: uncertain.phase.target.clone(),
+                claim: resolver(),
+                choice: UncertainPhaseChoice::Success { output: output() },
+            },
+        ),
+        message_id: crabber_core::MessageId::new(),
+        part_id: crabber_core::PartId::new(),
+        turn_id: None,
+        created_at: time::OffsetDateTime::UNIX_EPOCH,
+        duration_ms: 0,
+    };
+    // Corrupt the authoritative record behind its existing immutable phase
+    // binding. The control must not accept freshly recaptured arguments.
+    let before = {
+        let mut state = store.state.lock().unwrap();
+        state
+            .calls
+            .get_mut(&uncertain.phase.target.call_id)
+            .unwrap()
+            .arguments = serde_json::json!({"changed": "after phase ownership was recorded"});
+        state.clone()
+    };
+    assert_eq!(
+        store
+            .resolve_uncertain_phase(request.clone())
+            .await
+            .unwrap_err(),
+        Error::SemanticConflict
+    );
+    assert!(
+        store
+            .lookup_phase_mutation(&admitted.session.id, &request.resolution.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.runs, before.runs);
+    assert_eq!(state.calls, before.calls);
+    assert_eq!(state.messages, before.messages);
+    assert_eq!(state.events, before.events);
+    assert_eq!(state.public_revisions, before.public_revisions);
+    assert_eq!(state.snapshot_revisions, before.snapshot_revisions);
+    assert_eq!(
+        state.operation_receipts.len(),
+        before.operation_receipts.len()
+    );
+    assert_eq!(state.approval_barriers, before.approval_barriers);
+    let phase = state.phases.get(&uncertain.phase.target.id).unwrap();
+    let old_phase = before.phases.get(&uncertain.phase.target.id).unwrap();
+    assert_eq!(phase.snapshot, old_phase.snapshot);
+    assert_eq!(phase.token, old_phase.token);
+    assert_eq!(phase.output, old_phase.output);
+    let attempt = state
+        .attempts
+        .get(&uncertain.phase.target.attempt.id)
+        .unwrap();
+    let old_attempt = before
+        .attempts
+        .get(&uncertain.phase.target.attempt.id)
+        .unwrap();
+    assert_eq!(attempt.snapshot, old_attempt.snapshot);
+    assert_eq!(attempt.owner, old_attempt.owner);
+    assert_eq!(attempt.token, old_attempt.token);
+    assert_eq!(attempt.run_token, old_attempt.run_token);
+    assert_eq!(attempt.lease_until, old_attempt.lease_until);
 }

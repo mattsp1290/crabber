@@ -90,31 +90,69 @@ impl SqliteExecution {
         authority: Option<PhaseWriteAuthority>,
         effect: phase::PhaseEffect<'_>,
     ) -> Result<Outcome, Error> {
+        self.store
+            .change_phase_transaction(
+                &self.fence.run_id,
+                request,
+                authority,
+                effect,
+                Some(&self.fence),
+            )
+            .await
+    }
+}
+impl SqliteStore {
+    pub(super) async fn resolve_phase(
+        &self,
+        resolution: &crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, Error> {
+        resolution.validate()?;
+        let outcome = self
+            .change_phase_transaction(
+                &resolution.run_id,
+                resolution.resolution.clone(),
+                None,
+                phase::PhaseEffect::Resolve(resolution),
+                None,
+            )
+            .await?;
+        match outcome {
+            Outcome::Applied {
+                receipt,
+                authority: None,
+            } => Ok(crate::PhaseResolutionOutcome::Applied(receipt)),
+            Outcome::Replayed(receipt) => Ok(crate::PhaseResolutionOutcome::Replayed(receipt)),
+            Outcome::Applied { .. } => Err(Error::UnknownStoreOutcome),
+        }
+    }
+    async fn change_phase_transaction(
+        &self,
+        run_id: &RunId,
+        request: PhaseMutation,
+        authority: Option<PhaseWriteAuthority>,
+        effect: phase::PhaseEffect<'_>,
+        fence: Option<&crabber_core::RunFence>,
+    ) -> Result<Outcome, Error> {
         phase::validate_request(&request)?;
-        let mut tx = self.store.begin_write().await.map_err(sql::unknown)?;
+        let mut tx = self.begin_write().await.map_err(sql::unknown)?;
         let result = async {
             let row = sqlx::query("SELECT session_id,data FROM runs WHERE id=$1")
-                .bind(&self.fence.run_id.0)
+                .bind(&run_id.0)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)
                 .map_err(sql::unknown)?
                 .ok_or(Error::NotFound)?;
             let run: Run = super::records::decode_row(&row, "data").map_err(sql::unknown)?;
-            if run.id != self.fence.run_id || run.session_id.0 != row.get::<String, _>("session_id")
-            {
+            if run.id != *run_id || run.session_id.0 != row.get::<String, _>("session_id") {
                 return Err(Error::UnknownStoreOutcome);
             }
-            self.apply_phase(&mut tx, &run, &request, authority.as_ref(), effect)
+            self.apply_phase(&mut tx, &run, &request, authority.as_ref(), effect, fence)
                 .await
         }
         .await;
         #[cfg(test)]
-        let result = if self
-            .store
-            .phase_fault
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
+        let result = if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 1
             && matches!(&result, Ok(Outcome::Applied { .. }))
         {
             Err(Error::UnknownStoreOutcome)
@@ -123,11 +161,7 @@ impl SqliteExecution {
         };
         let result = finish(tx, result).await;
         #[cfg(test)]
-        if self
-            .store
-            .phase_fault
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 2
+        if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 2
             && matches!(&result, Ok(Outcome::Applied { .. }))
         {
             return Err(Error::UnknownStoreOutcome);
@@ -141,6 +175,7 @@ impl SqliteExecution {
         request: &PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
         effect: phase::PhaseEffect<'_>,
+        fence: Option<&crabber_core::RunFence>,
     ) -> Result<Outcome, Error> {
         let digest = effect.fingerprint(request, &run.session_id, &run.id)?;
         if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
@@ -153,8 +188,14 @@ impl SqliteExecution {
             }
             return Ok(Outcome::Replayed(receipt));
         }
-        let now = self.store.clock.now();
-        crate::attempt::verify_run(run, &self.fence, now).map_err(|_| Error::StaleOwner)?;
+        let now = self.clock.now();
+        match (effect.resolution(), fence) {
+            (Some(_), None) if authority.is_none() => (),
+            (None, Some(fence)) => {
+                crate::attempt::verify_run(run, fence, now).map_err(|_| Error::StaleOwner)?;
+            }
+            _ => return Err(Error::InvalidRequest),
+        }
         if admission_execution::load_record(tx, &run.id)
             .await
             .map_err(sql::unknown)?
@@ -167,13 +208,17 @@ impl SqliteExecution {
             return Err(Error::RevisionConflict);
         }
         let insert = matches!(request.command, PhaseCommand::Claim { .. });
-        let (mut record, authority) = prepare(tx, run, request, authority, now).await?;
+        let (mut record, authority) =
+            prepare(tx, run, request, authority, now, effect.resolution()).await?;
         if matches!(request.command, PhaseCommand::Begin { .. }) {
             calls::begin(tx, run, &record.snapshot.target.call_id, effect.start()).await?;
         }
         if let Some(settlement) = effect.settlement() {
             calls::settle(tx, run, settlement).await?;
             record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
+        }
+        if let Some(resolution) = effect.resolution() {
+            calls::resolve(tx, run, resolution).await?;
         }
         let revision = records::revision(tx, &run.session_id)
             .await?
@@ -185,12 +230,14 @@ impl SqliteExecution {
         Ok(Outcome::Applied { receipt, authority })
     }
 }
+
 async fn prepare(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     request: &PhaseMutation,
     authority: Option<&PhaseWriteAuthority>,
     now: time::OffsetDateTime,
+    resolution: Option<&crate::PhaseResolution>,
 ) -> Result<(phase::PhaseRecord, Option<PhaseAuthority>), Error> {
     let target = request.command.target();
     let attempt = super::attempt::load_owned(tx, &run.id, &target.attempt.id)
@@ -225,7 +272,11 @@ async fn prepare(
             Some(PhaseWriteAuthority::Phase(authority)) => Some(authority),
             _ => None,
         };
-        record.change(run, &attempt, &call, request, worker, now)?;
+        if let Some(resolution) = resolution {
+            record.resolve_uncertain(run, &attempt, &call, resolution)?;
+        } else {
+            record.change(run, &attempt, &call, request, worker, now)?;
+        }
         Ok((record, None))
     }
 }
@@ -254,3 +305,6 @@ mod tests;
 
 #[cfg(test)]
 mod process_tests;
+
+#[cfg(test)]
+mod resolution_tests;

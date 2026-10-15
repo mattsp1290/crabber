@@ -106,22 +106,7 @@ impl PhaseRecord {
         authority: Option<&PhaseAuthority>,
         now: OffsetDateTime,
     ) -> Result<(), PhaseError> {
-        self.validate()?;
-        crate::phase::validate_request(request)?;
-        if self.snapshot.session_id != run.session_id
-            || self.snapshot.run_id != run.id
-            || self.snapshot.target != *request.command.target()
-            || attempt.snapshot.target != self.snapshot.target.attempt
-            || attempt.snapshot.run_id != run.id
-            || attempt.snapshot.session_id != run.session_id
-            || call.run_id != run.id
-            || call.id != self.snapshot.target.call_id
-        {
-            return Err(PhaseError::NotFound);
-        }
-        if call_binding(call)? != self.snapshot.call_binding {
-            return Err(PhaseError::SemanticConflict);
-        }
+        self.verify_scope(run, attempt, call, request)?;
         match &request.command {
             PhaseCommand::MarkExpiredUncertain { .. } => {
                 if attempt.lease_until > now && attempt.run_token == run.claim_token {
@@ -130,7 +115,7 @@ impl PhaseRecord {
                 self.mark_uncertain()?;
             }
             PhaseCommand::MarkStoppedUncertain { .. } => self.mark_uncertain()?,
-            PhaseCommand::ResolveUncertain { choice, .. } => self.resolve(choice)?,
+            PhaseCommand::ResolveUncertain { .. } => return Err(PhaseError::InvalidRequest),
             PhaseCommand::RecordQuiescence {
                 result, host_claim, ..
             } => {
@@ -154,6 +139,61 @@ impl PhaseRecord {
                 self.worker_change(run, &request.command)?;
             }
             PhaseCommand::Claim { .. } => return Err(PhaseError::InvalidTransition),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resolve_uncertain(
+        &mut self,
+        run: &Run,
+        attempt: &AttemptRecord,
+        call: &ToolCallRecord,
+        request: &crate::PhaseResolution,
+    ) -> Result<(), PhaseError> {
+        request.validate()?;
+        if request.session_id != run.session_id || request.run_id != run.id {
+            return Err(PhaseError::NotFound);
+        }
+        self.verify_scope(run, attempt, call, &request.resolution)?;
+        if !matches!(
+            call.status,
+            ToolCallStatus::Pending | ToolCallStatus::Running
+        ) || call.result.is_some()
+        {
+            return Err(PhaseError::InvalidTransition);
+        }
+        let PhaseCommand::ResolveUncertain { choice, .. } = &request.resolution.command else {
+            return Err(PhaseError::InvalidRequest);
+        };
+        // Domain knowledge is independent of resource cleanup and worker leases.
+        self.resolve(choice)
+    }
+
+    fn verify_scope(
+        &self,
+        run: &Run,
+        attempt: &AttemptRecord,
+        call: &ToolCallRecord,
+        request: &PhaseMutation,
+    ) -> Result<(), PhaseError> {
+        self.validate()?;
+        attempt
+            .validate()
+            .map_err(|_| PhaseError::UnknownStoreOutcome)?;
+        crate::phase::validate_request(request)?;
+        if self.snapshot.session_id != run.session_id
+            || self.snapshot.run_id != run.id
+            || self.snapshot.target != *request.command.target()
+            || attempt.snapshot.target != self.snapshot.target.attempt
+            || attempt.snapshot.run_id != run.id
+            || attempt.snapshot.session_id != run.session_id
+            || call.run_id != run.id
+            || call.id != self.snapshot.target.call_id
+        {
+            return Err(PhaseError::NotFound);
+        }
+        if call_binding(call)? != self.snapshot.call_binding {
+            return Err(PhaseError::SemanticConflict);
         }
         Ok(())
     }

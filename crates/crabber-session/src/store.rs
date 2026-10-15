@@ -307,6 +307,15 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::VersionedPhase, crate::PhaseError> {
         Err(crate::PhaseError::Unsupported)
     }
+    /// Reconcile an already uncertain external outcome using the host's asserted
+    /// authority and protected output. Preserves cleanup and ownership, including
+    /// after lease expiry; grants no worker authority. Identical retries replay.
+    async fn resolve_uncertain_phase(
+        &self,
+        _resolution: crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
     /// Reconcile the original phase operation without granting dispatch authority.
     async fn lookup_phase_mutation(
         &self,

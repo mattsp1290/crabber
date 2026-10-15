@@ -207,6 +207,15 @@ or phase evidence, or a session approval barrier, return
 [Memory/PostgreSQL abandonment and administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.
 
+For an already uncertain native tool phase, `Agent::resolve_uncertain_phase`
+records the host's asserted resolver identity, authority claim and selected
+external outcome. Supply final protected output for success, select failure, or
+refuse to leave the phase uncertain. Keep the original request and operation key
+for retries. Resolution atomically records its receipt, audit and any logical
+tool result; it preserves resource cleanup and grants no execution handle.
+These controls remain available after extensions close. Parent attempt cleanup,
+run retirement and subsequent execution require separate lifecycle controls.
+
 The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
 cover legacy settlement, unknown-response retry, authoritative worker stop,
 retained session/inbox behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;

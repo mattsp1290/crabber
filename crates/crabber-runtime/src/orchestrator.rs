@@ -4,6 +4,8 @@ mod admission;
 mod approval;
 #[path = "orchestrator/continuation.rs"]
 mod continuation;
+#[path = "orchestrator/phase_control.rs"]
+mod phase_control;
 pub use continuation::{Continuation, ContinueApproval};
 #[path = "orchestrator/attempt.rs"]
 mod attempt;

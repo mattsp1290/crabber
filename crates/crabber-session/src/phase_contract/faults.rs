@@ -1,7 +1,7 @@
 use super::{applied, fixture, mutation, output, resolver};
 use crate::{
     PhaseCommand, PhaseError, PhaseMutationOutcome, PhaseQuiescenceResult, PhaseWriteAuthority,
-    Store, UncertainPhaseChoice,
+    Store,
 };
 
 #[derive(Clone, Copy)]
@@ -17,9 +17,6 @@ enum Action {
     Begin,
     Complete,
     Uncertain,
-    Success,
-    Failure,
-    Refuse,
     Quiescence,
 }
 
@@ -33,9 +30,6 @@ pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoin
         Action::Begin,
         Action::Complete,
         Action::Uncertain,
-        Action::Success,
-        Action::Failure,
-        Action::Refuse,
         Action::Quiescence,
     ] {
         for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommit] {
@@ -44,6 +38,7 @@ pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoin
     }
     super::settlement::faults(store, &set_fault).await;
     super::start::faults(store, &set_fault).await;
+    super::resolution::fault_contract(store, &set_fault).await;
 }
 async fn run_case(
     store: &impl Store,
@@ -163,7 +158,7 @@ async fn prepare(
                 target: target.clone(),
                 claim: resolver(),
             },
-            Action::Success | Action::Failure | Action::Refuse | Action::Quiescence => {
+            Action::Quiescence => {
                 let (uncertain, _) = applied(
                     execution
                         .mutate_phase(
@@ -180,23 +175,10 @@ async fn prepare(
                         .unwrap(),
                 );
                 revision = uncertain.revision;
-                match action {
-                    Action::Quiescence => PhaseCommand::RecordQuiescence {
-                        target: target.clone(),
-                        result: PhaseQuiescenceResult::Complete,
-                        host_claim: Some(resolver()),
-                    },
-                    _ => PhaseCommand::ResolveUncertain {
-                        target: target.clone(),
-                        claim: resolver(),
-                        choice: match action {
-                            Action::Success => UncertainPhaseChoice::Success { output: output() },
-                            Action::Failure => UncertainPhaseChoice::Failure {
-                                output: Some(output()),
-                            },
-                            _ => UncertainPhaseChoice::Refuse,
-                        },
-                    },
+                PhaseCommand::RecordQuiescence {
+                    target: target.clone(),
+                    result: PhaseQuiescenceResult::Complete,
+                    host_claim: Some(resolver()),
                 }
             }
             Action::Claim => unreachable!(),

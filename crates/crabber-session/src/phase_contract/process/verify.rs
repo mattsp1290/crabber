@@ -1,11 +1,15 @@
 //! Fresh-process read-only reconciliation for native phase operations.
-use super::{Fixture, Mode, settlement, start};
+use super::{Fixture, Mode, resolution, settlement, start};
 use crate::{PhaseError, PhaseMutationOutcome, PhaseState, Store};
 use crabber_core::{EventKind, ToolCallRecord, ToolCallStatus};
 
 pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
     if matches!(fixture.mode, Mode::Start) {
         verify_start_loss(store, fixture).await;
+        return;
+    }
+    if matches!(fixture.mode, Mode::Success | Mode::Failure | Mode::Refuse) {
+        verify_resolution_loss(store, fixture).await;
         return;
     }
     if matches!(fixture.mode, Mode::Settle) {
@@ -187,6 +191,77 @@ async fn verify_start_loss(store: &impl Store, fixture: Fixture) {
     assert_eq!(
         store
             .list_events(&fixture.session, None, 1000)
+            .await
+            .unwrap(),
+        events
+    );
+    assert_eq!(
+        store.session_revision(&fixture.session).await.unwrap(),
+        receipt.revision
+    );
+}
+
+async fn verify_resolution_loss(store: &impl Store, fixture: Fixture) {
+    let request = resolution(&fixture);
+    let receipt = store
+        .lookup_phase_mutation(&fixture.session, &fixture.request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.semantic_digest, request.fingerprint().unwrap());
+    assert_eq!(receipt.phase.quiescence, crate::PhaseQuiescence::Pending);
+    assert_eq!(
+        store.get_run(&fixture.fence.run_id).await.unwrap(),
+        Some(fixture.initial_run)
+    );
+    let attempt = store
+        .latest_execution_attempt(&fixture.fence.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(attempt.state, crate::AttemptState::Started);
+    assert_eq!(attempt.cleanup, crate::AttemptCleanup::Pending);
+    let calls = crate::phase_contract::settlement::read_calls(store, &fixture.session)
+        .await
+        .unwrap();
+    let call = calls
+        .iter()
+        .find(|call| call.id == receipt.phase.target.call_id)
+        .unwrap();
+    request.verify_replay(&receipt, call).unwrap();
+    let messages = store.list_messages(&fixture.session, None).await.unwrap();
+    let events = store
+        .list_events(&fixture.session, None, 100)
+        .await
+        .unwrap();
+    let refused = matches!(fixture.mode, Mode::Refuse);
+    assert_eq!(messages.len(), if refused { 1 } else { 2 });
+    assert_eq!(
+        events.len(),
+        fixture.mode.preoperations() + if refused { 2 } else { 3 }
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolCallSettled)
+            .count(),
+        usize::from(!refused)
+    );
+    if !refused {
+        assert_eq!(messages[1].id, request.message_id);
+    }
+    assert_eq!(
+        store.resolve_uncertain_phase(request).await.unwrap(),
+        crate::PhaseResolutionOutcome::Replayed(receipt.clone())
+    );
+    assert_eq!(
+        store.list_messages(&fixture.session, None).await.unwrap(),
+        messages
+    );
+    assert_eq!(
+        store
+            .list_events(&fixture.session, None, 100)
             .await
             .unwrap(),
         events

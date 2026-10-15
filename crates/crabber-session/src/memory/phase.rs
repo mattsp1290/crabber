@@ -5,6 +5,15 @@ use crate::{
 };
 use crabber_core::{ControlId, EventCursor, PhaseId, Run, RunId, SessionId, SessionRevision};
 
+#[derive(Clone, Copy)]
+enum PhaseCaller<'a> {
+    Worker {
+        fence: &'a crabber_core::RunFence,
+        authority: Option<&'a PhaseWriteAuthority>,
+    },
+    HostResolution,
+}
+
 fn revision(state: &State, session: &SessionId) -> SessionRevision {
     state
         .public_revisions
@@ -23,6 +32,27 @@ fn verify(state: &State, receipt: &PhaseReceipt) -> Result<(), Error> {
     )
 }
 impl MemoryStore {
+    pub(super) fn resolve_phase(
+        &self,
+        resolution: &crate::PhaseResolution,
+    ) -> Result<crate::PhaseResolutionOutcome, Error> {
+        resolution.validate()?;
+        match self.apply_phase(
+            &resolution.run_id,
+            resolution.resolution.clone(),
+            PhaseCaller::HostResolution,
+            phase::PhaseEffect::Resolve(resolution),
+        )? {
+            PhaseMutationOutcome::Applied {
+                receipt,
+                authority: None,
+            } => Ok(crate::PhaseResolutionOutcome::Applied(receipt)),
+            PhaseMutationOutcome::Replayed(receipt) => {
+                Ok(crate::PhaseResolutionOutcome::Replayed(receipt))
+            }
+            PhaseMutationOutcome::Applied { .. } => Err(Error::UnknownStoreOutcome),
+        }
+    }
     pub(super) fn read_phase(&self, run_id: &RunId, id: &PhaseId) -> Result<VersionedPhase, Error> {
         let state = self.state.lock().unwrap();
         let run = state.runs.get(run_id).ok_or(Error::NotFound)?;
@@ -100,20 +130,45 @@ impl MemoryExecution {
         authority: Option<&PhaseWriteAuthority>,
         effect: phase::PhaseEffect<'_>,
     ) -> Result<PhaseMutationOutcome, Error> {
+        self.store.apply_phase(
+            &self.fence.run_id,
+            request,
+            PhaseCaller::Worker {
+                fence: &self.fence,
+                authority,
+            },
+            effect,
+        )
+    }
+}
+impl MemoryStore {
+    fn apply_phase(
+        &self,
+        run_id: &RunId,
+        request: PhaseMutation,
+        caller: PhaseCaller<'_>,
+        effect: phase::PhaseEffect<'_>,
+    ) -> Result<PhaseMutationOutcome, Error> {
         phase::validate_request(&request)?;
-        let result = self.store.transact(|state| {
-            let run = state
-                .runs
-                .get(&self.fence.run_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
+        let result = self.transact(|state| {
+            let run = state.runs.get(run_id).cloned().ok_or(Error::NotFound)?;
             let digest = effect.fingerprint(&request, &run.session_id, &run.id)?;
-            let key = (run.session_id.clone(), request.id.clone());
             if let Some(replayed) = replay(state, &run, &request, &digest, effect)? {
                 return Ok(replayed);
             }
-            let now = self.store.clock.now();
-            crate::attempt::verify_run(&run, &self.fence, now).map_err(|_| Error::StaleOwner)?;
+            let now = self.clock.now();
+            let authority = match caller {
+                PhaseCaller::Worker { fence, authority } => {
+                    crate::attempt::verify_run(&run, fence, now).map_err(|_| Error::StaleOwner)?;
+                    authority
+                }
+                PhaseCaller::HostResolution => {
+                    if effect.resolution().is_none() {
+                        return Err(Error::InvalidRequest);
+                    }
+                    None
+                }
+            };
             if state
                 .admission_executions
                 .get(&run.id)
@@ -125,7 +180,8 @@ impl MemoryExecution {
             if current != request.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let (mut record, authority) = prepare_record(state, &run, &request, authority, now)?;
+            let (mut record, authority) =
+                prepare_record(state, &run, &request, authority, now, effect.resolution())?;
             if let Some(start) = effect.start() {
                 let call = state
                     .calls
@@ -137,60 +193,24 @@ impl MemoryExecution {
             if let Some(settlement) = effect.settlement() {
                 settle_call(state, &run, &mut record, settlement)?;
             }
-            let revision = revision(state, &run.session_id)
-                .next()
-                .map_err(|_| Error::RevisionExhausted)?;
-            let mut event = phase::event(&run, &request, &record.snapshot, now, digest.clone())?;
-            let cursor = EventCursor(state.events.len() as u64 + 1);
-            event.cursor = Some(cursor);
-            let receipt = PhaseReceipt {
-                operation: phase::operation(&request.command),
-                resolver: phase::resolver(&request.command),
-                operation_id: request.id,
-                semantic_digest: digest,
-                revision,
-                event_cursor: cursor,
-                phase: record.snapshot.clone(),
-            };
-            if matches!(request.command, PhaseCommand::Begin { .. }) {
-                state
+            if let Some(resolution) = effect.resolution() {
+                let call = state
                     .calls
-                    .get_mut(&record.snapshot.target.call_id)
-                    .ok_or(Error::NotFound)?
-                    .status = crabber_core::ToolCallStatus::Running;
-                let snapshot_revision = state
-                    .snapshot_revisions
-                    .entry(run.session_id.clone())
-                    .or_default();
-                *snapshot_revision = snapshot_revision
-                    .checked_add(1)
-                    .ok_or(Error::RevisionExhausted)?;
+                    .get(&record.snapshot.target.call_id)
+                    .ok_or(Error::NotFound)?;
+                if let Some(records) = resolution.materialize(&run, call)? {
+                    publish_result(state, &run, &record.snapshot.target.call_id, records)?;
+                }
             }
-            state
-                .phases
-                .insert(record.snapshot.target.id.clone(), record);
-            bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
-            state.events.push(event);
-            state
-                .operation_receipts
-                .insert(key, OperationReceipt::Phase(receipt.clone()));
+            let receipt = publish_phase(state, &run, request, record, digest, now)?;
             #[cfg(test)]
-            if self
-                .store
-                .phase_fault
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
+            if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 1 {
                 return Err(Error::UnknownStoreOutcome);
             }
             Ok(PhaseMutationOutcome::Applied { receipt, authority })
         });
         #[cfg(test)]
-        if self
-            .store
-            .phase_fault
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 2
+        if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 2
             && matches!(&result, Ok(PhaseMutationOutcome::Applied { .. }))
         {
             return Err(Error::UnknownStoreOutcome);
@@ -198,6 +218,55 @@ impl MemoryExecution {
         result
     }
 }
+fn publish_phase(
+    state: &mut State,
+    run: &Run,
+    request: PhaseMutation,
+    record: phase::PhaseRecord,
+    digest: crabber_core::InputFingerprint,
+    now: time::OffsetDateTime,
+) -> Result<PhaseReceipt, Error> {
+    let revision = revision(state, &run.session_id)
+        .next()
+        .map_err(|_| Error::RevisionExhausted)?;
+    let mut event = phase::event(run, &request, &record.snapshot, now, digest.clone())?;
+    let cursor = EventCursor(state.events.len() as u64 + 1);
+    event.cursor = Some(cursor);
+    let key = (run.session_id.clone(), request.id.clone());
+    let receipt = PhaseReceipt {
+        operation: phase::operation(&request.command),
+        resolver: phase::resolver(&request.command),
+        operation_id: request.id,
+        semantic_digest: digest,
+        revision,
+        event_cursor: cursor,
+        phase: record.snapshot.clone(),
+    };
+    if matches!(request.command, PhaseCommand::Begin { .. }) {
+        state
+            .calls
+            .get_mut(&record.snapshot.target.call_id)
+            .ok_or(Error::NotFound)?
+            .status = crabber_core::ToolCallStatus::Running;
+        let snapshot_revision = state
+            .snapshot_revisions
+            .entry(run.session_id.clone())
+            .or_default();
+        *snapshot_revision = snapshot_revision
+            .checked_add(1)
+            .ok_or(Error::RevisionExhausted)?;
+    }
+    state
+        .phases
+        .insert(record.snapshot.target.id.clone(), record);
+    bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
+    state.events.push(event);
+    state
+        .operation_receipts
+        .insert(key, OperationReceipt::Phase(receipt.clone()));
+    Ok(receipt)
+}
+
 fn replay(
     state: &State,
     run: &Run,
@@ -242,12 +311,20 @@ fn settle_call(
         .get(&record.snapshot.target.call_id)
         .ok_or(Error::NotFound)?;
     let records = settlement.materialize(run, call)?;
+    publish_result(state, run, &record.snapshot.target.call_id, records)?;
+    record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
+    Ok(())
+}
+
+fn publish_result(
+    state: &mut State,
+    run: &Run,
+    call_id: &crabber_core::ToolCallId,
+    records: crate::PhaseSettlementRecords,
+) -> Result<(), Error> {
     super::insert_message(state, run, records.message).map_err(|_| Error::UnknownStoreOutcome)?;
     super::insert_event(state, run, records.event).map_err(|_| Error::UnknownStoreOutcome)?;
-    let call = state
-        .calls
-        .get_mut(&record.snapshot.target.call_id)
-        .ok_or(Error::NotFound)?;
+    let call = state.calls.get_mut(call_id).ok_or(Error::NotFound)?;
     call.status = records.call_status;
     call.result = Some(records.result);
     let snapshot_revision = state
@@ -257,7 +334,6 @@ fn settle_call(
     *snapshot_revision = snapshot_revision
         .checked_add(1)
         .ok_or(Error::RevisionExhausted)?;
-    record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
     Ok(())
 }
 
@@ -267,6 +343,7 @@ fn prepare_record(
     request: &PhaseMutation,
     authority: Option<&PhaseWriteAuthority>,
     now: time::OffsetDateTime,
+    resolution: Option<&crate::PhaseResolution>,
 ) -> Result<(phase::PhaseRecord, Option<crate::PhaseAuthority>), Error> {
     let target = request.command.target();
     let attempt = state
@@ -306,7 +383,11 @@ fn prepare_record(
             Some(PhaseWriteAuthority::Phase(authority)) => Some(authority),
             _ => None,
         };
-        record.change(run, attempt, call, request, worker, now)?;
+        if let Some(resolution) = resolution {
+            record.resolve_uncertain(run, attempt, call, resolution)?;
+        } else {
+            record.change(run, attempt, call, request, worker, now)?;
+        }
         Ok((record, None))
     }
 }

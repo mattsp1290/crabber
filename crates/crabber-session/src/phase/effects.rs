@@ -7,8 +7,16 @@ pub(crate) enum PhaseEffect<'a> {
     Metadata,
     Start(&'a PhaseStart),
     Settle(&'a PhaseSettlement),
+    Resolve(&'a crate::PhaseResolution),
 }
 impl<'a> PhaseEffect<'a> {
+    pub(crate) fn resolution(self) -> Option<&'a crate::PhaseResolution> {
+        if let Self::Resolve(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
     pub(crate) fn start(self) -> Option<&'a PhaseStart> {
         if let Self::Start(value) = self {
             Some(value)
@@ -33,6 +41,12 @@ impl<'a> PhaseEffect<'a> {
             Self::Metadata => request.fingerprint(session, run),
             Self::Start(value) => value.fingerprint(session, run),
             Self::Settle(value) => value.fingerprint(session, run),
+            Self::Resolve(value) => {
+                if value.session_id != *session || value.run_id != *run {
+                    return Err(PhaseError::NotFound);
+                }
+                value.fingerprint()
+            }
         }
     }
     pub(crate) fn verify_replay(
@@ -44,6 +58,7 @@ impl<'a> PhaseEffect<'a> {
             Self::Metadata => Ok(()),
             Self::Start(value) => value.verify_replay(receipt),
             Self::Settle(value) => value.verify_replay(receipt, call),
+            Self::Resolve(value) => value.verify_replay(receipt, call),
         }
     }
 }

@@ -399,7 +399,7 @@ pub(super) async fn faults(store: &impl Store, set_fault: &impl Fn(super::FaultP
     }
 }
 
-async fn read_calls(
+pub(super) async fn read_calls(
     store: &impl Store,
     session: &crabber_core::SessionId,
 ) -> Result<Vec<crabber_core::ToolCallRecord>, crate::StoreError> {
