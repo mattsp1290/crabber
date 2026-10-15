@@ -15,12 +15,14 @@ async fn counter_state_survives_runs_and_is_bounded() {
         .expect("cargo xtask build-fixtures");
     let path = root.join("counter_sink.wasm");
     let hash = Sha256::digest(std::fs::read(&path).unwrap()).into();
+    // The captured fake context limit permits one proactive summary per run.
+    // Reserve both its summary and its actual turn for this long history.
     let provider = FakeProvider::scripted(vec![
         vec![
             StreamDelta::TextDelta("x".into()),
             StreamDelta::Completed
         ];
-        220
+        212 * 2
     ]);
     let store = Arc::new(MemoryStore::new());
     let agent = Agent::builder()
