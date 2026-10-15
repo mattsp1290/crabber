@@ -1,6 +1,7 @@
 //! Sandboxed Component Model extensions.
 #![allow(clippy::missing_errors_doc)]
 mod adapters;
+mod profile;
 
 use async_trait::async_trait;
 use crabber_core::ToolInfo;
@@ -67,6 +68,7 @@ pub struct ModuleConfig {
     pub path: PathBuf,
     pub allowed_root: PathBuf,
     pub expected_sha256: [u8; 32],
+    /// Nonsecret guest configuration; its exact bytes bind the registration.
     pub config_json: String,
     pub limits: Limits,
     pub instance_mode: InstanceMode,
@@ -271,10 +273,10 @@ impl Extension for WasmExtension {
         &self.config.name
     }
     fn version(&self) -> &'static str {
-        "0.1.0"
+        "0.2.0"
     }
     fn config_hash(&self) -> String {
-        format!("{:x?}", self.config.expected_sha256)
+        profile::config_hash(&self.config)
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         let loader = Arc::new(Loader::new().map_err(|e| ExtensionError::Plan(e.to_string()))?);

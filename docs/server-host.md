@@ -73,7 +73,10 @@ Extension `config_hash` and factory configuration/version must identify all
 registration-affecting inputs, including schemas and prompt data. Metadata replay
 cannot discover changes hidden behind falsely unchanged declarations without
 initializing native code. This declaration fingerprint does not replace checking
-actual restored instances before execution.
+actual restored instances before execution. The built-in WASM wrapper binds the
+mandatory module digest, exact nonsecret guest configuration, instance mode and
+runtime limits without loading the module. Artifact relocation with the same
+verified bytes does not change its declaration; preparation still validates paths.
 
 `extension_factory` creates a fresh extension, tool and service graph per
 `FactoryScope::Workspace` or `FactoryScope::Session` owner. The factory receives
