@@ -66,6 +66,8 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
         .unwrap();
     let handle = runtime
         .start(Request {
+            selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
             input_envelope: None,
             session_id: None,
             workspace_id: "test".into(),

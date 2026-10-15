@@ -19,6 +19,7 @@ pub(crate) fn fixture(
     behavior: char,
 ) -> BoundKeyedAdmitRequest {
     let data = AdmissionRequestData {
+        selection_policy: crate::AdmissionSelectionPolicy::Explicit,
         session_id: session.clone(),
         workspace_id: "bound-workspace".into(),
         directory: "/bound/workspace".into(),

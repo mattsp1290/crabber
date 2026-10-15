@@ -162,6 +162,9 @@ impl ExecutionBindingCapsule {
         Ok(())
     }
     fn validate_configuration(&self) -> Result<(), StoreError> {
+        self.request
+            .selection_policy
+            .verify_components(&self.runtime_semantics)?;
         let data = &self.request;
         if let Some(input) = &self.input_envelope
             && !self.request.text.is_empty()

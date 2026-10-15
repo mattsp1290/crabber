@@ -640,6 +640,7 @@ impl Agent {
         request: Request,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
+        let request = self.runtime.resolve_session_defaults(request).await?;
         self.prepare_request(&request).await?;
         let inner = self.runtime.start_with_context(request, context).await?;
         Ok(RunHandle {
@@ -689,6 +690,7 @@ impl Agent {
         if let Some(receipt) = self.runtime.replay_admission(&request, &options).await? {
             return Ok(Admission::Replayed(receipt));
         }
+        let request = self.runtime.resolve_session_defaults(request).await?;
         self.prepare_request(&request).await?;
         let admission = self
             .runtime
@@ -799,6 +801,8 @@ impl Agent {
         selection: &Selection,
     ) -> Request {
         Request {
+            selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
             input_envelope: None,
             session_id,
             text,
@@ -1506,3 +1510,5 @@ mod tests {
         assert!(matches!(run.done().await, Err(RuntimeError::Provider(_))));
     }
 }
+
+mod session_defaults;

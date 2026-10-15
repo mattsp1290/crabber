@@ -107,6 +107,10 @@ fn admission_error(error: StoreError) -> RuntimeError {
 
 #[derive(Debug, Clone)]
 pub struct Request {
+    /// Explicit selection or frozen host fallback for stored session defaults.
+    pub selection_policy: crabber_session::AdmissionSelectionPolicy,
+    /// Defaults and input share this captured session revision at admission.
+    pub captured_revision: Option<crabber_core::SessionRevision>,
     /// Host-validated semantic input. None adapts the text convenience API.
     /// With Some, text must be empty or the exact plain-text adapter shape.
     pub input_envelope: Option<crabber_core::InputEnvelope>,
@@ -134,6 +138,7 @@ struct InitialRequest {
 impl Request {
     fn admission_data(&self) -> Result<AdmissionRequestData, StoreError> {
         Ok(AdmissionRequestData {
+            selection_policy: self.selection_policy.clone(),
             session_id: self.session_id.clone().ok_or(StoreError::NotFound)?,
             workspace_id: self.workspace_id.clone(),
             directory: self.directory.clone(),
@@ -147,6 +152,8 @@ impl Request {
     }
     fn from_admission(data: AdmissionRequestData) -> Self {
         Self {
+            selection_policy: data.selection_policy,
+            captured_revision: None,
             input_envelope: None,
             session_id: Some(data.session_id),
             workspace_id: data.workspace_id,
@@ -228,6 +235,8 @@ pub enum RuntimeError {
     HostClosed,
     #[error("session is busy")]
     SessionBusy,
+    #[error("session management: {0}")]
+    Management(#[from] crabber_session::ManagementError),
     #[error("store: {0}")]
     Store(#[from] StoreError),
     #[error("admission execution: {0}")]
@@ -503,6 +512,11 @@ impl From<&Session> for RunSession {
 /// The request saved in a paused run's checkpoint, written and read only here.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CheckpointRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "crabber_session::AdmissionSelectionPolicy::is_explicit"
+    )]
+    selection_policy: crabber_session::AdmissionSelectionPolicy,
     #[serde(default)]
     version: u32,
     #[serde(default)]
@@ -519,6 +533,7 @@ struct CheckpointRequest {
 impl CheckpointRequest {
     fn new(request: &Request) -> Self {
         Self {
+            selection_policy: request.selection_policy.clone(),
             version: 2,
             input_digest: request
                 .input_envelope
@@ -555,6 +570,8 @@ impl CheckpointRequest {
     }
     fn into_request(self, session_id: &SessionId) -> Request {
         Request {
+            selection_policy: self.selection_policy,
+            captured_revision: None,
             input_envelope: None,
             session_id: Some(session_id.clone()),
             workspace_id: self.workspace_id,
@@ -1907,6 +1924,7 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
         let runtime = self.with_context(context);
+        let request = runtime.resolve_session_defaults(request).await?;
         let (plan, admission, _) = runtime.prepare_admission(&request).await?;
         let admitted = self
             .store
@@ -1970,12 +1988,15 @@ impl Orchestrator {
         if let Some(receipt) = self.replay_admission(&request, &options).await? {
             return Ok(Admission::Replayed(receipt));
         }
+        let request = self.resolve_session_defaults(request).await?;
         let (plan, keyed) = self
             .prepare_keyed_admission(&request, options.clone())
             .await?;
         let outcome = self.store.admit_bound_keyed_run(keyed).await;
         let outcome = match outcome {
-            Err(StoreError::AdmissionConflict) if request.input_envelope.is_none() => {
+            Err(StoreError::AdmissionConflict)
+                if request.input_envelope.is_none() || !request.selection_policy.is_explicit() =>
+            {
                 plan.release();
                 let original = self
                     .retained_admission(&request, &options)
@@ -2055,7 +2076,7 @@ impl Orchestrator {
             binding: original_binding,
         } = retained;
         let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
-        let mut captured = request.clone();
+        let mut captured = Self::original_default_request(&request, &original_binding)?;
         captured
             .input_envelope
             .clone_from(&original_binding.input_envelope);
@@ -2262,6 +2283,7 @@ impl Orchestrator {
         let mut messages = input.materialize_messages(&session_id, now)?;
         let first_message = messages.remove(0);
         let plan = self.acquire_execution_plan(&context).await?;
+        let plan = Self::bind_selection_policy(plan, &request.selection_policy)?;
         let provider = self.describe_provider(&plan, &request.selection)?;
         let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
         // Hash structured, independently observed semantics, never a caller's claim.
@@ -4329,3 +4351,5 @@ mod recovery_contract_tests {
         );
     }
 }
+
+mod session_defaults;

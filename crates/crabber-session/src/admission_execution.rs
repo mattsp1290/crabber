@@ -31,6 +31,11 @@ pub enum AdmissionExecutionError {
 /// Session-owned wire request; excludes credentials and transient trace identity.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmissionRequestData {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::AdmissionSelectionPolicy::is_explicit"
+    )]
+    pub selection_policy: crate::AdmissionSelectionPolicy,
     pub session_id: SessionId,
     pub workspace_id: String,
     pub directory: String,
@@ -91,6 +96,8 @@ impl AdmissionExecutionCapsule {
         let r: &AdmitRequest = &keyed.request;
         r.validate_messages()?;
         let data = &self.request;
+        data.selection_policy
+            .verify_components(&self.runtime_semantics)?;
         let semantics = self.runtime_semantics.as_array();
         if let Some(input) = &self.input_envelope
             && !self.request.text.is_empty()

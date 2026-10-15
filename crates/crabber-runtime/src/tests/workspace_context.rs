@@ -517,6 +517,8 @@ fn allow() -> Arc<dyn PermissionPolicy> {
 
 fn request(session: Option<&SessionId>, workspace_id: &str, directory: &str) -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
         input_envelope: None,
         session_id: session.cloned(),
         workspace_id: workspace_id.into(),

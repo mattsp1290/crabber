@@ -277,6 +277,8 @@ async fn replacement_fence_never_authorizes_pending_approval() {
         .unwrap();
     let run = runtime
         .start(Request {
+            selection_policy: crabber::session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
             input_envelope: None,
             session_id: None,
             workspace_id: "ws-fence".into(),

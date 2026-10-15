@@ -82,6 +82,8 @@ async fn mount_test(
 
 fn request() -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
         input_envelope: None,
         session_id: None,
         workspace_id: "workspace".into(),

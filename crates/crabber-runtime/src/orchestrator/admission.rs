@@ -161,6 +161,8 @@ impl Orchestrator {
         {
             return Err(StoreError::AdmissionConflict.into());
         }
+        let request = Self::original_default_request(request, &binding)?;
+        let request = &request;
         self.verify_binding_request(request, session_id, &binding)?;
         self.verify_declared_provider(&binding)?;
         self.verify_retained(request, options, &receipt, &record, &run, &context)?;

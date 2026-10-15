@@ -177,3 +177,8 @@ pub use phase_control::{
     PhaseCleanup, PhaseControlOutcome, PhasePage, PhasePageRequest, PhaseUncertainty,
     PhaseUncertaintyCause,
 };
+
+mod admission_selection;
+pub use admission_selection::{
+    AdmissionSelectionPolicy, SELECTION_POLICY_COMPONENT, SelectionFallback,
+};

@@ -29,10 +29,14 @@ impl Orchestrator {
             }
             input.clone()
         } else {
-            let revision = match self.store.session_revision(session).await {
-                Ok(revision) => revision,
-                Err(StoreError::NotFound) => SessionRevision::INITIAL,
-                Err(error) => return Err(error.into()),
+            let revision = if let Some(revision) = request.captured_revision {
+                revision
+            } else {
+                match self.store.session_revision(session).await {
+                    Ok(revision) => revision,
+                    Err(StoreError::NotFound) => SessionRevision::INITIAL,
+                    Err(error) => return Err(error.into()),
+                }
             };
             InputEnvelope::text(request.text.clone(), revision)?
         };

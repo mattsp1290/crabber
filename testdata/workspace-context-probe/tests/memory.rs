@@ -276,6 +276,8 @@ async fn replacement_fence_never_authorizes_pending_approval() {
         .unwrap();
     let run = runtime
         .start(Request {
+            selection_policy:Default::default(),
+            captured_revision:None,
             input_envelope: None,
             session_id: None,
             workspace_id: "ws-fence".into(),

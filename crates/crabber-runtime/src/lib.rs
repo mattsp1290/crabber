@@ -48,3 +48,5 @@ mod model_middleware_tests;
 
 #[cfg(test)]
 mod bound_provider_tests;
+
+pub use crabber_session::AdmissionSelectionPolicy;

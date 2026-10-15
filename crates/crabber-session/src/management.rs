@@ -20,8 +20,9 @@ pub enum ManagementError {
     #[error("session management outcome unknown")]
     UnknownStoreOutcome,
 }
-/// Selected identifiers only. Hosts must independently resolve and authorize
-/// these defaults when constructing an immutable future admission binding.
+/// Selected identifiers only. Hosts authorize these choices before storing them.
+/// Default-consuming Agent methods resolve each missing value from configured
+/// host selection and freeze the result in the next admission binding.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionDefaults {

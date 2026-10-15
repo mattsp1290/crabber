@@ -1,3 +1,4 @@
+pub use crabber::session::AdmissionSelectionPolicy;
 pub use crabber::session::{
     ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationRecovery,
     ApprovalContinuationState, ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome,

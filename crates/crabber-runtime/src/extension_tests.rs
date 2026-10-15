@@ -197,6 +197,8 @@ fn call_script(command: &str) -> Vec<StreamDelta> {
 }
 fn request() -> crate::Request {
     crate::Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
         input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),

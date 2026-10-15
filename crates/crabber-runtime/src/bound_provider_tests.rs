@@ -133,6 +133,8 @@ async fn active_execution_holds_original_implementation_and_limits_across_turns(
         .unwrap();
     let handle = runtime
         .start(Request {
+            selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+            captured_revision: None,
             input_envelope: None,
             session_id: None,
             workspace_id: "held".into(),
@@ -282,6 +284,8 @@ fn opaque_host_behavior_requires_explicit_declaration() {
 
 fn binding_request() -> Request {
     Request {
+        selection_policy: crabber_session::AdmissionSelectionPolicy::Explicit,
+        captured_revision: None,
         input_envelope: None,
         session_id: None,
         workspace_id: "binding-tests".into(),

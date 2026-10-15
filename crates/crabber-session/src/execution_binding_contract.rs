@@ -26,6 +26,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = factory(clock.clone());
+    reject_uncorroborated_selection(&store, now).await;
     let session = SessionId::new();
     let original = fixture(&session, now, "backend-original", 'b');
     let (left, right) = futures::join!(
@@ -205,3 +206,34 @@ pub(crate) mod faults;
 
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 pub(crate) mod process;
+
+async fn reject_uncorroborated_selection(store: &impl Store, now: OffsetDateTime) {
+    let session = SessionId::new();
+    let mut invalid = fixture(&session, now, "backend-original", 'b');
+    let policy = crate::AdmissionSelectionPolicy::session_defaults("host-provider", "host-model");
+    invalid.binding.request.selection_policy = policy.clone();
+    invalid
+        .keyed
+        .execution
+        .as_mut()
+        .unwrap()
+        .request
+        .selection_policy = policy;
+    // Matching private carriers cannot invent policy provenance without its
+    // independently hashed runtime/plan component. No prior receipt masks this.
+    assert_eq!(
+        store
+            .admit_bound_keyed_run(invalid.clone())
+            .await
+            .unwrap_err(),
+        StoreError::AdmissionConflict
+    );
+    assert!(store.get_session(&session).await.unwrap().is_none());
+    assert!(
+        store
+            .lookup_admission(&session, &invalid.keyed.options.key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

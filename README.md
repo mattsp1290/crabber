@@ -213,6 +213,29 @@ suspended worker and its resources to have joined, then atomically records fixed
 error results, the terminal run, barrier release and a replayable receipt. It
 executes no tools and grants no worker authority.
 
+Use `Agent::prompt_session` or `prompt_session_keyed` to consume stored session
+provider/model defaults for a new ordinary admission in the configured workspace.
+The corresponding `*_in` methods take a host-admitted `SessionContext`, allowing
+one configured Agent to serve distinct workspaces without inferring root
+authorization from stored metadata. Each absent value falls
+back independently to `AgentConfig.selection`; an invalid configured pair fails
+provider binding instead of selecting another backend. Typed counterparts take
+an `InputEnvelope` whose expected revision must match the captured defaults.
+The defaults and input share one admission revision precondition, so a concurrent
+management change rejects preparation or admission. Explicit `ExecutionContext`
+methods keep their supplied selection. Existing text convenience methods use
+`AgentConfig.selection` directly.
+
+Keyed default-selected retries reconcile the original immutable binding before
+reading current defaults, including after the Agent closes or its configured
+fallback selection changes. Keep the original input for retries. `recover_session_admission`
+and its typed counterpart restore only eligible retained Unstarted work with
+that binding. Defaults changed later affect new ordinary admissions; active runs,
+paused resumes and approval continuations retain their admitted selection.
+Default-consuming methods return unsupported when the Store lacks management
+reads. They can create the first session through keyed admission and also work
+with ordinary sessions that have no explicit management metadata.
+
 For an already uncertain native tool phase, `Agent::resolve_uncertain_phase`
 records the host's asserted resolver identity, authority claim and selected
 external outcome. Supply final protected output for success, select failure, or

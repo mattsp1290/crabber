@@ -65,6 +65,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
         input_envelope: None,
         version: 1,
         request: AdmissionRequestData {
+            selection_policy: crate::AdmissionSelectionPolicy::Explicit,
             session_id: session.clone(),
             workspace_id: keyed.request.workspace_id.clone(),
             directory: keyed.request.directory.clone(),

@@ -1404,6 +1404,8 @@ mod tests {
                 .unwrap();
             let handle = runtime
                 .start(Request {
+                    selection_policy: crabber_runtime::AdmissionSelectionPolicy::Explicit,
+                    captured_revision: None,
                     input_envelope: None,
                     session_id: None,
                     workspace_id: "test".into(),
