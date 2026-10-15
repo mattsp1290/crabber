@@ -379,6 +379,19 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn mark_attempt_uncertain(
+        &self,
+        request: crate::AttemptUncertainty,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(&crate::attempt_control::Control::Uncertain(request))
+    }
+    async fn retire_attempt(
+        &self,
+        request: crate::AttemptRetirement,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(&crate::attempt_control::Control::Retire(request))
+    }
+
     async fn manage_session(
         &self,
         request: crate::ManageSession,

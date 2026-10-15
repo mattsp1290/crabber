@@ -1,6 +1,8 @@
 //! Native phase writes share the session/run gate and operation-key namespace.
 mod calls;
+pub(super) use super::tool_result::apply as apply_host_result;
 pub(super) use calls::load as load_call;
+pub(super) use records::load as load_host_record;
 mod records;
 pub(super) async fn load_owned(
     tx: &mut Transaction<'_, Sqlite>,

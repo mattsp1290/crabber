@@ -25,6 +25,12 @@ pub use approval_termination::{ApprovalTermination, ApprovalTerminationKind};
 pub mod approval_contract;
 pub use approval::*;
 mod attempt;
+mod attempt_control;
+pub mod attempt_control_contract;
+pub use attempt_control::{
+    AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
+    AttemptUncertainty, AttemptUncertaintyCause, PendingCallDisposition,
+};
 mod attempt_conclusion;
 pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
 mod phase;

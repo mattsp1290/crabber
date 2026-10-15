@@ -1,4 +1,26 @@
 pub use crabber::session::AdmissionSelectionPolicy;
+
+#[path = "../../crabber-session/src/attempt_control/turn.rs"]
+#[allow(dead_code)]
+mod attempt_control_turn;
+pub use crabber::session::{
+    AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
+    AttemptUncertainty, AttemptUncertaintyCause, PendingCallDisposition,
+};
+#[path = "../../crabber-session/src/attempt_control/readiness.rs"]
+#[allow(dead_code)]
+mod attempt_control_readiness;
+#[path = "../../crabber-session/src/attempt_control/records.rs"]
+#[allow(dead_code)]
+mod attempt_control_records;
+mod attempt_control {
+    pub(crate) use crate::attempt_control_readiness::*;
+    pub(crate) use crate::attempt_control_records::*;
+    pub(crate) use crate::attempt_control_turn::*;
+}
+#[path = "../../crabber-session/src/attempt_control_contract.rs"]
+#[allow(dead_code)]
+mod attempt_control_contract;
 pub use crabber::session::{
     ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationRecovery,
     ApprovalContinuationState, ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome,

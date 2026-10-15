@@ -72,7 +72,7 @@ pub(super) async fn metadata(
         .map(|(data, revision)| Ok((sql::decode_metadata(data)?, revision)))
         .transpose()
 }
-pub(super) async fn load(
+pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
     id: &PhaseId,

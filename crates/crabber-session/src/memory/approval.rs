@@ -189,6 +189,41 @@ fn before_commit(fault: u8) -> Result<(), Error> {
     Ok(())
 }
 
+pub(super) fn retirement_context(
+    state: &State,
+    run: &Run,
+) -> Result<crate::attempt_control::RetirementContext, crate::AttemptError> {
+    let Some(id) = state.approval_barriers.get(&run.session_id) else {
+        return Ok(crate::attempt_control::RetirementContext::default());
+    };
+    let record = state
+        .approvals
+        .get(id)
+        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
+    recover::validate_provenance(state, record)
+        .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    for prepared in &record.batch.calls {
+        let call = state
+            .calls
+            .get(&prepared.target.call_id)
+            .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
+        prepared
+            .verify_call(call)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    }
+    Ok(crate::attempt_control::RetirementContext {
+        source: record.batch.source_turn_id.clone(),
+        order: Some(
+            record
+                .batch
+                .calls
+                .iter()
+                .map(|call| call.target.call_id.clone())
+                .collect(),
+        ),
+    })
+}
+
 #[cfg(test)]
 #[path = "approval/tests.rs"]
 mod tests;

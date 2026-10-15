@@ -1,5 +1,7 @@
 #[path = "agent/approval.rs"]
 mod approval;
+
+mod attempt_control;
 mod management;
 #[path = "agent/phase.rs"]
 mod phase;

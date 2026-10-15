@@ -12,7 +12,7 @@ use crate::{
     approval::{self, sql},
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
-pub(super) use guards::{guard_attempt, release_terminal};
+pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
 use sqlx::{Row, Sqlite, Transaction};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN length(CAST(json_extract(s.data, '$.workspace_id') AS BLOB))<=512 THEN json_extract(s.data, '$.workspace_id') END AS workspace,CASE WHEN length(CAST(c.id AS BLOB))<=128 THEN c.id END AS id,c.generation,CASE WHEN length(CAST(c.state AS BLOB))<=32 THEN c.state END AS state,c.format_version AS format_version,

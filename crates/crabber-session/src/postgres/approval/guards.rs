@@ -71,3 +71,34 @@ async fn active(
         })?;
     Ok(Some(record))
 }
+
+pub(in super::super) async fn retirement_context(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+) -> Result<crate::attempt_control::RetirementContext, Error> {
+    let Some(record) = active(tx, run).await? else {
+        return Ok(crate::attempt_control::RetirementContext::default());
+    };
+    super::recover::validate_provenance(tx, &record)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    for prepared in &record.batch.calls {
+        let call = super::super::phase::load_call(tx, run, &prepared.target.call_id)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        prepared
+            .verify_call(&call)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    Ok(crate::attempt_control::RetirementContext {
+        source: record.batch.source_turn_id.clone(),
+        order: Some(
+            record
+                .batch
+                .calls
+                .iter()
+                .map(|call| call.target.call_id.clone())
+                .collect(),
+        ),
+    })
+}

@@ -1,5 +1,7 @@
 #[path = "server_host/approval.rs"]
 mod approval;
+#[path = "server_host/attempt_control.rs"]
+mod attempt_control;
 #[path = "server_host/factories.rs"]
 mod factories;
 #[path = "server_host/interaction_hooks.rs"]

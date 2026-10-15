@@ -24,6 +24,20 @@ impl Store for SqliteStore {
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
         self.terminate_approval_inner(&request).await
     }
+    async fn mark_attempt_uncertain(
+        &self,
+        request: crate::AttemptUncertainty,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(crate::attempt_control::Control::Uncertain(request))
+            .await
+    }
+    async fn retire_attempt(
+        &self,
+        request: crate::AttemptRetirement,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        self.host_attempt(crate::attempt_control::Control::Retire(request))
+            .await
+    }
 
     async fn reclaim_approval_continuation(
         &self,

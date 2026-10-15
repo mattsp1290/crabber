@@ -118,15 +118,7 @@ fn validate_native(
     record: &approval::ApprovalRecord,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
-    let saved =
-        receipt(state, &run.session_id, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
-    record.verify_recovery_batch(&saved)?;
-    for question in &record.questions {
-        let answer = question.answer.as_ref().ok_or(Error::UnknownStoreOutcome)?;
-        let saved =
-            receipt(state, &run.session_id, &answer.id)?.ok_or(Error::UnknownStoreOutcome)?;
-        approval::verify_recovery_answer(answer, &saved)?;
-    }
+    validate_provenance(state, record)?;
     let old = state
         .attempts
         .get(&record.batch.attempt.id)
@@ -167,6 +159,22 @@ fn validate_native(
                     .any(|call| call.target.call_id == phase.snapshot.target.call_id))
     }) {
         return Err(Error::InvalidTransition);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_provenance(
+    state: &super::super::State,
+    record: &approval::ApprovalRecord,
+) -> Result<(), Error> {
+    let saved =
+        receipt(state, &record.session_id, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
+    record.verify_recovery_batch(&saved)?;
+    for question in &record.questions {
+        let answer = question.answer.as_ref().ok_or(Error::UnknownStoreOutcome)?;
+        let saved =
+            receipt(state, &record.session_id, &answer.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        approval::verify_recovery_answer(answer, &saved)?;
     }
     Ok(())
 }

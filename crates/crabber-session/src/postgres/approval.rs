@@ -12,7 +12,7 @@ use crate::{
     approval::{self, sql},
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
-pub(super) use guards::{guard_attempt, release_terminal};
+pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
 use sqlx::{Postgres, Row, Transaction};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN octet_length(s.data->>'workspace_id')<=512 THEN s.data->>'workspace_id' END AS workspace,CASE WHEN octet_length(c.id)<=128 THEN c.id END AS id,c.generation,CASE WHEN octet_length(c.state)<=32 THEN c.state END AS state,c.format_version::bigint AS format_version,

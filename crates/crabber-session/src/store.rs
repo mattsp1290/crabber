@@ -224,6 +224,21 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Revoke a lost/stopped parent without manufacturing child outcomes.
+    async fn mark_attempt_uncertain(
+        &self,
+        _request: crate::AttemptUncertainty,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+    /// Select failure/interruption only after truthful result and cleanup reconciliation.
+    async fn retire_attempt(
+        &self,
+        _request: crate::AttemptRetirement,
+    ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+
     /// Pure host metadata control; never initializes runtime/provider/tool code.
     async fn manage_session(
         &self,

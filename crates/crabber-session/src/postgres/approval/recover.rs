@@ -165,7 +165,7 @@ async fn validate_native(
     Ok(())
 }
 
-async fn validate_provenance(
+pub(super) async fn validate_provenance(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {

@@ -1,3 +1,5 @@
+#[path = "attempt/control.rs"]
+mod control;
 #[path = "attempt/pristine.rs"]
 mod pristine;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};

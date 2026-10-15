@@ -5,6 +5,7 @@ mod approval;
 #[path = "orchestrator/approval_recovery.rs"]
 mod approval_recovery;
 pub use approval_recovery::RecoverApproval;
+mod attempt_control;
 #[path = "orchestrator/continuation.rs"]
 mod continuation;
 mod management;

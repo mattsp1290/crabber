@@ -5,7 +5,7 @@ use crabber::{
     core::{ControlId, SessionRevision},
     extension::ComponentIdentity,
 };
-struct ForbiddenFactory(Arc<AtomicUsize>);
+pub(super) struct ForbiddenFactory(pub(super) Arc<AtomicUsize>);
 #[async_trait]
 impl ExtensionFactory for ForbiddenFactory {
     fn identity(&self) -> ComponentIdentity {

@@ -371,3 +371,27 @@ replay metadata before current eligibility checks, including after another run
 is admitted. Changed scope, choice or authority conflicts. Memory, PostgreSQL
 and SQLite support the same atomic contract; custom Store defaults return
 `Unsupported`. No schema migration is added by this control.
+
+Parent reconciliation uses two keyed host controls. `mark_attempt_uncertain`
+revokes the exact latest Started attempt and run authority, preserving every
+child outcome and cleanup state. Expiry/revocation permits detecting uncertainty;
+it never proves that an external resource stopped. A host-stopped assertion is
+an explicit authenticated-host obligation, bound to the exact attempt target.
+
+After independently reconciling all effects and cleanup, `retire_attempt` selects
+Failed or Interrupted for the latest OutcomeUnknown attempt and logical run.
+The host must assert that the whole matching worker and attempt-owned resources
+actually joined. Every run phase must have a known terminal outcome and Complete
+quiescence, with matching logical results and immutable call bindings. Pending
+calls block retirement unless `CancelNeverStarted` explicitly selects fixed
+Interrupted results for bounded calls that never owned any phase. Running,
+Claimed, Started, Suspended and Uncertain effects are never bulk-interrupted.
+
+Retirement preserves usage and binding, closes any durably identified open turn
+once, and commits result/source records, terminal run, attempt cleanup, eligible
+claimed-barrier release and audit/receipt atomically. Waiting approvals require
+their dedicated termination control. Both operations return metadata only and
+remain available after extension close, without factories, providers or tools.
+Retain the original key and request after an unknown acknowledgement; exact
+retries and `lookup_attempt_mutation` reconcile without restoring authority.
+These controls do not implement durable cancel requests or orderly host close.
