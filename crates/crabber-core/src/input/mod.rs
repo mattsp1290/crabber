@@ -2,7 +2,8 @@
 //! Unstable until the durable-host contract is qualified.
 mod validation;
 pub(crate) use validation::{
-    bounded as validate_serialized_bound, content as validate_content, json as validate_json,
+    bounded as validate_serialized_bound, bounded_with_limit as validate_serialized_limit,
+    content as validate_content, json as validate_json,
 };
 
 use crate::{

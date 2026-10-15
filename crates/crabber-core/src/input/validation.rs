@@ -113,13 +113,16 @@ pub(crate) fn content(value: &MessageContent) -> Result<(), CoreError> {
 }
 
 // Count escaped serialized bytes before constructing a canonical Value/string.
-struct BoundedBytes(usize);
+struct BoundedBytes {
+    written: usize,
+    limit: usize,
+}
 impl io::Write for BoundedBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self
-            .0
+        self.written = self
+            .written
             .checked_add(bytes.len())
-            .filter(|size| *size <= MAX_INPUT_BYTES)
+            .filter(|size| *size <= self.limit)
             .ok_or_else(|| io::Error::other("input bound"))?;
         Ok(bytes.len())
     }
@@ -128,7 +131,10 @@ impl io::Write for BoundedBytes {
     }
 }
 pub(crate) fn bounded(value: &impl Serialize) -> Result<(), CoreError> {
-    serde_json::to_writer(BoundedBytes(0), value).map_err(|_| invalid())
+    bounded_with_limit(value, MAX_INPUT_BYTES)
+}
+pub(crate) fn bounded_with_limit(value: &impl Serialize, limit: usize) -> Result<(), CoreError> {
+    serde_json::to_writer(BoundedBytes { written: 0, limit }, value).map_err(|_| invalid())
 }
 
 pub(super) fn envelope(value: &WireEnvelope) -> Result<(), CoreError> {

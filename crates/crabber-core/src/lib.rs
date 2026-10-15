@@ -3,6 +3,15 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod interaction;
+pub use interaction::{
+    AuthorityRequirement, InteractionDescription, InteractionKind, InteractionState,
+};
+mod continuation;
+pub use continuation::{
+    MAX_TOOL_CHECKPOINT_BYTES, ToolCheckpoint, ToolPhaseOutcome, ToolSuspension,
+};
+
 mod tool_output;
 pub use tool_output::ToolOutput;
 
