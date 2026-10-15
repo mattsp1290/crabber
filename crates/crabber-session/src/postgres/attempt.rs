@@ -165,6 +165,7 @@ impl PostgresExecution {
         {
             return Err(Error::StaleOwner);
         }
+        super::approval::guard_attempt(tx, run, request).await?;
         let current = records::revision(tx, &run.session_id).await?;
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -306,6 +307,9 @@ async fn apply_run_transition(
         let mut updated = run.clone();
         conclusion.apply_run(&mut updated, now)?;
         super::save_run(tx, &updated).await.map_err(sql::unknown)?;
+        if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
+            super::approval::release_terminal(tx, run, request).await?;
+        }
     } else if matches!(
         request.command,
         AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }

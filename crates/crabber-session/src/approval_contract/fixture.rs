@@ -11,13 +11,13 @@ use crabber_core::{
 };
 use serde_json::json;
 
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub run: Run,
     pub execution: Box<dyn ExecutionStore>,
     pub owner: AttemptAuthority,
     pub batch: ApprovalSuspension,
 }
-pub(super) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
+pub(crate) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
     let mut prepared =
         crate::typed_admission_contract::fixture(&SessionId::new(), clock.now(), "approval");
     prepared.keyed.request.session_id = None;
@@ -78,7 +78,7 @@ pub(super) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
         batch,
     }
 }
-pub(super) async fn answer(
+pub(crate) async fn answer(
     store: &impl Store,
     f: &Fixture,
     index: usize,

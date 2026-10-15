@@ -4,7 +4,7 @@ mod faults;
 #[path = "approval_contract/finish.rs"]
 mod finish;
 #[path = "approval_contract/fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "approval_contract/integrity.rs"]
 mod integrity;
 use crate::{

@@ -18,6 +18,27 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn answer_approval(
+        &self,
+        answer: crate::ApprovalAnswer,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.answer_approval_inner(&answer).await
+    }
+
+    async fn approval_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
+        self.read_approval(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ApprovalReceipt>, crate::ApprovalError> {
+        self.approval_receipt(session, id).await
+    }
     fn supports_owned_attempts(&self) -> bool {
         true
     }

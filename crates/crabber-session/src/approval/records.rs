@@ -1,4 +1,6 @@
 //! Private persisted approval state. Public snapshots contain no worker tokens.
+#[path = "answer.rs"]
+mod answer;
 #[path = "integrity.rs"]
 mod integrity;
 use super::{

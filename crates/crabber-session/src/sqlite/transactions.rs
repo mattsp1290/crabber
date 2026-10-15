@@ -90,6 +90,16 @@ impl SqliteStore {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
         }
+        let barrier: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+        )
+        .bind(&session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if barrier {
+            return Err(StoreError::Busy);
+        }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )

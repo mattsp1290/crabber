@@ -1,6 +1,8 @@
 //! Durable approval of a complete prepared batch, before any call starts.
 mod audit;
 mod records;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) mod sql;
 mod validation;
 use crate::{AttemptAuthority, AttemptSnapshot, AttemptTarget, PhaseTarget};
 pub(crate) use audit::{event, verify_receipt};

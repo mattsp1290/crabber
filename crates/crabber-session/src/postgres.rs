@@ -4,9 +4,10 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v7.
+//! connect remains read-only and requires explicit migration to schema v8.
 mod abandon;
 mod admission_execution;
+mod approval;
 mod attempt;
 mod execution_binding;
 #[cfg(test)]
@@ -44,6 +45,8 @@ pub struct PostgresStore {
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    approval_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
 }
@@ -391,6 +394,8 @@ impl PostgresStore {
             #[cfg(test)]
             phase_fault: Arc::default(),
             #[cfg(test)]
+            approval_fault: Arc::default(),
+            #[cfg(test)]
             binding_fault: Arc::default(),
         })
     }
@@ -433,6 +438,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0007_typed_admission.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0008_continuations.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -538,6 +547,16 @@ impl PostgresStore {
             if expected.get() != current {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
+        }
+        let barrier: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+        )
+        .bind(&session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if barrier {
+            return Err(StoreError::Busy);
         }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
@@ -672,6 +691,27 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn answer_approval(
+        &self,
+        answer: crate::ApprovalAnswer,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.answer_approval_inner(&answer).await
+    }
+
+    async fn approval_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
+        self.read_approval(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ApprovalReceipt>, crate::ApprovalError> {
+        self.approval_receipt(session, id).await
+    }
     fn supports_owned_attempts(&self) -> bool {
         true
     }
