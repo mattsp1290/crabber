@@ -124,6 +124,9 @@ fn event(session: &SessionId, run: &RunId, index: usize) -> EventRecord {
 async fn admit(store: &dyn Store, session: &SessionId, first: &str) -> AdmitOutcome {
     store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "fixture".into(),
             directory: "fixture".into(),

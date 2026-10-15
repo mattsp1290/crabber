@@ -222,6 +222,13 @@ impl DriftStore {
 }
 #[async_trait]
 impl Store for DriftStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        self.inner.session_revision(session).await
+    }
+
     async fn admit_bound_run(
         &self,
         request: crabber_session::BoundAdmitRequest,
@@ -417,6 +424,7 @@ fn allow() -> Arc<dyn PermissionPolicy> {
 
 fn request(session: Option<&SessionId>, workspace_id: &str, directory: &str) -> Request {
     Request {
+        input_envelope: None,
         session_id: session.cloned(),
         workspace_id: workspace_id.into(),
         directory: directory.into(),

@@ -33,6 +33,9 @@ pub(super) fn input(session: &SessionId, text: &str) -> Message {
 }
 pub(super) fn request(session: &SessionId) -> AdmitRequest {
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: "/tmp".into(),
@@ -328,4 +331,10 @@ async fn sqlite_public_state_contract() {
 async fn sqlite_execution_binding_contract() {
     let (store, _, _directory) = temp_store().await;
     crate::execution_binding_contract::run_contract(|clock| store.with_clock(clock)).await;
+}
+
+#[tokio::test]
+async fn sqlite_typed_admission_contract() {
+    let (store, _, _directory) = temp_store().await;
+    crate::typed_admission_contract::run_contract(|clock| store.with_clock(clock)).await;
 }

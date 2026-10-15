@@ -133,14 +133,22 @@ pub struct Part {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PartKind {
+    /// Model-input text with a role other than the legacy user/assistant cases.
+    InputText,
+    /// Explicit model-input/result media, separate from custom UI activity.
+    Media,
     UserInputText,
     AssistantText,
     Reasoning,
     FunctionToolCall,
     FunctionToolResult,
     ProviderState,
-    Custom { custom_type: String },
-    CustomMessage { custom_type: String },
+    Custom {
+        custom_type: String,
+    },
+    CustomMessage {
+        custom_type: String,
+    },
     CompactionSummary,
 }
 
@@ -157,6 +165,12 @@ pub enum ContentBlock {
     Media {
         uri: String,
         mime_type: String,
+    },
+    /// Explicit typed media; source interpretation is never inferred from a string.
+    MediaContent {
+        kind: MediaKind,
+        mime_type: String,
+        source: MediaSource,
     },
     ToolCall {
         call_id: ToolCallId,
@@ -402,6 +416,8 @@ pub enum CoreError {
     Conflict,
     #[error("admission key conflicts with retained input")]
     AdmissionConflict,
+    #[error("admission session revision changed")]
+    AdmissionRevisionConflict,
     #[error("keyed admission is unsupported by this store")]
     AdmissionUnsupported,
     #[error("unstarted admission requires original semantics and recover_admission")]

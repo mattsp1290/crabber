@@ -585,6 +585,7 @@ async fn lease() -> Vec<OperationalObservation> {
         .unwrap();
     let handle = runtime
         .start(Request {
+            input_envelope: None,
             session_id: None,
             workspace_id: "fixture".into(),
             directory: ".".into(),

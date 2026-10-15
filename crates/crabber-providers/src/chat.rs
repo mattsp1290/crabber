@@ -125,6 +125,7 @@ mod tests {
 
     fn request() -> ModelRequest {
         ModelRequest {
+            context: Vec::new(),
             identity: RequestIdentity {
                 session_id: SessionId::from("session"),
                 run_id: RunId::from("run"),

@@ -112,16 +112,17 @@ A legacy receipt with missing binding evidence is never patched during replay.
 
 `execution_binding(session, run)` reads scoped private evidence, including the
 original input. Its Debug output is redacted; it is not a public snapshot or an
-execution capability. The independent binding capsule uses version 2 while its
-text request/runtime codec and existing admission receipt remain version 1. It
-is bounded to 16 MiB encoded JSON and 64 levels of configuration nesting. No new
-migration is needed: it uses the allocated `run_execution_bindings` table. Custom
+execution capability. New runtime admissions retain binding capsule version 3,
+keyed execution capsule version 2 and canonical input digest version 2. The
+binding codec is bounded to 16 MiB encoded JSON and 64 levels of configuration
+nesting. PostgreSQL schema 7 and fresh SQLite schema 3 expand the private codec
+carriers; retained older payloads are not rewritten or made executable. Custom
 adapters default to `HostUnsupported` and must implement the atomic capability.
 The runtime uses these atomic APIs for both ordinary and keyed admission. It
 restores the retained backend/configuration before recovery claims, holds the
 same implementation across turns and compaction, and uses captured limits rather
 than querying a live model catalog. Missing legacy binding evidence fails closed.
-Typed input and the complete common execution driver remain unfinished.
+The complete common execution driver remains unfinished.
 
 Every Agent/Orchestrator builder requires an explicit `behavior_fingerprint` or
 `behavior_version` declaration for opaque native policy, tool and callback behavior.
@@ -141,7 +142,27 @@ the versioned canonical hash for typed admission. It preserves supplied message,
 parent and part IDs, explicit media representations, frontend input/output schema
 separation, context, null-versus-absent state, captured revision and continuation
 generation. Construction does not grant role, result or filesystem authority.
-The envelope is not yet wired into Agent admission or durable execution capsules.
+`Agent::prompt_input_in`, `prompt_input_keyed_in` and
+`recover_input_admission_in` accept that original envelope in an explicit
+`ExecutionContext`. The host authorizes roles/history/artifacts and retains the
+coherent snapshot revision it validated, including when a wire client omitted
+If-Match. All bundled stores check that revision inside the admission mutation
+after identity and receipt reconciliation. A stale new admission changes no
+input, run or revision; an exact prior receipt still replays after revision
+advances. The text convenience APIs adapt to an envelope; explicit typed retries
+must retain their original envelope rather than refreshing its revision.
+
+Admission preserves every message/part and supplied identity in order, with
+new internal IDs excluded from the digest. Recovery validates the original input
+prefix and uses the original envelope. Version-2 pause checkpoints reference its
+canonical digest instead of duplicating private context/state into a run record.
+Context contributes to every turn and compaction request separately from
+activity. HTTP transports encode context as canonical user-role JSON text and
+report their supported roles/media through `input_support()`. Media encodings
+remain unsupported in those transports and fail before credentials, header
+callbacks or network I/O; the native typed provider path preserves media without
+flattening or fetching URLs. Frontend descriptors and continuation envelopes
+still require the pending durable interaction driver and fail closed today.
 
 `Store::session_revision` reads the current opaque public revision. Public history,
 call, epoch, event and accepted same-run input mutations advance it atomically;
@@ -149,7 +170,8 @@ lease refresh, private extension state, failed writes and receipt replay do not.
 Values can have gaps and are separate from event cursors and history-snapshot
 invalidation counters. Custom stores can run `revision_contract::run_contract`.
 This scalar alone does not validate a separately captured history snapshot;
-coherent public snapshots and conditional admission are still being implemented.
+coherent public snapshots are still being implemented. Conditional admission
+is available through the captured typed envelope and `AdmitRequest.expected_revision`.
 
 The experimental `Store::public_state` reads state, display activities and their
 revision from one store snapshot. `ExecutionStore::mutate_public_state` replaces

@@ -4,7 +4,7 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v6.
+//! connect remains read-only and requires explicit migration to schema v7.
 mod abandon;
 mod admission_execution;
 mod attempt;
@@ -430,6 +430,10 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0007_typed_admission.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -483,6 +487,9 @@ impl PostgresStore {
         request: AdmitRequest,
         allow_create: bool,
     ) -> Result<AdmitOutcome, StoreError> {
+        if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
+            request.validate_messages()?;
+        }
         let now = self.clock.now();
         let lease = time::Duration::try_from(request.lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
@@ -498,12 +505,15 @@ impl PostgresStore {
                 "user message has wrong session".into(),
             ));
         }
-        let existing = sqlx::query("SELECT data FROM sessions WHERE id=$1")
+        let existing = sqlx::query("SELECT data,public_revision FROM sessions WHERE id=$1")
             .bind(&session_id.0)
             .fetch_optional(&mut **tx)
             .await
             .map_err(db)?;
         let had_session = existing.is_some();
+        let current_revision: i64 = existing
+            .as_ref()
+            .map_or(0, |row| row.get("public_revision"));
         let session: Session = if let Some(row) = existing {
             let existing: Session = decode(row.get("data"))?;
             existing.ensure_identity(&request.workspace_id, &request.directory)?;
@@ -520,6 +530,13 @@ impl PostgresStore {
                 updated_at: now,
             }
         };
+        if let Some(expected) = request.expected_revision {
+            let current = u64::try_from(current_revision)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
+            if expected.get() != current {
+                return Err(StoreError::AdmissionRevisionConflict);
+            }
+        }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )
@@ -531,6 +548,7 @@ impl PostgresStore {
         if busy {
             return Err(StoreError::Busy);
         }
+        request.validate_messages()?;
         let prior_history = if had_session {
             project(tx, &session_id, None).await?
         } else {
@@ -603,6 +621,10 @@ impl PostgresStore {
         let mut user = request.user_message;
         user.run_id = Some(run_id.clone());
         insert_message(tx, &run, &user).await?;
+        for mut message in request.additional_messages {
+            message.run_id = Some(run_id.clone());
+            insert_message(tx, &run, &message).await?;
+        }
         Ok(AdmitOutcome {
             session,
             run,
@@ -1362,6 +1384,9 @@ mod tests {
     }
     pub(super) fn request(session: &SessionId) -> AdmitRequest {
         AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "test".into(),
             directory: "/tmp".into(),
@@ -1380,6 +1405,14 @@ mod tests {
         PostgresStore::migrate(&url).await.unwrap();
         let store = PostgresStore::connect(&url).await.unwrap();
         crate::public_state_contract::run_contract(|clock| store.with_clock(clock)).await;
+    }
+    #[tokio::test]
+    async fn postgres_typed_admission_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::typed_admission_contract::run_contract(|clock| store.with_clock(clock)).await;
     }
     #[tokio::test]
     async fn postgres_revision_contract() {

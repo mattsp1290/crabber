@@ -47,6 +47,8 @@ pub struct AdmissionRequestData {
 /// turn limit, tools, prompts, restrictions, components, guards, providers.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdmissionExecutionCapsule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub version: u32,
     pub request: AdmissionRequestData,
     pub runtime_semantics: Value,
@@ -87,8 +89,16 @@ impl AdmissionExecutionCapsule {
     pub fn validate(&self, keyed: &KeyedAdmitRequest) -> Result<(), StoreError> {
         use crabber_core::{ContentBlock, PartKind, Role};
         let r: &AdmitRequest = &keyed.request;
+        r.validate_messages()?;
         let data = &self.request;
         let semantics = self.runtime_semantics.as_array();
+        if let Some(input) = &self.input_envelope
+            && !self.request.text.is_empty()
+            && input.legacy_text() != Some(self.request.text.as_str())
+        {
+            return Err(StoreError::AdmissionConflict);
+        }
+
         let text_matches = r.user_message.role == Role::User
             && r.user_message.parent_id.is_none()
             && r.user_message.parts.len() == 1
@@ -98,13 +108,17 @@ impl AdmissionExecutionCapsule {
                 == ContentBlock::Text {
                     text: data.text.clone(),
                 };
-        if self.version != 1
+        let typed = self.version == 2 && self.input_envelope.is_some();
+        if !matches!(
+            (self.version, self.input_envelope.is_some()),
+            (1, false) | (2, true)
+        ) || self.input_envelope != r.input_envelope
             || r.session_id.as_ref() != Some(&data.session_id)
             || r.user_message.session_id != data.session_id
             || r.workspace_id != data.workspace_id
             || r.directory != data.directory
             || r.title != data.title
-            || !text_matches
+            || (!typed && (!text_matches || !r.additional_messages.is_empty()))
             || self.config_hash != r.config_hash
             || self.plan_fingerprint != r.plan_fingerprint
             || self.fingerprint != keyed.options.fingerprint
@@ -170,6 +184,22 @@ pub struct ClaimedAdmission {
 }
 
 impl AdmissionExecutionRecord {
+    /// Encode bounded private evidence as lossless JSON text.
+    /// # Errors
+    /// Rejects oversized or malformed evidence without echoing input.
+    pub fn encode(&self) -> Result<String, StoreError> {
+        crate::execution_binding::encode_bounded(self)
+    }
+    /// Decode private evidence; authoritative row validation remains required.
+    /// # Errors
+    /// Rejects oversized or malformed evidence.
+    pub fn decode(encoded: &str) -> Result<Self, StoreError> {
+        if encoded.len() > 16 * 1024 * 1024 {
+            return Err(StoreError::AdmissionConflict);
+        }
+        serde_json::from_str(encoded).map_err(|_| StoreError::AdmissionConflict)
+    }
+
     /// Validate retained capsule, run and original user-message bindings.
     /// # Errors
     /// Returns sanitized `SemanticConflict` for inconsistent evidence.
@@ -178,11 +208,36 @@ impl AdmissionExecutionRecord {
         run: &Run,
         user: &crabber_core::Message,
     ) -> Result<(), AdmissionExecutionError> {
+        self.validate_messages(run, std::slice::from_ref(user))
+    }
+    /// Validate original keyed input without treating replay as execution authority.
+    /// # Errors
+    /// Rejects a missing/altered message or inconsistent receipt/capsule.
+    pub fn validate_messages(
+        &self,
+        run: &Run,
+        messages: &[crabber_core::Message],
+    ) -> Result<(), AdmissionExecutionError> {
+        if let Some(input) = &self.capsule.input_envelope {
+            input
+                .validate_message_projection(&run.session_id, Some(&run.id), messages)
+                .map_err(|_| AdmissionExecutionError::SemanticConflict)?;
+        } else if messages.len() != 1 {
+            return Err(AdmissionExecutionError::SemanticConflict);
+        }
+        let user = messages
+            .first()
+            .ok_or(AdmissionExecutionError::SemanticConflict)?;
         if self.receipt.run_id != run.id
             || self.receipt.session_id != run.session_id
             || self.receipt.user_message_id != user.id
             || user.run_id.as_ref() != Some(&run.id)
-            || self.receipt.semantic_digest_version != 1
+            || self.receipt.semantic_digest_version
+                != if self.capsule.input_envelope.is_some() {
+                    2
+                } else {
+                    1
+                }
             || self.receipt.fingerprint != self.capsule.fingerprint
             || self.receipt.semantic_digest != self.capsule.semantic_digest
             || run.config_hash != self.capsule.config_hash
@@ -193,8 +248,24 @@ impl AdmissionExecutionRecord {
         let data = &self.capsule.request;
         let mut user = user.clone();
         user.run_id = None;
+        let additional_messages = messages
+            .iter()
+            .skip(1)
+            .cloned()
+            .map(|mut record| {
+                record.run_id = None;
+                record
+            })
+            .collect();
         let keyed = KeyedAdmitRequest {
             request: AdmitRequest {
+                input_envelope: self.capsule.input_envelope.clone(),
+                additional_messages,
+                expected_revision: self
+                    .capsule
+                    .input_envelope
+                    .as_ref()
+                    .map(crabber_core::InputEnvelope::expected_revision),
                 session_id: Some(run.session_id.clone()),
                 workspace_id: data.workspace_id.clone(),
                 directory: data.directory.clone(),
@@ -210,7 +281,7 @@ impl AdmissionExecutionRecord {
                 fingerprint: self.capsule.fingerprint.clone(),
                 behavior_fingerprint: self.capsule.behavior_fingerprint.clone(),
             },
-            execution: None,
+            execution: Some(self.capsule.clone()),
         };
         self.capsule
             .validate(&keyed)

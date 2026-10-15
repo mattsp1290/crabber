@@ -15,6 +15,13 @@ pub(super) struct LostAdmissionReply {
 }
 #[async_trait]
 impl Store for LostAdmissionReply {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber::core::SessionRevision, StoreError> {
+        self.inner.session_revision(session).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(request).await
     }

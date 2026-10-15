@@ -25,6 +25,9 @@ pub(crate) async fn admit(store: &impl Store, now: OffsetDateTime) -> AdmitOutco
     let id = MessageId::new();
     store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "workspace".into(),
             directory: "/workspace".into(),

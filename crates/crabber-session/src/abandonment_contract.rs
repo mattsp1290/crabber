@@ -14,6 +14,9 @@ pub(crate) trait FixtureStore: Store {
 pub(crate) fn request() -> AdmitRequest {
     let session = SessionId::new();
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: ".".into(),

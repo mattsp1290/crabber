@@ -25,8 +25,8 @@ async fn bindings_survive_lost_ack_in_fresh_process() {
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for keyed in [false, true] {
-        let target = process::Fixture::new(keyed);
+    for (keyed, typed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let target = process::Fixture::new(keyed, typed);
         store
             .binding_fault
             .store(2, std::sync::atomic::Ordering::SeqCst);
@@ -44,12 +44,12 @@ async fn killed_binding_insert_rolls_back_entire_admission() {
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
-    for keyed in [false, true] {
-        crash(&store, keyed).await;
+    for (keyed, typed) in [(false, false), (true, false), (false, true), (true, true)] {
+        crash(&store, keyed, typed).await;
     }
 }
-async fn crash(store: &crate::PostgresStore, keyed: bool) {
-    let target = process::Fixture::new(keyed);
+async fn crash(store: &crate::PostgresStore, keyed: bool, typed: bool) {
+    let target = process::Fixture::new(keyed, typed);
     let name = format!("binding_barrier_{}", uuid::Uuid::new_v4().simple());
     // IDs are generated UUIDs, never caller SQL or data used as an identifier.
     sqlx::query(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF EXISTS(SELECT 1 FROM runs WHERE id=NEW.run_id AND session_id='{}') THEN PERFORM pg_advisory_xact_lock(751302926); END IF; RETURN NEW; END $$", target.session.0)).execute(&store.pool).await.unwrap();

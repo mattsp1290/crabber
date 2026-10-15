@@ -1,5 +1,5 @@
 //! Metadata-only keyed reconciliation, before contextual owner acquisition.
-use super::{Orchestrator, Request, RuntimeError, user_message};
+use super::{Orchestrator, Request, RuntimeError};
 use crabber_core::{AdmissionOptions, AdmissionReceipt, Run, RunStatus, Session, SessionContext};
 use crabber_extension::{ComponentIdentity, RunPlan, compute_fingerprint};
 use crabber_session::{
@@ -154,7 +154,8 @@ impl Orchestrator {
             .await?
             .ok_or(StoreError::NotFound)?;
         let binding = self.stored_binding(session_id, &receipt.run_id).await?;
-        if binding.request != record.capsule.request
+        if binding.input_envelope != record.capsule.input_envelope
+            || binding.request != record.capsule.request
             || binding.runtime_semantics != record.capsule.runtime_semantics
             || binding.behavior_fingerprint != record.capsule.behavior_fingerprint
         {
@@ -180,7 +181,7 @@ impl Orchestrator {
         run: &Run,
         context: &SessionContext,
     ) -> Result<(), RuntimeError> {
-        if receipt.semantic_digest_version != 1
+        if receipt.semantic_digest_version != 2
             || record.receipt != *receipt
             || record.key != options.key
             || record.capsule.request != request.admission_data()?
@@ -192,25 +193,31 @@ impl Orchestrator {
             return Err(StoreError::AdmissionConflict.into());
         }
         // Recompute original request semantics; generated IDs/time/owner are
-        // excluded by the established v1 digest, just as on a fresh submission.
+        // excluded by the canonical typed digest, just as on a fresh submission.
+        let input = record
+            .capsule
+            .input_envelope
+            .clone()
+            .ok_or(AdmissionExecutionError::Unsupported)?;
+        let mut messages = input.materialize_messages(context.session_id(), self.clock.now())?;
+        let user = messages.remove(0);
         let keyed = KeyedAdmitRequest {
             request: AdmitRequest {
+                input_envelope: Some(input.clone()),
+                additional_messages: messages,
+                expected_revision: Some(input.expected_revision()),
                 session_id: request.session_id.clone(),
                 workspace_id: request.workspace_id.clone(),
                 directory: request.directory.clone(),
                 title: request.title.clone(),
-                user_message: user_message(
-                    context.session_id().clone(),
-                    request.text.clone(),
-                    self.clock.now(),
-                ),
+                user_message: user,
                 config_hash: run.config_hash.clone(),
                 plan_fingerprint: run.plan_fingerprint.clone(),
                 owner: run.owner.clone(),
                 lease: Duration::from_secs(30),
             },
             options: options.clone(),
-            execution: None,
+            execution: Some(record.capsule.clone()),
         };
         record.capsule.validate(&keyed)?;
         self.verify_configuration(record, context)

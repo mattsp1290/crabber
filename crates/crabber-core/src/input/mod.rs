@@ -1,5 +1,7 @@
 //! Validated semantic input, separate from raw persisted messages and authority.
 //! Unstable until the durable-host contract is qualified.
+mod persistence;
+pub(crate) use persistence::record_content;
 mod validation;
 pub(crate) use validation::{
     bounded as validate_serialized_bound, bounded_with_limit as validate_serialized_limit,
@@ -113,6 +115,25 @@ pub struct InputContext {
     pub value: Value,
 }
 
+impl InputContext {
+    /// Render explicit context as canonical JSON data for text-only transports.
+    /// Object keys are sorted; arrays, null and strings remain distinct.
+    /// # Errors
+    /// Rejects invalid, deeply nested or oversized context before serialization.
+    pub fn canonical_text(&self) -> Result<String, CoreError> {
+        if self.description.contains('\0') {
+            return Err(validation::invalid());
+        }
+        validation::json(&self.value, 0)?;
+        validation::bounded(self)?;
+        let mut value = serde_json::json!([self.description, self.value]);
+        value.sort_all_objects();
+        serde_json::to_string(&value)
+            .map(|value| format!("Context: {value}"))
+            .map_err(|_| validation::invalid())
+    }
+}
+
 /// Preserve explicit JSON null independently of absence.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -150,6 +171,61 @@ struct WireEnvelope {
 #[serde(transparent)]
 pub struct InputEnvelope(WireEnvelope);
 impl InputEnvelope {
+    /// Deliberate adapter for the ordinary text convenience API.
+    /// # Errors
+    /// Rejects invalid or oversized text using the same envelope validation.
+    pub fn text(text: impl Into<String>, revision: SessionRevision) -> Result<Self, CoreError> {
+        Self::new(
+            vec![InputMessage {
+                id: None,
+                parent_id: None,
+                role: Role::User,
+                parts: vec![InputPart {
+                    id: None,
+                    content: InputContent::Content {
+                        content: MessageContent::Text { text: text.into() },
+                    },
+                }],
+            }],
+            vec![],
+            vec![],
+            InputState::Absent,
+            revision,
+            AdmissionKind::Ordinary,
+        )
+    }
+    /// Recognize only the exact text convenience shape, without discarding
+    /// provenance, media, context, state, frontend declarations or continuation.
+    #[must_use]
+    pub fn legacy_text(&self) -> Option<&str> {
+        if !self.frontend_tools().is_empty()
+            || !self.context().is_empty()
+            || !matches!(self.state(), InputState::Absent)
+            || !matches!(self.admission_kind(), AdmissionKind::Ordinary)
+        {
+            return None;
+        }
+        let [message] = self.messages() else {
+            return None;
+        };
+        if message.id.is_some() || message.parent_id.is_some() || message.role != Role::User {
+            return None;
+        }
+        let [part] = message.parts.as_slice() else {
+            return None;
+        };
+        if part.id.is_some() {
+            return None;
+        }
+        if let InputContent::Content {
+            content: MessageContent::Text { text },
+        } = &part.content
+        {
+            Some(text)
+        } else {
+            None
+        }
+    }
     /// Validate input without assigning internal persistence identities.
     /// # Errors
     /// Returns fixed validation errors without echoing input content.

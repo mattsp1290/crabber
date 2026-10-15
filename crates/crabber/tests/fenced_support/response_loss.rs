@@ -80,6 +80,9 @@ async fn memory_committed_response_loss_exact_request_reconciles() {
 pub(super) async fn verify_loss(store: Arc<dyn Store>) -> (AbandonRequest, AbandonOutcome) {
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             ..admit_request(&SessionId::new())
         })

@@ -237,6 +237,7 @@ fn default_status_taxonomy_is_stable() {
 #[cfg(any(feature = "custom-http", feature = "codex", feature = "opencode-go"))]
 fn request(provider: &str) -> ModelRequest {
     ModelRequest {
+        context: Vec::new(),
         identity: RequestIdentity {
             session_id: SessionId::from("session-1"),
             run_id: RunId::from("run-1"),

@@ -305,6 +305,7 @@ async fn stale_fence_never_invokes_the_executor() {
         .unwrap();
     let run = runtime
         .start(Request {
+            input_envelope: None,
             session_id: None,
             workspace_id: "ws-fence".into(),
             directory: "/srv/fence".into(),

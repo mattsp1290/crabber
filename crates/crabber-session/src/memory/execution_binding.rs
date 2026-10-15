@@ -17,12 +17,25 @@ fn read(
         return Ok(None);
     };
     let binding = RetainedExecutionBinding::decode(encoded)?;
-    let user = state
+    let count = binding
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages: Vec<_> = state
         .messages
         .iter()
-        .find(|message| message.id == binding.user_message_id)
-        .ok_or(StoreError::AdmissionConflict)?;
-    binding.validate(id, session, &run.config_hash, &run.plan_fingerprint, user)?;
+        .filter(|message| message.run_id.as_ref() == Some(id) && message.session_id == *session)
+        .take(count)
+        .cloned()
+        .collect();
+    binding.validate_messages(
+        id,
+        session,
+        &run.config_hash,
+        &run.plan_fingerprint,
+        &messages,
+    )?;
     state
         .sessions
         .get(session)

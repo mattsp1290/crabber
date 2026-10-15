@@ -193,6 +193,7 @@ fn call_script(command: &str) -> Vec<StreamDelta> {
 }
 fn request() -> crate::Request {
     crate::Request {
+        input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: ".".into(),

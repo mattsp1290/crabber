@@ -41,6 +41,41 @@ impl ToolOutput {
         let text = serde_json::to_string(value).map_err(|_| invalid())?;
         Self::new(vec![MessageContent::Text { text }], false)
     }
+    /// Project validated content into durable `ToolResult` blocks without flattening
+    /// media or attaching call/session identity or a runtime outcome class.
+    #[must_use]
+    pub fn to_content_blocks(&self) -> Vec<crate::ContentBlock> {
+        self.content().iter().map(input::record_content).collect()
+    }
+    /// Recover only typed data blocks from a stored result or a protected transform.
+    /// Legacy URI media and control/provider/reasoning blocks are not interpreted.
+    /// # Errors
+    /// Rejects untyped media, authority-bearing blocks, malformed or oversized data.
+    pub fn from_content_blocks(
+        content: Vec<crate::ContentBlock>,
+        is_error: bool,
+    ) -> Result<Self, CoreError> {
+        if content.len() > input::MAX_INPUT_PARTS {
+            return Err(invalid());
+        }
+        let content = content
+            .into_iter()
+            .map(|block| match block {
+                crate::ContentBlock::Text { text } => Ok(MessageContent::Text { text }),
+                crate::ContentBlock::MediaContent {
+                    kind,
+                    mime_type,
+                    source,
+                } => Ok(MessageContent::Media {
+                    kind,
+                    mime_type,
+                    source,
+                }),
+                _ => Err(invalid()),
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Self::new(content, is_error)
+    }
     #[must_use]
     pub fn content(&self) -> &[MessageContent] {
         &self.0.content
@@ -93,6 +128,35 @@ mod tests {
         ];
         let output = ToolOutput::new(content.clone(), false).unwrap();
         assert_eq!(output.content(), content);
+        let records = output.to_content_blocks();
+        assert!(
+            matches!(&records[1], crate::ContentBlock::MediaContent { source: MediaSource::File { file_id }, .. } if file_id == "opaque-file")
+        );
+        assert_eq!(
+            ToolOutput::from_content_blocks(records, false).unwrap(),
+            output
+        );
+        for forbidden in [
+            crate::ContentBlock::Media {
+                uri: "https://example.invalid/image".into(),
+                mime_type: "image/png".into(),
+            },
+            crate::ContentBlock::ToolCall {
+                call_id: crate::ToolCallId::new(),
+                name: "authority".into(),
+                arguments: serde_json::json!({}),
+            },
+            crate::ContentBlock::ProviderState {
+                codec_id: "authority".into(),
+                payload: serde_json::Value::Null,
+            },
+            crate::ContentBlock::Reasoning {
+                text: "private".into(),
+                provider_state: None,
+            },
+        ] {
+            assert!(ToolOutput::from_content_blocks(vec![forbidden], false).is_err());
+        }
         let restored: ToolOutput =
             serde_json::from_value(serde_json::to_value(output.clone().with_error()).unwrap())
                 .unwrap();

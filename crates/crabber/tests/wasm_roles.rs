@@ -234,9 +234,17 @@ async fn admit_expired_retry_safe_run(
     binding.request.directory = ".".into();
     binding.request.title = "recovery".into();
     binding.request.text = "recover".into();
+    binding.input_envelope = Some(
+        crabber::core::InputEnvelope::text("recover", crabber::core::SessionRevision::INITIAL)
+            .unwrap(),
+    );
+    binding.input_fingerprint = binding.computed_input_fingerprint().unwrap();
     let admitted = store
         .admit_bound_run(crabber::session::BoundAdmitRequest {
             request: AdmitRequest {
+                input_envelope: binding.input_envelope.clone(),
+                additional_messages: Vec::new(),
+                expected_revision: Some(crabber::core::SessionRevision::INITIAL),
                 session_id: None,
                 workspace_id: "test".into(),
                 directory: ".".into(),

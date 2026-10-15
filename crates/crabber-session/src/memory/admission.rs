@@ -12,30 +12,16 @@ pub(super) fn admit_transaction(
     now: OffsetDateTime,
     allow_create: bool,
 ) -> Result<AdmitOutcome, StoreError> {
+    if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
+        request.validate_messages()?;
+    }
     let lease = time::Duration::try_from(request.lease)
         .map_err(|_| StoreError::Validation("lease is too large".into()))?;
     if lease <= time::Duration::ZERO {
         return Err(StoreError::Validation("lease must be positive".into()));
     }
-    let session_id = request
-        .session_id
-        .clone()
-        .unwrap_or_else(|| request.user_message.session_id.clone());
-    let session = if let Some(existing) = state.sessions.get(&session_id) {
-        existing.ensure_identity(&request.workspace_id, &request.directory)?;
-        existing.clone()
-    } else if request.session_id.is_some() && !allow_create {
-        return Err(StoreError::NotFound);
-    } else {
-        Session {
-            id: session_id.clone(),
-            workspace_id: request.workspace_id.clone(),
-            directory: request.directory.clone(),
-            title: request.title.clone(),
-            created_at: now,
-            updated_at: now,
-        }
-    };
+    let session = admission_session(state, request, now, allow_create)?;
+    let session_id = session.id.clone();
     if state
         .runs
         .values()
@@ -43,6 +29,7 @@ pub(super) fn admit_transaction(
     {
         return Err(StoreError::Busy);
     }
+    request.validate_messages()?;
     if request.user_message.session_id != session_id {
         return Err(StoreError::Validation(
             "user message has wrong session".into(),
@@ -90,6 +77,11 @@ pub(super) fn admit_transaction(
     crate::ensure_storable(&session)?;
     crate::ensure_storable(&run)?;
     insert_message(state, &run, user_message)?;
+    for additional in &request.additional_messages {
+        let mut message = additional.clone();
+        message.run_id = Some(run_id.clone());
+        insert_message(state, &run, message)?;
+    }
     state.sessions.insert(session_id.clone(), session.clone());
     state.runs.insert(run_id.clone(), run.clone());
     state.run_order.push(run_id.clone());
@@ -107,6 +99,44 @@ pub(super) fn admit_transaction(
         epoch: epoch_id,
         prior_history,
     })
+}
+
+fn admission_session(
+    state: &State,
+    request: &AdmitRequest,
+    now: OffsetDateTime,
+    allow_create: bool,
+) -> Result<Session, StoreError> {
+    let session_id = request
+        .session_id
+        .clone()
+        .unwrap_or_else(|| request.user_message.session_id.clone());
+    let session = if let Some(existing) = state.sessions.get(&session_id) {
+        existing.ensure_identity(&request.workspace_id, &request.directory)?;
+        existing.clone()
+    } else if request.session_id.is_some() && !allow_create {
+        return Err(StoreError::NotFound);
+    } else {
+        Session {
+            id: session_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            directory: request.directory.clone(),
+            title: request.title.clone(),
+            created_at: now,
+            updated_at: now,
+        }
+    };
+    if let Some(expected) = request.expected_revision {
+        let current = state
+            .public_revisions
+            .get(&session_id)
+            .copied()
+            .unwrap_or(crabber_core::SessionRevision::INITIAL);
+        if current != expected {
+            return Err(StoreError::AdmissionRevisionConflict);
+        }
+    }
+    Ok(session)
 }
 
 pub(super) fn admit_keyed_transaction(
@@ -136,7 +166,11 @@ pub(super) fn admit_keyed_transaction(
         run_id: admitted.run.id.clone(),
         user_message_id: request.user_message.id.clone(),
         fingerprint: keyed.options.fingerprint.clone(),
-        semantic_digest_version: 1,
+        semantic_digest_version: if request.input_envelope.is_some() {
+            2
+        } else {
+            1
+        },
         semantic_digest: digest,
     };
     crate::ensure_storable(&receipt)?;
@@ -147,7 +181,11 @@ pub(super) fn admit_keyed_transaction(
             capsule,
             state: crate::AdmissionExecutionState::Unstarted,
         };
-        crate::ensure_storable(&execution)?;
+        if execution.capsule.version == 2 {
+            execution.encode()?;
+        } else {
+            crate::ensure_storable(&execution)?;
+        }
         state
             .admission_executions
             .insert(admitted.run.id.clone(), execution);

@@ -11,6 +11,16 @@ pub type StoreError = crabber_core::CoreError;
 
 #[derive(Debug, Clone)]
 pub struct AdmitRequest {
+    /// Optional guard for a host's previously validated coherent snapshot.
+    /// Checked under the admission transaction after identity and receipt replay.
+    /// This legacy text request guard is not itself an idempotency semantic;
+    /// typed envelopes additionally retain their revision in canonical input.
+    pub expected_revision: Option<crabber_core::SessionRevision>,
+    /// Ordered records following the admission's first message. This is a
+    /// trusted persistence API, not role/history authorization for wire input.
+    pub additional_messages: Vec<Message>,
+    /// Original bounded semantic input; generated persistence IDs are separate.
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub session_id: Option<SessionId>,
     pub workspace_id: String,
     pub directory: String,
@@ -20,6 +30,62 @@ pub struct AdmitRequest {
     pub plan_fingerprint: String,
     pub owner: String,
     pub lease: Duration,
+}
+
+impl AdmitRequest {
+    /// Check the complete input batch before any write. Runtime-owned generated
+    /// IDs and host-supplied provenance are validated against the envelope separately.
+    /// # Errors
+    /// Rejects oversized batches, duplicate IDs, foreign scope or pre-owned typed
+    /// records. The legacy single raw-message path normalizes its run ID.
+    pub fn validate_messages(&self) -> Result<(), StoreError> {
+        let session = self
+            .session_id
+            .as_ref()
+            .unwrap_or(&self.user_message.session_id);
+        if self.additional_messages.len() >= crabber_core::input::MAX_INPUT_MESSAGES {
+            return Err(StoreError::Validation(
+                "invalid admission message batch".into(),
+            ));
+        }
+        if let Some(input) = &self.input_envelope {
+            if !matches!(
+                input.admission_kind(),
+                crabber_core::AdmissionKind::Ordinary
+            ) {
+                return Err(StoreError::HostUnsupported);
+            }
+            if self.expected_revision != Some(input.expected_revision()) {
+                return Err(StoreError::AdmissionConflict);
+            }
+            input.validate_message_projection(
+                session,
+                None,
+                std::iter::once(&self.user_message).chain(&self.additional_messages),
+            )?;
+        }
+        let mut messages = std::collections::BTreeSet::new();
+        let mut parts = std::collections::BTreeSet::new();
+        for message in std::iter::once(&self.user_message).chain(&self.additional_messages) {
+            if message.session_id != *session
+                || (message.run_id.is_some()
+                    && (self.input_envelope.is_some() || !self.additional_messages.is_empty()))
+                || !messages.insert(&message.id)
+            {
+                return Err(StoreError::Validation(
+                    "invalid admission message batch".into(),
+                ));
+            }
+            for part in &message.parts {
+                if part.message_id != message.id || !parts.insert(&part.id) {
+                    return Err(StoreError::Validation(
+                        "invalid admission message batch".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +123,9 @@ impl KeyedAdmitRequest {
     /// Returns a sanitized serialization error.
     pub fn semantic_digest(&self) -> Result<InputFingerprint, StoreError> {
         use sha2::{Digest, Sha256};
+        if self.request.input_envelope.is_some() {
+            return crate::typed_admission::semantic_digest(self);
+        }
         let request = &self.request;
         let parts = request
             .user_message
@@ -107,6 +176,12 @@ impl KeyedAdmitRequest {
                 "invalid admission message identity".into(),
             ));
         }
+        request.validate_messages()?;
+        // Legacy keyed capsules cannot attest a multi-message input. The typed
+        // capsule/digest must be installed before this path can grant authority.
+        if !request.additional_messages.is_empty() && request.input_envelope.is_none() {
+            return Err(StoreError::HostUnsupported);
+        }
         let digest = self.semantic_digest()?;
         if let Some(capsule) = &self.execution {
             capsule.validate(self)?;
@@ -150,7 +225,9 @@ pub enum InboxKind {
 #[async_trait]
 pub trait Store: Send + Sync {
     /// Atomic admission plus retained provider-binding evidence. No fallback to
-    /// legacy admission is safe: custom adapters must implement this capability.
+    /// legacy admission is safe: custom adapters must implement this capability,
+    /// enforce an expected revision under the same mutation lock, and preserve
+    /// every typed message and original envelope. Unsupported codecs must fail.
     async fn admit_bound_run(
         &self,
         _request: crate::BoundAdmitRequest,

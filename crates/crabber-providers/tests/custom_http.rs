@@ -294,6 +294,7 @@ fn assert_single_protocol_error(items: &[StreamDelta], expected_message: &str) {
 
 fn request(provider: &str) -> ModelRequest {
     ModelRequest {
+        context: Vec::new(),
         identity: RequestIdentity {
             session_id: SessionId::from("session"),
             run_id: RunId::from("run"),
@@ -435,3 +436,56 @@ mod redaction;
 mod streaming;
 #[path = "custom_http/transport.rs"]
 mod transport;
+
+#[tokio::test]
+async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
+    for protocol in [
+        Protocol::Responses,
+        Protocol::Messages,
+        Protocol::ChatCompletions,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = timeout(LOOPBACK_TIMEOUT, listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let (_, body) = read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 14\r\nConnection: close\r\n\r\ndata: [DONE]\n\n").await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+        });
+        let adapter = HttpAdapter::custom("context-fixture", endpoint, protocol)
+            .with_api_key("fixture-context");
+        assert!(adapter.input_support().context_data);
+        assert_eq!(adapter.input_support().media, []);
+        let mut request = request("context-fixture");
+        request.system = Some("host policy".into());
+        request.context = vec![crabber_core::InputContext {
+            description: "provided data".into(),
+            value: serde_json::json!({"z":[null,1],"a":"\u{0}"}),
+        }];
+        let expected = request.context[0].canonical_text().unwrap();
+        drop(adapter.stream(request).await.unwrap());
+        let body = timeout(LOOPBACK_TIMEOUT, server).await.unwrap().unwrap();
+        let field = if protocol == Protocol::Responses {
+            "input"
+        } else {
+            "messages"
+        };
+        let offset = usize::from(protocol == Protocol::ChatCompletions);
+        let message = &body[field][offset];
+        assert_eq!(message["role"], "user");
+        if protocol == Protocol::Messages {
+            assert_eq!(message["content"][0]["type"], "text");
+            assert_eq!(message["content"][0]["text"], expected);
+        } else {
+            assert_eq!(message["content"], expected);
+        }
+        match protocol {
+            Protocol::Responses => assert_eq!(body["instructions"], "host policy"),
+            Protocol::Messages => assert_eq!(body["system"], "host policy"),
+            Protocol::ChatCompletions => assert_eq!(body["messages"][0]["content"], "host policy"),
+        }
+    }
+}

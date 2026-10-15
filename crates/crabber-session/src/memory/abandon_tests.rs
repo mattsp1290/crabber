@@ -6,6 +6,9 @@ use std::time::Duration;
 fn request() -> AdmitRequest {
     let session = SessionId::new();
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "w".into(),
         directory: ".".into(),
@@ -266,6 +269,9 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
     );
     let next = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(admitted.run.session_id.clone()),
             user_message: inbox.clone(),
             ..request()

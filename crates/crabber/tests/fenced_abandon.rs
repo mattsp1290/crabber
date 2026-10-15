@@ -120,6 +120,9 @@ fn event(run: &Run, kind: EventKind) -> EventRecord {
 }
 fn admit_request(session: &SessionId) -> AdmitRequest {
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: Some(session.clone()),
         workspace_id: "workspace".into(),
         directory: ".".into(),
@@ -469,6 +472,9 @@ async fn stopped_owner(store: Arc<dyn Store>) {
     let mut worker = OwnerProcess::spawn();
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             owner: format!("process:{}", worker.0.id()),
             ..admit_request(&SessionId::new())
@@ -627,6 +633,9 @@ async fn error_semantics(store: Arc<dyn Store>) {
     );
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             ..admit_request(&SessionId::new())
         })

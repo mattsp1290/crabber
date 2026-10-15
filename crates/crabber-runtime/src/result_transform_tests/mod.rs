@@ -358,6 +358,7 @@ pub(super) fn one_turn(calls: &[&ScriptedCall]) -> Vec<Vec<StreamDelta>> {
 
 fn request() -> Request {
     Request {
+        input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: ".".into(),

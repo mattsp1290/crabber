@@ -133,6 +133,7 @@ async fn active_execution_holds_original_implementation_and_limits_across_turns(
         .unwrap();
     let handle = runtime
         .start(Request {
+            input_envelope: None,
             session_id: None,
             workspace_id: "held".into(),
             directory: "/held".into(),
@@ -281,6 +282,7 @@ fn opaque_host_behavior_requires_explicit_declaration() {
 
 fn binding_request() -> Request {
     Request {
+        input_envelope: None,
         session_id: None,
         workspace_id: "binding-tests".into(),
         directory: "/binding-tests".into(),

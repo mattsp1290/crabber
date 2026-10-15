@@ -2,6 +2,8 @@
 mod admission;
 #[path = "orchestrator/binding.rs"]
 mod binding;
+#[path = "orchestrator/input.rs"]
+mod input;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
@@ -82,6 +84,9 @@ fn admission_error(error: StoreError) -> RuntimeError {
 
 #[derive(Debug, Clone)]
 pub struct Request {
+    /// Host-validated semantic input. None adapts the text convenience API.
+    /// With Some, text must be empty or the exact plain-text adapter shape.
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub session_id: Option<SessionId>,
     pub workspace_id: String,
     pub directory: String,
@@ -119,6 +124,7 @@ impl Request {
     }
     fn from_admission(data: AdmissionRequestData) -> Self {
         Self {
+            input_envelope: None,
             session_id: Some(data.session_id),
             workspace_id: data.workspace_id,
             directory: data.directory,
@@ -232,6 +238,7 @@ pub enum RuntimeError {
 
 #[derive(Debug, Clone)]
 pub struct TurnSnapshot {
+    pub context: Vec<crabber_core::InputContext>,
     pub identity: RequestIdentity,
     pub selection: Selection,
     pub messages: Vec<Message>,
@@ -439,6 +446,10 @@ impl From<&Session> for RunSession {
 /// The request saved in a paused run's checkpoint, written and read only here.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CheckpointRequest {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    input_digest: Option<String>,
     workspace_id: String,
     directory: String,
     title: String,
@@ -451,6 +462,11 @@ struct CheckpointRequest {
 impl CheckpointRequest {
     fn new(request: &Request) -> Self {
         Self {
+            version: 2,
+            input_digest: request
+                .input_envelope
+                .as_ref()
+                .map(|input| admission_config_hash(&serde_json::json!(input))),
             workspace_id: request.workspace_id.clone(),
             directory: request.directory.clone(),
             title: request.title.clone(),
@@ -482,6 +498,7 @@ impl CheckpointRequest {
     }
     fn into_request(self, session_id: &SessionId) -> Request {
         Request {
+            input_envelope: None,
             session_id: Some(session_id.clone()),
             workspace_id: self.workspace_id,
             directory: self.directory,
@@ -1059,10 +1076,30 @@ impl Orchestrator {
         if let Some(saved) = &saved {
             session.ensure_identity(&saved.workspace_id, &saved.directory)?;
         }
-        Ok((
-            RunSession::from(&session),
-            saved.map(|saved| saved.into_request(&session.id)),
-        ))
+        let saved = if let Some(saved) = saved {
+            let binding = self
+                .store
+                .execution_binding(&session.id, &run.id)
+                .await?
+                .ok_or(StoreError::HostUnsupported)?
+                .capsule;
+            let input = binding
+                .input_envelope
+                .as_ref()
+                .ok_or(StoreError::HostUnsupported)?;
+            if saved.version != 2
+                || saved.input_digest.as_deref()
+                    != Some(admission_config_hash(&serde_json::json!(input)).as_str())
+            {
+                return Err(StoreError::HostUnsupported);
+            }
+            let mut request = saved.into_request(&session.id);
+            request.input_envelope = Some(input.clone());
+            Some(request)
+        } else {
+            None
+        };
+        Ok((RunSession::from(&session), saved))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1086,7 +1123,7 @@ impl Orchestrator {
         if let Some(saved) = &saved {
             self.verify_binding_request(saved, &session.id, &binding)?;
         }
-        let original = Request::from_admission(binding.request.clone());
+        let original = Request::from_binding(&binding);
         let (plan, prepared, _) = self.prepare_admission(&original).await?;
         if prepared.binding.provider != binding.provider {
             return Err(crabber_providers::ProviderBindingError::VersionConflict.into());
@@ -1612,13 +1649,22 @@ impl Orchestrator {
         if let Some(receipt) = self.replay_admission(&request, &options).await? {
             return Ok(Admission::Replayed(receipt));
         }
-        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
-        match self
-            .store
-            .admit_bound_keyed_run(keyed)
-            .await
-            .map_err(admission_error)?
-        {
+        let (plan, keyed) = self
+            .prepare_keyed_admission(&request, options.clone())
+            .await?;
+        let outcome = self.store.admit_bound_keyed_run(keyed).await;
+        let outcome = match outcome {
+            Err(StoreError::AdmissionConflict) if request.input_envelope.is_none() => {
+                plan.release();
+                let original = self
+                    .retained_admission(&request, &options)
+                    .await?
+                    .ok_or(StoreError::AdmissionConflict)?;
+                return Ok(Admission::Replayed(original.receipt));
+            }
+            result => result.map_err(admission_error)?,
+        };
+        match outcome {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {
                 receipt,
                 handle: self.with_context(context).spawn_admitted(
@@ -1672,7 +1718,11 @@ impl Orchestrator {
             binding: original_binding,
         } = retained;
         let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
-        let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
+        let mut captured = request.clone();
+        captured
+            .input_envelope
+            .clone_from(&original_binding.input_envelope);
+        let (plan, keyed) = self.prepare_keyed_admission(&captured, options).await?;
         if keyed.binding != original_binding {
             return Err(StoreError::AdmissionConflict.into());
         }
@@ -1684,7 +1734,7 @@ impl Orchestrator {
         // Check actual restored instance semantics against the retained capsule
         // before claiming ownership; metadata already checked frozen declarations.
         record.capsule.validate(&keyed)?;
-        if receipt.semantic_digest_version != 1
+        if receipt.semantic_digest_version != 2
             || record.receipt != receipt
             || record.key != keyed.options.key
             || record.capsule != *capsule
@@ -1729,7 +1779,7 @@ impl Orchestrator {
         Ok(Admission::Started {
             receipt: claimed.record.receipt,
             handle: self.with_context(context).spawn_admitted(
-                Request::from_admission(claimed.record.capsule.request),
+                Request::from_execution(&claimed.record.capsule),
                 plan,
                 claimed.fence,
                 &persisted,
@@ -1755,17 +1805,28 @@ impl Orchestrator {
             execution: None,
         };
         let capsule = AdmissionExecutionCapsule {
-            version: 1,
+            input_envelope: keyed.request.input_envelope.clone(),
+            version: 2,
             request: request.admission_data()?,
             runtime_semantics,
             config_hash: keyed.request.config_hash.clone(),
             plan_fingerprint: keyed.request.plan_fingerprint.clone(),
             fingerprint: keyed.options.fingerprint.clone(),
             behavior_fingerprint: keyed.options.behavior_fingerprint.clone(),
-            semantic_digest: keyed.semantic_digest()?,
+            semantic_digest: keyed.options.fingerprint.clone(),
         };
-        capsule.validate(&keyed)?;
         keyed.execution = Some(capsule);
+        let semantic_digest = keyed.semantic_digest()?;
+        keyed
+            .execution
+            .as_mut()
+            .ok_or(AdmissionExecutionError::MissingEvidence)?
+            .semantic_digest = semantic_digest;
+        keyed
+            .execution
+            .as_ref()
+            .ok_or(AdmissionExecutionError::MissingEvidence)?
+            .validate(&keyed)?;
         Ok((
             plan,
             crabber_session::BoundKeyedAdmitRequest {
@@ -1854,6 +1915,9 @@ impl Orchestrator {
             request.directory.clone(),
         );
         self.validate_context(&context).await?;
+        let input = self.capture_input(request, &session_id).await?;
+        let mut messages = input.materialize_messages(&session_id, now)?;
+        let first_message = messages.remove(0);
         let plan = self.acquire_execution_plan(&context).await?;
         let provider = self.describe_provider(&plan, &request.selection)?;
         let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
@@ -1890,11 +1954,14 @@ impl Orchestrator {
         config.sort_all_objects();
         let config_hash = admission_config_hash(&config);
         let admission = AdmitRequest {
+            input_envelope: Some(input.clone()),
+            additional_messages: messages,
+            expected_revision: Some(input.expected_revision()),
             session_id: request.session_id.clone(),
             workspace_id: request.workspace_id.clone(),
             directory: request.directory.clone(),
             title: request.title.clone(),
-            user_message: user_message(session_id.clone(), request.text.clone(), now),
+            user_message: first_message,
             config_hash,
             plan_fingerprint: plan.fingerprint().to_string(),
             owner: RunId::new().to_string(),
@@ -1902,8 +1969,10 @@ impl Orchestrator {
         };
         let mut stable = request.clone();
         stable.session_id = Some(session_id);
-        let binding = crabber_session::ExecutionBindingCapsule {
-            version: 2,
+        let mut binding = crabber_session::ExecutionBindingCapsule {
+            input_fingerprint: None,
+            input_envelope: Some(input),
+            version: 3,
             provider,
             request: stable.admission_data()?,
             runtime_semantics: config.clone(),
@@ -1913,6 +1982,7 @@ impl Orchestrator {
             )?,
             behavior_fingerprint: self.behavior_fingerprint.clone(),
         };
+        binding.input_fingerprint = binding.computed_input_fingerprint()?;
         binding.validate(&admission)?;
         Ok((
             plan,
@@ -1943,19 +2013,18 @@ impl Orchestrator {
         let work_session = RunSession::from(session);
         let run_id = fence.run_id.clone();
         let task = self.execution_tasks.spawn(run_id.clone(), async move {
-            let result = runtime
-                .run(
-                    fence,
-                    work_session,
-                    InitialRequest {
-                        request,
-                        entry,
-                        bound,
-                    },
-                    plan,
-                    work_cancellation,
-                )
-                .await;
+            let result = Box::pin(runtime.run(
+                fence,
+                work_session,
+                InitialRequest {
+                    request,
+                    entry,
+                    bound,
+                },
+                plan,
+                work_cancellation,
+            ))
+            .await;
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
         });
@@ -2025,6 +2094,8 @@ impl Orchestrator {
         } = initial;
         let binding = self.stored_binding(&session_id, &fence.run_id).await?;
         self.verify_binding_request(&request, &session_id, &binding)?;
+        let mut request = request;
+        request.input_envelope.clone_from(&binding.input_envelope);
         if plan.fingerprint().to_string() != binding.plan_fingerprint.as_str() {
             return Err(RuntimeError::PlanChanged);
         }
@@ -2222,8 +2293,14 @@ impl Orchestrator {
             snapshot.identity.turn_id = turn_id.clone();
             let mut compacted = false;
             if let Some(context_limit) = bound.descriptor().limits().context_tokens {
-                let estimated =
-                    serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len() / 4);
+                let history_bytes =
+                    serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len());
+                let context_bytes = if snapshot.context.is_empty() {
+                    0
+                } else {
+                    serde_json::to_vec(&snapshot.context).map_or(0, |bytes| bytes.len())
+                };
+                let estimated = history_bytes.saturating_add(context_bytes) / 4;
                 #[allow(clippy::cast_precision_loss)]
                 if snapshot.messages.len() > self.compaction.keep_tail_messages
                     && context_limit > 0
@@ -2470,6 +2547,10 @@ impl Orchestrator {
             }
         }
         Ok(TurnSnapshot {
+            context: request
+                .input_envelope
+                .as_ref()
+                .map_or_else(Vec::new, |input| input.context().to_vec()),
             identity: RequestIdentity {
                 session_id: session_id.clone(),
                 run_id: run_id.clone(),
@@ -2735,6 +2816,7 @@ impl Orchestrator {
             let chunk: String = raw[offset..end].iter().collect();
             let input = format!("Previous summary:\n{text}\nNew context:\n{chunk}");
             let request = ModelRequest {
+                context: snapshot.context.clone(),
                 identity: RequestIdentity {
                     session_id: session_id.clone(),
                     run_id: run_id.clone(),
@@ -3047,6 +3129,7 @@ impl Orchestrator {
         );
         let model_started = self.monotonic_clock.now();
         let request = ModelRequest {
+            context: snapshot.context.clone(),
             identity: snapshot.identity.clone(),
             selection: snapshot.selection.clone(),
             system,

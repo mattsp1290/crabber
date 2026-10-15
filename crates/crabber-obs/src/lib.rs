@@ -2364,6 +2364,7 @@ mod tests {
             .unwrap();
         let run = runtime
             .start(Request {
+                input_envelope: None,
                 session_id: None,
                 workspace_id: "test".into(),
                 directory: ".".into(),
@@ -2467,6 +2468,7 @@ mod tests {
                 .unwrap();
             let run = runtime
                 .start(Request {
+                    input_envelope: None,
                     session_id: None,
                     workspace_id: "test".into(),
                     directory: ".".into(),

@@ -82,6 +82,7 @@ async fn mount_test(
 
 fn request() -> Request {
     Request {
+        input_envelope: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/workspace".into(),

@@ -144,7 +144,12 @@ impl Fixture {
         if let Some(stale) = stale {
             prepared.request.plan_fingerprint.clone_from(&stale);
             prepared.binding.plan_fingerprint = crabber_core::InputFingerprint::new(stale).unwrap();
+            prepared.binding.input_fingerprint =
+                prepared.binding.computed_input_fingerprint().unwrap();
         }
+        let input_digest = crabber_session::admission_config_hash(&serde_json::json!(
+            prepared.binding.input_envelope.as_ref().unwrap()
+        ));
         let admitted = harness.store.admit_bound_run(prepared).await.unwrap();
         let session = admitted.session.id;
         let run = admitted.run.id;
@@ -184,6 +189,7 @@ impl Fixture {
             execution
                 .pause_run(
                     json!({"request": {
+                        "version": 2, "input_digest": input_digest,
                         "workspace_id": "test", "directory": ".", "title": "test", "text": "hello",
                         "provider_id": "fake", "model_id": "scripted", "system_prompt": null, "max_output_tokens": null
                     }}),

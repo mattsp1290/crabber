@@ -805,6 +805,7 @@ impl Agent {
         selection: &Selection,
     ) -> Request {
         Request {
+            input_envelope: None,
             session_id,
             text,
             workspace_id: workspace_id.to_owned(),

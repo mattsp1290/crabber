@@ -53,6 +53,8 @@ pub(crate) fn fixture(
     ], [], []]);
     let config_hash = InputFingerprint::new(admission_config_hash(&semantics)).unwrap();
     let binding = ExecutionBindingCapsule {
+        input_fingerprint: None,
+        input_envelope: None,
         version: 2,
         provider,
         request: data.clone(),
@@ -63,6 +65,9 @@ pub(crate) fn fixture(
     };
     let message_id = MessageId::new();
     let request = AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: Some(session.clone()),
         workspace_id: data.workspace_id.clone(),
         directory: data.directory.clone(),
@@ -99,6 +104,7 @@ pub(crate) fn fixture(
         execution: None,
     };
     keyed.execution = Some(AdmissionExecutionCapsule {
+        input_envelope: None,
         version: 1,
         request: data,
         runtime_semantics: semantics,

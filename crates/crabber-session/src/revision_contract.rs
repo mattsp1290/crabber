@@ -1,5 +1,7 @@
 //! Reusable public-revision contract for custom Store implementers.
 //! Unstable until durable-host qualification.
+mod admission;
+
 use crate::{AdmitOutcome, AdmitRequest, KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError};
 use crabber_core::{
     AdmissionKey, AdmissionOptions, Clock, ContentBlock, EventKind, EventRecord, InputFingerprint,
@@ -26,6 +28,8 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     context_epochs_and_abandonment(&store, &clock).await;
     ownership_and_terminal(&store, &clock).await;
     receipt_replay(&store, &clock).await;
+    admission::conditional_admission(&store, &clock).await;
+    admission::message_batch(&store, &clock).await;
 }
 fn message(session: &SessionId, run: Option<&Run>, now: OffsetDateTime) -> Message {
     let id = MessageId::new();
@@ -50,6 +54,9 @@ fn message(session: &SessionId, run: Option<&Run>, now: OffsetDateTime) -> Messa
 fn request(now: OffsetDateTime) -> AdmitRequest {
     let session = SessionId::new();
     AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/workspace".into(),

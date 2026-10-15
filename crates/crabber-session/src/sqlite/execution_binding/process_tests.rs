@@ -28,8 +28,8 @@ async fn process_helper() {
 #[tokio::test]
 async fn bindings_survive_lost_ack_in_fresh_process() {
     let (store, path, _directory) = crate::sqlite::tests::temp_store().await;
-    for keyed in [false, true] {
-        let target = process::Fixture::new(keyed);
+    for (keyed, typed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let target = process::Fixture::new(keyed, typed);
         store
             .binding_fault
             .store(2, std::sync::atomic::Ordering::SeqCst);
@@ -43,8 +43,11 @@ async fn bindings_survive_lost_ack_in_fresh_process() {
 async fn killed_binding_insert_rolls_back_entire_admission() {
     let _guard = crate::sqlite::test_support::BARRIER_LOCK.lock().await;
     let (store, path, directory) = crate::sqlite::tests::temp_store().await;
-    for (index, keyed) in [false, true].into_iter().enumerate() {
-        let target = process::Fixture::new(keyed);
+    for (index, (keyed, typed)) in [(false, false), (true, false), (false, true), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let target = process::Fixture::new(keyed, typed);
         let marker = directory.path().join(format!("binding-{index}.marker"));
         sqlx::query("CREATE TRIGGER binding_barrier AFTER INSERT ON run_execution_bindings BEGIN SELECT 1 WHERE 'a' < 'b' COLLATE crabber_test_barrier; END").execute(&store.writer).await.unwrap();
         let mut child = process::spawn(HELPER, &target, Some(&path), true, Some(&marker));

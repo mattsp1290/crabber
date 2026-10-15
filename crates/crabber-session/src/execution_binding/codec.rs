@@ -24,7 +24,7 @@ pub(super) fn validate_depth(value: &Value, depth: usize) -> Result<(), StoreErr
     }
     Ok(())
 }
-pub(super) fn encode_bounded(value: &impl Serialize) -> Result<String, StoreError> {
+pub(crate) fn encode_bounded(value: &impl Serialize) -> Result<String, StoreError> {
     struct Writer {
         bytes: Vec<u8>,
         exceeded: bool,

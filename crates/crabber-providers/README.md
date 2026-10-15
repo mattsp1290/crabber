@@ -13,6 +13,23 @@ Codex sign-in follows the current [Sign in with ChatGPT open-source agent flow](
 
 Credentials are written under `${XDG_CONFIG_HOME}/crabber/auth.json`, or `${HOME}/.config/crabber/auth.json`, with owner-only file permissions on Unix. The stable host identifier is stored in the same directory. The adapter never logs credential values or request bodies.
 
+## Typed input support
+
+`HttpAdapter::input_support()` and `CustomHttpAdapter::input_support()` report
+supported roles, media references and explicit context data without I/O.
+Context reaches each protocol as canonical user-role JSON text, separate from
+system policy and UI activity. Unsupported roles/media fail before credentials,
+header callbacks or network access; media is never silently removed or fetched.
+The current HTTP implementation supports text/context and reports no media
+encodings. Native typed streamers receive explicit media blocks unchanged.
+
+Agent admission requires an explicit host `behavior_version` or
+`behavior_fingerprint`. Built-in HTTP bindings independently capture endpoint,
+protocol, implementation version and user agent, excluding credential values.
+Opaque custom callbacks/transports require an explicit `VersionedResolver` or
+`VersionedAdapter` route/configuration declaration for Agent execution. Direct
+adapter streaming remains available for transport tests and host-owned drivers.
+
 ## Host-owned custom HTTP providers
 
 Enable the facade's `custom-http` feature (or `crabber-providers/custom-http`

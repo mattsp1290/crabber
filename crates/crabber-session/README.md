@@ -234,15 +234,29 @@ The bundled stores reuse their transaction-only admission helpers. PostgreSQL
 uses the session gate first; SQLite explicitly completes its write transaction;
 Memory publishes its cloned state only after all writes succeed.
 
-`ExecutionBindingCapsule` version 2 is independent binding evidence, with the
-existing version-1 text request/runtime semantics and keyed receipt. Its
+`ExecutionBindingCapsule` version 3 retains the original validated `InputEnvelope`
+with binding evidence; legacy version 2 remains metadata-only for the runtime.
+New keyed execution capsules and canonical semantic digests use version 2. Their
 configuration must contain exactly one `PROVIDER_BINDING_COMPONENT` whose version
 encodes the complete descriptor and one `HOST_BEHAVIOR_COMPONENT` whose version is
 the declared opaque behavior fingerprint. The store hashes the complete runtime
 semantics and checks original input, selected route, limits, configuration and
 behavior rather than trusting the caller's claimed fingerprint. Credentials and
-transport correlation do not belong in these declarations. The runtime now uses this capability for ordinary/keyed execution and recovery;
-the typed-input envelope remains separate and is not yet the admission codec.
+transport correlation do not belong in these declarations. The runtime uses
+this capability for typed and text-adapted ordinary/keyed admission and recovery.
+`AdmitRequest.expected_revision` is checked under the same session lock, after
+identity and exact receipt lookup; stale new admissions change no input or owner.
+The typed envelope includes that revision in its canonical semantics. The legacy
+raw text guard remains a precondition separately from its v1 digest.
+
+All ordered message records commit with admission. Supplied IDs are preserved,
+generated IDs never change the typed digest, and every original record is checked
+on scoped private reads. Model-input media has an explicit part kind, separate
+from custom display activity; it is never removed by the conversation projector.
+`typed_admission_contract::run_contract` qualifies this capability, including
+context/state JSON that requires lossless TEXT rather than PostgreSQL JSONB.
+PostgreSQL schema 7 adds that private text carrier; SQLite schema 3 is initialized
+only on fresh databases, and existing SQLite versions fail closed as before.
 
 Custom adapters can use `KeyedAdmitRequest::validated_digest` before taking locks,
 `ExecutionBindingCapsule::validate`/`validate_keyed`, and the bounded

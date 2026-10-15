@@ -54,13 +54,18 @@ impl SqliteStore {
         }
         let session_id = session.clone();
         let user_message_id = request.user_message.id.clone();
+        let semantic_digest_version = if request.input_envelope.is_some() {
+            2
+        } else {
+            1
+        };
         let admitted = self.admit_transaction(tx, keyed.request, true).await?;
         let receipt = AdmissionReceipt {
             session_id,
             run_id: admitted.run.id.clone(),
             user_message_id,
             fingerprint: keyed.options.fingerprint,
-            semantic_digest_version: 1,
+            semantic_digest_version,
             semantic_digest: digest,
         };
         sqlx::query(
@@ -77,6 +82,8 @@ impl SqliteStore {
         .await
         .map_err(db)?;
         if let Some(capsule) = keyed.execution {
+            let version =
+                i32::try_from(capsule.version).map_err(|_| StoreError::AdmissionConflict)?;
             let record = crate::AdmissionExecutionRecord {
                 receipt: receipt.clone(),
                 key: keyed.options.key.clone(),
@@ -86,12 +93,13 @@ impl SqliteStore {
             sqlx::query(
                     "INSERT INTO \
                         admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) \
-                        VALUES($1,$2,$3,1,'Unstarted',$4)",
+                        VALUES($1,$2,$3,$4,'Unstarted',$5)",
                 )
                 .bind(&receipt.run_id.0)
                 .bind(&receipt.session_id.0)
                 .bind(keyed.options.key.as_str())
-                .bind(text(&record)?)
+                .bind(version)
+                .bind(record.encode()?)
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
@@ -198,9 +206,10 @@ async fn save(
     binding: &RetainedExecutionBinding,
 ) -> Result<(), StoreError> {
     sqlx::query(
-        "INSERT INTO run_execution_bindings(run_id,capsule_version,data_json) VALUES($1,2,$2)",
+        "INSERT INTO run_execution_bindings(run_id,capsule_version,data_json) VALUES($1,$2,$3)",
     )
     .bind(&binding.run_id.0)
+    .bind(i32::try_from(binding.capsule.version).map_err(|_| StoreError::AdmissionConflict)?)
     .bind(binding.encode()?)
     .execute(&mut **tx)
     .await
@@ -221,15 +230,20 @@ async fn read(
     };
     let version: i32 = row.try_get("capsule_version").map_err(db)?;
     let encoded: Option<String> = row.try_get("binding").map_err(db)?;
-    if version != 2 {
+    if !matches!(version, 2 | 3) {
         return Err(StoreError::AdmissionConflict);
     }
     let binding =
         RetainedExecutionBinding::decode(encoded.as_deref().ok_or(StoreError::AdmissionConflict)?)?;
-    let user: Option<String> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(data AS BLOB)) <= 16777216 THEN data END FROM messages WHERE id=$1 AND session_id=$2 AND run_id=$3")
-        .bind(&binding.user_message_id.0).bind(&session.0).bind(&run.0).fetch_optional(&mut **tx).await.map_err(db)?.flatten();
-    let encoded = user.ok_or(StoreError::AdmissionConflict)?;
-    let user: Message = super::decode(&encoded)?;
+    if u32::try_from(version).ok() != Some(binding.capsule.version) {
+        return Err(StoreError::AdmissionConflict);
+    }
+    let count = binding
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages = original_messages(tx, session, run, count).await?;
     let config: String = row
         .try_get::<Option<String>, _>("config")
         .map_err(db)?
@@ -246,13 +260,40 @@ async fn read(
         .try_get::<Option<String>, _>("directory")
         .map_err(db)?
         .ok_or(StoreError::AdmissionConflict)?;
-    binding.validate(run, session, &config, &plan, &user)?;
+    binding.validate_messages(run, session, &config, &plan, &messages)?;
     if binding.capsule.request.workspace_id != workspace
         || binding.capsule.request.directory != directory
     {
         return Err(StoreError::SessionIdentityMismatch);
     }
     Ok(Some(binding))
+}
+
+/// Read the bounded original prefix in the caller's coherent transaction.
+pub(super) async fn original_messages(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    count: usize,
+) -> Result<Vec<Message>, StoreError> {
+    if count == 0 || count > crabber_core::input::MAX_INPUT_MESSAGES {
+        return Err(StoreError::AdmissionConflict);
+    }
+    let rows = sqlx::query("WITH originals AS (SELECT seq,data AS record FROM messages WHERE session_id=$1 AND run_id=$2 ORDER BY seq LIMIT $3) SELECT CASE WHEN sum(length(CAST(record AS BLOB))) OVER () <= 16777216 THEN record END AS record FROM originals ORDER BY seq")
+        .bind(&session.0).bind(&run.0).bind(i64::try_from(count).map_err(|_| StoreError::AdmissionConflict)?)
+        .fetch_all(&mut **tx).await.map_err(db)?;
+    if rows.len() != count {
+        return Err(StoreError::AdmissionConflict);
+    }
+    rows.iter()
+        .map(|row| {
+            let encoded = row
+                .try_get::<Option<String>, _>("record")
+                .map_err(db)?
+                .ok_or(StoreError::AdmissionConflict)?;
+            super::decode(&encoded)
+        })
+        .collect()
 }
 
 #[cfg(test)]

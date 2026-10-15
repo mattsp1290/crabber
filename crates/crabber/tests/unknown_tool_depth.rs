@@ -66,6 +66,7 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
         .unwrap();
     let handle = runtime
         .start(Request {
+            input_envelope: None,
             session_id: None,
             workspace_id: "test".into(),
             directory: ".".into(),

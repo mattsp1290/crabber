@@ -69,6 +69,7 @@ impl Streamer for Captured {
 }
 fn request() -> ModelRequest {
     ModelRequest {
+        context: Vec::new(),
         identity: RequestIdentity {
             session_id: SessionId::new(),
             run_id: RunId::new(),

@@ -30,6 +30,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0001_initial.sql"),
     "\nINSERT INTO schema_version(version) VALUES(1);\n",
     include_str!("../migrations/sqlite/0002_host_foundation.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(2);\n",
+    include_str!("../migrations/sqlite/0003_typed_admission.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

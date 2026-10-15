@@ -98,6 +98,52 @@ impl Agent {
             .await
     }
 
+    /// Admit host-validated ordered input in an explicit execution context.
+    /// The host authorizes roles/history/artifacts and supplies the revision of
+    /// its coherent comparison, even if the wire request omitted If-Match.
+    /// Unstable until durable-host qualification.
+    /// # Errors
+    /// Returns stale-revision, unsupported-input, identity or execution failures.
+    pub async fn prompt_input_in(
+        &self,
+        execution: &ExecutionContext,
+        input: crabber_core::InputEnvelope,
+        trace: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let mut request = self.context_request(execution, String::new());
+        request.input_envelope = Some(input);
+        self.start_request(request, trace).await
+    }
+    /// Admit or reconcile the exact original typed envelope under a stable key.
+    /// Retain the envelope for retries; do not recompute it from current state.
+    /// # Errors
+    /// Returns semantic/revision/identity conflicts or execution failures.
+    pub async fn prompt_input_keyed_in(
+        &self,
+        execution: &ExecutionContext,
+        input: crabber_core::InputEnvelope,
+        options: AdmissionOptions,
+        trace: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let mut request = self.context_request(execution, String::new());
+        request.input_envelope = Some(input);
+        self.start_keyed_request(request, options, trace).await
+    }
+    /// Recover a durably Unstarted admission using its exact original typed input.
+    /// # Errors
+    /// Returns eligibility, semantic/revision, readiness or ownership failures.
+    pub async fn recover_input_admission_in(
+        &self,
+        execution: &ExecutionContext,
+        input: crabber_core::InputEnvelope,
+        options: AdmissionOptions,
+        trace: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let mut request = self.context_request(execution, String::new());
+        request.input_envelope = Some(input);
+        self.recover_request(request, options, trace).await
+    }
+
     /// Recover a retained unstarted admission using its original explicit context.
     /// Unstable until the durable-host consumer contract is qualified.
     /// # Errors

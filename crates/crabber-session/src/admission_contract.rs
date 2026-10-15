@@ -13,6 +13,9 @@ fn request(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitRequest {
     KeyedAdmitRequest {
         execution: None,
         request: AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(session.clone()),
             workspace_id: "workspace-secret".into(),
             directory: "/private/secret".into(),

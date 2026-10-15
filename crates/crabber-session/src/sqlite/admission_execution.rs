@@ -1,24 +1,27 @@
-use super::records::{decode_row, load_run, lookup_receipt, save_run};
-use super::{SqliteExecution, SqliteStore, db, text};
+use super::records::{load_run, lookup_receipt, save_run};
+use super::{SqliteExecution, SqliteStore, db};
 use crate::StoreError;
 use crate::{
     AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission,
 };
-use crabber_core::{Message, Run, RunFence, RunId};
+use crabber_core::{Run, RunFence, RunId};
 use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) async fn load_record(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
-    sqlx::query("SELECT data,start_state FROM admission_executions WHERE run_id=$1")
+    sqlx::query("SELECT capsule_version,CASE WHEN length(CAST(data AS BLOB))<=16777216 THEN data END AS data,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?
         .map(|row| {
-            let record: AdmissionExecutionRecord = decode_row(&row, "data")?;
+            let encoded = row.try_get::<Option<String>, _>("data").map_err(db)?.ok_or(StoreError::AdmissionConflict)?;
+            let record = AdmissionExecutionRecord::decode(&encoded)?;
+            let version: i32 = row.try_get("capsule_version").map_err(db)?;
+            if u32::try_from(version).ok() != Some(record.capsule.version) || !matches!(version, 1 | 2) { return Err(StoreError::AdmissionConflict); }
             let state: String = row.try_get("start_state").map_err(db)?;
             if state != format!("{:?}", record.state) {
                 return Err(StoreError::AdmissionConflict);
@@ -33,15 +36,15 @@ async fn validate_binding(
     record: &AdmissionExecutionRecord,
     run: &Run,
 ) -> Result<(), Error> {
-    let row = sqlx::query("SELECT data FROM messages WHERE id=$1")
-        .bind(&record.receipt.user_message_id.0)
-        .fetch_optional(&mut **tx)
+    let count = record
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages = super::execution_binding::original_messages(tx, &run.session_id, &run.id, count)
         .await
-        .map_err(|_| Error::UnknownStoreFailure)?
-        .ok_or(Error::SemanticConflict)?;
-    let text: String = row.try_get("data").map_err(|_| Error::SemanticConflict)?;
-    let user: Message = super::decode(&text).map_err(|_| Error::SemanticConflict)?;
-    record.validate_binding(run, &user)
+        .map_err(|_| Error::SemanticConflict)?;
+    record.validate_messages(run, &messages)
 }
 
 pub(super) async fn claim(
@@ -136,7 +139,7 @@ pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
             "UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1",
         )
         .bind(&run.id.0)
-        .bind(text(&record).map_err(unknown)?)
+        .bind(record.encode().map_err(unknown)?)
         .execute(&mut *tx)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;

@@ -1022,6 +1022,7 @@ async fn crashed_run_admitted_under(
     if let Some(stale) = stale {
         prepared.request.plan_fingerprint.clone_from(&stale);
         prepared.binding.plan_fingerprint = crabber_core::InputFingerprint::new(stale).unwrap();
+        prepared.binding.input_fingerprint = prepared.binding.computed_input_fingerprint().unwrap();
     }
     let admitted = store.admit_bound_run(prepared).await.unwrap();
     let execution = store.execution(admitted.fence).await.unwrap();
@@ -1253,6 +1254,7 @@ fn tool(executor: Arc<dyn ToolExecutor>) -> Arc<ToolDefinition> {
 
 fn request() -> Request {
     Request {
+        input_envelope: None,
         session_id: None,
         workspace_id: "test".into(),
         directory: "/tmp".into(),
@@ -1973,6 +1975,13 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        self.inner.session_revision(session).await
+    }
+
     async fn admit_bound_run(
         &self,
         request: crabber_session::BoundAdmitRequest,

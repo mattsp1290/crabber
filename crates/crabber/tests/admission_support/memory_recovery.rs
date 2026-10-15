@@ -29,6 +29,13 @@ struct FaultExecution {
 }
 #[async_trait]
 impl Store for FaultStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber::core::SessionRevision, StoreError> {
+        self.inner.session_revision(session).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         let outcome = self.inner.admit_run(request).await?;
         if self.fault == Fault::UnkeyedAdmissionLost {
@@ -743,6 +750,9 @@ async fn missing_and_legacy_evidence_never_invent_an_initial_executor() {
             execution: None,
             options: options(),
             request: AdmitRequest {
+                input_envelope: None,
+                additional_messages: Vec::new(),
+                expected_revision: None,
                 session_id: Some(session.clone()),
                 workspace_id: cfg.workspace_id,
                 directory: cfg.directory,

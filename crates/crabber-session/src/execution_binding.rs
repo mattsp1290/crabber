@@ -1,10 +1,11 @@
 //! Immutable provider-binding evidence, retained in the admission transaction.
-//! Independent of the version-1 admission capsule and its receipt wire format.
+//! Typed v3 evidence is independent of the keyed execution capsule carrier.
 mod codec;
 use crate::{
     AdmissionRequestData, AdmitRequest, KeyedAdmitRequest, StoreError, admission_config_hash,
 };
-use codec::{encode_bounded, validate_depth};
+pub(crate) use codec::encode_bounded;
+use codec::validate_depth;
 use crabber_core::{
     ContentBlock, InputFingerprint, Message, MessageId, PartKind, ProviderBindingDescriptor, Role,
     RunId, SessionId,
@@ -25,6 +26,10 @@ pub(crate) const MAX_BINDING_BYTES: usize = 16 << 20;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionBindingCapsule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fingerprint: Option<InputFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_envelope: Option<crabber_core::InputEnvelope>,
     pub version: u32,
     pub provider: ProviderBindingDescriptor,
     pub request: AdmissionRequestData,
@@ -72,13 +77,51 @@ redacted!(
 );
 
 impl ExecutionBindingCapsule {
+    /// Independently recompute typed input semantics, excluding generated IDs.
+    /// # Errors
+    /// Rejects invalid scope/configuration; legacy text capsules have no v2 digest.
+    pub fn computed_input_fingerprint(&self) -> Result<Option<InputFingerprint>, StoreError> {
+        let Some(input) = &self.input_envelope else {
+            return Ok(None);
+        };
+        let data = &self.request;
+        let context = crabber_core::SessionContext::new(
+            data.session_id.clone(),
+            data.workspace_id.clone(),
+            data.directory.clone(),
+        );
+        let runtime = crate::typed_admission::runtime_digest(
+            self.config_hash.as_str(),
+            self.plan_fingerprint.as_str(),
+            &data.title,
+        )?;
+        input
+            .fingerprint(
+                &context,
+                &self.provider,
+                &runtime,
+                &self.behavior_fingerprint,
+            )
+            .map(Some)
+    }
     /// Validate all independently inspectable configuration before admission.
     /// No caller hash alone proves the descriptor or original input.
     /// # Errors
     /// Rejects unsupported, unbounded or inconsistent binding evidence.
     pub fn validate(&self, request: &AdmitRequest) -> Result<(), StoreError> {
         self.validate_configuration()?;
-        if !matches_input(&self.request, &request.user_message)
+        request.validate_messages()?;
+        if self.input_envelope != request.input_envelope {
+            return Err(StoreError::AdmissionConflict);
+        }
+        let input_matches = if self.input_envelope.is_some() {
+            true
+        } else {
+            request.additional_messages.is_empty()
+                && matches_input(&self.request, &request.user_message)
+        };
+        if !input_matches
+            || request.user_message.session_id != self.request.session_id
             || request
                 .session_id
                 .as_ref()
@@ -120,6 +163,13 @@ impl ExecutionBindingCapsule {
     }
     fn validate_configuration(&self) -> Result<(), StoreError> {
         let data = &self.request;
+        if let Some(input) = &self.input_envelope
+            && !self.request.text.is_empty()
+            && input.legacy_text() != Some(self.request.text.as_str())
+        {
+            return Err(StoreError::AdmissionConflict);
+        }
+
         if data.session_id.0.is_empty()
             || data.session_id.0.len() > 512
             || data.session_id.0.chars().any(char::is_control)
@@ -131,13 +181,19 @@ impl ExecutionBindingCapsule {
             return Err(StoreError::AdmissionConflict);
         }
         validate_depth(&self.runtime_semantics, 0)?;
+        if self.input_fingerprint != self.computed_input_fingerprint()? {
+            return Err(StoreError::AdmissionConflict);
+        }
+
         let bytes = encode_bounded(self)?;
         let values = self
             .runtime_semantics
             .as_array()
             .ok_or(StoreError::AdmissionConflict)?;
-        if self.version != 2
-            || values.len() != 15
+        if !matches!(
+            (self.version, self.input_envelope.is_some()),
+            (2, false) | (3, true)
+        ) || values.len() != 15
             || values[0] != "crabber.runtime.admission.v1"
             || values[1] != self.provider.provider_id()
             || values[2] != self.provider.model_id()
@@ -221,7 +277,28 @@ impl RetainedExecutionBinding {
         plan: &str,
         user: &Message,
     ) -> Result<(), StoreError> {
+        self.validate_messages(run, session, config, plan, std::slice::from_ref(user))
+    }
+    /// Validate all original input messages from one coherent scoped read.
+    /// # Errors
+    /// Rejects altered provenance, content or incomplete original evidence.
+    pub fn validate_messages(
+        &self,
+        run: &RunId,
+        session: &SessionId,
+        config: &str,
+        plan: &str,
+        messages: &[Message],
+    ) -> Result<(), StoreError> {
         self.capsule.validate_configuration()?;
+        let user = messages.first().ok_or(StoreError::AdmissionConflict)?;
+        let input_matches = if let Some(input) = &self.capsule.input_envelope {
+            input
+                .validate_message_projection(session, Some(run), messages)
+                .is_ok()
+        } else {
+            messages.len() == 1 && matches_input(&self.capsule.request, user)
+        };
         if self.run_id != *run
             || self.session_id != *session
             || self.capsule.request.session_id != *session
@@ -230,7 +307,7 @@ impl RetainedExecutionBinding {
             || self.user_message_id != user.id
             || user.run_id.as_ref() != Some(run)
             || user.parts.iter().any(|p| p.message_id != user.id)
-            || !matches_input(&self.capsule.request, user)
+            || !input_matches
         {
             return Err(StoreError::AdmissionConflict);
         }

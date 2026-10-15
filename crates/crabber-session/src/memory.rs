@@ -209,6 +209,14 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
             ));
         }
     }
+    if message.parts.iter().any(|part| {
+        state
+            .messages
+            .iter()
+            .any(|stored| stored.parts.iter().any(|old| old.id == part.id))
+    }) {
+        return Err(StoreError::Conflict);
+    }
     crate::ensure_storable(&message)?;
     bump_public_revision(state, &run.session_id)?;
     state.messages.push(message);
@@ -1038,6 +1046,7 @@ mod atomic_claim_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // Full rollback and reclaimed-owner fixture.
     async fn failed_claim_append_rolls_back_and_reclaimed_owner_can_retry() {
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         let clock = Arc::new(ManualClock::new(now));
@@ -1046,6 +1055,9 @@ mod atomic_claim_tests {
         let user = input(&session_id, "first", now);
         let admitted = store
             .admit_run(AdmitRequest {
+                input_envelope: None,
+                additional_messages: Vec::new(),
+                expected_revision: None,
                 session_id: None,
                 workspace_id: "test".into(),
                 directory: "/tmp".into(),

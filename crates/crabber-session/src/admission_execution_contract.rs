@@ -25,6 +25,9 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
     ]);
     let mut keyed = KeyedAdmitRequest {
         request: AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: Some(session.clone()),
             workspace_id: "workspace-secret".into(),
             directory: "/private/secret".into(),
@@ -59,6 +62,7 @@ pub(crate) fn keyed(session: &SessionId, now: OffsetDateTime) -> KeyedAdmitReque
         execution: None,
     };
     keyed.execution = Some(AdmissionExecutionCapsule {
+        input_envelope: None,
         version: 1,
         request: AdmissionRequestData {
             session_id: session.clone(),

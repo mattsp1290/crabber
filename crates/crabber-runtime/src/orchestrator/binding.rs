@@ -77,12 +77,16 @@ impl Orchestrator {
         session: &SessionId,
         run: &RunId,
     ) -> Result<ExecutionBindingCapsule, RuntimeError> {
-        Ok(self
+        let binding = self
             .store
             .execution_binding(session, run)
             .await?
             .ok_or(crabber_session::AdmissionExecutionError::MissingEvidence)?
-            .capsule)
+            .capsule;
+        if binding.version != 3 || binding.input_envelope.is_none() {
+            return Err(crabber_session::AdmissionExecutionError::Unsupported.into());
+        }
+        Ok(binding)
     }
     pub(super) fn verify_binding_request(
         &self,
@@ -92,7 +96,16 @@ impl Orchestrator {
     ) -> Result<(), RuntimeError> {
         let mut stable = request.clone();
         stable.session_id = Some(session.clone());
-        if stable.admission_data()? != binding.request
+        let input = binding
+            .input_envelope
+            .as_ref()
+            .ok_or(crabber_session::AdmissionExecutionError::Unsupported)?;
+        let input_matches = request.input_envelope.as_ref().map_or_else(
+            || input.legacy_text() == Some(request.text.as_str()),
+            |provided| provided == input,
+        );
+        if !input_matches
+            || stable.admission_data()? != binding.request
             || binding.behavior_fingerprint != self.behavior_fingerprint
         {
             return Err(StoreError::AdmissionConflict.into());

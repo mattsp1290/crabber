@@ -17,6 +17,13 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(crate) struct ThreadStore(pub Arc<MemoryStore>);
 #[async_trait]
 impl Store for ThreadStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber::core::SessionRevision, StoreError> {
+        self.0.session_revision(session).await
+    }
+
     async fn admit_run(&self, mut request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         if request.session_id.as_ref() != Some(&request.user_message.session_id) {
             return Err(StoreError::Validation("thread identity mismatch".into()));

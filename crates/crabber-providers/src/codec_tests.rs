@@ -104,6 +104,7 @@ fn codex_fixture_and_echo_golden() {
         created_at: crabber_core::SystemClock.now(),
     };
     let request = ModelRequest {
+        context: Vec::new(),
         identity: RequestIdentity {
             session_id: SessionId::from("s"),
             run_id: RunId::from("r"),

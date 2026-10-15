@@ -9,12 +9,14 @@ use std::{path::Path, process::Command, time::Duration};
 pub(crate) struct Fixture {
     pub session: SessionId,
     pub keyed: bool,
+    pub typed: bool,
 }
 impl Fixture {
-    pub(crate) fn new(keyed: bool) -> Self {
+    pub(crate) fn new(keyed: bool, typed: bool) -> Self {
         Self {
             session: SessionId::new(),
             keyed,
+            typed,
         }
     }
 }
@@ -23,13 +25,16 @@ pub(crate) fn settings() -> Option<Fixture> {
         .ok()
         .map(|v| serde_json::from_str(&v).unwrap())
 }
+fn original(target: &Fixture) -> crate::BoundKeyedAdmitRequest {
+    let now = time::OffsetDateTime::now_utc();
+    if target.typed {
+        crate::typed_admission_contract::fixture(&target.session, now, "process-backend")
+    } else {
+        fixture(&target.session, now, "process-backend", 'b')
+    }
+}
 pub(crate) async fn write(store: &impl Store, target: &Fixture, lost_ack: bool) {
-    let mut original = fixture(
-        &target.session,
-        time::OffsetDateTime::now_utc(),
-        "process-backend",
-        'b',
-    );
+    let mut original = original(target);
     if target.keyed {
         let result = store.admit_bound_keyed_run(original).await;
         if lost_ack {
@@ -53,12 +58,7 @@ pub(crate) async fn write(store: &impl Store, target: &Fixture, lost_ack: bool) 
     }
 }
 pub(crate) async fn verify(store: &impl Store, target: &Fixture) {
-    let original = fixture(
-        &target.session,
-        time::OffsetDateTime::now_utc(),
-        "process-backend",
-        'b',
-    );
+    let original = original(target);
     let runs = store
         .list_unfinished_runs()
         .await

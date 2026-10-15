@@ -198,7 +198,10 @@ async fn legacy_migration(url: &str, legacy_version: i32) {
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(
+        versions,
+        (1..=crate::POSTGRES_SCHEMA_VERSION).collect::<Vec<_>>()
+    );
     assert_eq!(
         migrated.get_session(&session).await.unwrap(),
         Some(admitted.session.clone())

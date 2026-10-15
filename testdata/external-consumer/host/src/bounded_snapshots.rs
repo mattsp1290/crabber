@@ -9,6 +9,8 @@ macro_rules! forward_store {
     ($store:ty, $($extra:item)*) => {
         #[async_trait::async_trait]
         impl Store for $store {
+    async fn session_revision(&self, session: &SessionId) -> Result<SessionRevision, StoreError> { self.0.session_revision(session).await }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.0.admit_run(request).await
     }

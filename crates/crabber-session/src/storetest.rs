@@ -76,6 +76,9 @@ where
         now,
     );
     let request = AdmitRequest {
+        input_envelope: None,
+        additional_messages: Vec::new(),
+        expected_revision: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/tmp".into(),
@@ -551,6 +554,9 @@ where
     );
     let resumed = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "workspace".into(),
             directory: "/tmp".into(),
@@ -592,6 +598,7 @@ where
 /// # Panics
 ///
 /// Panics when a backend admits a run under a drifted workspace identity.
+#[allow(clippy::too_many_lines)] // Complete cross-backend immutable identity contract.
 pub async fn run_workspace_identity_contract<S, F>(factory: F)
 where
     S: Store,
@@ -602,6 +609,9 @@ where
     let store = factory(Arc::clone(&clock));
     let admit = |session: &SessionId, existing: bool, workspace: &str, directory: &str| {
         let request = AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: existing.then(|| session.clone()),
             workspace_id: workspace.into(),
             directory: directory.into(),
@@ -723,6 +733,9 @@ where
     );
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "workspace".into(),
             directory: "directory".into(),

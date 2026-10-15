@@ -162,6 +162,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut worker = OwnerProcess(Command::new("sleep").arg("60").spawn()?);
     let admitted = store
         .admit_run(AdmitRequest {
+            input_envelope: None,
+            additional_messages: Vec::new(),
+            expected_revision: None,
             session_id: None,
             workspace_id: "demo".into(),
             directory: ".".into(),

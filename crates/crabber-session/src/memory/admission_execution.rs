@@ -28,12 +28,21 @@ impl MemoryStore {
                 .admission_executions
                 .get(&run.id)
                 .ok_or(Error::MissingEvidence)?;
-            let user = state
+            let count = record
+                .capsule
+                .input_envelope
+                .as_ref()
+                .map_or(1, |input| input.messages().len());
+            let messages: Vec<_> = state
                 .messages
                 .iter()
-                .find(|m| m.id == record.receipt.user_message_id)
-                .ok_or(Error::SemanticConflict)?;
-            record.validate_binding(run, user)?;
+                .filter(|message| {
+                    message.run_id.as_ref() == Some(&run.id) && message.session_id == run.session_id
+                })
+                .take(count)
+                .cloned()
+                .collect();
+            record.validate_messages(run, &messages)?;
             if state
                 .receipts
                 .get(&(claim.session_id.clone(), claim.key.clone()))
@@ -88,12 +97,21 @@ impl MemoryExecution {
                 .admission_executions
                 .get(&run.id)
                 .ok_or(Error::MissingEvidence)?;
-            let user = state
+            let count = record
+                .capsule
+                .input_envelope
+                .as_ref()
+                .map_or(1, |input| input.messages().len());
+            let messages: Vec<_> = state
                 .messages
                 .iter()
-                .find(|m| m.id == record.receipt.user_message_id)
-                .ok_or(Error::SemanticConflict)?;
-            record.validate_binding(run, user)?;
+                .filter(|message| {
+                    message.run_id.as_ref() == Some(&run.id) && message.session_id == run.session_id
+                })
+                .take(count)
+                .cloned()
+                .collect();
+            record.validate_messages(run, &messages)?;
             if state
                 .receipts
                 .get(&(run.session_id.clone(), record.key.clone()))

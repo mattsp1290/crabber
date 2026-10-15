@@ -1,25 +1,29 @@
-use super::{
-    PostgresExecution, PostgresStore, db, decode, decode_record, json, lookup_receipt, save_run,
-};
+use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt, save_run};
 use crate::StoreError;
 use crate::{
     AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission,
 };
-use crabber_core::{Message, Run, RunFence, RunId};
+use crabber_core::{Run, RunFence, RunId};
 use sqlx::{Postgres, Row, Transaction};
 
 pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
-    sqlx::query("SELECT data,start_state FROM admission_executions WHERE run_id=$1")
+    sqlx::query("SELECT capsule_version,CASE WHEN capsule_version=1 THEN data ELSE NULL END AS data,CASE WHEN octet_length(data_json)<=16777216 THEN data_json END AS data_json,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?
         .map(|row| {
-            let record: AdmissionExecutionRecord = decode(row.get("data"))?;
+            let version: i32 = row.try_get("capsule_version").map_err(db)?;
+            let record: AdmissionExecutionRecord = match version {
+                1 => decode(row.get("data"))?,
+                2 => AdmissionExecutionRecord::decode(&row.try_get::<Option<String>, _>("data_json").map_err(db)?.ok_or(StoreError::AdmissionConflict)?)?,
+                _ => return Err(StoreError::AdmissionConflict),
+            };
+            if u32::try_from(version).ok() != Some(record.capsule.version) { return Err(StoreError::AdmissionConflict); }
             let state: String = row.get("start_state");
             if state != format!("{:?}", record.state) {
                 return Err(StoreError::AdmissionConflict);
@@ -34,15 +38,15 @@ async fn validate_binding(
     record: &AdmissionExecutionRecord,
     run: &Run,
 ) -> Result<(), Error> {
-    let row = sqlx::query("SELECT snapshot_record FROM messages WHERE id=$1")
-        .bind(&record.receipt.user_message_id.0)
-        .fetch_optional(&mut **tx)
+    let count = record
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages = super::execution_binding::original_messages(tx, &run.session_id, &run.id, count)
         .await
-        .map_err(|_| Error::UnknownStoreFailure)?
-        .ok_or(Error::SemanticConflict)?;
-    let text: String = row.get("snapshot_record");
-    let user: Message = decode_record(&text).map_err(|_| Error::SemanticConflict)?;
-    record.validate_binding(run, &user)
+        .map_err(|_| Error::SemanticConflict)?;
+    record.validate_messages(run, &messages)
 }
 
 pub(super) async fn claim(
@@ -128,12 +132,25 @@ pub(super) async fn begin(execution: &PostgresExecution) -> Result<(), Error> {
         return Err(Error::AlreadyStarted);
     }
     record.state = AdmissionExecutionState::Started;
-    sqlx::query("UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1")
+    if record.capsule.version == 2 {
+        sqlx::query(
+            "UPDATE admission_executions SET start_state='Started',data_json=$2 WHERE run_id=$1",
+        )
+        .bind(&run.id.0)
+        .bind(record.encode().map_err(unknown)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    } else {
+        sqlx::query(
+            "UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1",
+        )
         .bind(&run.id.0)
         .bind(json(&record).map_err(unknown)?)
         .execute(&mut *tx)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
+    }
     tx.commit().await.map_err(|_| Error::UnknownStoreFailure)
 }
 

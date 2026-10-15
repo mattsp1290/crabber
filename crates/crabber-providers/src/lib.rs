@@ -67,7 +67,7 @@ pub use real::{
     feature = "codex",
     feature = "opencode-go"
 ))]
-pub use real::{HttpAdapter, HttpResolver, Protocol};
+pub use real::{HttpAdapter, HttpInputSupport, HttpResolver, MediaInputSource, Protocol};
 #[cfg(all(test, feature = "all-providers"))]
 mod codec_tests;
 
@@ -102,6 +102,8 @@ pub struct RequestIdentity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelRequest {
+    /// Explicit model-input data, separate from UI activity and system policy.
+    pub context: Vec<crabber_core::InputContext>,
     pub identity: RequestIdentity,
     pub selection: Selection,
     pub system: Option<String>,

@@ -5,6 +5,7 @@ use crate::{AdmitOutcome, AdmitRequest};
 use crabber_core::{
     ContextEpoch, EpochId, MessageId, Run, RunFence, RunId, RunStatus, Session, Usage,
 };
+use sqlx::Row;
 
 // Complete every transaction explicitly before exposing its result to a caller.
 // This also closes read transactions promptly on decoding/validation failures.
@@ -39,6 +40,9 @@ impl SqliteStore {
         request: AdmitRequest,
         allow_create: bool,
     ) -> Result<AdmitOutcome, StoreError> {
+        if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
+            request.validate_messages()?;
+        }
         let now = self.clock.now();
         let lease = time::Duration::try_from(request.lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
@@ -54,12 +58,15 @@ impl SqliteStore {
                 "user message has wrong session".into(),
             ));
         }
-        let existing = sqlx::query("SELECT data FROM sessions WHERE id=$1")
+        let existing = sqlx::query("SELECT data,public_revision FROM sessions WHERE id=$1")
             .bind(&session_id.0)
             .fetch_optional(&mut **tx)
             .await
             .map_err(db)?;
         let had_session = existing.is_some();
+        let current_revision: i64 = existing
+            .as_ref()
+            .map_or(0, |row| row.get("public_revision"));
         let session: Session = if let Some(row) = existing {
             let existing: Session = decode_row(&row, "data")?;
             existing.ensure_identity(&request.workspace_id, &request.directory)?;
@@ -76,6 +83,13 @@ impl SqliteStore {
                 updated_at: now,
             }
         };
+        if let Some(expected) = request.expected_revision {
+            let current = u64::try_from(current_revision)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
+            if expected.get() != current {
+                return Err(StoreError::AdmissionRevisionConflict);
+            }
+        }
         let busy = sqlx::query(
             "SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused')",
         )
@@ -87,6 +101,7 @@ impl SqliteStore {
         if busy {
             return Err(StoreError::Busy);
         }
+        request.validate_messages()?;
         let prior_history = if had_session {
             project(tx, &session_id, None).await?
         } else {
@@ -184,6 +199,10 @@ impl SqliteStore {
         let mut user = request.user_message;
         user.run_id = Some(run_id.clone());
         insert_message(tx, &run, &user).await?;
+        for mut message in request.additional_messages {
+            message.run_id = Some(run_id.clone());
+            insert_message(tx, &run, &message).await?;
+        }
         Ok(AdmitOutcome {
             session,
             run,
