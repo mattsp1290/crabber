@@ -926,12 +926,15 @@ impl ExecutionStore for PostgresExecution {
     }
     async fn append_part(&self, part: Part) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM messages WHERE id=$1 FOR UPDATE")
-            .bind(&part.message_id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(
+            "SELECT snapshot_record FROM messages WHERE id=$1 AND run_id=$2 FOR UPDATE",
+        )
+        .bind(&part.message_id.0)
+        .bind(&run.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(StoreError::NotFound)?;
         let mut message: Message = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if message.session_id != run.session_id || message.run_id.as_ref() != Some(&run.id) {
             return Err(StoreError::Validation("part belongs to another run".into()));
@@ -970,7 +973,6 @@ impl ExecutionStore for PostgresExecution {
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Validation("invalid new tool call".into()));
         }
-        insert_event(&mut tx, &run, &pending_event).await?;
         let accounting = snapshot::call_record(&call)?;
         sqlx::query("INSERT INTO tool_calls(id,run_id,status,data,snapshot_record,snapshot_parts,snapshot_text,snapshot_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
             .bind(&call.id.0)
@@ -981,6 +983,7 @@ impl ExecutionStore for PostgresExecution {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        insert_event(&mut tx, &run, &pending_event).await?;
         tx.commit().await.map_err(db)
     }
     async fn claim_tool_call(
@@ -989,12 +992,15 @@ impl ExecutionStore for PostgresExecution {
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
-            .bind(&id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(
+            "SELECT snapshot_record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE",
+        )
+        .bind(&id.0)
+        .bind(&run.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(StoreError::NotFound)?;
         let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Conflict);
@@ -1020,12 +1026,15 @@ impl ExecutionStore for PostgresExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT snapshot_record FROM tool_calls WHERE id=$1 FOR UPDATE")
-            .bind(&id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(
+            "SELECT snapshot_record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE",
+        )
+        .bind(&id.0)
+        .bind(&run.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(StoreError::NotFound)?;
         let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
         if call.run_id != run.id || call.status != ToolCallStatus::Running {
             return Err(StoreError::Conflict);
@@ -1072,8 +1081,9 @@ impl ExecutionStore for PostgresExecution {
     }
     async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        let row = sqlx::query("SELECT data FROM epochs WHERE id=$1 FOR UPDATE")
+        let row = sqlx::query("SELECT data FROM epochs WHERE id=$1 AND run_id=$2 FOR UPDATE")
             .bind(&id.0)
+            .bind(&run.id.0)
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
