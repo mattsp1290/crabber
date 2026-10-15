@@ -27,6 +27,9 @@ use std::sync::{
 };
 use tokio::sync::{Barrier, Notify, oneshot};
 
+#[path = "tests/terminal_outcome.rs"]
+mod terminal_outcome;
+
 #[derive(Default)]
 struct RecordingObserver(Mutex<Vec<EventKind>>);
 
@@ -1930,6 +1933,7 @@ struct SettlementGate {
     fail_claim: std::sync::atomic::AtomicBool,
     fail_settle: std::sync::atomic::AtomicBool,
     fail_permission_event: std::sync::atomic::AtomicBool,
+    terminal_fault: AtomicUsize,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
@@ -2135,7 +2139,17 @@ impl ExecutionStore for DelayedTerminalExecution {
         event: EventRecord,
     ) -> Result<(), StoreError> {
         self.gate.settlements.fetch_add(1, Ordering::SeqCst);
+        if self.gate.terminal_fault.load(Ordering::SeqCst) == 1 {
+            return Err(StoreError::Validation(
+                "terminal acknowledgement unavailable".into(),
+            ));
+        }
         let result = self.inner.settle_run(status, error, usage, event).await;
+        if self.gate.terminal_fault.load(Ordering::SeqCst) == 2 && result.is_ok() {
+            return Err(StoreError::Validation(
+                "terminal acknowledgement unavailable".into(),
+            ));
+        }
         if status == RunStatus::Completed && result.is_ok() {
             if let Some(sender) = self
                 .gate

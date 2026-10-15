@@ -209,6 +209,14 @@ pub enum RuntimeError {
     LeaseLost,
     #[error("run interrupted")]
     Interrupted,
+    /// The task stopped without acknowledged terminal persistence. Reconcile
+    /// the retained run and events; this error proves neither rollback nor commit.
+    #[error("run terminal persistence outcome is unknown")]
+    TerminalOutcomeUnknown {
+        run_id: RunId,
+        #[source]
+        reason: StoreError,
+    },
     #[error("run paused")]
     Paused,
     #[error("run plan changed since checkpoint")]
@@ -1969,24 +1977,24 @@ impl Orchestrator {
                     &Usage::default(),
                     run_started_at,
                 );
-                if !matches!(error, RuntimeError::LeaseLost)
-                    && execution
-                        .settle_run(
-                            status,
-                            Some(storable_error_text(&error)),
-                            Usage::default(),
-                            settled.clone(),
-                        )
-                        .await
-                        .is_ok()
-                {
-                    self.observer.emit(&settled);
-                    let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-                    plan.dispatcher
-                        .notify::<EventPublished>(projection.clone())
-                        .await;
-                    plan.dispatcher.notify::<RunSettled>(projection).await;
-                }
+                execution
+                    .settle_run(
+                        status,
+                        Some(storable_error_text(&error)),
+                        Usage::default(),
+                        settled.clone(),
+                    )
+                    .await
+                    .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
+                        run_id: run_id.clone(),
+                        reason,
+                    })?;
+                self.observer.emit(&settled);
+                let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
+                plan.dispatcher
+                    .notify::<EventPublished>(projection.clone())
+                    .await;
+                plan.dispatcher.notify::<RunSettled>(projection).await;
                 if status == RunStatus::Interrupted {
                     Ok(RunResult {
                         session_id,

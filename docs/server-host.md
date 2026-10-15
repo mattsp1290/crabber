@@ -105,6 +105,14 @@ and can qualify against `public_state_contract::run_contract` and the injected
 rollback/unknown-response contract. This state snapshot does not include history
 and therefore cannot validate a separately captured history snapshot.
 
+If the initial execution cannot acknowledge its interruption/failure terminal
+write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID
+and storage cause. The task may have stopped while the retained run is still
+running, or the terminal write may already have committed. Reconcile the run and
+durable events before deciding what to do next. Runtime terminal notifications
+follow acknowledged persistence. The common owned/resumed execution lifecycle
+and cleanup/join guarantees remain under implementation.
+
 Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
 preserved custom registrations and defaults, exact retry and root drift,
