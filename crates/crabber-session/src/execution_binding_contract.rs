@@ -123,7 +123,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let store = factory(clock.clone());
     let session = SessionId::new();
     let original = fixture(&session, now, "backend-original", 'b');
-    let (left, right) = tokio::join!(
+    let (left, right) = futures::join!(
         store.admit_bound_keyed_run(original.clone()),
         store.admit_bound_keyed_run(original.clone())
     );
