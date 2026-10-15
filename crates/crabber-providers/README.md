@@ -20,8 +20,23 @@ supported roles, media references and explicit context data without I/O.
 Context reaches each protocol as canonical user-role JSON text, separate from
 system policy and UI activity. Unsupported roles/media fail before credentials,
 header callbacks or network access; media is never silently removed or fetched.
-The current HTTP implementation supports text/context and reports no media
-encodings. Native typed streamers receive explicit media blocks unchanged.
+Encoding support is specific to the media source, MIME type and placement:
+
+| Protocol | Image sources | Placements |
+| --- | --- | --- |
+| Responses | Inline base64, URL, opaque file ID | User messages and function-call output |
+| Chat Completions | Inline base64, URL | User messages |
+| Messages | None in this implementation | Unsupported media fails before I/O |
+
+Supported image MIME types are PNG, JPEG, WebP and GIF. Other media kinds,
+unsupported roles/sources and malformed references fail before credentials or
+HTTP. Source URLs are passed through and never fetched by Crabber; opaque file
+IDs remain opaque. `HttpMediaSupport` reports these encoding limits, including
+`message_roles`, `tool_results` and `mime_types`; it does not claim that a selected
+remote model supports vision. Native typed streamers receive media unchanged.
+The wire mapping follows the official [image input guide](https://developers.openai.com/api/docs/guides/images-vision),
+[function output guide](https://developers.openai.com/api/docs/guides/function-calling)
+and [Chat Completions schema](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 
 Agent admission requires an explicit host `behavior_version` or
 `behavior_fingerprint`. Built-in HTTP bindings independently capture endpoint,

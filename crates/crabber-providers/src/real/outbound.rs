@@ -2,27 +2,148 @@
 use crate::{ModelRequest, ProviderError, ProviderErrorKind};
 use crabber_core::ContentBlock;
 
-pub(super) fn validate(request: &ModelRequest) -> Result<(), ProviderError> {
-    let mut pending: Vec<_> = request
-        .messages
-        .iter()
-        .flat_map(|message| &message.parts)
-        .map(|part| &part.content)
-        .collect();
-    while let Some(block) = pending.pop() {
-        match block {
-            ContentBlock::Media { .. } | ContentBlock::MediaContent { .. } => {
-                return Err(ProviderError {
-                    kind: ProviderErrorKind::Invalid,
-                    message: "unsupported outbound media representation".into(),
-                    retryable: false,
-                });
+const IMAGE_MIMES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+const fn image(source: super::MediaInputSource, tool_results: bool) -> super::HttpMediaSupport {
+    super::HttpMediaSupport {
+        kind: crabber_core::MediaKind::Image,
+        source,
+        mime_types: IMAGE_MIMES,
+        message_roles: &[crabber_core::Role::User],
+        tool_results,
+    }
+}
+const RESPONSE_MEDIA: &[super::HttpMediaSupport] = &[
+    image(super::MediaInputSource::Data, true),
+    image(super::MediaInputSource::Url, true),
+    image(super::MediaInputSource::OpaqueFile, true),
+];
+const CHAT_MEDIA: &[super::HttpMediaSupport] = &[
+    image(super::MediaInputSource::Data, false),
+    image(super::MediaInputSource::Url, false),
+];
+pub(super) fn media_support(protocol: super::Protocol) -> &'static [super::HttpMediaSupport] {
+    use super::Protocol;
+    match protocol {
+        Protocol::Responses => RESPONSE_MEDIA,
+        Protocol::ChatCompletions => CHAT_MEDIA,
+        Protocol::Messages => &[],
+    }
+}
+fn invalid_media() -> ProviderError {
+    ProviderError {
+        kind: ProviderErrorKind::Invalid,
+        message: "unsupported outbound media representation".into(),
+        retryable: false,
+    }
+}
+pub(super) fn validate(
+    protocol: super::Protocol,
+    request: &ModelRequest,
+) -> Result<(), ProviderError> {
+    use crabber_core::{MediaSource, MessageContent, ToolOutput};
+    for message in &request.messages {
+        if message
+            .parts
+            .iter()
+            .any(|part| matches!(part.content, ContentBlock::MediaContent { .. }))
+            && message.parts.iter().any(|part| {
+                !matches!(
+                    part.content,
+                    ContentBlock::Text { .. } | ContentBlock::MediaContent { .. }
+                )
+            })
+        {
+            return Err(invalid_media());
+        }
+        let mut pending: Vec<_> = message
+            .parts
+            .iter()
+            .map(|part| (&part.content, false))
+            .collect();
+        while let Some((block, in_result)) = pending.pop() {
+            match block {
+                ContentBlock::MediaContent {
+                    kind,
+                    mime_type,
+                    source,
+                } => {
+                    let source_kind = match source {
+                        MediaSource::Data { base64 }
+                            if base64.len() <= crabber_core::input::MAX_INLINE_MEDIA_BYTES * 2 =>
+                        {
+                            super::MediaInputSource::Data
+                        }
+                        MediaSource::Url { url } if url.len() <= 4096 => {
+                            super::MediaInputSource::Url
+                        }
+                        MediaSource::File { file_id } if file_id.len() <= 512 => {
+                            super::MediaInputSource::OpaqueFile
+                        }
+                        _ => return Err(invalid_media()),
+                    };
+                    if !media_support(protocol).iter().any(|support| {
+                        support.kind == *kind
+                            && support.source == source_kind
+                            && support.mime_types.contains(&mime_type.as_str())
+                            && if in_result {
+                                support.tool_results
+                            } else {
+                                support.message_roles.contains(&message.role)
+                            }
+                    }) {
+                        return Err(invalid_media());
+                    }
+                    // Validate explicit source syntax and bounds before any I/O.
+                    ToolOutput::new(
+                        vec![MessageContent::Media {
+                            kind: *kind,
+                            mime_type: mime_type.clone(),
+                            source: source.clone(),
+                        }],
+                        false,
+                    )
+                    .map_err(|_| invalid_media())?;
+                }
+                ContentBlock::ToolResult { content, .. } if !in_result => {
+                    pending.extend(content.iter().map(|block| (block, true)));
+                }
+                ContentBlock::Media { .. } | ContentBlock::ToolResult { .. } => {
+                    return Err(invalid_media());
+                }
+                _ => {}
             }
-            ContentBlock::ToolResult { content, .. } => pending.extend(content),
-            _ => {}
         }
     }
     Ok(())
+}
+
+/// Called only after strict outbound preflight has validated the representation.
+pub(crate) fn response_image(block: &ContentBlock) -> Option<serde_json::Value> {
+    let ContentBlock::MediaContent {
+        kind: crabber_core::MediaKind::Image,
+        mime_type,
+        source,
+    } = block
+    else {
+        return None;
+    };
+    use crabber_core::MediaSource;
+    Some(match source {
+        MediaSource::Data { base64 } => {
+            serde_json::json!({"type":"input_image","detail":"auto","image_url":format!("data:{mime_type};base64,{base64}")})
+        }
+        MediaSource::Url { url } => {
+            serde_json::json!({"type":"input_image","detail":"auto","image_url":url})
+        }
+        MediaSource::File { file_id } => {
+            serde_json::json!({"type":"input_image","detail":"auto","file_id":file_id})
+        }
+    })
+}
+pub(crate) fn chat_image(block: &ContentBlock) -> Option<serde_json::Value> {
+    let mut image = response_image(block)?;
+    let url = image.as_object_mut()?.remove("image_url")?;
+    Some(serde_json::json!({"type":"image_url","image_url":{"url":url}}))
 }
 
 /// Prepare every fallible representation before credential/header callbacks.
@@ -30,7 +151,7 @@ pub(super) fn prepare(
     adapter: &super::HttpAdapter,
     request: &ModelRequest,
 ) -> Result<serde_json::Value, ProviderError> {
-    validate(request)?;
+    validate(adapter.protocol, request)?;
     let invalid = || ProviderError {
         kind: ProviderErrorKind::Invalid,
         message: "unsupported outbound input representation".into(),
@@ -86,136 +207,7 @@ pub(super) fn prepare(
 }
 
 #[cfg(all(test, feature = "custom-http"))]
-mod tests {
-    use super::*;
-    use crate::{CredentialSource, HttpAdapter, Protocol, RequestIdentity, Selection, Streamer};
-    use crabber_core::{
-        MediaKind, MediaSource, Message, MessageId, Part, PartId, PartKind, Role, RunId, SessionId,
-        ToolCallId, TurnId,
-    };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
+mod tests;
 
-    struct Credentials(AtomicUsize);
-    #[async_trait::async_trait]
-    impl CredentialSource for Credentials {
-        async fn credential(&self, _: &ModelRequest) -> Result<String, ProviderError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            panic!("unsupported media must be rejected before credentials")
-        }
-        async fn invalidate(&self, _: &str) {
-            panic!("no credential was acquired")
-        }
-    }
-    fn request(content: ContentBlock, nested: bool) -> ModelRequest {
-        let id = MessageId::new();
-        let content = if nested {
-            ContentBlock::ToolResult {
-                call_id: ToolCallId::new(),
-                content: vec![
-                    ContentBlock::Text {
-                        text: "partial".into(),
-                    },
-                    content,
-                ],
-                is_error: true,
-            }
-        } else {
-            content
-        };
-        ModelRequest {
-            context: Vec::new(),
-            identity: RequestIdentity {
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                turn_id: TurnId::new(),
-            },
-            selection: Selection {
-                provider_id: "fixture".into(),
-                model_id: "model".into(),
-            },
-            system: None,
-            messages: vec![Message {
-                id: id.clone(),
-                session_id: SessionId::new(),
-                run_id: None,
-                role: if nested { Role::Tool } else { Role::User },
-                parent_id: None,
-                parts: vec![Part {
-                    id: PartId::new(),
-                    message_id: id,
-                    ordinal: 0,
-                    kind: PartKind::Custom {
-                        custom_type: "fixture-media".into(),
-                    },
-                    content,
-                }],
-                created_at: std::time::UNIX_EPOCH.into(),
-            }],
-            tools: vec![],
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-        }
-    }
-    #[tokio::test]
-    async fn every_protocol_rejects_media_and_tool_result_media_before_credentials_or_network() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
-        let credentials = Arc::new(Credentials(AtomicUsize::new(0)));
-        for protocol in [
-            Protocol::Responses,
-            Protocol::Messages,
-            Protocol::ChatCompletions,
-        ] {
-            let adapter = HttpAdapter::custom("fixture", &endpoint, protocol)
-                .with_credential_source(credentials.clone());
-            let mut blocks = vec![ContentBlock::Media {
-                uri: "PRIVATE_SENTINEL".into(),
-                mime_type: "image/png".into(),
-            }];
-            for (kind, mime) in [
-                (MediaKind::Image, "image/png"),
-                (MediaKind::Audio, "audio/wav"),
-                (MediaKind::Video, "video/mp4"),
-                (MediaKind::Document, "application/pdf"),
-            ] {
-                for source in [
-                    MediaSource::Data {
-                        base64: "AQ==".into(),
-                    },
-                    MediaSource::Url {
-                        url: "https://example.invalid/PRIVATE_SENTINEL".into(),
-                    },
-                    MediaSource::File {
-                        file_id: "PRIVATE_SENTINEL".into(),
-                    },
-                ] {
-                    blocks.push(ContentBlock::MediaContent {
-                        kind,
-                        mime_type: mime.into(),
-                        source,
-                    });
-                }
-            }
-            for block in blocks {
-                for nested in [false, true] {
-                    let Err(error) = adapter.stream(request(block.clone(), nested)).await else {
-                        panic!("unsupported media must not be silently discarded")
-                    };
-                    assert_eq!(error.kind, ProviderErrorKind::Invalid);
-                    assert!(!error.retryable);
-                    assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
-                    assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
-                    assert_eq!(
-                        listener.accept().unwrap_err().kind(),
-                        std::io::ErrorKind::WouldBlock
-                    );
-                }
-            }
-        }
-    }
-}
+#[cfg(all(test, feature = "custom-http"))]
+mod image_rejections;

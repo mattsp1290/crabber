@@ -33,6 +33,20 @@ fn check() {
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
     check_custom_http(workspace);
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "wasm,sqlite,postgres,custom-http",
+            "--test",
+            "typed_input",
+            "--test",
+            "typed_output",
+        ],
+    );
     check_sqlite(workspace);
     run(
         workspace,

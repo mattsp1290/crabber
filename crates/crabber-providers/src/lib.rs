@@ -67,7 +67,9 @@ pub use real::{
     feature = "codex",
     feature = "opencode-go"
 ))]
-pub use real::{HttpAdapter, HttpInputSupport, HttpResolver, MediaInputSource, Protocol};
+pub use real::{
+    HttpAdapter, HttpInputSupport, HttpMediaSupport, HttpResolver, MediaInputSource, Protocol,
+};
 #[cfg(all(test, feature = "all-providers"))]
 mod codec_tests;
 

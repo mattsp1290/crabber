@@ -328,3 +328,7 @@ async fn public_wasm_mixed_completion_uses_the_same_typed_path() {
     handle.done().await.unwrap();
     assert_output(&*store, &session, &call, &provider, false).await;
 }
+
+#[cfg(feature = "custom-http")]
+#[path = "typed_output/http.rs"]
+mod http;

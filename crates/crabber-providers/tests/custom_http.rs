@@ -458,7 +458,10 @@ async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
         let adapter = HttpAdapter::custom("context-fixture", endpoint, protocol)
             .with_api_key("fixture-context");
         assert!(adapter.input_support().context_data);
-        assert_eq!(adapter.input_support().media, []);
+        assert_eq!(
+            adapter.input_support().media.is_empty(),
+            protocol == Protocol::Messages
+        );
         let mut request = request("context-fixture");
         request.system = Some("host policy".into());
         request.context = vec![crabber_core::InputContext {
@@ -489,3 +492,6 @@ async fn all_protocols_put_canonical_context_on_the_wire_as_user_data() {
         }
     }
 }
+
+#[path = "custom_http/media.rs"]
+mod media;

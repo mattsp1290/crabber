@@ -158,10 +158,11 @@ prefix and uses the original envelope. Version-2 pause checkpoints reference its
 canonical digest instead of duplicating private context/state into a run record.
 Context contributes to every turn and compaction request separately from
 activity. HTTP transports encode context as canonical user-role JSON text and
-report their supported roles/media through `input_support()`. Media encodings
-remain unsupported in those transports and fail before credentials, header
-callbacks or network I/O; the native typed provider path preserves media without
-flattening or fetching URLs. Frontend descriptors and continuation envelopes
+report supported roles, media sources, MIME types and placements through
+`input_support()`. Responses encodes image data/URLs/opaque files in user input
+and function output; Chat Completions encodes data/URL images in user input.
+Other representations fail before credentials, headers or HTTP. Typed media
+remains ordered and Crabber never fetches source URLs. Frontend descriptors and continuation envelopes
 still require the pending durable interaction driver and fail closed today.
 
 `Store::session_revision` reads the current opaque public revision. Public history,

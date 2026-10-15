@@ -8,6 +8,22 @@ pub const CODEX_STATE: &str = "crabber.codex.reasoning-items/v1";
 pub fn body(request: &ModelRequest, codex: bool) -> Value {
     let mut input = Vec::new();
     for message in &request.messages {
+        if message
+            .parts
+            .iter()
+            .any(|part| matches!(part.content, ContentBlock::MediaContent { .. }))
+        {
+            let content: Vec<_> = message
+                .parts
+                .iter()
+                .filter_map(|part| match &part.content {
+                    ContentBlock::Text { text } => Some(json!({"type":"input_text","text":text})),
+                    block => crate::real::outbound::response_image(block),
+                })
+                .collect();
+            input.push(json!({"role":"user","content":content}));
+            continue;
+        }
         for part in &message.parts {
             match &part.content {
                 ContentBlock::Text { text } if matches!(message.role, Role::User | Role::Assistant) =>
@@ -17,7 +33,14 @@ pub fn body(request: &ModelRequest, codex: bool) -> Value {
                 ContentBlock::ToolCall { call_id, name, arguments } =>
                     input.push(json!({"type":"function_call","call_id":call_id.0,"name":name,"arguments":arguments.to_string()})),
                 ContentBlock::ToolResult { call_id, content, .. } => {
-                    let output = content.iter().filter_map(|v| match v { ContentBlock::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
+                    let output = if content.iter().any(|block| matches!(block, ContentBlock::MediaContent { .. })) {
+                        Value::Array(content.iter().filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(json!({"type":"input_text","text":text})),
+                            block => crate::real::outbound::response_image(block),
+                        }).collect())
+                    } else {
+                        Value::String(content.iter().filter_map(|v| match v { ContentBlock::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join("\n"))
+                    };
                     input.push(json!({"type":"function_call_output","call_id":call_id.0,"output":output}));
                 }
                 _ => {}

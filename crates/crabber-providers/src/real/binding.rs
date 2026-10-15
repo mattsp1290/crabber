@@ -48,7 +48,7 @@ impl HttpAdapter {
             &selection.provider_id,
             &selection.model_id,
             backend,
-            concat!(env!("CARGO_PKG_VERSION"), "/http-binding.v2"),
+            concat!(env!("CARGO_PKG_VERSION"), "/http-binding.v3"),
             config,
             ProviderBindingLimits {
                 context_tokens: None,

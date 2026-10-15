@@ -17,7 +17,7 @@ mod client;
 #[cfg(feature = "custom-http")]
 mod custom;
 mod errors;
-mod outbound;
+pub(crate) mod outbound;
 mod streaming;
 #[cfg(feature = "custom-http")]
 pub use client::{HttpClientConfig, HttpProxyConfig};
@@ -72,12 +72,22 @@ pub enum MediaInputSource {
     OpaqueFile,
 }
 
+/// A representation supported at specific message or tool-result placements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpMediaSupport {
+    pub kind: crabber_core::MediaKind,
+    pub source: MediaInputSource,
+    pub mime_types: &'static [&'static str],
+    pub message_roles: &'static [crabber_core::Role],
+    pub tool_results: bool,
+}
+
 /// Inspectable outbound support; unsupported representations fail before I/O.
 /// This describes encoding support, not role/artifact authorization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpInputSupport {
     pub roles: &'static [crabber_core::Role],
-    pub media: &'static [(crabber_core::MediaKind, MediaInputSource)],
+    pub media: &'static [HttpMediaSupport],
     pub context_data: bool,
 }
 
@@ -159,7 +169,7 @@ impl HttpAdapter {
             } else {
                 &[Role::User, Role::Assistant, Role::Tool]
             },
-            media: &[],
+            media: outbound::media_support(self.protocol),
             context_data: true,
         }
     }
