@@ -203,9 +203,8 @@ mod tests {
             }
             for block in blocks {
                 for nested in [false, true] {
-                    let error = match adapter.stream(request(block.clone(), nested)).await {
-                        Err(error) => error,
-                        Ok(_) => panic!("unsupported media must not be silently discarded"),
+                    let Err(error) = adapter.stream(request(block.clone(), nested)).await else {
+                        panic!("unsupported media must not be silently discarded")
                     };
                     assert_eq!(error.kind, ProviderErrorKind::Invalid);
                     assert!(!error.retryable);
