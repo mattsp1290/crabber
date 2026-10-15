@@ -264,9 +264,16 @@ impl PhaseAuthority {
             && self.snapshot.call_binding == snapshot.call_binding
             && self.token == token
     }
+    /// Validate the adapter's private parent record without exposing the
+    /// broader attempt capability to a phase owner.
     #[must_use]
-    pub fn attempt_authority(&self) -> &AttemptAuthority {
-        &self.attempt
+    pub fn matches_attempt_store(
+        &self,
+        snapshot: &crate::AttemptSnapshot,
+        token: &str,
+        run_token: &str,
+    ) -> bool {
+        self.attempt.matches_store(snapshot, token, run_token)
     }
 }
 #[derive(Debug, Clone)]

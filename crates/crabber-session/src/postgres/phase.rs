@@ -198,3 +198,6 @@ pub(super) async fn legacy_guard(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod process_tests;

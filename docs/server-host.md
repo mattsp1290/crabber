@@ -149,7 +149,12 @@ an ordinary phase claim cannot resume a suspended phase.
 Retain the original `PhaseMutation` and reconcile unknown acknowledgements with
 `lookup_phase_mutation`. Metadata reconciliation does not restore factories or
 grant dispatch authority. `phase_contract::run_contract` and its commit-fault
-suite qualify these native transitions; they do not prove runtime task joining.
+suite qualify these native transitions. SQLite/PostgreSQL process tests kill
+writers before commit and reconcile lost acknowledgements in fresh processes.
+Worker capabilities stay inside the writer; phase validation checks its parent
+without returning the broader attempt capability. An owner can finish phase
+quiescence after reporting incomplete attempt cleanup. Runtime task joining
+remains under implementation.
 
 If the initial execution cannot acknowledge its interruption/failure terminal
 write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID

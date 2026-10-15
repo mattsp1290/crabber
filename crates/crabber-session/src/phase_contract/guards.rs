@@ -220,10 +220,27 @@ async fn ended_worker_quiescence(store: &impl Store) {
             outcome: AttemptFinish::Completed,
         },
     };
-    let AttemptMutationOutcome::Applied { receipt, .. } =
-        execution.mutate_attempt(finish, Some(owner)).await.unwrap()
+    let AttemptMutationOutcome::Applied { receipt, .. } = execution
+        .mutate_attempt(finish, Some(owner.clone()))
+        .await
+        .unwrap()
     else {
         panic!("fresh finish");
+    };
+    let incomplete = AttemptMutation {
+        id: ControlId::new(),
+        expected_revision: receipt.revision,
+        command: AttemptCommand::RecordCleanup {
+            target: receipt.attempt.target,
+            result: crate::AttemptCleanupResult::Incomplete,
+        },
+    };
+    let AttemptMutationOutcome::Applied { receipt, .. } = execution
+        .mutate_attempt(incomplete, Some(owner))
+        .await
+        .unwrap()
+    else {
+        panic!("fresh cleanup report");
     };
     let (quiet, _) = applied(
         execution

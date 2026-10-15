@@ -169,13 +169,11 @@ impl PhaseRecord {
         if !authority.matches_store(&self.snapshot, &self.token) {
             return Err(PhaseError::StaleOwner);
         }
-        verify_attempt(
-            run,
-            attempt,
-            &self.snapshot.target,
-            authority.attempt_authority(),
-            now,
-        )
+        verify_parent(run, attempt, &self.snapshot.target, now)?;
+        if !authority.matches_attempt_store(&attempt.snapshot, &attempt.token, &attempt.run_token) {
+            return Err(PhaseError::StaleOwner);
+        }
+        Ok(())
     }
 
     fn worker_change(&mut self, run: &Run, command: &PhaseCommand) -> Result<(), PhaseError> {
@@ -268,6 +266,18 @@ fn verify_attempt(
     authority: &AttemptAuthority,
     now: OffsetDateTime,
 ) -> Result<(), PhaseError> {
+    verify_parent(run, attempt, target, now)?;
+    if !authority.matches_store(&attempt.snapshot, &attempt.token, &attempt.run_token) {
+        return Err(PhaseError::StaleOwner);
+    }
+    Ok(())
+}
+fn verify_parent(
+    run: &Run,
+    attempt: &AttemptRecord,
+    target: &PhaseTarget,
+    now: OffsetDateTime,
+) -> Result<(), PhaseError> {
     attempt
         .validate()
         .map_err(|_| PhaseError::UnknownStoreOutcome)?;
@@ -275,10 +285,9 @@ fn verify_attempt(
         || attempt.snapshot.session_id != run.session_id
         || attempt.snapshot.target != target.attempt
         || attempt.snapshot.state == AttemptState::Unstarted
-        || attempt.snapshot.cleanup != AttemptCleanup::Pending
+        || attempt.snapshot.cleanup == AttemptCleanup::Complete
         || attempt.run_token != run.claim_token
         || attempt.lease_until <= now
-        || !authority.matches_store(&attempt.snapshot, &attempt.token, &attempt.run_token)
     {
         return Err(PhaseError::StaleOwner);
     }

@@ -4,6 +4,9 @@
 mod faults;
 #[path = "phase_contract/guards.rs"]
 mod guards;
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+#[path = "phase_contract/process.rs"]
+pub(crate) mod process;
 #[path = "phase_contract/recovery.rs"]
 mod recovery;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
