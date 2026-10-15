@@ -1,6 +1,6 @@
 use super::{
     PostgresStore, call_status, db, decode, decode_record, insert_event, insert_message, json,
-    load_run, save_run,
+    save_run,
 };
 use crate::StoreError;
 use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
@@ -12,8 +12,11 @@ pub(super) async fn abandon(
     store: &PostgresStore,
     request: AbandonRequest,
 ) -> Result<AbandonOutcome, AbandonError> {
-    let mut tx = store.pool.begin().await.map_err(db)?;
-    let (outcome, changed) = match settle(store, &mut tx, request).await {
+    let (mut tx, run) = match store.run_transaction(&request.expected.run_id).await {
+        Err(StoreError::NotFound) => return Err(AbandonError::NotFound),
+        result => result?,
+    };
+    let (outcome, changed) = match settle(store, &mut tx, request, run).await {
         Ok(outcome) => outcome,
         Err(error) => {
             // Explicitly release all locks before returning even on semantic
@@ -53,11 +56,8 @@ async fn settle(
     store: &PostgresStore,
     tx: &mut Transaction<'_, Postgres>,
     request: AbandonRequest,
+    mut run: Run,
 ) -> Result<(AbandonOutcome, bool), AbandonError> {
-    let mut run = match load_run(tx, &request.expected.run_id, true).await {
-        Err(StoreError::NotFound) => return Err(AbandonError::NotFound),
-        result => result?,
-    };
     // All ownership operations serialize on this row. Read the store clock only
     // after acquiring it, so waiting for a renewal cannot use a stale timestamp.
     let now = store.clock.now();

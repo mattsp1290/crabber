@@ -95,7 +95,7 @@ async fn independent_pools_and_saturated_existing_session() {
 
     // Force all contenders to hold a pooled connection while waiting on the same
     // session lock. The winner must read history on its already-held connection.
-    let mut held = other.admission_transaction(&session).await.unwrap();
+    let mut held = other.session_transaction(&session).await.unwrap();
     let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *held)
         .await

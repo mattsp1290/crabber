@@ -1,6 +1,5 @@
 use super::{
-    PostgresExecution, PostgresStore, db, decode, decode_record, json, load_run, lookup_receipt,
-    save_run,
+    PostgresExecution, PostgresStore, db, decode, decode_record, json, lookup_receipt, save_run,
 };
 use crate::StoreError;
 use crate::{
@@ -50,13 +49,8 @@ pub(super) async fn claim(
     store: &PostgresStore,
     request: ClaimUnstartedAdmissionRequest,
 ) -> Result<ClaimedAdmission, Error> {
-    // Ownership paths are run-first. No session row/advisory lock here.
-    let mut tx = store
-        .pool
-        .begin()
-        .await
-        .map_err(|_| Error::UnknownStoreFailure)?;
-    let mut run = load_run(&mut tx, &request.expected_fence.run_id, true)
+    let (mut tx, mut run) = store
+        .run_transaction(&request.expected_fence.run_id)
         .await
         .map_err(unknown)?;
     let record = load_record(&mut tx, &run.id)
@@ -101,12 +95,8 @@ fn unknown(_: StoreError) -> Error {
 
 pub(super) async fn begin(execution: &PostgresExecution) -> Result<(), Error> {
     let store = &execution.store;
-    let mut tx = store
-        .pool
-        .begin()
-        .await
-        .map_err(|_| Error::UnknownStoreFailure)?;
-    let run = load_run(&mut tx, &execution.fence.run_id, true)
+    let (mut tx, run) = store
+        .run_transaction(&execution.fence.run_id)
         .await
         .map_err(unknown)?;
     if run.claim_token != execution.fence.claim_token {
@@ -222,7 +212,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        // Owner writes take run then session. They may wait on the deliberately
+        // Owner writes take the session gate, run, then session row. They may wait on the deliberately
         // held session, while claim/begin have already released their run lock.
         let event =
             crate::abandonment_contract::event(&claimed.run, crabber_core::EventKind::RunSettled);

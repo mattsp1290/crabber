@@ -7,6 +7,8 @@
 //! connect remains read-only and requires explicit migration to schema v5.
 mod abandon;
 mod admission_execution;
+#[cfg(test)]
+mod lock_order_tests;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -89,6 +91,20 @@ fn call_status(status: ToolCallStatus) -> &'static str {
         ToolCallStatus::Failed => "failed",
         ToolCallStatus::Interrupted => "interrupted",
     }
+}
+// Mutation order: session advisory gate -> run rows -> dependent rows ->
+// events/revision. Every existing and new write path must enter through this
+// gate, including lease renewal and keyed replay. No external I/O under locks.
+async fn lock_session(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&session.0)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 async fn save_run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), StoreError> {
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
@@ -382,18 +398,36 @@ impl PostgresStore {
         self.limits = limits;
         self
     }
-    async fn admission_transaction(
+    async fn session_transaction(
         &self,
         session: &SessionId,
     ) -> Result<Transaction<'_, Postgres>, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        // Serializes first and subsequent admissions without blocking unrelated sessions.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(&session.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        lock_session(&mut tx, session).await?;
         Ok(tx)
+    }
+    // Discover immutable routing without a row lock, then take the session
+    // mutation gate before any run/call/event lock. Verify the relational and
+    // serialized identity agree before granting write authority.
+    async fn run_transaction(
+        &self,
+        id: &RunId,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let session: String = sqlx::query_scalar("SELECT session_id FROM runs WHERE id=$1")
+            .bind(&id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(StoreError::NotFound)?;
+        lock_session(&mut tx, &SessionId(session.clone())).await?;
+        let run = load_run(&mut tx, id, true).await?;
+        if run.session_id.0 != session {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
+        Ok((tx, run))
     }
     #[allow(clippy::too_many_lines)] // One atomic admission transaction.
     async fn admit_transaction(
@@ -538,8 +572,7 @@ impl PostgresStore {
         &self,
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let run = load_run(&mut tx, &fence.run_id, true).await?;
+        let (tx, run) = self.run_transaction(&fence.run_id).await?;
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
             || run.lease_until <= self.clock.now()
@@ -573,7 +606,7 @@ impl Store for PostgresStore {
             .session_id
             .as_ref()
             .unwrap_or(&request.user_message.session_id);
-        let mut tx = self.admission_transaction(session).await?;
+        let mut tx = self.session_transaction(session).await?;
         let admitted = self.admit_transaction(&mut tx, request, false).await?;
         tx.commit().await.map_err(db)?;
         Ok(admitted)
@@ -603,7 +636,7 @@ impl Store for PostgresStore {
         if let Some(capsule) = &keyed.execution {
             capsule.validate(&keyed)?;
         }
-        let mut tx = self.admission_transaction(session).await?;
+        let mut tx = self.session_transaction(session).await?;
         if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
             .bind(&session.0)
             .fetch_optional(&mut *tx)
@@ -796,8 +829,7 @@ impl Store for PostgresStore {
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let mut run = load_run(&mut tx, id, true).await?;
+        let (mut tx, mut run) = self.run_transaction(id).await?;
         if admission_execution::load_record(&mut tx, id)
             .await?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
@@ -848,7 +880,7 @@ impl Store for PostgresStore {
                 "inbox message has wrong session".into(),
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = self.session_transaction(session).await?;
         sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
             .bind(&session.0)
             .fetch_optional(&mut *tx)
@@ -1381,12 +1413,6 @@ mod tests {
                 .await?
                 .append_message(value)
                 .await?;
-            let mut busy_request = request(&a.session.id);
-            busy_request.session_id = Some(a.session.id.clone());
-            assert_eq!(
-                store.admit_run(busy_request).await.unwrap_err(),
-                StoreError::Busy
-            );
             Ok::<_, StoreError>(b)
         })
         .await
@@ -1398,6 +1424,13 @@ mod tests {
         );
         held.commit().await.unwrap();
         blocked_write.await.unwrap().unwrap();
+        let mut busy_request = request(&a.session.id);
+        busy_request.session_id = Some(a.session.id.clone());
+        assert_eq!(
+            store.admit_run(busy_request).await.unwrap_err(),
+            StoreError::Busy
+        );
+
         assert_eq!(
             store.list_all_messages(&b.session.id).await.unwrap().len(),
             2

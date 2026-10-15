@@ -47,7 +47,10 @@ keyed requests to unkeyed starts. Forward both methods in wrappers.
 
 PostgreSQL schema version 2 adds retained receipts and their semantic digests in a
 forward, idempotent migration that preserves existing sessions, runs and messages.
-Per-session transaction locks serialize keyed and unkeyed admission. Receipt,
+Per-session transaction locks serialize all mutations, including keyed/unkeyed
+admission, lease renewal, recovery, inbox and abandonment. PostgreSQL locks the
+session advisory gate before run rows, dependent rows and event/revision rows;
+unrelated sessions remain independent. Receipt,
 run, epoch and user message commit together. Lookup is read-only; replay never
 changes lease ownership. PostgreSQL receipts survive pool and process restarts.
 
@@ -141,9 +144,9 @@ death. Crabber checks the exact expected owner and token atomically; it cannot
 verify external process death. This authority may revoke an unexpired lease.
 
 MemoryStore rotates the claim token before settlement inside a rollback-safe
-transaction. PostgreSQL provides the same contract in one transaction, locking
-the run row before reading its clock or checking ownership; renewal and recovery
-claims serialize on that lock. Every Pending or Running tool call becomes Interrupted with one
+transaction. PostgreSQL provides the same contract in one transaction, taking
+the session gate then the run row before reading its clock or checking ownership;
+renewal and recovery claims use that same order. Every Pending or Running tool call becomes Interrupted with one
 matching result message and ToolCallSettled event. The run becomes Interrupted
 with one durable RunSettled event. All old ExecutionStore writes are fenced out.
 Completed tool records/results, history, usage, checkpoint, admission receipts

@@ -111,7 +111,10 @@ is validated before replay/fresh insertion and committed atomically; `None`
 retains safety-only direct admission and cannot be upgraded by replay.
 Effect-bearing execution writes deny Unstarted; only begin and lease maintenance
 may mutate its live execution ownership. PostgreSQL claim/begin/renew/writes and
-abandonment serialize on the run row, without session-first lock inversion.
+abandonment first acquire the same per-session advisory mutation gate, then the
+run row, dependent records and event/revision rows. Run-ID operations discover
+immutable session routing without a row lock and verify it after acquiring the
+gate. No provider/tool/network operation runs while these locks are held.
 Retain private capsules and markers for the same session lifetime as receipts.
 Forward the entire contract in wrappers. Run the shared
 `admission_contract::run_contract`, `storetest::run_contract`, and
