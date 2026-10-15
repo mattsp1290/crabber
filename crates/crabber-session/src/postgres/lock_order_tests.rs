@@ -31,16 +31,26 @@ async fn session_gate_precedes_run_rows_for_existing_mutation_paths() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    for mode in 0..11 {
+    for mode in 0..13 {
         let now = clock.now();
-        let keyed = crate::admission_execution_contract::keyed(&SessionId::new(), now);
-        let KeyedAdmitOutcome::Started { receipt, admitted } =
-            store.admit_keyed_run(keyed.clone()).await.unwrap()
-        else {
+        let session = SessionId::new();
+        let bound = (mode >= 11).then(|| {
+            crate::execution_binding_contract::fixture(&session, now, "opposing-backend", 'b')
+        });
+        let keyed = bound.as_ref().map_or_else(
+            || crate::admission_execution_contract::keyed(&session, now),
+            |bound| bound.keyed.clone(),
+        );
+        let outcome = if let Some(bound) = bound {
+            store.admit_bound_keyed_run(bound).await
+        } else {
+            store.admit_keyed_run(keyed.clone()).await
+        };
+        let KeyedAdmitOutcome::Started { receipt, admitted } = outcome.unwrap() else {
             panic!("fresh admission must start")
         };
         let execution = other.execution(admitted.fence.clone()).await.unwrap();
-        if mode < 6 || matches!(mode, 8..=10) {
+        if mode < 6 || matches!(mode, 8..=12) {
             execution.begin_admission_execution().await.unwrap();
         }
         if matches!(mode, 4 | 5 | 7) {
@@ -177,6 +187,21 @@ async fn run_mutation(
                 .await
                 .unwrap();
         }
+        8..=12 => {
+            run_native_mutation(mode, &writer_store, execution.as_ref(), original, &run).await;
+        }
+        _ => unreachable!("fixed mutation mode"),
+    }
+}
+
+async fn run_native_mutation(
+    mode: u8,
+    writer_store: &PostgresStore,
+    execution: &dyn crate::ExecutionStore,
+    original: crate::KeyedAdmitRequest,
+    run: &crabber_core::Run,
+) {
+    match mode {
         8 => {
             assert!(matches!(
                 writer_store.admit_keyed_run(original).await.unwrap(),
@@ -196,7 +221,7 @@ async fn run_mutation(
                 .await
                 .unwrap();
         }
-        _ => {
+        10 => {
             let request = crate::attempt_contract::reserve(
                 writer_store
                     .session_revision(&run.session_id)
@@ -205,6 +230,37 @@ async fn run_mutation(
             );
             execution.mutate_attempt(request, None).await.unwrap();
         }
+        11 => {
+            let bound = crate::execution_binding_contract::fixture(
+                &run.session_id,
+                run.created_at,
+                "opposing-backend",
+                'b',
+            );
+            assert!(matches!(
+                writer_store.admit_bound_keyed_run(bound).await.unwrap(),
+                KeyedAdmitOutcome::Replayed(_)
+            ));
+        }
+        12 => {
+            let bound = crate::execution_binding_contract::fixture(
+                &run.session_id,
+                run.created_at,
+                "opposing-backend",
+                'b',
+            );
+            assert_eq!(
+                writer_store
+                    .admit_bound_run(crate::BoundAdmitRequest {
+                        request: bound.keyed.request,
+                        binding: bound.binding
+                    })
+                    .await
+                    .unwrap_err(),
+                crate::StoreError::Busy
+            );
+        }
+        _ => unreachable!("fixed native mutation mode"),
     }
 }
 

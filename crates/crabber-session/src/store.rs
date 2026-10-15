@@ -83,6 +83,38 @@ impl KeyedAdmitRequest {
     }
 }
 
+impl KeyedAdmitRequest {
+    /// Validate immutable message identity and optional original execution
+    /// evidence before taking admission locks, then independently hash semantics.
+    /// Custom adapters must also check persisted identity and replay under their
+    /// transaction lock. This pure validation grants no execution authority.
+    /// # Errors
+    /// Rejects inconsistent scope, original evidence or serialization.
+    pub fn validated_digest(&self) -> Result<InputFingerprint, StoreError> {
+        let request = &self.request;
+        let session = request.session_id.as_ref().ok_or_else(|| {
+            StoreError::Validation("keyed admission requires a stable session ID".into())
+        })?;
+        if request.user_message.session_id != *session
+            || request.user_message.run_id.is_some()
+            || request
+                .user_message
+                .parts
+                .iter()
+                .any(|part| part.message_id != request.user_message.id)
+        {
+            return Err(StoreError::Validation(
+                "invalid admission message identity".into(),
+            ));
+        }
+        let digest = self.semantic_digest()?;
+        if let Some(capsule) = &self.execution {
+            capsule.validate(self)?;
+        }
+        Ok(digest)
+    }
+}
+
 /// Only a newly committed admission grants execution authority.
 #[derive(Clone)]
 pub enum KeyedAdmitOutcome {
@@ -117,6 +149,30 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Atomic admission plus retained provider-binding evidence. No fallback to
+    /// legacy admission is safe: custom adapters must implement this capability.
+    async fn admit_bound_run(
+        &self,
+        _request: crate::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Matching replay checks the original capsule before current admission guards.
+    async fn admit_bound_keyed_run(
+        &self,
+        _request: crate::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Scoped private evidence, with no execution authority or factory restoration.
+    async fn execution_binding(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+    ) -> Result<Option<crate::RetainedExecutionBinding>, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+
     /// Experimental native phase metadata; contains no worker authority or output.
     async fn tool_phase(
         &self,

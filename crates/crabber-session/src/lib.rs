@@ -10,6 +10,13 @@ pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRe
 
 mod abandonment;
 mod admission_execution;
+#[cfg(test)]
+mod binding_fault;
+mod execution_binding;
+pub use execution_binding::{
+    BoundAdmitRequest, BoundKeyedAdmitRequest, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT,
+    PROVIDER_BINDING_COMPONENT, RetainedExecutionBinding,
+};
 mod attempt;
 mod phase;
 pub mod phase_contract;
@@ -24,6 +31,7 @@ pub use attempt::{
 pub mod admission_contract;
 #[cfg(test)]
 mod admission_execution_contract;
+pub mod execution_binding_contract;
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -59,6 +67,23 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_execution_binding_fault_contract() {
+        let store = crate::MemoryStore::new();
+        crate::execution_binding_contract::faults::run(&store, |stage| {
+            store.arm_binding_fault(stage);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn memory_execution_binding_contract() {
+        crate::execution_binding_contract::run_contract(|clock| {
+            crate::MemoryStore::with_clock(clock)
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn memory_phase_contract() {
         crate::phase_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;

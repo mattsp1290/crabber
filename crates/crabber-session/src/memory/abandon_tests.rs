@@ -1,5 +1,5 @@
 use super::*;
-use crabber_core::{AbandonAuthority, AbandonError, AbandonRequest, EventKind, Role};
+use crabber_core::{AbandonAuthority, AbandonError, AbandonRequest, EventKind, MessageId, Role};
 use serde_json::json;
 use std::time::Duration;
 

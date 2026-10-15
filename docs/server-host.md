@@ -104,6 +104,23 @@ owned initial/resumed execution lifecycle, typed admission, authoritative contro
 and session management remain part of this implementation. Their completion is
 required before claiming the durable server-host contract delivered.
 
+Experimental `Store::admit_bound_run` and `admit_bound_keyed_run` atomically retain
+an `ExecutionBindingCapsule` with admission in all bundled stores. They require
+provider-binding and host-behavior components in the independently hashed runtime
+configuration. Keyed admission additionally verifies its original execution
+capsule; exact replay checks the retained binding before granting any new work.
+A legacy receipt with missing binding evidence is never patched during replay.
+
+`execution_binding(session, run)` reads scoped private evidence, including the
+original input. Its Debug output is redacted; it is not a public snapshot or an
+execution capability. The independent binding capsule uses version 2 while its
+text request/runtime codec and existing admission receipt remain version 1. It
+is bounded to 16 MiB encoded JSON and 64 levels of configuration nesting. No new
+migration is needed: it uses the allocated `run_execution_bindings` table. Custom
+adapters default to `HostUnsupported` and must implement the atomic capability.
+The runtime has not yet switched to these APIs or held frozen implementations;
+typed input, exact provider restoration and the common driver remain unfinished.
+
 The experimental core `InputEnvelope` validates bounded ordered input and defines
 the versioned canonical hash for typed admission. It preserves supplied message,
 parent and part IDs, explicit media representations, frontend input/output schema

@@ -78,113 +78,35 @@ impl Store for SqliteStore {
         )
     }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        let mut tx = self.begin_write().await?;
-        let result = async {
-            let admitted = self.admit_transaction(&mut tx, request, false).await?;
-            Ok(admitted)
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.admit_with_binding(request, None).await
     }
 
     async fn admit_keyed_run(
         &self,
-        keyed: KeyedAdmitRequest,
+        request: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let request = &keyed.request;
-        let session = request.session_id.as_ref().ok_or_else(|| {
-            StoreError::Validation("keyed admission requires a stable session ID".into())
-        })?;
-        if request.user_message.session_id != *session
-            || request.user_message.run_id.is_some()
-            || request
-                .user_message
-                .parts
-                .iter()
-                .any(|part| part.message_id != request.user_message.id)
-        {
-            return Err(StoreError::Validation(
-                "invalid admission message identity".into(),
-            ));
-        }
-        let digest = keyed.semantic_digest()?;
-        if let Some(capsule) = &keyed.execution {
-            capsule.validate(&keyed)?;
-        }
-        let mut tx = self.begin_write().await?;
-        let result = async {
-            let request = &keyed.request;
-            let session = request.session_id.as_ref().ok_or_else(|| {
-                StoreError::Validation("keyed admission requires a stable session ID".into())
-            })?;
-            if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
-                .bind(&session.0)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-            {
-                let existing: Session = decode_row(&row, "data")?;
-                existing.ensure_identity(&request.workspace_id, &request.directory)?;
-            }
-            if let Some(receipt) = lookup_receipt(&mut tx, session, &keyed.options.key).await? {
-                if receipt.fingerprint != keyed.options.fingerprint
-                    || receipt.semantic_digest != digest
-                {
-                    return Err(StoreError::AdmissionConflict);
-                }
-                return Ok(KeyedAdmitOutcome::Replayed(receipt));
-            }
-            let session_id = session.clone();
-            let user_message_id = request.user_message.id.clone();
-            let admitted = self.admit_transaction(&mut tx, keyed.request, true).await?;
-            let receipt = AdmissionReceipt {
-                session_id,
-                run_id: admitted.run.id.clone(),
-                user_message_id,
-                fingerprint: keyed.options.fingerprint,
-                semantic_digest_version: 1,
-                semantic_digest: digest,
-            };
-            sqlx::query(
-                "INSERT INTO \
-                    admission_receipts(session_id,admission_key,run_id,user_message_id,data) \
-                    VALUES($1,$2,$3,$4,$5)",
-            )
-            .bind(&receipt.session_id.0)
-            .bind(keyed.options.key.as_str())
-            .bind(&receipt.run_id.0)
-            .bind(&receipt.user_message_id.0)
-            .bind(text(&receipt)?)
-            .execute(&mut *tx)
+        self.admit_keyed_with_binding(request, None).await
+    }
+    async fn admit_bound_run(
+        &self,
+        request: crate::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_with_binding(request.request, Some(request.binding))
             .await
-            .map_err(db)?;
-            if let Some(capsule) = keyed.execution {
-                let record = crate::AdmissionExecutionRecord {
-                    receipt: receipt.clone(),
-                    key: keyed.options.key.clone(),
-                    capsule,
-                    state: crate::AdmissionExecutionState::Unstarted,
-                };
-                sqlx::query(
-                    "INSERT INTO \
-                        admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) \
-                        VALUES($1,$2,$3,1,'Unstarted',$4)",
-                )
-                .bind(&receipt.run_id.0)
-                .bind(&receipt.session_id.0)
-                .bind(keyed.options.key.as_str())
-                .bind(text(&record)?)
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
-            }
-            Ok(KeyedAdmitOutcome::Started {
-                receipt,
-                admitted: Box::new(admitted),
-            })
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crate::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        self.admit_keyed_with_binding(request.keyed, Some(request.binding))
+            .await
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::RetainedExecutionBinding>, StoreError> {
+        self.read_execution_binding(session, run).await
     }
 
     async fn lookup_admission(

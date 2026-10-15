@@ -223,3 +223,41 @@ is read-only and rejects other schemas; mixed v4/v5 writers are unsupported.
 Rollback requires backup restore or forward repair. No receipt/capsule pruning,
 TTL or retained-key reuse is introduced. See the [full host contract](../../docs/admission-receipts.md)
 for eligibility classifications, original behavior restoration and process proofs.
+
+
+### Experimental atomic binding admission
+
+`admit_bound_run` and `admit_bound_keyed_run` commit immutable provider-binding
+records with the original message/run and, when keyed, receipt/Unstarted capsule.
+Never implement this by calling legacy admission and then writing the binding.
+The bundled stores reuse their transaction-only admission helpers. PostgreSQL
+uses the session gate first; SQLite explicitly completes its write transaction;
+Memory publishes its cloned state only after all writes succeed.
+
+`ExecutionBindingCapsule` version 2 is independent binding evidence, with the
+existing version-1 text request/runtime semantics and keyed receipt. Its
+configuration must contain exactly one `PROVIDER_BINDING_COMPONENT` whose version
+encodes the complete descriptor and one `HOST_BEHAVIOR_COMPONENT` whose version is
+the declared opaque behavior fingerprint. The store hashes the complete runtime
+semantics and checks original input, selected route, limits, configuration and
+behavior rather than trusting the caller's claimed fingerprint. Credentials and
+transport correlation do not belong in these declarations. Actual execution and
+typed input are not yet wired to this capability.
+
+Custom adapters can use `KeyedAdmitRequest::validated_digest` before taking locks,
+`ExecutionBindingCapsule::validate`/`validate_keyed`, and the bounded
+`RetainedExecutionBinding` codec and row validator. Recheck persisted identity and
+receipt under the session lock. Replay compares the original binding, even after
+Started, terminal settlement or lease changes, and never inserts missing evidence
+or grants another fence. Missing/inconsistent binding evidence returns a conflict;
+legacy receipt lookup still returns metadata. Default methods return
+`HostUnsupported` rather than silently dropping the binding.
+
+`execution_binding(session, run)` is a scoped private read, not a public snapshot.
+It checks immutable run fields and the original committed input in a coherent
+read transaction. The SQL projection omits private worker tokens and bounds its
+payload before decoding. Both writers and readers cap private encoded records at
+16 MiB; configuration nesting is capped at 64. Debug output is redacted. The
+public `execution_binding_contract::run_contract` qualifies adapters; bundled
+fault/process tests cover rollback, lost acknowledgement and killed writers for
+both keyed and unkeyed admission, without dispatching a provider or tool.

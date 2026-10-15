@@ -1,9 +1,14 @@
+#[path = "memory/admission.rs"]
+mod admission;
+use admission::{admit_keyed_transaction, admit_transaction};
 #[path = "memory/abandon.rs"]
 mod abandon;
 #[path = "memory/admission_execution.rs"]
 mod admission_execution;
 #[path = "memory/attempt.rs"]
 mod attempt;
+#[path = "memory/execution_binding.rs"]
+mod execution_binding;
 #[path = "memory/phase.rs"]
 mod phase;
 #[path = "memory/public_state.rs"]
@@ -16,9 +21,8 @@ use crate::{
 use async_trait::async_trait;
 use crabber_core::{
     AdmissionKey, AdmissionReceipt, ByteLimits, Clock, ContextEpoch, EpochId, EventCursor,
-    EventRecord, Message, MessageId, Part, PartKind, Run, RunFence, RunId, RunStatus, Session,
-    SessionId, SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult,
-    ToolResultStatus, Usage,
+    EventRecord, Message, Part, PartKind, Run, RunFence, RunId, RunStatus, Session, SessionId,
+    SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult, ToolResultStatus, Usage,
 };
 use std::{
     collections::BTreeMap,
@@ -41,6 +45,8 @@ pub struct MemoryStore {
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    binding_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
@@ -51,6 +57,7 @@ struct State {
     abandon_fault_boundary: u8,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     admission_executions: BTreeMap<RunId, crate::AdmissionExecutionRecord>,
+    execution_bindings: BTreeMap<RunId, String>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
     runs: BTreeMap<RunId, Run>,
@@ -116,6 +123,8 @@ impl MemoryStore {
             attempt_fault: Arc::default(),
             #[cfg(test)]
             phase_fault: Arc::default(),
+            #[cfg(test)]
+            binding_fault: Arc::default(),
         }
     }
 
@@ -338,109 +347,6 @@ fn initial_epoch(
     }
 }
 
-fn admit_transaction(
-    state: &mut State,
-    request: &AdmitRequest,
-    now: OffsetDateTime,
-    allow_create: bool,
-) -> Result<AdmitOutcome, StoreError> {
-    let lease = time::Duration::try_from(request.lease)
-        .map_err(|_| StoreError::Validation("lease is too large".into()))?;
-    if lease <= time::Duration::ZERO {
-        return Err(StoreError::Validation("lease must be positive".into()));
-    }
-    let session_id = request
-        .session_id
-        .clone()
-        .unwrap_or_else(|| request.user_message.session_id.clone());
-    let session = if let Some(existing) = state.sessions.get(&session_id) {
-        existing.ensure_identity(&request.workspace_id, &request.directory)?;
-        existing.clone()
-    } else if request.session_id.is_some() && !allow_create {
-        return Err(StoreError::NotFound);
-    } else {
-        Session {
-            id: session_id.clone(),
-            workspace_id: request.workspace_id.clone(),
-            directory: request.directory.clone(),
-            title: request.title.clone(),
-            created_at: now,
-            updated_at: now,
-        }
-    };
-    if state
-        .runs
-        .values()
-        .any(|run| run.session_id == session_id && !run.status.is_terminal())
-    {
-        return Err(StoreError::Busy);
-    }
-    if request.user_message.session_id != session_id {
-        return Err(StoreError::Validation(
-            "user message has wrong session".into(),
-        ));
-    }
-    let prior_history = if state.sessions.contains_key(&session_id) {
-        project_messages(state, &session_id, None)?
-    } else {
-        Vec::new()
-    };
-    let previous_epoch = state
-        .run_order
-        .iter()
-        .rev()
-        .find_map(|id| {
-            state
-                .runs
-                .get(id)
-                .filter(|run| run.session_id == session_id)
-        })
-        .map(|run| state.epochs.get(&run.epoch_id).ok_or(StoreError::NotFound))
-        .transpose()?
-        .cloned();
-    let run_id = RunId::new();
-    let epoch_id = EpochId::new();
-    let token = uuid::Uuid::new_v4().to_string();
-    let run = Run {
-        id: run_id.clone(),
-        session_id: session_id.clone(),
-        status: RunStatus::Running,
-        owner: request.owner.clone(),
-        claim_token: token.clone(),
-        lease_until: now + lease,
-        epoch_id: epoch_id.clone(),
-        config_hash: request.config_hash.clone(),
-        plan_fingerprint: request.plan_fingerprint.clone(),
-        checkpoint: None,
-        error: None,
-        usage: Usage::default(),
-        created_at: now,
-        updated_at: now,
-    };
-    let mut user_message = request.user_message.clone();
-    user_message.run_id = Some(run_id.clone());
-    crate::ensure_storable(&session)?;
-    crate::ensure_storable(&run)?;
-    insert_message(state, &run, user_message)?;
-    state.sessions.insert(session_id.clone(), session.clone());
-    state.runs.insert(run_id.clone(), run.clone());
-    state.run_order.push(run_id.clone());
-    let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);
-    crate::ensure_storable(&epoch)?;
-    state.epochs.insert(epoch_id.clone(), epoch);
-    Ok(AdmitOutcome {
-        session,
-        run,
-        fence: RunFence {
-            run_id,
-            claim_token: token,
-        },
-        assistant_placeholder: MessageId::new(),
-        epoch: epoch_id,
-        prior_history,
-    })
-}
-
 #[async_trait]
 impl Store for MemoryStore {
     async fn tool_phase(
@@ -508,67 +414,27 @@ impl Store for MemoryStore {
         &self,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let request = &keyed.request;
-        let session_id = request.session_id.as_ref().ok_or_else(|| {
-            StoreError::Validation("keyed admission requires a stable session ID".into())
-        })?;
-        if request.user_message.session_id != *session_id
-            || request.user_message.run_id.is_some()
-            || request
-                .user_message
-                .parts
-                .iter()
-                .any(|part| part.message_id != request.user_message.id)
-        {
-            return Err(StoreError::Validation(
-                "invalid admission message identity".into(),
-            ));
-        }
-        let digest = keyed.semantic_digest()?;
-        if let Some(capsule) = &keyed.execution {
-            capsule.validate(&keyed)?;
-        }
-        self.transact(|state| {
-            if let Some(session) = state.sessions.get(session_id) {
-                session.ensure_identity(&request.workspace_id, &request.directory)?;
-            }
-            let key = (session_id.clone(), keyed.options.key.clone());
-            if let Some(receipt) = state.receipts.get(&key) {
-                if receipt.fingerprint != keyed.options.fingerprint
-                    || receipt.semantic_digest != digest
-                {
-                    return Err(StoreError::AdmissionConflict);
-                }
-                return Ok(KeyedAdmitOutcome::Replayed(receipt.clone()));
-            }
-            let admitted = admit_transaction(state, request, self.clock.now(), true)?;
-            let receipt = AdmissionReceipt {
-                session_id: session_id.clone(),
-                run_id: admitted.run.id.clone(),
-                user_message_id: request.user_message.id.clone(),
-                fingerprint: keyed.options.fingerprint.clone(),
-                semantic_digest_version: 1,
-                semantic_digest: digest,
-            };
-            crate::ensure_storable(&receipt)?;
-            if let Some(capsule) = keyed.execution.clone() {
-                let execution = crate::AdmissionExecutionRecord {
-                    receipt: receipt.clone(),
-                    key: keyed.options.key.clone(),
-                    capsule,
-                    state: crate::AdmissionExecutionState::Unstarted,
-                };
-                crate::ensure_storable(&execution)?;
-                state
-                    .admission_executions
-                    .insert(admitted.run.id.clone(), execution);
-            }
-            state.receipts.insert(key, receipt.clone());
-            Ok(KeyedAdmitOutcome::Started {
-                receipt,
-                admitted: Box::new(admitted),
-            })
-        })
+        keyed.validated_digest()?;
+        self.transact(|state| admit_keyed_transaction(state, &keyed, self.clock.now()))
+    }
+    async fn admit_bound_run(
+        &self,
+        request: crate::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_with_binding(request)
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crate::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        self.admit_keyed_with_binding(request)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::RetainedExecutionBinding>, StoreError> {
+        self.read_execution_binding(session, run)
     }
 
     async fn lookup_admission(
