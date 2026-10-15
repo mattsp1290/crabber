@@ -4,6 +4,8 @@ mod admission;
 mod binding;
 #[path = "orchestrator/input.rs"]
 mod input;
+#[path = "orchestrator/terminal.rs"]
+mod terminal;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
@@ -744,6 +746,36 @@ pub struct RunHandle {
     tasks: crate::execution_tasks::ExecutionTasks,
     completion: watch::Receiver<bool>,
     cancellation: CancellationToken,
+    events: Option<crate::RunEvents>,
+}
+
+/// Cloneable local control/observation of one worker. It carries no fence and
+/// grants no durable cancellation authority. Dropping it does not cancel work.
+#[derive(Clone)]
+pub struct RunControl {
+    session_id: SessionId,
+    run_id: RunId,
+    cancellation: CancellationToken,
+    completion: watch::Receiver<bool>,
+}
+impl RunControl {
+    /// Signal local cancellation. This is not a persisted request/acknowledgement.
+    pub fn interrupt(&self) {
+        self.cancellation.cancel();
+    }
+    #[must_use]
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+    #[must_use]
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+    /// Publication of the worker result; never a join or proof of cleanup.
+    #[must_use]
+    pub fn completion_signal(&self) -> watch::Receiver<bool> {
+        self.completion.clone()
+    }
 }
 
 struct RunStateSink {
@@ -846,6 +878,25 @@ impl Drop for HeartbeatGuard {
 }
 
 impl RunHandle {
+    /// Clone local control while retaining sole ownership of the event receiver.
+    #[must_use]
+    pub fn control(&self) -> RunControl {
+        RunControl {
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            cancellation: self.cancellation.clone(),
+            completion: self.completion.clone(),
+        }
+    }
+
+    /// Take the sole bounded event receiver for this worker.
+    /// # Panics
+    /// Panics if the receiver was already taken.
+    #[must_use]
+    pub fn events(&mut self) -> crate::RunEvents {
+        self.events.take().expect("events receiver already taken")
+    }
+
     /// Requests cancellation of the active provider stream or tool body.
     /// `done` reports settlement failures, including unknown durable outcomes.
     pub fn interrupt(&self) {
@@ -1050,32 +1101,48 @@ impl Orchestrator {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunResult, RuntimeError> {
-        let runtime = self.with_context(context);
-        let run_id = run_id.clone();
-        let (sender, result) = oneshot::channel();
-        // Once polled, preparation, claim and execution stay owned even if the
-        // caller abandons its waiter. A later drain awaits this actual task.
-        let task = self.execution_tasks.spawn(run_id.clone(), async move {
-            let outcome = Box::pin(runtime.resume_attempt(&run_id)).await;
-            let _ = sender.send(outcome);
-        });
-        let outcome = result.await;
-        if self.execution_tasks.join(&task).await != crate::TaskTermination::Returned {
-            return Err(RuntimeError::TaskStopped);
-        }
-        outcome.map_err(|_| RuntimeError::TaskStopped)?
+        self.resume_execution_with_context(run_id, context)
+            .await?
+            .done()
+            .await
     }
 
-    async fn resume_attempt(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
-        let run = self
-            .store
-            .get_run(run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        // Stored-record identity check, before plan acquisition, the claim and
-        // any pending tool execution: a rejection leaves the run untouched.
-        let validated = self.validated_session(&run).await?;
-        Box::pin(self.resume_loaded(run, validated)).await
+    /// Observe/control a resumed worker using the same handle as initial admission.
+    /// Eligibility, frozen-plan restoration and claim execute under retained task
+    /// ownership. A handle is observation, never a grant of execution authority.
+    /// # Errors
+    /// Returns missing/invalid identity; `done` reports subsequent eligibility,
+    /// binding, claim, execution and terminal-persistence failures.
+    pub async fn resume_execution(&self, run_id: &RunId) -> Result<RunHandle, RuntimeError> {
+        self.resume_execution_with_context(run_id, None).await
+    }
+    /// Resume with explicit correlation, excluded from persisted execution authority.
+    /// # Errors
+    /// Returns the same failures as `resume_execution`.
+    pub async fn resume_execution_with_context(
+        &self,
+        run_id: &RunId,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let runtime = self.with_context(context);
+        let run_id = run_id.clone();
+        self.own_preparation(async move {
+            let run = runtime
+                .store
+                .get_run(&run_id)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+            let validated = runtime.validated_session(&run).await?;
+            let session_id = validated.0.id.clone();
+            Ok(runtime.spawn_worker(
+                session_id,
+                run_id,
+                move |runtime, cancellation| async move {
+                    Box::pin(runtime.resume_loaded(run, validated, cancellation)).await
+                },
+            ))
+        })
+        .await
     }
 
     /// Loads the run's persisted session and compares it with the request saved
@@ -1124,6 +1191,7 @@ impl Orchestrator {
         &self,
         run: crabber_core::Run,
         (session, saved): (RunSession, Option<Request>),
+        cancellation: CancellationToken,
     ) -> Result<RunResult, RuntimeError> {
         let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
@@ -1184,7 +1252,6 @@ impl Orchestrator {
         );
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
-        let cancellation = CancellationToken::new();
         let work_cancellation = cancellation.clone();
         let state_sink: Arc<dyn StateSink> = Arc::new(RunStateSink {
             store: Arc::clone(&self.store),
@@ -1192,8 +1259,13 @@ impl Orchestrator {
             session_id: run.session_id.clone(),
             lost: Arc::clone(&lost),
         });
-        let work_fence = fence.clone();
-        let observed_lost = Arc::clone(&measurement_lost);
+        let failure_execution = execution.clone();
+        let failure_plan = plan.clone();
+        let failure_session = run.session_id.clone();
+        let failure_started_at = run.created_at;
+        let failure_lost = lost.clone();
+        let current_turn = Arc::new(std::sync::Mutex::new(None));
+        let work_turn = current_turn.clone();
         let resumed_work = async move {
             let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
             execution.append_event(resumed.clone()).await?;
@@ -1286,7 +1358,12 @@ impl Orchestrator {
                             self.claim_input(execution.as_ref(), InboxKind::FollowUp)
                                 .await?;
                         }
-                        Err(error) => return Err(error.into()),
+                        Err(reason) => {
+                            return Err(RuntimeError::TerminalOutcomeUnknown {
+                                run_id: run_id.clone(),
+                                reason,
+                            });
+                        }
                     }
                 }
                 self.emit_durable(
@@ -1309,7 +1386,7 @@ impl Orchestrator {
                         false,
                         usage,
                         lost.as_ref(),
-                        &std::sync::Mutex::new(None),
+                        &work_turn,
                     )
                     .await;
                 let result = match outcome {
@@ -1325,42 +1402,7 @@ impl Orchestrator {
                         status: RunStatus::Paused,
                         usage: Usage::default(),
                     }),
-                    Err(error) => {
-                        if lost.load(Ordering::SeqCst)
-                            || matches!(error, RuntimeError::LeaseLost)
-                            || self.verified_lease_loss(&work_fence).await
-                        {
-                            observed_lost.store(true, Ordering::SeqCst);
-                            plan.release();
-                            return Err(error);
-                        }
-                        self.settle_unfinished_calls(
-                            execution.as_ref(),
-                            &run.session_id,
-                            run_id,
-                            &plan,
-                            true,
-                            None,
-                        )
-                        .await?;
-                        let event = self.run_settled_event(
-                            &run.session_id,
-                            run_id,
-                            RunStatus::Failed,
-                            &Usage::default(),
-                            run.created_at,
-                        );
-                        execution
-                            .settle_run(
-                                RunStatus::Failed,
-                                Some(storable_error_text(&error)),
-                                Usage::default(),
-                                event.clone(),
-                            )
-                            .await?;
-                        self.observer.emit(&event);
-                        Err(error)
-                    }
+                    Err(error) => Err(error),
                 };
                 plan.release();
                 return result;
@@ -1374,7 +1416,11 @@ impl Orchestrator {
                 self.run_settled_event(&run.session_id, run_id, status, &run.usage, run.created_at);
             execution
                 .settle_run(status, None, run.usage.clone(), event.clone())
-                .await?;
+                .await
+                .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
+                    run_id: run_id.clone(),
+                    reason,
+                })?;
             self.observer.emit(&event);
             plan.release();
             Ok(RunResult {
@@ -1398,6 +1444,27 @@ impl Orchestrator {
             result = &mut resumed_work => result,
         };
         drop(heartbeat);
+        let result = match result {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let turn = current_turn.lock().expect("turn context poisoned").clone();
+                self.finish_failed_run(
+                    terminal::FailureContext {
+                        execution: failure_execution.as_ref(),
+                        fence: &fence,
+                        session: &failure_session,
+                        plan: &failure_plan,
+                        started_at: failure_started_at,
+                        lost: failure_lost.as_ref(),
+                        observed_lost: measurement_lost.as_ref(),
+                    },
+                    error,
+                    turn.as_ref(),
+                )
+                .await
+            }
+        };
+        failure_plan.release();
         if result.is_err() && self.verified_lease_loss(&fence).await {
             measurement_lost.store(true, Ordering::SeqCst);
         }
@@ -1440,12 +1507,7 @@ impl Orchestrator {
             // A run whose session is missing, undecodable or drifted, or that is
             // claimed elsewhere or awaits admission recovery, stays unfinished
             // and is reported; it must not stop the sweep.
-            let outcome = match self.validated_session(&run).await {
-                Ok(validated) => {
-                    Box::pin(self.with_context(context).resume_loaded(run, validated)).await
-                }
-                Err(error) => Err(error.into()),
-            };
+            let outcome = self.resume_with_context(&run_id, context).await;
             match outcome {
                 Ok(result) => report.recovered.push(result),
                 Err(RuntimeError::Store(
@@ -2065,31 +2127,53 @@ impl Orchestrator {
         entry: InitialEntry,
         bound: Option<crabber_providers::BoundProvider>,
     ) -> RunHandle {
+        let work_session = RunSession::from(session);
+        self.spawn_worker(
+            session.id.clone(),
+            fence.run_id.clone(),
+            move |runtime, cancellation| async move {
+                Box::pin(runtime.run(
+                    fence,
+                    work_session,
+                    InitialRequest {
+                        request,
+                        entry,
+                        bound,
+                    },
+                    plan,
+                    cancellation,
+                ))
+                .await
+            },
+        )
+    }
+
+    fn spawn_worker<F, W>(&self, session_id: SessionId, run_id: RunId, work: F) -> RunHandle
+    where
+        F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
+    {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let cancellation = CancellationToken::new();
-        let work_cancellation = cancellation.clone();
-        let runtime = self.clone();
-        let work_session = RunSession::from(session);
-        let run_id = fence.run_id.clone();
+        let mut runtime = self.clone();
+        let (event_observer, events) = crate::execution_events::ExecutionEventObserver::channel(
+            runtime.observer.clone(),
+            session_id.clone(),
+            run_id.clone(),
+            completion.clone(),
+        );
+        runtime.observer = event_observer.clone();
+        let cancellation_for_work = cancellation.clone();
         let task = self.execution_tasks.spawn(run_id.clone(), async move {
-            let result = Box::pin(runtime.run(
-                fence,
-                work_session,
-                InitialRequest {
-                    request,
-                    entry,
-                    bound,
-                },
-                plan,
-                work_cancellation,
-            ))
-            .await;
+            let guard = event_observer.guard();
+            let result = Box::pin(work(runtime, cancellation_for_work)).await;
+            drop(guard);
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
         });
         RunHandle {
-            session_id: session.id.clone(),
+            session_id,
             run_id,
             store: Arc::clone(&self.store),
             clock: Arc::clone(&self.clock),
@@ -2098,6 +2182,7 @@ impl Orchestrator {
             tasks: self.execution_tasks.clone(),
             completion,
             cancellation,
+            events: Some(events),
         }
     }
 
@@ -2231,75 +2316,21 @@ impl Orchestrator {
                 usage,
             }),
             Err(error) => {
-                if matches!(error, RuntimeError::Paused) {
-                    plan.release();
-                    return Ok(RunResult {
-                        session_id,
-                        run_id,
-                        status: RunStatus::Paused,
-                        usage: Usage::default(),
-                    });
-                }
-                if lost.load(Ordering::SeqCst)
-                    || matches!(error, RuntimeError::LeaseLost)
-                    || self.verified_lease_loss(&fence).await
-                {
-                    observed_lost.store(true, Ordering::SeqCst);
-                    plan.release();
-                    return Err(error);
-                }
-                if !matches!(error, RuntimeError::LeaseLost) {
-                    let turn_id = current_turn.lock().expect("turn context poisoned").clone();
-                    self.settle_unfinished_calls(
-                        execution.as_ref(),
-                        &session_id,
-                        &run_id,
-                        &plan,
-                        true,
-                        turn_id.as_ref(),
-                    )
-                    .await?;
-                }
-                let status = if matches!(error, RuntimeError::Interrupted) {
-                    RunStatus::Interrupted
-                } else {
-                    RunStatus::Failed
-                };
-                let settled = self.run_settled_event(
-                    &session_id,
-                    &run_id,
-                    status,
-                    &Usage::default(),
-                    run_started_at,
-                );
-                execution
-                    .settle_run(
-                        status,
-                        Some(storable_error_text(&error)),
-                        Usage::default(),
-                        settled.clone(),
-                    )
-                    .await
-                    .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
-                        run_id: run_id.clone(),
-                        reason,
-                    })?;
-                self.observer.emit(&settled);
-                let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-                plan.dispatcher
-                    .notify::<EventPublished>(projection.clone())
-                    .await;
-                plan.dispatcher.notify::<RunSettled>(projection).await;
-                if status == RunStatus::Interrupted {
-                    Ok(RunResult {
-                        session_id,
-                        run_id,
-                        status,
-                        usage: Usage::default(),
-                    })
-                } else {
-                    Err(error)
-                }
+                let turn = current_turn.lock().expect("turn context poisoned").clone();
+                self.finish_failed_run(
+                    terminal::FailureContext {
+                        execution: execution.as_ref(),
+                        fence: &fence,
+                        session: &session_id,
+                        plan: &plan,
+                        started_at: run_started_at,
+                        lost: lost.as_ref(),
+                        observed_lost,
+                    },
+                    error,
+                    turn.as_ref(),
+                )
+                .await
             }
         };
         plan.release();

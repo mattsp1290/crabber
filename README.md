@@ -39,6 +39,23 @@ run.done().await?;
 # }
 ```
 
+Each handle owns one bounded event receiver. Take it once with `events()`;
+lag ends that observation path and requires reconciliation from the Store.
+Dropping the receiver or handle leaves the retained worker running. Unrelated
+workers have separate event queues, including resumed workers with the same RunId.
+
+`Agent::resume_execution(&run_id)` returns the same handle for an eligible retained
+run; `resume()` waits for its result directly. Eligibility and frozen-binding
+checks run under retained ownership, so await `done()` for their outcome. Clone
+`handle.control()` to interrupt a worker independently of its receiver. This is a
+local cancellation signal; it does not acknowledge a durable cancellation request.
+
+`done()` awaits the worker result and actual task join. Event EOF and the control's
+completion signal do not prove terminal persistence or external resource cleanup.
+If a terminal write fails or loses its acknowledgement, the result is
+`RuntimeError::TerminalOutcomeUnknown`; reconcile durable state before deciding
+what happened. A terminal event is published only after persistence acknowledges it.
+
 ## Host-authorized `AGENTS.md` middleware
 
 Model middleware can append bounded system-prompt text. The first-party recipe has

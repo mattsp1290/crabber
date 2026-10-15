@@ -1,6 +1,8 @@
 //! Fresh-run agent orchestration.
 
 mod event_payload;
+mod execution_events;
+pub use execution_events::RunEvents;
 mod execution_tasks;
 pub use execution_tasks::{
     ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, PreparationTaskId,
@@ -19,8 +21,8 @@ mod policy;
 pub use orchestrator::{
     Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode,
     INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer,
-    Orchestrator, OrchestratorBuilder, RecoverReport, Request, RunHandle, RunResult, RuntimeError,
-    SkippedRun, TOOL_PIPELINE_HANDLER_ID, TurnSnapshot,
+    Orchestrator, OrchestratorBuilder, RecoverReport, Request, RunControl, RunHandle, RunResult,
+    RuntimeError, SkippedRun, TOOL_PIPELINE_HANDLER_ID, TurnSnapshot,
 };
 pub use policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,

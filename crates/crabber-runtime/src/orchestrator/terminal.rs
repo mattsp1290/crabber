@@ -1,0 +1,91 @@
+//! Shared failure settlement for initial and resumed workers.
+use super::{
+    AtomicBool, EventPublished, ExecutionStore, OffsetDateTime, Orchestrator, Ordering, RunFence,
+    RunPlan, RunResult, RunSettled, RunStatus, RuntimeError, SessionId, TurnId, Usage, Value,
+    storable_error_text,
+};
+
+pub(super) struct FailureContext<'a> {
+    pub execution: &'a dyn ExecutionStore,
+    pub fence: &'a RunFence,
+    pub session: &'a SessionId,
+    pub plan: &'a RunPlan,
+    pub started_at: OffsetDateTime,
+    pub lost: &'a AtomicBool,
+    pub observed_lost: &'a AtomicBool,
+}
+impl Orchestrator {
+    pub(super) async fn finish_failed_run(
+        &self,
+        scope: FailureContext<'_>,
+        error: RuntimeError,
+        turn: Option<&TurnId>,
+    ) -> Result<RunResult, RuntimeError> {
+        let FailureContext {
+            execution,
+            fence,
+            session,
+            plan,
+            started_at,
+            lost,
+            observed_lost,
+        } = scope;
+        let run = &fence.run_id;
+        if matches!(error, RuntimeError::Paused) {
+            return Ok(RunResult {
+                session_id: session.clone(),
+                run_id: run.clone(),
+                status: RunStatus::Paused,
+                usage: Usage::default(),
+            });
+        }
+        // An unknown terminal write is reconciled from durable state, never
+        // followed by a second attempt to manufacture another outcome.
+        if matches!(error, RuntimeError::TerminalOutcomeUnknown { .. }) {
+            return Err(error);
+        }
+        if lost.load(Ordering::SeqCst)
+            || matches!(error, RuntimeError::LeaseLost)
+            || self.verified_lease_loss(fence).await
+        {
+            observed_lost.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        self.settle_unfinished_calls(execution, session, run, plan, true, turn)
+            .await?;
+        let status = if matches!(error, RuntimeError::Interrupted) {
+            RunStatus::Interrupted
+        } else {
+            RunStatus::Failed
+        };
+        let settled = self.run_settled_event(session, run, status, &Usage::default(), started_at);
+        execution
+            .settle_run(
+                status,
+                Some(storable_error_text(&error)),
+                Usage::default(),
+                settled.clone(),
+            )
+            .await
+            .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
+                run_id: run.clone(),
+                reason,
+            })?;
+        self.observer.emit(&settled);
+        let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
+        plan.dispatcher
+            .notify::<EventPublished>(projection.clone())
+            .await;
+        plan.dispatcher.notify::<RunSettled>(projection).await;
+        if status == RunStatus::Interrupted {
+            Ok(RunResult {
+                session_id: session.clone(),
+                run_id: run.clone(),
+                status,
+                usage: Usage::default(),
+            })
+        } else {
+            Err(error)
+        }
+    }
+}

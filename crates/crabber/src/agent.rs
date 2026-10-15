@@ -24,7 +24,6 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::broadcast;
 
 /// Host-owned settings frozen into each prompt request.
 #[derive(Debug, Clone)]
@@ -306,12 +305,10 @@ impl AgentBuilder {
                 "max_output_tokens must be positive",
             ));
         }
-        let (events, _) = broadcast::channel(256);
         #[cfg(feature = "datadog")]
         let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
-        let observer = Arc::new(EventBroadcaster {
+        let observer = Arc::new(AgentObservers {
             observers: self.observers,
-            events: events.clone(),
             #[cfg(feature = "datadog")]
             datadog: datadog.clone(),
         });
@@ -379,7 +376,6 @@ impl AgentBuilder {
         Ok(Agent {
             runtime: runtime.build()?,
             config,
-            events,
             #[cfg(feature = "datadog")]
             datadog,
             #[cfg(test)]
@@ -391,14 +387,13 @@ impl AgentBuilder {
     }
 }
 
-struct EventBroadcaster {
+struct AgentObservers {
     observers: Vec<Arc<dyn Observer>>,
-    events: broadcast::Sender<Arc<EventRecord>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogObserver>,
 }
 
-impl Observer for EventBroadcaster {
+impl Observer for AgentObservers {
     fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
         for observer in &self.observers {
             // A faulty local observer must not suppress the remaining observers.
@@ -437,7 +432,6 @@ impl Observer for EventBroadcaster {
         self.model_completed_with_context(event, None);
     }
     fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
-        let _ = self.events.send(Arc::new(event.clone()));
         for observer in &self.observers {
             observer.emit_with_context(event, context);
         }
@@ -462,7 +456,6 @@ impl Observer for EventBroadcaster {
         context: Option<&TraceContext>,
         attempt: &RunId,
     ) {
-        let _ = self.events.send(Arc::new(event.clone()));
         for observer in &self.observers {
             observer.emit_in_attempt(event, context, attempt);
         }
@@ -492,7 +485,6 @@ impl Observer for EventBroadcaster {
 pub struct Agent {
     runtime: Orchestrator,
     config: AgentConfig,
-    events: broadcast::Sender<Arc<EventRecord>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogObserver>,
     #[cfg(test)]
@@ -642,13 +634,10 @@ impl Agent {
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
         self.prepare_request(&request).await?;
-        let receiver = self.events.subscribe();
         let inner = self.runtime.start_with_context(request, context).await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
-            completion: inner.completion_signal(),
             inner,
-            events: Some(receiver),
         })
     }
 
@@ -694,12 +683,11 @@ impl Agent {
             return Ok(Admission::Replayed(receipt));
         }
         self.prepare_request(&request).await?;
-        let receiver = self.events.subscribe();
         let admission = self
             .runtime
             .start_keyed_with_context(request, options, context)
             .await?;
-        Ok(Admission::from_runtime(admission, receiver))
+        Ok(Admission::from_runtime(admission))
     }
 
     /// Complete a retained Unstarted admission after its owner expires. Restore
@@ -747,12 +735,11 @@ impl Agent {
             return Ok(Admission::Replayed(receipt));
         }
         self.prepare_request(&request).await?;
-        let receiver = self.events.subscribe();
         let admission = self
             .runtime
             .recover_admission_with_context(request, options, context)
             .await?;
-        Ok(Admission::from_runtime(admission, receiver))
+        Ok(Admission::from_runtime(admission))
     }
 
     async fn prepare_request(&self, request: &Request) -> Result<(), RuntimeError> {
@@ -862,8 +849,37 @@ impl Agent {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunResult, RuntimeError> {
+        self.resume_execution_with_context(run_id, context)
+            .await?
+            .done()
+            .await
+    }
+
+    /// Resume with the same bounded event/control/join handle as a fresh prompt.
+    /// Eligibility and claim are performed by its owned worker; handle creation
+    /// grants no execution authority. Dropping observation never cancels work.
+    /// # Errors
+    /// Returns initialization/identity errors; `done` reports claim and execution errors.
+    pub async fn resume_execution(&self, run_id: &RunId) -> Result<RunHandle, RuntimeError> {
+        self.resume_execution_with_context(run_id, None).await
+    }
+    /// Resume with explicit host correlation metadata and an owned stream.
+    /// # Errors
+    /// Returns the same failures as `resume_execution`.
+    pub async fn resume_execution_with_context(
+        &self,
+        run_id: &RunId,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
         self.initialize_extensions().await?;
-        self.runtime.resume_with_context(run_id, context).await
+        let inner = self
+            .runtime
+            .resume_execution_with_context(run_id, context)
+            .await?;
+        Ok(RunHandle {
+            run_id: inner.run_id().clone(),
+            inner,
+        })
     }
 
     /// Reclaims all expired unfinished runs and reports each expired run it
@@ -901,10 +917,7 @@ pub enum Admission {
     Replayed(AdmissionReceipt),
 }
 impl Admission {
-    fn from_runtime(
-        admission: crabber_runtime::Admission,
-        receiver: broadcast::Receiver<Arc<EventRecord>>,
-    ) -> Self {
+    fn from_runtime(admission: crabber_runtime::Admission) -> Self {
         match admission {
             crabber_runtime::Admission::Started {
                 receipt,
@@ -913,9 +926,7 @@ impl Admission {
                 receipt,
                 handle: RunHandle {
                     run_id: inner.run_id().clone(),
-                    completion: inner.completion_signal(),
                     inner,
-                    events: Some(receiver),
                 },
             },
             crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
@@ -938,57 +949,20 @@ impl std::fmt::Debug for Admission {
     }
 }
 
-/// Filters one agent's event broadcast to a single run.
-pub struct RunEvents {
-    run_id: RunId,
-    receiver: broadcast::Receiver<Arc<EventRecord>>,
-    completion: tokio::sync::watch::Receiver<bool>,
-}
-
-impl RunEvents {
-    /// Receives the next event for this run, or `None` once the run task ends.
-    ///
-    /// # Errors
-    ///
-    /// Returns a broadcast lag or closure error if events cannot be read.
-    pub async fn recv(&mut self) -> Result<Option<Arc<EventRecord>>, broadcast::error::RecvError> {
-        loop {
-            if *self.completion.borrow() {
-                match self.receiver.try_recv() {
-                    Ok(event) if event.run_id == self.run_id => return Ok(Some(event)),
-                    Ok(_) => continue,
-                    Err(
-                        broadcast::error::TryRecvError::Empty
-                        | broadcast::error::TryRecvError::Closed,
-                    ) => return Ok(None),
-                    Err(broadcast::error::TryRecvError::Lagged(count)) => {
-                        return Err(broadcast::error::RecvError::Lagged(count));
-                    }
-                }
-            }
-            tokio::select! {
-                biased;
-                event = self.receiver.recv() => {
-                    let event = event?;
-                    if event.run_id == self.run_id { return Ok(Some(event)); }
-                }
-                changed = self.completion.changed() => {
-                    if changed.is_err() { return Ok(None); }
-                }
-            }
-        }
-    }
-}
+pub use crabber_runtime::RunEvents;
 
 /// A running prompt with a live event receiver and terminal result.
 pub struct RunHandle {
     run_id: RunId,
     inner: crabber_runtime::RunHandle,
-    events: Option<broadcast::Receiver<Arc<EventRecord>>>,
-    completion: tokio::sync::watch::Receiver<bool>,
 }
 
 impl RunHandle {
+    /// Clone local control; the event receiver remains exclusive to this handle.
+    #[must_use]
+    pub fn control(&self) -> crabber_runtime::RunControl {
+        self.inner.control()
+    }
     pub fn interrupt(&self) {
         self.inner.interrupt();
     }
@@ -1009,11 +983,7 @@ impl RunHandle {
     /// Panics if the receiver was already taken from this handle.
     #[must_use]
     pub fn events(&mut self) -> RunEvents {
-        RunEvents {
-            run_id: self.run_id.clone(),
-            receiver: self.events.take().expect("events receiver already taken"),
-            completion: self.completion.clone(),
-        }
+        self.inner.events()
     }
 
     /// Waits for the worker result and actual task join. Extension resource

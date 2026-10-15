@@ -20,8 +20,8 @@ pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
     ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose, MonotonicClock,
     Observer, OperationKind, OperationalObservation, PermissionDecision, PreparationTaskId,
-    RecoverReport, RunResult, RuntimeError, SkippedRun, StaticPolicy, SystemMonotonicClock,
-    TaskTermination, TerminalReason,
+    RecoverReport, RunControl, RunResult, RuntimeError, SkippedRun, StaticPolicy,
+    SystemMonotonicClock, TaskTermination, TerminalReason,
 };
 
 #[cfg(feature = "codex")]
