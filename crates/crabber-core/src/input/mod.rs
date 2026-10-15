@@ -1,6 +1,9 @@
 //! Validated semantic input, separate from raw persisted messages and authority.
 //! Unstable until the durable-host contract is qualified.
 mod validation;
+pub(crate) use validation::{
+    bounded as validate_serialized_bound, content as validate_content, json as validate_json,
+};
 
 use crate::{
     ContinuationGeneration, CoreError, InputFingerprint, ProviderBindingDescriptor, Role, RunId,

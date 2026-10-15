@@ -23,7 +23,7 @@ fn optional_id(id: Option<&str>, seen: &mut BTreeSet<String>) -> Result<(), Core
     }
     Ok(())
 }
-fn json(value: &Value, depth: usize) -> Result<(), CoreError> {
+pub(crate) fn json(value: &Value, depth: usize) -> Result<(), CoreError> {
     if depth > MAX_INPUT_JSON_DEPTH {
         return Err(invalid());
     }
@@ -42,7 +42,7 @@ fn json(value: &Value, depth: usize) -> Result<(), CoreError> {
     }
     Ok(())
 }
-fn content(value: &MessageContent) -> Result<(), CoreError> {
+pub(crate) fn content(value: &MessageContent) -> Result<(), CoreError> {
     match value {
         MessageContent::Text { text } => {
             if text.contains('\0') {
@@ -127,7 +127,7 @@ impl io::Write for BoundedBytes {
         Ok(())
     }
 }
-fn bounded(value: &impl Serialize) -> Result<(), CoreError> {
+pub(crate) fn bounded(value: &impl Serialize) -> Result<(), CoreError> {
     serde_json::to_writer(BoundedBytes(0), value).map_err(|_| invalid())
 }
 
