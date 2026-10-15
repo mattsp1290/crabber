@@ -548,6 +548,16 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::SnapshotOutcome, StoreError> {
         Err(StoreError::SnapshotUnsupported)
     }
+    /// Public history with provider state and reasoning recursively omitted.
+    /// Uses the raw snapshot's pre-allocation limits and authenticated history
+    /// boundary. It does not capture session/control metadata; use the captured
+    /// public revision when assembling a coherent aggregate view.
+    async fn public_history(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicHistoryOutcome, StoreError> {
+        Ok(self.snapshot(request).await?.into())
+    }
     /// Unbounded runtime context projection. Embeddings should use `snapshot`.
     async fn list_messages(
         &self,

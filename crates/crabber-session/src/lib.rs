@@ -62,7 +62,9 @@ pub use management::{
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
+mod public_history;
 mod public_run;
+pub use public_history::{PublicHistoryOutcome, PublicHistoryPage};
 mod public_state;
 pub mod public_state_contract;
 mod snapshot;
@@ -96,6 +98,10 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn public_history_projection_contract() {
+        crate::public_history::tests::run(&crate::MemoryStore::new()).await;
+    }
     #[test]
     fn public_run_private_allocation_is_bounded() {
         let runtime = tokio::runtime::Builder::new_current_thread()

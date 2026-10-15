@@ -411,3 +411,12 @@ a conservatively larger budget. Native implementations project and bound safe
 fields before transferring or cloning them; private checkpoints, configuration,
 errors, leases and owner tokens are never decoded by this read. This primitive
 must be combined with other reads only at matching captured revisions.
+
+`Store::public_history` projects a bounded history page for public display. It
+omits reasoning and provider-state blocks recursively, including nested tool
+results, and preserves message/part/call identities and original ordinals.
+`read_usage` charges the original raw read before redaction, so private records
+still consume the requested allocation budget and may produce `Limited`.
+Runtime `snapshot` remains the raw inspection path. The public history page
+retains its authenticated captured revision and history cutoff; it is a history
+projection, not a coherent session/control metadata snapshot.

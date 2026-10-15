@@ -575,3 +575,10 @@ fn public_run_private_allocation_is_bounded() {
     let (store, _path, _directory) = runtime.block_on(temp_store());
     crate::public_run::tests::allocation_contract(&runtime, &store);
 }
+
+#[cfg(test)]
+#[tokio::test]
+async fn public_history_projection_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::public_history::tests::run(&store).await;
+}

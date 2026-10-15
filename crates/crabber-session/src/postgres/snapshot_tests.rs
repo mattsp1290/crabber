@@ -992,3 +992,15 @@ fn public_run_private_allocation_is_bounded() {
     let store = runtime.block_on(PostgresStore::connect(&url)).unwrap();
     crate::public_run::tests::allocation_contract(&runtime, &store);
 }
+
+#[cfg(test)]
+#[tokio::test]
+async fn public_history_projection_contract() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::public_history::tests::run(&store).await;
+}
