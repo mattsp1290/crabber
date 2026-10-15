@@ -168,9 +168,11 @@ pub(super) fn validate_provenance(
     state: &super::super::State,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {
-    let saved =
-        receipt(state, &record.session_id, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
-    record.verify_recovery_batch(&saved)?;
+    let run = state
+        .runs
+        .get(&record.run_id)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    super::verify_record(state, run, record)?;
     for question in &record.questions {
         let answer = question.answer.as_ref().ok_or(Error::UnknownStoreOutcome)?;
         let saved =

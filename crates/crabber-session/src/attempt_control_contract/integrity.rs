@@ -126,12 +126,14 @@ pub(crate) async fn claimed(
         p.original.continuation.id,
     )
 }
-pub(crate) fn forge_approval(record: &mut crate::approval::ApprovalRecord, answer: bool) {
-    if answer {
-        record.questions[0].answer.as_mut().unwrap().reply = crate::ApprovalReply::Deny;
-        record.questions[0].view.state = crabber_core::InteractionState::Denied;
-    } else {
-        record.batch.calls[2].decision = crate::CallApproval::Deny;
+pub(crate) fn forge_approval(record: &mut crate::approval::ApprovalRecord, case: usize) {
+    match case {
+        0 => record.batch.calls[2].decision = crate::CallApproval::Deny,
+        1 => {
+            record.questions[0].answer.as_mut().unwrap().reply = crate::ApprovalReply::Deny;
+            record.questions[0].view.state = crabber_core::InteractionState::Denied;
+        }
+        _ => crate::approval_contract::origin::corrupt(record, [0, 1, 2, 4][case - 2]),
     }
     // This regression deliberately passes local record validation; only original
     // suspension/answer provenance can reject the coherently forged evidence.

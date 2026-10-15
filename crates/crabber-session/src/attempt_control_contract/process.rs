@@ -9,7 +9,11 @@ pub(crate) struct Fixture {
 }
 pub(crate) async fn evidence(store: &impl Store, control: &Control) -> serde_json::Value {
     let (session, run, _, _, _) = control.scope();
-    serde_json::json!({"run":store.get_run(run).await.unwrap(),"attempt":store.latest_execution_attempt(run).await.unwrap(),"revision":store.session_revision(session).await.unwrap(),"messages":store.list_all_messages(session).await.unwrap(),"events":store.list_events(session,None,100).await.unwrap(),"calls":read_calls(store,session).await,"approval":store.approval_snapshot(session,run).await.unwrap()})
+    let approval = match store.approval_snapshot(session, run).await {
+        Ok(snapshot) => serde_json::to_value(snapshot).unwrap(),
+        Err(error) => serde_json::json!({"error":format!("{error:?}")}),
+    };
+    serde_json::json!({"run":store.get_run(run).await.unwrap(),"attempt":store.latest_execution_attempt(run).await.unwrap(),"revision":store.session_revision(session).await.unwrap(),"messages":store.list_all_messages(session).await.unwrap(),"events":store.list_events(session,None,100).await.unwrap(),"calls":read_calls(store,session).await,"approval":approval})
 }
 pub(crate) async fn pending(store: &impl Store, retire: bool) -> Fixture {
     let (admitted, _, _, planned) = crate::phase_contract::fixture(store).await;

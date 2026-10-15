@@ -215,14 +215,14 @@ mod tests {
             time::OffsetDateTime::UNIX_EPOCH,
         ));
         let store = super::MemoryStore::with_clock(clock.clone());
-        for answer in [false, true] {
+        for case in 0..6 {
             let (request, id) =
                 crate::attempt_control_contract::integrity::claimed(&store, &clock).await;
             {
                 let mut state = store.state.lock().unwrap();
                 crate::attempt_control_contract::integrity::forge_approval(
                     state.approvals.get_mut(&id).unwrap(),
-                    answer,
+                    case,
                 );
             }
             crate::attempt_control_contract::integrity::refused(&store, request).await;

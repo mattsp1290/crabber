@@ -254,6 +254,15 @@ It returns no output bodies or worker tokens.
 These controls remain available after extensions close. Parent attempt cleanup,
 run retirement and subsequent execution require separate lifecycle controls.
 
+`Agent::mark_attempt_uncertain` revokes the exact latest Started parent attempt
+without selecting any child outcome. Once all phases have known results and
+complete cleanup, `Agent::retire_attempt` can select Failed or Interrupted after
+the host verifies that the whole worker and attempt resources joined. Explicit
+`CancelNeverStarted` can settle bounded pending calls that never owned a phase;
+started or uncertain effects require their own reconciliation first. The controls
+preserve usage, close the original open turn once, and atomically record terminal
+state and eligible barrier release. Exact retries return metadata after close.
+
 The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
 cover legacy settlement, unknown-response retry, authoritative worker stop,
 retained session/inbox behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;

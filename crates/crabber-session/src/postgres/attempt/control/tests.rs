@@ -216,7 +216,7 @@ async fn parent_retirement_requires_original_claimed_approval_provenance() {
         .await
         .unwrap()
         .with_clock(clock.clone());
-    for answer in [false, true] {
+    for case in 0..6 {
         let (request, id) =
             crate::attempt_control_contract::integrity::claimed(&store, &clock).await;
         let text: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
@@ -225,7 +225,7 @@ async fn parent_retirement_requires_original_claimed_approval_provenance() {
             .await
             .unwrap();
         let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&text).unwrap();
-        crate::attempt_control_contract::integrity::forge_approval(&mut record, answer);
+        crate::attempt_control_contract::integrity::forge_approval(&mut record, case);
         sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
             .bind(&id.0)
             .bind(serde_json::to_string(&record).unwrap())
