@@ -496,6 +496,18 @@ impl Agent {
         Ok(())
     }
 
+    /// Await retained initial, keyed-recovery and resume worker joins within a deadline.
+    /// Dropping a run handle detaches its result subscription; it does not
+    /// cancel the worker. Stop ingress before draining. This does not cancel
+    /// work or certify extension resource cleanup or
+    /// durable settlement; inspect `pending` and durable state separately.
+    pub async fn drain_execution_tasks(
+        &self,
+        bound: Duration,
+    ) -> crabber_runtime::ExecutionTaskDrain {
+        self.runtime.drain_execution_tasks(bound).await
+    }
+
     /// Terminally closes the extension registry without interrupting live runs.
     /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
     /// retained plan leases keep the detached close task waiting until completion.
@@ -973,7 +985,8 @@ impl RunHandle {
         }
     }
 
-    /// Waits for the run's terminal result.
+    /// Waits for the worker result and actual task join. Extension resource
+    /// cleanup and durable outcome reconciliation remain separate.
     ///
     /// # Errors
     ///

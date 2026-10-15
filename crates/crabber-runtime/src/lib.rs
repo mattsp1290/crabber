@@ -1,6 +1,8 @@
 //! Fresh-run agent orchestration.
 
 mod event_payload;
+mod execution_tasks;
+pub use execution_tasks::{ExecutionTaskDrain, JoinedExecutionTask, TaskTermination};
 mod observation;
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 

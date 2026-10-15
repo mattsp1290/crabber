@@ -27,6 +27,8 @@ use std::sync::{
 };
 use tokio::sync::{Barrier, Notify, oneshot};
 
+#[path = "tests/task_ownership.rs"]
+mod task_ownership;
 #[path = "tests/terminal_outcome.rs"]
 mod terminal_outcome;
 

@@ -389,6 +389,7 @@ impl Streamer for SingleUseStreamer {
 #[derive(Clone)]
 pub struct Orchestrator {
     store: Arc<dyn Store>,
+    execution_tasks: crate::execution_tasks::ExecutionTasks,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
@@ -650,6 +651,7 @@ impl OrchestratorBuilder {
             ));
         }
         Ok(Orchestrator {
+            execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
             workspace_reader_resolver: self.workspace_reader_resolver,
@@ -693,6 +695,8 @@ pub struct RunHandle {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
+    task: Arc<crate::execution_tasks::ExecutionTask>,
+    tasks: crate::execution_tasks::ExecutionTasks,
     completion: watch::Receiver<bool>,
     cancellation: CancellationToken,
 }
@@ -797,12 +801,13 @@ impl Drop for HeartbeatGuard {
 }
 
 impl RunHandle {
-    /// Cancels the active provider stream or tool body. The run task performs
-    /// durable settlement before `done` resolves.
+    /// Requests cancellation of the active provider stream or tool body.
+    /// `done` reports settlement failures, including unknown durable outcomes.
     pub fn interrupt(&self) {
         self.cancellation.cancel();
     }
-    /// Signals when the run task has returned, whether it succeeded or failed.
+    /// Signals publication of the worker result, whether success or failure.
+    /// This signal is not a join or proof of durable outcome/cleanup.
     #[must_use]
     pub fn completion_signal(&self) -> watch::Receiver<bool> {
         self.completion.clone()
@@ -815,13 +820,18 @@ impl RunHandle {
     pub fn run_id(&self) -> &RunId {
         &self.run_id
     }
-    /// Waits for the run's terminal result.
+    /// Waits for the worker result and its actual task join. This joins the
+    /// worker only; extension-owned resources require separate cleanup.
     ///
     /// # Errors
     ///
     /// Returns the run failure or `TaskStopped` if its task ended unexpectedly.
     pub async fn done(self) -> Result<RunResult, RuntimeError> {
-        self.done.await.map_err(|_| RuntimeError::TaskStopped)?
+        let result = self.done.await;
+        if self.tasks.join(&self.task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        result.map_err(|_| RuntimeError::TaskStopped)?
     }
     /// Queues input for the next model request.
     ///
@@ -852,6 +862,15 @@ impl Orchestrator {
     #[must_use]
     pub fn builder() -> OrchestratorBuilder {
         OrchestratorBuilder::default()
+    }
+
+    /// Joins retained initial, keyed-recovery and resume workers within a shared
+    /// deadline. A dropped run handle leaves its worker retained here.
+    /// This does not stop ingress, cancel work, or prove durable settlement or
+    /// extension resource cleanup. Concurrent starts can appear in `pending`;
+    /// the host must stop its ingress before draining.
+    pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
+        self.execution_tasks.drain(bound).await
     }
 
     /// Rebuilds the latest assistant batch when a resumed process died after
@@ -963,7 +982,20 @@ impl Orchestrator {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunResult, RuntimeError> {
-        Box::pin(self.with_context(context).resume_attempt(run_id)).await
+        let runtime = self.with_context(context);
+        let run_id = run_id.clone();
+        let (sender, result) = oneshot::channel();
+        // Once polled, preparation, claim and execution stay owned even if the
+        // caller abandons its waiter. A later drain awaits this actual task.
+        let task = self.execution_tasks.spawn(run_id.clone(), async move {
+            let outcome = Box::pin(runtime.resume_attempt(&run_id)).await;
+            let _ = sender.send(outcome);
+        });
+        let outcome = result.await;
+        if self.execution_tasks.join(&task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        outcome.map_err(|_| RuntimeError::TaskStopped)?
     }
 
     async fn resume_attempt(&self, run_id: &RunId) -> Result<RunResult, RuntimeError> {
@@ -1795,26 +1827,29 @@ impl Orchestrator {
     ) -> RunHandle {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
-        let handle = RunHandle {
-            session_id: session.id.clone(),
-            run_id: fence.run_id.clone(),
-            store: Arc::clone(&self.store),
-            clock: Arc::clone(&self.clock),
-            done,
-            completion,
-            cancellation: CancellationToken::new(),
-        };
-        let cancellation = handle.cancellation.clone();
+        let cancellation = CancellationToken::new();
+        let work_cancellation = cancellation.clone();
         let runtime = self.clone();
-        let session = RunSession::from(session);
-        tokio::spawn(async move {
+        let work_session = RunSession::from(session);
+        let run_id = fence.run_id.clone();
+        let task = self.execution_tasks.spawn(run_id.clone(), async move {
             let result = runtime
-                .run(fence, session, request, plan, cancellation, entry)
+                .run(fence, work_session, request, plan, work_cancellation, entry)
                 .await;
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
         });
-        handle
+        RunHandle {
+            session_id: session.id.clone(),
+            run_id,
+            store: Arc::clone(&self.store),
+            clock: Arc::clone(&self.clock),
+            done,
+            task,
+            tasks: self.execution_tasks.clone(),
+            completion,
+            cancellation,
+        }
     }
 
     async fn run(
