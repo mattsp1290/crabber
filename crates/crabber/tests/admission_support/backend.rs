@@ -175,7 +175,10 @@ impl Backend {
                     .await
                     .unwrap();
                 let evidence = read_evidence!(pool, "data");
-                assert_eq!(evidence.schema, 1);
+                assert_eq!(
+                    i64::from(evidence.schema),
+                    crabber::session::SQLITE_SCHEMA_VERSION
+                );
                 evidence
             }
         }

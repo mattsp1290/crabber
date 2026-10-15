@@ -466,7 +466,7 @@ mod durable_process {
                             .fetch_one(&pool)
                             .await
                             .unwrap();
-                    assert_eq!(version, 5);
+                    assert_eq!(version, crabber::session::POSTGRES_SCHEMA_VERSION);
                     pool.close().await;
                 }
                 #[cfg(feature = "sqlite")]
@@ -478,7 +478,7 @@ mod durable_process {
                             .fetch_one(&pool)
                             .await
                             .unwrap();
-                    assert_eq!(version, 1);
+                    assert_eq!(version, crabber::session::SQLITE_SCHEMA_VERSION);
                     pool.close().await;
                 }
             }
