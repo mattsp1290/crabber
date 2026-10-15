@@ -213,7 +213,7 @@ Tool result transforms receive read-only call context and return
 register any protective redactor in the final phase:
 
 ```rust,no_run
-use crabber::extension::{Registrar, ToolInput, TransformOutput};
+use crabber::{core::ToolOutput, ExtensionError, extension::{Registrar, ToolInput, TransformOutput}};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -225,7 +225,10 @@ fn register_redactor(registrar: &mut Registrar) {
                 && matches!(context.input(), ToolInput::Normalized(input)
                     if input["command"] == "echo hello")
             {
-                result["private"] = json!("[REDACTED]");
+                // This shell tool deliberately produces JSON-to-text output.
+                let mut value = result.json_value().map_err(|_| ExtensionError::Tool("JSON shell result required".into()))?;
+                value["private"] = json!("[REDACTED]");
+                result = ToolOutput::from_json(&value).map_err(|_| ExtensionError::Tool("invalid JSON shell result".into()))?;
             }
             Ok(TransformOutput::new(result))
         })
@@ -243,7 +246,10 @@ contract](docs/embedding.md#tool-result-transform-context) and the runnable
 
 Adoption is a clean contract break: update JSON callbacks to preserve the full
 envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
-Schema 5 stays unchanged, but old frozen plans fail with `PlanChanged`.
+Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
+use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
+completion adds no storage migration beyond the current PostgreSQL schema 7 and
+SQLite schema 3.
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await
 `Agent::close_extensions()` on a Tokio runtime after interrupting runs as
