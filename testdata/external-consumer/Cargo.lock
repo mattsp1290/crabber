@@ -396,8 +396,8 @@ name = "crabber-session"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
  "crabber-core",
+ "futures",
  "serde",
  "serde_json",
  "sha2",
