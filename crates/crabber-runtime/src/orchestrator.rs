@@ -2171,6 +2171,9 @@ impl Orchestrator {
             drop(guard);
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
+            // Keep the event sender alive until completion is published, even
+            // when no native tool retained its observer/context.
+            drop(event_observer);
         });
         RunHandle {
             session_id,

@@ -43,6 +43,10 @@ impl RunEvents {
                 biased;
                 event = self.receiver.recv() => match event {
                     Ok(event) => return Ok(Some(event)),
+                    Err(broadcast::error::RecvError::Closed) if *self.completion.borrow() => {
+                        self.ended = true;
+                        return Ok(None);
+                    },
                     Err(error) => { self.ended = true; return Err(error); }
                 },
                 changed = self.completion.changed() => {
@@ -155,5 +159,27 @@ impl Observer for ExecutionEventObserver {
     }
     fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
         self.inner.mount_close_timed_out(timeout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn committed_completion_wins_a_simultaneously_closed_event_channel() {
+        let (sender, receiver) = broadcast::channel(1);
+        let (done, completion) = watch::channel(false);
+        let mut events = RunEvents {
+            receiver,
+            completion,
+            ended: false,
+        };
+        let pending = events.recv();
+        tokio::pin!(pending);
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        done.send(true).unwrap();
+        drop(sender);
+        assert!(pending.await.unwrap().is_none());
     }
 }

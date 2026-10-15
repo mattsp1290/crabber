@@ -59,9 +59,22 @@ distinct retained local tasks. Dropping the configured host does not request
 cancellation; retain it and drain to establish joins. Runtime shutdown may still
 stop tasks.
 
+Initial admission and `resume_execution` return the same `RunHandle` interface.
+Each worker gets its own bounded, sole event receiver, including separate workers
+with the same run ID. Dropping observation does not cancel work. Lag ends that
+observation path; reconcile durable state instead of treating a later partial
+stream as complete. `control()` clones local interrupt/completion access without
+exposing a fence or transferring receiver ownership. An interrupt is a local
+signal, not a durable cancellation acknowledgement. `resume()` remains a convenience
+that awaits the resumed handle. Eligibility and binding errors can arrive through
+its result after preparation returns a handle.
+
 These joins do not prove durable terminal outcome, callback/child-process cleanup
-or notification-task completion. Facade readiness/context checks before entering
-the runtime are outside this ownership scope. A common owned execution facade, durable
+or notification-task completion. Terminal-write errors, including lost acknowledgements
+after commit, return `RuntimeError::TerminalOutcomeUnknown` without a second terminal
+write. Reconcile the durable run and events; live terminal events require an
+acknowledged commit. Facade readiness/context checks before entering the runtime
+are outside this ownership scope. Native attempt/phase integration, durable
 cancellation and full orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
