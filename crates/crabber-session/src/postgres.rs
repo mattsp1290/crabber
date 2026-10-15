@@ -10,6 +10,7 @@ mod admission_execution;
 mod attempt;
 #[cfg(test)]
 mod lock_order_tests;
+mod phase;
 mod public_state;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -40,6 +41,8 @@ pub struct PostgresStore {
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    phase_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -380,6 +383,8 @@ impl PostgresStore {
             public_state_fault: Arc::default(),
             #[cfg(test)]
             attempt_fault: Arc::default(),
+            #[cfg(test)]
+            phase_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -638,6 +643,21 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn tool_phase(
+        &self,
+        run: &RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crate::VersionedPhase, crate::PhaseError> {
+        self.read_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PhaseReceipt>, crate::PhaseError> {
+        self.phase_receipt(session, id).await
+    }
+
     async fn execution_attempt(
         &self,
         run: &RunId,
@@ -985,6 +1005,14 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn mutate_phase(
+        &self,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.change_phase(request, authority).await
+    }
+
     async fn mutate_attempt(
         &self,
         request: crate::AttemptMutation,
@@ -1091,6 +1119,7 @@ impl ExecutionStore for PostgresExecution {
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
+        phase::legacy_guard(&mut tx, &run, id).await?;
         let row = sqlx::query(
             "SELECT snapshot_record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE",
         )
@@ -1125,6 +1154,7 @@ impl ExecutionStore for PostgresExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
+        phase::legacy_guard(&mut tx, &run, id).await?;
         let row = sqlx::query(
             "SELECT snapshot_record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE",
         )

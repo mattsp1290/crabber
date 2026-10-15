@@ -160,6 +160,29 @@ async fn denied_writes(
             .unwrap_err(),
         crate::AttemptError::StaleOwner
     );
+    let target = crate::PhaseTarget {
+        id: crabber_core::PhaseId::new(),
+        generation: crabber_core::PhaseGeneration::INITIAL,
+        call_id: ToolCallId::new(),
+        attempt: crate::AttemptTarget {
+            id: crabber_core::AttemptId::new(),
+            generation: crabber_core::AttemptGeneration::INITIAL,
+        },
+    };
+    assert_eq!(
+        execution
+            .mutate_phase(
+                crate::PhaseMutation {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: crabber_core::SessionRevision::INITIAL,
+                    command: crate::PhaseCommand::Claim { target }
+                },
+                None
+            )
+            .await
+            .unwrap_err(),
+        crate::PhaseError::StaleOwner
+    );
     assert_eq!(
         execution
             .mutate_public_state(crate::PublicStateMutation {

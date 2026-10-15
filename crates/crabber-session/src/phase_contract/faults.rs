@@ -189,7 +189,9 @@ async fn prepare(
                         claim: resolver(),
                         choice: match action {
                             Action::Success => UncertainPhaseChoice::Success { output: output() },
-                            Action::Failure => UncertainPhaseChoice::Failure { output: output() },
+                            Action::Failure => UncertainPhaseChoice::Failure {
+                                output: Some(output()),
+                            },
                             _ => UncertainPhaseChoice::Refuse,
                         },
                     },

@@ -18,6 +18,21 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn tool_phase(
+        &self,
+        run: &RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crate::VersionedPhase, crate::PhaseError> {
+        self.read_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PhaseReceipt>, crate::PhaseError> {
+        self.phase_receipt(session, id).await
+    }
+
     async fn execution_attempt(
         &self,
         run: &RunId,

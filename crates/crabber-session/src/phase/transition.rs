@@ -60,6 +60,7 @@ impl PhaseRecord {
         verify_attempt(run, attempt, target, authority, now)?;
         if run.status != RunStatus::Running
             || call.status != ToolCallStatus::Pending
+            || call.result.is_some()
             || attempt.snapshot.state != AttemptState::Started
         {
             return Err(PhaseError::InvalidTransition);
@@ -140,6 +141,13 @@ impl PhaseRecord {
             }
             PhaseCommand::Begin { .. } | PhaseCommand::Complete { .. } => {
                 self.verify_worker(run, attempt, authority, now)?;
+                let expected_call_state = match request.command {
+                    PhaseCommand::Begin { .. } => ToolCallStatus::Pending,
+                    _ => ToolCallStatus::Running,
+                };
+                if call.status != expected_call_state || call.result.is_some() {
+                    return Err(PhaseError::InvalidTransition);
+                }
                 if attempt.snapshot.state != AttemptState::Started {
                     return Err(PhaseError::StaleOwner);
                 }
@@ -212,7 +220,12 @@ impl PhaseRecord {
         match choice {
             UncertainPhaseChoice::Success { output } => self.set_output(output.clone()),
             UncertainPhaseChoice::Failure { output } => {
-                self.set_output(output.clone().with_error());
+                let output = match output {
+                    Some(output) => output.clone().with_error(),
+                    None => ToolOutput::new(vec![], true)
+                        .map_err(|_| PhaseError::UnknownStoreOutcome)?,
+                };
+                self.set_output(output);
             }
             UncertainPhaseChoice::Refuse => (),
         }

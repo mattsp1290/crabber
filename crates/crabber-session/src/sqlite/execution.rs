@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn mutate_phase(
+        &self,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.change_phase(request, authority).await
+    }
+
     async fn mutate_attempt(
         &self,
         request: crate::AttemptMutation,
@@ -164,6 +172,7 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
+            super::phase::legacy_guard(&mut tx, &run, id).await?;
             let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1")
                 .bind(&id.0)
                 .fetch_optional(&mut *tx)
@@ -192,6 +201,7 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
+            super::phase::legacy_guard(&mut tx, &run, id).await?;
             let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1")
                 .bind(&id.0)
                 .fetch_optional(&mut *tx)

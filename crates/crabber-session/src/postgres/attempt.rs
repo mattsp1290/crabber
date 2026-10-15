@@ -179,3 +179,13 @@ mod phase_tests;
 
 #[cfg(test)]
 mod metadata_tests;
+
+pub(super) async fn load_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    id: &AttemptId,
+) -> Result<Option<attempt::AttemptRecord>, Error> {
+    records::load(tx, run, Some(id), true)
+        .await
+        .map(|v| v.map(|(r, _)| r))
+}

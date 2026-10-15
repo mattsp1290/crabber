@@ -127,8 +127,8 @@ barriers remain under implementation. Custom stores default to
 `Unsupported` and can run `attempt_contract::run_contract` and its commit-fault
 conformance suite.
 
-Experimental native phase transitions currently work in Memory only; SQLite,
-PostgreSQL and custom adapters return `Unsupported`. `mutate_phase` commits a
+Experimental native phase transitions work in Memory, SQLite and PostgreSQL.
+Custom adapters default to `Unsupported`. `mutate_phase` commits a
 phase record, source event, revision and receipt together. A fresh claim returns
 opaque authority; only a fresh applied begin permits dispatch. The authority is
 never serialized into a receipt or returned on replay. These APIs are not yet

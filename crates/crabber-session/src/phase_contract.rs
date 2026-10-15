@@ -2,8 +2,13 @@
 //! metadata replay, resolver choices and quiescence never grant dispatch.
 #[path = "phase_contract/faults.rs"]
 mod faults;
+#[path = "phase_contract/guards.rs"]
+mod guards;
 #[path = "phase_contract/recovery.rs"]
 mod recovery;
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+#[path = "phase_contract/storage.rs"]
+pub(crate) mod storage;
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptMutation, AttemptMutationOutcome, PhaseAuthority,
     PhaseCommand, PhaseError as Error, PhaseMutation, PhaseMutationOutcome as Outcome,
@@ -27,10 +32,14 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     for choice in [
         UncertainPhaseChoice::Refuse,
         UncertainPhaseChoice::Success { output: output() },
-        UncertainPhaseChoice::Failure { output: output() },
+        UncertainPhaseChoice::Failure { output: None },
+        UncertainPhaseChoice::Failure {
+            output: Some(output()),
+        },
     ] {
         resolution(&store, choice).await;
     }
+    guards::run(&store).await;
     recovery::run(&store, &clock).await;
 }
 pub(crate) fn output() -> ToolOutput {
@@ -82,7 +91,7 @@ pub(crate) async fn fixture(
         )
         .await
         .unwrap();
-    let call = ToolCallId::new();
+    let call = ToolCallId(format!("provider:原本/{}", uuid::Uuid::new_v4()));
     execution
         .create_tool_call(
             ToolCallRecord {
@@ -262,6 +271,7 @@ async fn resolution(store: &impl Store, choice: UncertainPhaseChoice) {
         applied(execution.mutate_phase(resolve.clone(), None).await.unwrap());
     assert!(no_grant.is_none());
     assert_eq!(resolved.phase.quiescence, PhaseQuiescence::Pending);
+    assert_eq!(resolved.resolver, Some(resolver()));
     let expected = match choice {
         UncertainPhaseChoice::Success { .. } => PhaseState::Completed,
         UncertainPhaseChoice::Failure { .. } => PhaseState::Failed,
@@ -271,6 +281,7 @@ async fn resolution(store: &impl Store, choice: UncertainPhaseChoice) {
     assert!(
         matches!(execution.mutate_phase(resolve.clone(), None).await.unwrap(), Outcome::Replayed(r) if r == resolved)
     );
+    reject_changed_choice(execution.as_ref(), &resolve).await;
     let mut changed = resolve;
     changed.command = PhaseCommand::ResolveUncertain {
         target: resolved.phase.target.clone(),
@@ -325,5 +336,33 @@ async fn competing_begin(
             .filter(|o| matches!(o, Outcome::Replayed(_)))
             .count(),
         1
+    );
+}
+
+async fn reject_changed_choice(execution: &dyn crate::ExecutionStore, original: &PhaseMutation) {
+    let PhaseCommand::ResolveUncertain {
+        target,
+        claim,
+        choice,
+    } = &original.command
+    else {
+        unreachable!()
+    };
+    let changed = match choice {
+        UncertainPhaseChoice::Success { .. } => UncertainPhaseChoice::Failure {
+            output: Some(output()),
+        },
+        UncertainPhaseChoice::Failure { .. } => UncertainPhaseChoice::Refuse,
+        UncertainPhaseChoice::Refuse => UncertainPhaseChoice::Success { output: output() },
+    };
+    let mut request = original.clone();
+    request.command = PhaseCommand::ResolveUncertain {
+        target: target.clone(),
+        claim: claim.clone(),
+        choice: changed,
+    };
+    assert_eq!(
+        execution.mutate_phase(request, None).await.unwrap_err(),
+        Error::SemanticConflict
     );
 }

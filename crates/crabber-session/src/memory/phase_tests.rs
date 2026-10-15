@@ -39,7 +39,7 @@ async fn resolution_retains_typed_output_without_acknowledging_cleanup() {
             }
         } else {
             UncertainPhaseChoice::Failure {
-                output: value.clone(),
+                output: Some(value.clone()),
             }
         };
         let (resolved, _) = applied(

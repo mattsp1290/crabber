@@ -84,6 +84,25 @@ pub(crate) fn verify_receipt(
     }
     let saved: PhaseEvent = serde_json::from_value(event.payload.clone())
         .map_err(|_| PhaseError::UnknownStoreOutcome)?;
+    let resolver_required = matches!(
+        saved.operation,
+        PhaseOperation::MarkStoppedUncertain
+            | PhaseOperation::ResolveSuccess
+            | PhaseOperation::ResolveFailure
+            | PhaseOperation::ResolveRefuse
+    );
+    let resolver_optional = matches!(
+        saved.operation,
+        PhaseOperation::QuiescenceComplete | PhaseOperation::QuiescenceIncomplete
+    );
+    if resolver_required && saved.resolver.is_none()
+        || !resolver_required && !resolver_optional && saved.resolver.is_some()
+    {
+        return Err(PhaseError::UnknownStoreOutcome);
+    }
+    if let Some(claim) = &saved.resolver {
+        validate_resolver(claim).map_err(|_| PhaseError::UnknownStoreOutcome)?;
+    }
     let valid = match saved.operation {
         PhaseOperation::Claim => saved.phase.state == PhaseState::Claimed,
         PhaseOperation::Begin => saved.phase.state == PhaseState::Started,
@@ -115,14 +134,10 @@ pub(crate) fn verify_receipt(
 
 pub(crate) fn validate_request(request: &PhaseMutation) -> Result<(), PhaseError> {
     let target = request.command.target();
-    for id in [
-        &request.id.0,
-        &target.id.0,
-        &target.call_id.0,
-        &target.attempt.id.0,
-    ] {
+    for id in [&request.id.0, &target.id.0, &target.attempt.id.0] {
         crate::attempt::validate_identifier(id).map_err(|_| PhaseError::InvalidRequest)?;
     }
+    validate_call_id(&target.call_id.0).map_err(|_| PhaseError::InvalidRequest)?;
     let claim = match &request.command {
         PhaseCommand::MarkStoppedUncertain { claim, .. }
         | PhaseCommand::ResolveUncertain { claim, .. } => Some(claim),
@@ -130,11 +145,7 @@ pub(crate) fn validate_request(request: &PhaseMutation) -> Result<(), PhaseError
         _ => None,
     };
     if let Some(claim) = claim {
-        for (value, limit) in [(&claim.resolver_id, 128), (&claim.authority_claim, 2048)] {
-            if value.is_empty() || value.len() > limit || value.chars().any(char::is_control) {
-                return Err(PhaseError::InvalidRequest);
-            }
-        }
+        validate_resolver(claim)?;
     }
     if let PhaseCommand::ResolveUncertain {
         choice: UncertainPhaseChoice::Success { output },
@@ -157,13 +168,10 @@ pub(crate) fn resolver(command: &PhaseCommand) -> Option<PhaseResolverClaim> {
 }
 
 pub(crate) fn validate_snapshot(snapshot: &PhaseSnapshot) -> Result<(), PhaseError> {
-    for id in [
-        &snapshot.target.id.0,
-        &snapshot.target.call_id.0,
-        &snapshot.target.attempt.id.0,
-    ] {
+    for id in [&snapshot.target.id.0, &snapshot.target.attempt.id.0] {
         crate::attempt::validate_identifier(id).map_err(|_| PhaseError::UnknownStoreOutcome)?;
     }
+    validate_call_id(&snapshot.target.call_id.0)?;
     if snapshot.session_id.0.is_empty()
         || snapshot.session_id.0.len() > 512
         || snapshot.session_id.0.chars().any(char::is_control)
@@ -173,6 +181,23 @@ pub(crate) fn validate_snapshot(snapshot: &PhaseSnapshot) -> Result<(), PhaseErr
         || matches!(snapshot.state, PhaseState::Claimed | PhaseState::Started)
             && snapshot.quiescence != PhaseQuiescence::Pending
     {
+        return Err(PhaseError::UnknownStoreOutcome);
+    }
+    Ok(())
+}
+
+fn validate_resolver(claim: &PhaseResolverClaim) -> Result<(), PhaseError> {
+    for (value, limit) in [(&claim.resolver_id, 128), (&claim.authority_claim, 2048)] {
+        if value.trim().is_empty() || value.len() > limit || value.chars().any(char::is_control) {
+            return Err(PhaseError::InvalidRequest);
+        }
+    }
+    Ok(())
+}
+
+fn validate_call_id(id: &str) -> Result<(), PhaseError> {
+    // Provider call identities are bounded opaque data, not native capability IDs.
+    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
         return Err(PhaseError::UnknownStoreOutcome);
     }
     Ok(())

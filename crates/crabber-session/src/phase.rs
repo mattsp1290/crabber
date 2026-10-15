@@ -1,5 +1,7 @@
 //! Experimental native tool-phase ownership, separate from logical call settlement.
 mod records;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) mod sql;
 use crate::{AttemptAuthority, AttemptTarget};
 use crabber_core::{
     ControlId, EventCursor, InputFingerprint, PhaseGeneration, PhaseId, RunId, SessionId,
@@ -83,8 +85,13 @@ impl std::fmt::Debug for PhaseResolverClaim {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "choice", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UncertainPhaseChoice {
-    Success { output: ToolOutput },
-    Failure { output: ToolOutput },
+    Success {
+        output: ToolOutput,
+    },
+    Failure {
+        #[serde(default)]
+        output: Option<ToolOutput>,
+    },
     Refuse,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
