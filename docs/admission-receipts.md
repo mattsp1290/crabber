@@ -153,14 +153,18 @@ inferred from successful receipt lookup. The store's
 `process_crash_before_commit_rolls_back_every_record` separately kills a transaction
 before commit and asserts zero partially admitted records.
 
-## Schema 5 rollout and acceptance
+## Schema 6 rollout and acceptance
 
 Stop writers, back up the database, explicitly migrate, then deploy the matching
-schema-5 binary. Connect verifies schema 5 read-only. Do not mix v4/v5 writers.
-Migration is transactional and idempotent, retaining v1-v4 sessions, receipts,
-history, usage, checkpoints, snapshots, inbox and abandonment evidence. It never
-backfills Unstarted from legacy records. Rollback requires restoring the backup
-or forward repair; an old binary cannot connect to v5.
+schema-6 binary. Connect verifies the complete version history read-only. Do not
+mix schema-5/schema-6 writers. The additive host-foundation migration retains old
+rows without inspecting or upgrading their execution evidence. Schema 5 added the
+existing version-1 admission capsule; schema 6 reserves independent binding,
+attempt/phase, public state and receipt storage for the experimental host contract.
+Runtime integration/qualification of the new execution format is still pending.
+Finish or settle old paused work with its matching binary before upgrading. No
+legacy checkpoint is promised to execute under a new host format. Rollback
+requires the matching backup and binary; there is no in-place downgrade.
 
 Library proof includes shared Memory/Postgres/SQLite execution contracts
 (`sqlite_admission_execution_contract`), live process

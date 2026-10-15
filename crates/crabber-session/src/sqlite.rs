@@ -1,5 +1,5 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
-//! connecting only verifies a version-one Crabber database already using WAL.
+//! connecting only verifies a current-version Crabber database already using WAL.
 
 mod abandon;
 mod admission_execution;
@@ -20,9 +20,13 @@ use sqlx::{
 use std::{path::Path, sync::Arc, time::Duration};
 
 const APPLICATION_ID: i32 = 0x4352_4142;
-const SCHEMA_VERSION: i64 = 1;
+use crate::SQLITE_SCHEMA_VERSION;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA: &str = include_str!("../migrations/sqlite/0001_initial.sql");
+const SCHEMA: &str = concat!(
+    include_str!("../migrations/sqlite/0001_initial.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(1);\n",
+    include_str!("../migrations/sqlite/0002_host_foundation.sql"),
+);
 
 /// A dedicated, file-backed SQLite session database.
 ///
@@ -170,11 +174,12 @@ async fn classify(connection: &mut SqliteConnection) -> Result<DatabaseState, St
         .await
         .map_err(classification_error)?;
     if application == APPLICATION_ID {
-        let version: Option<i64> = sqlx::query_scalar("SELECT max(version) FROM schema_version")
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|_| unsupported_version())?;
-        if version != Some(SCHEMA_VERSION) {
+        let versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|_| unsupported_version())?;
+        if versions != (1..=SQLITE_SCHEMA_VERSION).collect::<Vec<_>>() {
             return Err(unsupported_version());
         }
         Ok(DatabaseState::Current)
@@ -256,7 +261,7 @@ async fn initialize(
         .await
         .map_err(db)?;
     sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
-        .bind(SCHEMA_VERSION)
+        .bind(SQLITE_SCHEMA_VERSION)
         .execute(&mut **transaction)
         .await
         .map_err(db)?;

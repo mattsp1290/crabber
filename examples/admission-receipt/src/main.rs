@@ -225,9 +225,9 @@ fn print_source(mode: &str) -> Result<(), Box<dyn Error>> {
         sha.trim(),
         mode.trim_start_matches("--"),
         match mode {
-            "--postgres" => "5",
-            "--sqlite" => "1",
-            _ => "admission-v1",
+            "--postgres" => crabber::session::POSTGRES_SCHEMA_VERSION.to_string(),
+            "--sqlite" => crabber::session::SQLITE_SCHEMA_VERSION.to_string(),
+            _ => "admission-v1".to_owned(),
         }
     );
     Ok(())

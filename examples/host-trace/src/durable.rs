@@ -328,9 +328,9 @@ pub async fn worker(store: Arc<dyn Store>, path: &Path, mode: &str, backend: &st
             "backend={} schema={} provider=fake session={} run={} attempt_trace={} attempt_span={} observation_attempt={} predecessor={} predecessor_span={} predecessor_attempt={} callbacks={} models={}",
             backend,
             match backend {
-                "postgres" => "5",
-                "sqlite" => "1",
-                _ => "not-applicable",
+                "postgres" => crabber::session::POSTGRES_SCHEMA_VERSION.to_string(),
+                "sqlite" => crabber::session::SQLITE_SCHEMA_VERSION.to_string(),
+                _ => "not-applicable".to_owned(),
             },
             envelope.session,
             receipt.run_id,

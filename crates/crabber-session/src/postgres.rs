@@ -4,7 +4,7 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v5.
+//! connect remains read-only and requires explicit migration to schema v6.
 mod abandon;
 mod admission_execution;
 #[cfg(test)]
@@ -328,15 +328,12 @@ impl PostgresStore {
             .connect(url)
             .await
             .map_err(db)?;
-        let version: i32 =
-            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
-                .fetch_optional(&pool)
+        let versions: Vec<i32> =
+            sqlx::query_scalar("SELECT version FROM schema_version ORDER BY version")
+                .fetch_all(&pool)
                 .await
-                .map_err(db)?
-                .ok_or(StoreError::Validation(
-                    "unsupported PostgreSQL schema version".into(),
-                ))?;
-        if version != 5 {
+                .map_err(db)?;
+        if versions != (1..=crate::POSTGRES_SCHEMA_VERSION).collect::<Vec<_>>() {
             return Err(StoreError::Validation(
                 "unsupported PostgreSQL schema version".into(),
             ));
@@ -380,6 +377,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0005_admission_execution.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0006_host_foundation.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;

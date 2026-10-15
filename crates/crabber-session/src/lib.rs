@@ -1,5 +1,11 @@
 //! Session persistence boundary and in-memory implementation.
 
+/// Required version of the bundled PostgreSQL schema. Connect never migrates.
+pub const POSTGRES_SCHEMA_VERSION: i32 = 6;
+/// Required version of the bundled SQLite schema. Older files must be recreated
+/// explicitly using the matching binary/backup; connect/migrate never upgrade them.
+pub const SQLITE_SCHEMA_VERSION: i64 = 2;
+
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
 mod abandonment;

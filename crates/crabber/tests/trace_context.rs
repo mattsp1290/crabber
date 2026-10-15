@@ -671,7 +671,7 @@ mod durable_process {
     }
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn postgres_fresh_workers_preserve_schema5_receipts_sessions_and_cursors() {
+    async fn postgres_fresh_workers_preserve_receipts_sessions_and_cursors() {
         let Some(journey) = journey_store().await else {
             return;
         };
