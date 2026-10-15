@@ -158,9 +158,23 @@ struct CountingPlans {
 }
 #[async_trait]
 impl RunPlanProvider for CountingPlans {
+    fn registration_fingerprint(
+        &self,
+        context: &crabber_core::SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        self.inner.registration_fingerprint(context)
+    }
+
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
         self.acquired.fetch_add(1, Ordering::SeqCst);
         self.inner.acquire_plan(session).await
+    }
+    async fn acquire_plan_in(
+        &self,
+        context: &crabber_core::SessionContext,
+    ) -> Result<RunPlan, ExtensionError> {
+        self.acquired.fetch_add(1, Ordering::SeqCst);
+        self.inner.acquire_plan_in(context).await
     }
 }
 
@@ -584,7 +598,15 @@ async fn row6_generic_recovery_of_paused_run_with_checkpoint_request() {
 /// retry-safe pending call and no checkpoint, as a crashed host would.
 async fn crashed_running_run(h: &Harness, workspace_id: &str, directory: &str) -> RunId {
     let session = SessionId::new();
-    let plan = h.plans.inner.acquire_plan(&session).await.unwrap();
+    let plan = h
+        .runtime
+        .acquire_execution_plan(&crabber_core::SessionContext::new(
+            session.clone(),
+            workspace_id,
+            directory,
+        ))
+        .await
+        .unwrap();
     let fingerprint = plan.fingerprint().to_string();
     plan.release();
     let now = h.clock.now();
@@ -675,6 +697,16 @@ async fn row8_keyed_admission_recovery_uses_persisted_identity_and_rejects_drift
             .is_err()
     );
     h.store.lose_admission.store(false, Ordering::SeqCst);
+    let acquired = h.plans.acquired.load(Ordering::SeqCst);
+    assert!(matches!(
+        h.runtime
+            .recover_admission(input.clone(), options("row8"))
+            .await,
+        Err(RuntimeError::AdmissionExecution(
+            crabber_session::AdmissionExecutionError::LiveLease
+        ))
+    ));
+    assert_eq!(h.plans.acquired.load(Ordering::SeqCst), acquired);
     expire(&h.clock);
     let before = h.memory.list_unfinished_runs().await.unwrap();
     assert_eq!(before.len(), 1);

@@ -38,12 +38,20 @@ binary before upgrading; it must not execute under an incompatible plan.
 
 `close_extensions` now stops ingress even for an agent with no extensions.
 Readiness and new prompts return `RuntimeError::HostClosed` once closing starts.
+Matching committed keyed requests can still return their original metadata receipt.
 It closes extension resources and leases; it does not join active executions.
 
 Register shareable state explicitly with `shared_tool`, `shared_extension`,
 `shared_wasm_extension`, or `shared_host_services`. These replace the old builder
 names without compatibility aliases. A scope filters visibility of the same
 instance. Its state must tolerate concurrent use across admitted contexts.
+
+`RunPlanProvider::registration_fingerprint` inspects frozen declarations without
+creating contextual owners, initializing components or acquiring a plan lease.
+Static, live Registry and contextual providers implement it; custom providers explicitly implement
+this capability. Contextual providers capture shared metadata and factory declarations
+at configuration time, including failures needed for truthful readiness rollback.
+This declaration fingerprint does not replace checking actual restored instances.
 
 `extension_factory` creates a fresh extension, tool and service graph per
 `FactoryScope::Workspace` or `FactoryScope::Session` owner. The factory receives

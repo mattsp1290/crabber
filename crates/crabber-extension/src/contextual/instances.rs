@@ -160,43 +160,28 @@ impl ContextualPlanProvider {
     }
 
     async fn install_shared(&self, slot: &Slot) -> Result<(), ExtensionError> {
-        for (extension, scope) in &self.inner.shared {
+        for registration in &self.inner.shared {
+            let extension = &registration.extension;
             self.check_slot(slot)?;
             let (index, _) = self.start_record(slot)?;
-            let frozen = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let identity = ComponentIdentity {
-                    id: extension.id().into(),
-                    version: extension.version().into(),
-                };
-                let config_hash = extension.config_hash();
-                if identity.id.is_empty()
-                    || identity.id.len() > 128
-                    || identity.id.chars().any(char::is_control)
-                    || identity.version.is_empty()
-                    || identity.version.len() > 128
-                    || identity.version.chars().any(char::is_control)
-                    || config_hash.len() > 16384
-                {
-                    return None;
+            let metadata = match &registration.metadata {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    Self::signal_records(slot);
+                    let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
+                    return Err(error.clone());
                 }
-                Some(FrozenExtension {
-                    identity,
-                    config_hash,
-                    extension: extension.clone(),
-                })
-            }));
-            let Ok(Some(frozen)) = frozen else {
-                Self::signal_records(slot);
-                let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
-                return Err(ExtensionError::ContextInitializationFailed {
-                    component: "shared-component".into(),
-                });
+            };
+            let frozen = FrozenExtension {
+                identity: metadata.identity.clone(),
+                config_hash: metadata.config_hash.clone(),
+                extension: extension.clone(),
             };
             let component = frozen.identity.id.clone();
             let Ok(mount) = self
                 .inner
                 .registry
-                .mount(Arc::new(frozen), scope.clone())
+                .mount(Arc::new(frozen), registration.scope.clone())
                 .await
             else {
                 Self::signal_records(slot);

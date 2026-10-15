@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fault {
+    UnkeyedAdmissionLost,
     AdmissionLost,
     AdmissionDelayed,
     ClaimLost,
@@ -29,7 +30,13 @@ struct FaultExecution {
 #[async_trait]
 impl Store for FaultStore {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.inner.admit_run(request).await
+        let outcome = self.inner.admit_run(request).await?;
+        if self.fault == Fault::UnkeyedAdmissionLost {
+            return Err(StoreError::Validation(
+                "unknown unkeyed admission response".into(),
+            ));
+        }
+        Ok(outcome)
     }
     async fn admit_keyed_run(
         &self,
@@ -740,7 +747,6 @@ async fn missing_and_legacy_evidence_never_invent_an_initial_executor() {
 
 #[tokio::test]
 async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_work() {
-    use crabber::extension::{RunPlanProvider, StaticPlanProvider};
     let (clock, store, provider, session) = fixture();
     let receipt = lost(store.clone(), provider.clone(), &session).await;
     let before = store.get_run(&receipt.run_id).await.unwrap();
@@ -757,34 +763,26 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         order: 0,
         text: "changed plan".into(),
     });
-    let ordinary_session = SessionId::new();
-    let plan = StaticPlanProvider::new(Vec::new(), vec![section.clone()])
-        .acquire_plan(&ordinary_session)
-        .await
+    // Create a real current-library ordinary admission, then lose its reply
+    // before spawn. This retains the actual registration and plan fingerprints.
+    let ordinary_agent = Agent::builder()
+        .store(fault(store.clone(), Fault::UnkeyedAdmissionLost))
+        .provider(provider.clone())
+        .config(config())
+        .prompt_section(section.clone())
+        .build()
         .unwrap();
-    let mut user = messages[0].clone();
-    user.id = MessageId::new();
-    user.session_id = ordinary_session;
-    user.run_id = None;
-    for part in &mut user.parts {
-        part.id = PartId::new();
-        part.message_id = user.id.clone();
-    }
+    assert!(matches!(
+        ordinary_agent.prompt(None, "ordinary").await,
+        Err(RuntimeError::Store(CoreError::Validation(_)))
+    ));
     let ordinary = store
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: "/tmp".into(),
-            title: "ordinary".into(),
-            user_message: user,
-            config_hash: "ordinary".into(),
-            plan_fingerprint: plan.fingerprint().to_string(),
-            owner: "ordinary-host".into(),
-            lease: Duration::from_secs(30),
-        })
+        .list_unfinished_runs()
         .await
+        .unwrap()
+        .into_iter()
+        .find(|run| run.id != receipt.run_id)
         .unwrap();
-    plan.release();
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     // The public facade wrapper must forward classification as well as claim.
     let agent = Agent::builder()
@@ -800,7 +798,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
     ));
     let recovered = agent.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].run_id, ordinary.run.id);
+    assert_eq!(recovered[0].run_id, ordinary.id);
     assert_eq!(recovered[0].status, RunStatus::Interrupted);
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(

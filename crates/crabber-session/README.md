@@ -71,6 +71,14 @@ and pause checkpoints created before the output-cap field was introduced are
 invalid. Reset or re-migrate local PostgreSQL data when applying or reverting
 this change; the admission domain and capsule version remain version 1.
 
+The runtime includes a `contract:crabber/registration-profile.v1` component that
+binds frozen declaration metadata and the plan provider's original fingerprint.
+This additional component preserves the existing capsule and admission digest
+formats. It enables committed request verification before contextual setup;
+actual acquired instance schemas are still checked for Unstarted restoration.
+Runtime replay requires this evidence. Bare receipt lookup remains available for
+older capsules without the component.
+
 The acquired plan fingerprint is also retained. The store's
 `KeyedAdmitRequest::semantic_digest` hashes domain `crabber.admission.v1`, immutable
 workspace/directory, title, user role/parent, ordered part ordinal/kind/content,

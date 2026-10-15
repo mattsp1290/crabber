@@ -648,6 +648,9 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        if let Some(receipt) = self.runtime.replay_admission(&request, &options).await? {
+            return Ok(Admission::Replayed(receipt));
+        }
         self.prepare_request(&request).await?;
         let receiver = self.events.subscribe();
         let admission = self
@@ -694,6 +697,13 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        if let Some(receipt) = self
+            .runtime
+            .replay_started_admission(&request, &options)
+            .await?
+        {
+            return Ok(Admission::Replayed(receipt));
+        }
         self.prepare_request(&request).await?;
         let receiver = self.events.subscribe();
         let admission = self
@@ -1001,10 +1011,14 @@ impl Extension for BuiltinExtension {
         "crabber/builtin"
     }
     fn version(&self) -> &'static str {
-        "1"
+        "2"
     }
     fn config_hash(&self) -> String {
-        String::new()
+        crabber_session::admission_config_hash(&serde_json::json!({
+            "contract": "crabber.builtin-registration.v1",
+            "tools": self.tools.iter().map(|tool| &tool.info).collect::<Vec<_>>(),
+            "prompts": self.prompts.iter().map(|prompt| (&prompt.name, prompt.order, &prompt.text)).collect::<Vec<_>>(),
+        }))
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         for tool in &self.tools {
@@ -1071,6 +1085,62 @@ mod tests {
                 .map(Some)
                 .map_err(|_| "utf8".into())
         }
+    }
+
+    struct Uncalled;
+    #[async_trait]
+    impl crabber_extension::ToolExecutor for Uncalled {
+        async fn execute(&self, _: serde_json::Value) -> Result<serde_json::Value, ExtensionError> {
+            panic!("metadata must not execute tools");
+        }
+    }
+    #[test]
+    fn builtin_registration_identity_binds_tool_schema_and_prompt_data() {
+        let tool = |parameters| {
+            Arc::new(ToolDefinition {
+                info: crabber_core::ToolInfo {
+                    name: "declared".into(),
+                    description: "description".into(),
+                    parameters,
+                    retry_safe: false,
+                    required_permissions: vec![],
+                },
+                executor: Arc::new(Uncalled),
+            })
+        };
+        let config = |parameters, text: &str| {
+            BuiltinExtension {
+                tools: vec![tool(parameters)],
+                prompts: vec![Arc::new(PromptSection {
+                    name: "prompt".into(),
+                    order: 0,
+                    text: text.into(),
+                })],
+            }
+            .config_hash()
+        };
+        let original = config(
+            serde_json::json!({"type":"object","additionalProperties":false}),
+            "first",
+        );
+        assert_eq!(
+            original,
+            config(
+                serde_json::json!({"additionalProperties":false,"type":"object"}),
+                "first"
+            )
+        );
+        assert_ne!(
+            original,
+            config(serde_json::json!({"type":"string"}), "first")
+        );
+        assert_ne!(
+            original,
+            config(
+                serde_json::json!({"type":"object","additionalProperties":false}),
+                "changed"
+            )
+        );
     }
     struct BuilderExtension;
     #[async_trait]

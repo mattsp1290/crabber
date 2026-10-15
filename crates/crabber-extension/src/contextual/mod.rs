@@ -1,6 +1,8 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
 mod instances;
 mod lifecycle;
+mod profile;
+use profile::SharedRegistration;
 
 use crate::{
     CleanupOwner, CleanupTracker, ComponentIdentity, Extension, ExtensionError, MountHandle,
@@ -119,7 +121,8 @@ struct Owners {
 }
 struct Inner {
     registry: Registry,
-    shared: Vec<(Arc<dyn Extension>, Scope)>,
+    shared: Vec<SharedRegistration>,
+    base_profile: Result<crate::registry::RegistrationSnapshot, ExtensionError>,
     factories: Vec<FactoryRegistration>,
     owners: Mutex<Owners>,
     closed: AtomicBool,
@@ -136,7 +139,8 @@ pub struct ContextualPlanProvider {
 }
 
 impl ContextualPlanProvider {
-    /// Freeze factory metadata once. Shared registrations are mounted only once.
+    /// Freeze shared and factory metadata once. Shared registration failures are
+    /// retained for readiness rollback; no component is installed here.
     /// # Errors
     /// Rejects duplicate or invalid factory identities before invoking factories.
     pub fn new(
@@ -152,8 +156,11 @@ impl ContextualPlanProvider {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     (factory.identity(), factory.config_hash(), factory.scope())
                 }))
-                .map_err(|_| ExtensionError::ContextInitializationFailed {
-                    component: "factory-metadata".into(),
+                .map_err(|payload| {
+                    crate::dispatch::discard_panic_payload(payload);
+                    ExtensionError::ContextInitializationFailed {
+                        component: "factory-metadata".into(),
+                    }
                 })?;
             if identity.id.is_empty()
                 || identity.id.len() > 128
@@ -181,8 +188,12 @@ impl ContextualPlanProvider {
         }
         Ok(Self {
             inner: Arc::new(Inner {
+                base_profile: registry.registration_snapshot(),
                 registry,
-                shared,
+                shared: shared
+                    .into_iter()
+                    .map(|(extension, scope)| SharedRegistration::capture(extension, scope))
+                    .collect(),
                 factories: registrations,
                 owners: Mutex::new(Owners::default()),
                 closed: AtomicBool::new(false),
@@ -234,6 +245,21 @@ impl ContextualPlanProvider {
 
 #[async_trait]
 impl RunPlanProvider for ContextualPlanProvider {
+    fn registration_fingerprint(
+        &self,
+        context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        let base = self
+            .inner
+            .base_profile
+            .as_ref()
+            .map_err(Clone::clone)?
+            .for_context(context);
+        let declarations =
+            profile::declarations(&self.inner.shared, &self.inner.factories, context)?;
+        crate::plan::registration_hash(serde_json::json!(["contextual", base, declarations]))
+    }
+
     async fn acquire_plan(&self, _session: &SessionId) -> Result<RunPlan, ExtensionError> {
         Err(ExtensionError::MissingCapability(
             "session execution context",

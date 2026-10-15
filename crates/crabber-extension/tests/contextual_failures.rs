@@ -286,6 +286,12 @@ async fn shared_metadata_is_frozen_once_and_panics_rollback_before_error() {
     )
     .unwrap();
     assert!(matches!(
+        provider.registration_fingerprint(&context("session", "workspace")),
+        Err(ExtensionError::ContextInitializationFailed { .. })
+    ));
+    assert_eq!(failed_shutdown.load(Ordering::SeqCst), 0);
+    assert!(observed.shutdown.lock().unwrap().is_empty());
+    assert!(matches!(
         provider.ready().await,
         Err(ExtensionError::ContextInitializationFailed { .. })
     ));

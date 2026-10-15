@@ -1,5 +1,7 @@
 //! Atomic native extension mounting and immutable plan acquisition.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#[path = "registry/profile.rs"]
+mod profile;
 use crate::dispatch::{
     self, AroundCallback, Callback, Dispatcher, Handler, HandlerFn, Mode, Point,
     ToolResultTransform,
@@ -17,6 +19,7 @@ use async_trait::async_trait;
 use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
+pub(crate) use profile::RegistrationSnapshot;
 use serde::Serialize;
 use std::{
     collections::HashSet,
@@ -42,7 +45,20 @@ pub enum Scope {
     },
 }
 impl Scope {
-    fn applies(&self, session: &SessionId, context: Option<&SessionContext>) -> bool {
+    pub(crate) fn declaration_value(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Self::Global => json!(["global"]),
+            Self::Workspace(id) => json!(["workspace", id]),
+            Self::Session(id) => json!(["session", id]),
+            Self::SessionIn {
+                session_id,
+                workspace_id,
+            } => json!(["session_in", session_id, workspace_id]),
+        }
+    }
+
+    pub(crate) fn applies(&self, session: &SessionId, context: Option<&SessionContext>) -> bool {
         match self {
             Self::Global => true,
             Self::Session(id) => id == session,
@@ -55,7 +71,7 @@ impl Scope {
             } => session_id == session && context.is_some_and(|c| c.workspace_id() == workspace_id),
         }
     }
-    fn rank(&self) -> u8 {
+    pub(crate) fn rank(&self) -> u8 {
         match self {
             Self::Global => 0,
             Self::Workspace(_) => 1,
@@ -492,6 +508,10 @@ pub struct Registry {
     close_start_hook: Arc<Mutex<Option<AcquireHook>>>,
 }
 impl Registry {
+    pub(crate) fn registration_snapshot(&self) -> Result<RegistrationSnapshot, ExtensionError> {
+        profile::capture(self)
+    }
+
     pub(crate) fn is_closed(&self) -> bool {
         self.inner.lock().unwrap().closed
     }
@@ -780,9 +800,34 @@ fn append_mount_components(
     plan_sequence: u64,
     components: &mut Vec<ComponentIdentity>,
 ) {
-    let extension_id = mount.extension.id();
-    let extension_version = mount.extension.version();
-    let extension_config = canonical_hash(&mount.extension.config_hash());
+    let identity = RegistrationIdentity::capture(mount.extension.as_ref());
+    append_registration_components(&identity, mount.scope.rank(), r, plan_sequence, components);
+}
+
+struct RegistrationIdentity {
+    id: String,
+    version: String,
+    config: String,
+}
+impl RegistrationIdentity {
+    fn capture(extension: &dyn Extension) -> Self {
+        Self {
+            id: extension.id().into(),
+            version: extension.version().into(),
+            config: extension.config_hash(),
+        }
+    }
+}
+fn append_registration_components(
+    identity: &RegistrationIdentity,
+    scope_rank: u8,
+    r: &Registrar,
+    plan_sequence: u64,
+    components: &mut Vec<ComponentIdentity>,
+) {
+    let extension_id = &identity.id;
+    let extension_version = &identity.version;
+    let extension_config = canonical_hash(&identity.config);
     components.push(ComponentIdentity {
         id: format!("extension:{extension_id}"),
         version: serde_json::to_string(&(extension_version, &extension_config))
@@ -814,7 +859,7 @@ fn append_mount_components(
                     extension_id,
                     extension_version,
                     &extension_config,
-                    mount.scope.rank(),
+                    scope_rank,
                     h.point,
                     &h.id
                 ))
@@ -840,7 +885,7 @@ fn append_mount_components(
             version: serde_json::to_string(&(
                 extension_version,
                 &extension_config,
-                mount.scope.rank(),
+                scope_rank,
                 plan_sequence,
                 service_presence,
             ))
@@ -997,6 +1042,16 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
 }
 #[async_trait]
 impl RunPlanProvider for Registry {
+    fn registration_fingerprint(
+        &self,
+        context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        crate::plan::registration_hash(serde_json::json!([
+            "registry",
+            self.registration_snapshot()?.for_context(context)
+        ]))
+    }
+
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
         self.try_acquire(session)
     }

@@ -146,8 +146,17 @@ impl Fixture {
         harness.store = Arc::new(MemoryStore::with_clock(clock.clone()));
         let session = SessionId::new();
         let plan = harness.registry.acquire_plan(&session).await.unwrap();
-        let fingerprint = admitted_fingerprint
-            .map_or_else(|| plan.fingerprint().to_string(), |stale| stale(&plan));
+        let stale = admitted_fingerprint.map(|stale| stale(&plan));
+        let declaration = harness
+            .registry
+            .registration_fingerprint(&crabber_core::SessionContext::new(
+                session.clone(),
+                "test",
+                ".",
+            ))
+            .unwrap();
+        let plan = Orchestrator::bind_plan_registration(plan, declaration).unwrap();
+        let fingerprint = stale.unwrap_or_else(|| plan.fingerprint().to_string());
         plan.release();
         let admitted = harness
             .store

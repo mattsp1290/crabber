@@ -28,6 +28,33 @@ impl fmt::Display for PlanFingerprint {
     }
 }
 
+pub(crate) fn registration_config(value: &str) -> Value {
+    // Structured metadata is canonicalized; scalar strings (including all-digit
+    // opaque hashes) retain exact identity rather than passing through numbers.
+    match serde_json::from_str(value) {
+        Ok(value @ (Value::Object(_) | Value::Array(_))) => value,
+        _ => Value::String(value.into()),
+    }
+}
+
+pub(crate) fn registration_hash(
+    value: Value,
+) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+    let mut value = Value::Array(vec![
+        Value::from("crabber.registration-profile.v1"),
+        Value::from(crate::RESULT_TRANSFORM_CONTRACT_VERSION),
+        Value::from(crate::SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION),
+        Value::from(crate::PROMPT_CONTRIBUTION_CONTRACT_VERSION),
+        value,
+    ]);
+    value.sort_all_objects();
+    crabber_core::InputFingerprint::new(format!(
+        "{:x}",
+        Sha256::digest(value.to_string().as_bytes())
+    ))
+    .map_err(|_| ExtensionError::RegistrationDescriptorUnavailable)
+}
+
 /// Id of the synthetic component that carries the result-transform contract
 /// version into every fingerprint (D9).
 const RESULT_TRANSFORM_CONTRACT_COMPONENT_ID: &str = "contract:crabber/tool/result-transform";
@@ -61,6 +88,8 @@ pub struct PromptSection {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExtensionError {
+    #[error("frozen registration declarations are unavailable")]
+    RegistrationDescriptorUnavailable,
     #[error("extension plan failed: {0}")]
     Plan(String),
     #[error("tool execution failed: {0}")]
@@ -181,6 +210,19 @@ impl RunPlan {
 
 #[async_trait]
 pub trait RunPlanProvider: Send + Sync {
+    /// Inspect frozen registration declarations without acquiring a plan,
+    /// initializing components or obtaining execution authority. Frozen providers
+    /// retain these declarations after close. Actual instance schemas still
+    /// require a separate restore check.
+    /// # Errors
+    /// Custom providers must explicitly implement declaration inspection.
+    fn registration_fingerprint(
+        &self,
+        _context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        Err(ExtensionError::RegistrationDescriptorUnavailable)
+    }
+
     async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError>;
 
     /// Acquire using the authoritative session identity, or the host-admitted
@@ -241,6 +283,26 @@ impl StaticPlanProvider {
 
 #[async_trait]
 impl RunPlanProvider for StaticPlanProvider {
+    fn registration_fingerprint(
+        &self,
+        _context: &SessionContext,
+    ) -> Result<crabber_core::InputFingerprint, ExtensionError> {
+        registration_hash(serde_json::json!([
+            "static",
+            self.plan.fingerprint.to_string(),
+            self.plan
+                .tools
+                .iter()
+                .map(|tool| &tool.info)
+                .collect::<Vec<_>>(),
+            self.plan
+                .prompts
+                .iter()
+                .map(|prompt| (&prompt.name, prompt.order, &prompt.text))
+                .collect::<Vec<_>>(),
+        ]))
+    }
+
     async fn acquire_plan(&self, _session: &SessionId) -> Result<RunPlan, ExtensionError> {
         Ok(self.plan.clone())
     }

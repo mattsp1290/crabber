@@ -970,8 +970,16 @@ async fn crashed_run_admitted_under(
     ));
     let session = SessionId::new();
     let plan = plan_provider.acquire_plan(&session).await.unwrap();
-    let fingerprint =
-        admitted_fingerprint.map_or_else(|| plan.fingerprint().to_string(), |stale| stale(&plan));
+    let stale = admitted_fingerprint.map(|stale| stale(&plan));
+    let declaration = plan_provider
+        .registration_fingerprint(&crabber_core::SessionContext::new(
+            session.clone(),
+            "test",
+            "/tmp",
+        ))
+        .unwrap();
+    let plan = Orchestrator::bind_plan_registration(plan, declaration).unwrap();
+    let fingerprint = stale.unwrap_or_else(|| plan.fingerprint().to_string());
     plan.release();
     let message_id = crabber_core::MessageId::new();
     let admitted = store

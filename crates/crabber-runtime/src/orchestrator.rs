@@ -1,3 +1,5 @@
+#[path = "orchestrator/admission.rs"]
+mod admission;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
@@ -1009,11 +1011,7 @@ impl Orchestrator {
         {
             return Err(StoreError::AdmissionRecoveryRequired.into());
         }
-        let plan = self
-            .plan_provider
-            .acquire_plan_in(&session.context)
-            .await
-            .map_err(RuntimeError::ExtensionPlan)?;
+        let plan = self.acquire_execution_plan(&session.context).await?;
         if plan.fingerprint().to_string() != run.plan_fingerprint {
             plan.release();
             return Err(RuntimeError::PlanChanged);
@@ -1513,6 +1511,9 @@ impl Orchestrator {
             )
             .into());
         }
+        if let Some(receipt) = self.replay_admission(&request, &options).await? {
+            return Ok(Admission::Replayed(receipt));
+        }
         let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
         match self
             .store
@@ -1557,32 +1558,27 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        let retained = self
+            .retained_admission(&request, &options)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        if let Some(receipt) = self.recovery_replay(&retained)? {
+            return Ok(Admission::Replayed(receipt));
+        }
+        let admission::Retained {
+            session: persisted,
+            receipt,
+            record,
+            run: _,
+        } = retained;
         let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
-        // Host-presented identity check, before the receipt lookup and before
-        // any replay: a drifted request never receives a replayed result.
-        let persisted = self
-            .store
-            .get_session(session)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        persisted.ensure_identity(&request.workspace_id, &request.directory)?;
-        let receipt = self
-            .store
-            .lookup_admission(session, &options.key)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        let record = self
-            .store
-            .load_admission_execution(session, &options.key)
-            .await?
-            .ok_or(AdmissionExecutionError::MissingEvidence)?;
         let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
         let capsule = keyed
             .execution
             .as_ref()
             .ok_or(AdmissionExecutionError::MissingEvidence)?;
-        // Compare the entire capsule, including independently recomputed semantics,
-        // before terminal/Started replay or any ownership operation.
+        // Check actual restored instance semantics against the retained capsule
+        // before claiming ownership; metadata already checked frozen declarations.
         record.capsule.validate(&keyed)?;
         if receipt.semantic_digest_version != 1
             || record.receipt != receipt
@@ -1740,11 +1736,7 @@ impl Orchestrator {
             request.directory.clone(),
         );
         self.validate_context(&context).await?;
-        let plan = self
-            .plan_provider
-            .acquire_plan_in(&context)
-            .await
-            .map_err(RuntimeError::ExtensionPlan)?;
+        let plan = self.acquire_execution_plan(&context).await?;
         // Hash structured, independently observed semantics, never a caller's claim.
         let mut config = json!([
             "crabber.runtime.admission.v1",

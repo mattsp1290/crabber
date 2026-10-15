@@ -66,9 +66,16 @@ There is no blind initial provider retry once Started. Paused tool continuation
 retains existing retry-safety and fencing rules. External tool effects are not
 exactly-once.
 
-Plan acquisition and global extension initialization are pre-admission setup,
-including on replay. They must not perform provider/tool business effects; the
-execution boundary does not promise exactly-once arbitrary plugin initialization.
+An already committed request is verified against its retained input, runtime
+settings and frozen registration declarations before plan acquisition or extension
+initialization. Started/terminal recovery uses this same metadata path. Configured
+hosts retain those declarations after close, and a temporarily unavailable factory
+does not prevent matching receipt replay. Eligible Unstarted recovery restores and
+checks the complete acquired plan and capsule before claiming ownership.
+
+An initially absent key can commit concurrently with pre-admission setup. Setup
+must remain free of provider/tool business effects; the execution boundary does
+not promise exactly-once arbitrary plugin initialization.
 Generic `resume` returns `AdmissionRecoveryRequired` for Unstarted, and bulk
 `recover` skips such records so their completion route remains available. Explicit
 abandonment may settle them terminally when the host chooses not to execute.
@@ -90,6 +97,13 @@ opaque code. JSON objects are sorted recursively; array order remains meaningful
 See the [versioned fingerprint contract](../crates/crabber-session/README.md#version-1-fingerprint-contract)
 for the precise fields and domain separators.
 
+The library adds a `contract:crabber/registration-profile.v1` component that binds
+frozen declarations and the provider's original plan fingerprint. Actual acquired
+schemas remain a separate restoration check. This is an additional configuration
+component in the existing capsule format. Capsules without this declaration cannot
+verify runtime request replay and return `MissingEvidence`; `lookup_admission`
+continues to return their metadata. No configuration or old capsule is rewritten.
+
 Keys are unique within a session for the **entire retained session lifetime**,
 including terminal, expired and recovered runs. No TTL, automatic pruning or key
 reuse exists. MemoryStore durability ends with its shared store lifetime;
@@ -97,8 +111,8 @@ PostgreSQL survives process restarts. Use opaque correlation IDs, not secrets:
 receipt metadata contains IDs and fingerprints, never prompt/history, private
 paths, claim tokens, checkpoints or execution fences.
 
-Custom Store adapters must override `admit_keyed_run` and `lookup_admission`;
-defaults fail closed. Validate message/part/session and immutable identity before
+Custom Store adapters must implement `admit_keyed_run`, `lookup_admission` and
+`load_admission_execution` for verified runtime replay; defaults fail closed. Validate message/part/session and immutable identity before
 replay; independently compute `KeyedAdmitRequest::semantic_digest`; compare both
 claimed fingerprint and semantic digest; resolve replay/conflict before Busy.
 Serialize admission for each session and commit receipt/run/message/epoch as one
