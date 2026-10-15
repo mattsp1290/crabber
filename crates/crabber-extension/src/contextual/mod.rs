@@ -57,6 +57,9 @@ impl FactoryContext {
 #[async_trait]
 pub trait ExtensionFactory: Send + Sync {
     fn identity(&self) -> ComponentIdentity;
+    /// Pure declaration of every input determining owner registrations, including
+    /// schemas and prompts. Change this or the declared version when those change.
+    /// Metadata replay does not create instances to discover hidden changes.
     fn config_hash(&self) -> String;
     fn scope(&self) -> FactoryScope;
     async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError>;

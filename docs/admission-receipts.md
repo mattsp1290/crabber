@@ -92,8 +92,13 @@ behavior must change this fingerprint. The host must retain the original version
 for exact retries; silently applying a new deployment's behavior is not equivalent.
 
 The library independently hashes inspectable semantics and rejects changed payloads
-even when the host reuses stale claimed hashes. It cannot detect a host lying about
-opaque code. JSON objects are sorted recursively; array order remains meaningful.
+even when the host reuses stale claimed hashes. Shared extensions must include
+registration-affecting inputs, such as schemas and prompt data, in their pure
+`config_hash` declaration (or change their version). Factories must likewise
+version all inputs that determine their registrations. Matching metadata replay
+does not initialize extensions or create instances to inspect hidden changes;
+actual acquired schemas are independently checked before restored execution.
+The library cannot detect falsely unchanged native declarations or opaque code. JSON objects are sorted recursively; array order remains meaningful.
 See the [versioned fingerprint contract](../crates/crabber-session/README.md#version-1-fingerprint-contract)
 for the precise fields and domain separators.
 

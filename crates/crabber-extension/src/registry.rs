@@ -99,6 +99,16 @@ impl Scope {
 pub trait Extension: Send + Sync {
     fn id(&self) -> &str;
     fn version(&self) -> &str;
+    /// Pure registration declaration, captured before installation. Together
+    /// with `id` and `version`, this must identify every registration-affecting
+    /// input, including tool schemas, prompt text, service routing and handler
+    /// configuration. Include structured metadata or its canonical digest.
+    ///
+    /// Matching receipt replay does not run `install` to discover hidden
+    /// changes. Keeping this declaration unchanged after changing registrations
+    /// violates the host's behavior-version contract. Actual acquired schemas
+    /// are independently checked before restoration can grant execution.
+    /// Never include credentials or execute business effects here.
     fn config_hash(&self) -> String;
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError>;
     async fn shutdown(&self) {}

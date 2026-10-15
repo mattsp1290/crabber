@@ -69,7 +69,11 @@ creating contextual owners, initializing components or acquiring a plan lease.
 Static, live Registry and contextual providers implement it; custom providers explicitly implement
 this capability. Contextual providers capture shared metadata and factory declarations
 at configuration time, including failures needed for truthful readiness rollback.
-This declaration fingerprint does not replace checking actual restored instances.
+Extension `config_hash` and factory configuration/version must identify all
+registration-affecting inputs, including schemas and prompt data. Metadata replay
+cannot discover changes hidden behind falsely unchanged declarations without
+initializing native code. This declaration fingerprint does not replace checking
+actual restored instances before execution.
 
 `extension_factory` creates a fresh extension, tool and service graph per
 `FactoryScope::Workspace` or `FactoryScope::Session` owner. The factory receives

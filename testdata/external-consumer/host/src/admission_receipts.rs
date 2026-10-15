@@ -37,7 +37,13 @@ impl Extension for SchemaExtension {
         "1"
     }
     fn config_hash(&self) -> String {
-        self.config.clone()
+        // Schema is an input to installation and must be part of the pure
+        // declaration. Receipt replay deliberately does not install extensions.
+        // Keep the full schema assertions below, including ordered enum arrays.
+        serde_json::json!({
+            "configuration": serde_json::from_str::<Value>(&self.config).unwrap(),
+            "tools": [&self.tool.info],
+        }).to_string()
     }
     async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
         registrar.tool(self.tool.clone());
