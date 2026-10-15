@@ -1,7 +1,7 @@
 //! Real-process proof of original-turn completion and conservative start ambiguity.
 use super::*;
 use crabber::session::{AdmissionExecutionError, AdmissionExecutionState};
-use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse};
+use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse_recorded};
 
 #[allow(clippy::too_many_lines)] // Fresh-process modes share one original request and receipt.
 pub(super) async fn child(
@@ -220,7 +220,7 @@ async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
         "original recovered output"
     );
     for event in output {
-        let frame = encode_sse(&event, 1_048_576).unwrap();
+        let frame = encode_sse_recorded(&event, 1_048_576).unwrap();
         assert!(frame.starts_with(b"data: "));
     }
 }

@@ -4,7 +4,7 @@ Opt-in live projection of Crabber source events into `ag-ui-core` 0.2.0 from
 [mattsp1290/ag-ui](https://github.com/mattsp1290/ag-ui/tree/705303b26b6b900cdf9bdfa456fbd92a7003ca6b),
 revision `705303b26b6b900cdf9bdfa456fbd92a7003ca6b`. Core/runtime and the default
 Crabber facade do not depend on AG-UI or HTTP. The adapter re-exports its pinned
-`ag_ui_core` so hosts share one wire type identity.
+`ag_ui_core` and `ag_ui_encoder` so hosts share the pinned wire types and encoder.
 
 ```rust,no_run
 use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse};
@@ -34,11 +34,16 @@ Repeated finish is empty; pushes after finish are rejected.
 See the [full mapping and host contract](../../docs/ag-ui.md), the
 [HTTP example](../../examples/agui-sse/README.md), and integration tests in
 [tests/projection.rs](tests/projection.rs). `cargo test -p crabber-agui` runs
-without credentials. SSE encoding uses compact SDK JSON, no replay ID and no
+without credentials. SSE encoding uses the SDK encoder and producer normalization, no replay ID and no
 `[DONE]` marker. Reasoning display defaults off.
 
 Hosts can use `Projector::push_with_delivery` to reserve and send an entire batch
 atomically without cloning prior identities. A rejected delivery rolls back
-presentation boundaries and permanently faults the stream. `sse_frame_len`
-counts a frame before allocation so host data and control queues can share an
-explicit byte budget.
+presentation boundaries and permanently faults the stream. `frame_budget` performs
+an allocation-free conservative precheck, including SSE framing, before the SDK
+allocates a normalized event. The limit covers the whole frame. Queue accounting
+uses the encoded frame's actual length; `sse_frame_len` is an allocating wrapper.
+`encode_sse` uses live producer normalization; `encode_sse_recorded` preserves a
+recorded `RUN_STARTED` version or its omission. Both reject invalid SDK events as
+permanent `Malformed` faults. Hosts can use `ag_ui_encoder::Encoder::keepalive`
+for bounded comment frames and `ag_ui_encoder::CONTENT_TYPE` for HTTP responses.

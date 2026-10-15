@@ -15,7 +15,7 @@ use crabber_agui::ag_ui_core::{
     types::{Message, RunAgentInput},
 };
 use crabber_agui::{
-    Completion, ProjectionConfig, ProjectionError, Projector, encode_sse, sse_frame_len,
+    Completion, ProjectionConfig, ProjectionError, Projector, encode_sse, frame_budget,
 };
 use futures::Stream;
 use serde_json::{Value, json};
@@ -323,7 +323,7 @@ async fn admitted_response(
     ));
     (
         [
-            ("content-type", "text/event-stream"),
+            ("content-type", crabber_agui::ag_ui_encoder::CONTENT_TYPE),
             ("cache-control", "no-cache"),
         ],
         Body::from_stream(output),
@@ -423,13 +423,12 @@ fn enqueue(
             .map_err(|_| ProjectionError::Transport)?;
         let mut reserved = Vec::with_capacity(events.len());
         for event in events {
-            let count =
-                u32::try_from(sse_frame_len(event, limit)?).map_err(|_| ProjectionError::Limit)?;
+            let bytes = encode_sse(event, limit)?;
+            let count = u32::try_from(bytes.len()).map_err(|_| ProjectionError::Limit)?;
             let permit = budget
                 .clone()
                 .try_acquire_many_owned(count)
                 .map_err(|_| ProjectionError::Transport)?;
-            let bytes = encode_sse(event, limit)?;
             reserved.push(Frame { bytes, permit });
         }
         for (slot, frame) in slots.zip(reserved) {
@@ -539,7 +538,7 @@ async fn worker(
 
 fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, ProjectionError> {
     let fits = events.iter().try_fold(0usize, |sum, event| {
-        sum.checked_add(sse_frame_len(event, limit)?)
+        sum.checked_add(frame_budget(event, limit)?)
             .filter(|total| *total <= CONTROL_BYTES)
             .ok_or(ProjectionError::Limit)
     });
@@ -554,7 +553,11 @@ fn control_frames(events: &[Event], limit: usize) -> Result<Vec<Frame>, Projecti
         code: Some(ProjectionError::Limit.code().into()),
         usage: None,
     })];
-    let events = if fits.is_ok() { events } else { &fallback };
+    let events = match fits {
+        Ok(_) => events,
+        Err(ProjectionError::Limit) => &fallback,
+        Err(error) => return Err(error),
+    };
     let budget = Arc::new(Semaphore::new(CONTROL_BYTES));
     frames(events, limit)?
         .into_iter()
@@ -606,7 +609,7 @@ mod tests {
                 terminal,
             } = output();
             let events: Vec<Event> = [
-                json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r"}),
+                json!({"type":"RUN_STARTED", "threadId":"t", "runId":"r", "protocolVersion":crabber_agui::ag_ui_core::processing::PROTOCOL_VERSION}),
                 json!({"type":"TEXT_MESSAGE_START", "messageId":"m", "role":"assistant"}),
                 json!({"type":"TEXT_MESSAGE_CONTENT", "messageId":"m", "delta":"buffered"}),
                 json!({"type":"TEXT_MESSAGE_END", "messageId":"m"}),
@@ -644,7 +647,17 @@ mod tests {
             let mut decoder = crate::check::Decoder::default();
             decoder.push(&raw).unwrap();
             let received = decoder.finish().unwrap();
-            assert_eq!(&received[..events.len()], events);
+            let expected: Vec<Value> = events
+                .iter()
+                .map(|event| {
+                    crabber_agui::ag_ui_core::processing::normalize_producer_event(event).unwrap()
+                })
+                .collect();
+            let received_values: Vec<Value> = received[..events.len()]
+                .iter()
+                .map(|event| serde_json::to_value(event).unwrap())
+                .collect();
+            assert_eq!(received_values, expected);
             assert!(matches!(received.last(), Some(Event::RunFinished(_))));
         }
     }
@@ -691,7 +704,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .map(|e| sse_frame_len(e, 1_048_576).unwrap())
+                .map(|e| frame_budget(e, 1_048_576).unwrap())
                 .sum::<usize>()
                 > OUTPUT_BYTES
         );
