@@ -42,7 +42,7 @@ run.done().await?;
 Each handle owns one bounded event receiver. Take it once with `events()`;
 lag ends that observation path and requires reconciliation from the Store.
 Dropping the receiver or handle leaves the retained worker running. Unrelated
-workers have separate event queues, including resumed workers with the same RunId.
+workers have separate event queues, including resumed workers with the same `RunId`.
 
 `Agent::resume_execution(&run_id)` returns the same handle for an eligible retained
 run; `resume()` waits for its result directly. Eligibility and frozen-binding
