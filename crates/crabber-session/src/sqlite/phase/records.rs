@@ -187,7 +187,7 @@ pub(super) async fn publish(
     revision: SessionRevision,
     now: OffsetDateTime,
 ) -> Result<PhaseReceipt, Error> {
-    let event = phase::event(run, request, snapshot, now)?;
+    let event = phase::event(run, request, snapshot, now, digest.clone())?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )

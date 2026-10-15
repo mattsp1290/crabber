@@ -21,14 +21,16 @@ pub(crate) enum Mode {
     Success,
     Failure,
     Refuse,
+    Settle,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Claim,
         Self::Begin,
         Self::Success,
         Self::Failure,
         Self::Refuse,
+        Self::Settle,
     ];
     pub(crate) fn operation(self) -> &'static str {
         match self {
@@ -37,6 +39,7 @@ impl Mode {
             Self::Success => "resolve_success",
             Self::Failure => "resolve_failure",
             Self::Refuse => "resolve_refuse",
+            Self::Settle => "complete",
         }
     }
     fn preoperations(self) -> usize {
@@ -102,6 +105,10 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
     let command = match mode {
         Mode::Claim => PhaseCommand::Claim { target },
         Mode::Begin => PhaseCommand::Begin { target },
+        Mode::Settle => PhaseCommand::Complete {
+            target,
+            output: output(),
+        },
         _ => PhaseCommand::ResolveUncertain {
             target,
             claim: resolver(),
@@ -131,9 +138,18 @@ pub(crate) async fn write(
     if lose_ack {
         inject(2);
     }
-    let result = execution
-        .mutate_phase(fixture.request.clone(), authority)
-        .await;
+    let result = if matches!(fixture.mode, Mode::Settle) {
+        let Some(PhaseWriteAuthority::Phase(worker)) = authority else {
+            panic!("phase worker missing");
+        };
+        execution
+            .settle_tool_phase(settlement(fixture), Some(worker))
+            .await
+    } else {
+        execution
+            .mutate_phase(fixture.request.clone(), authority)
+            .await
+    };
     inject(0);
     result
 }
@@ -190,6 +206,21 @@ async fn prepare(
     if matches!(fixture.mode, Mode::Begin) {
         return Some(PhaseWriteAuthority::Phase(worker.unwrap()));
     }
+    if matches!(fixture.mode, Mode::Settle) {
+        execution
+            .mutate_phase(
+                mutation(
+                    claimed.revision,
+                    PhaseCommand::Begin {
+                        target: target.clone(),
+                    },
+                ),
+                Some(PhaseWriteAuthority::Phase(worker.clone().unwrap())),
+            )
+            .await
+            .unwrap();
+        return Some(PhaseWriteAuthority::Phase(worker.unwrap()));
+    }
     execution
         .mutate_phase(
             mutation(
@@ -225,7 +256,23 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         .iter()
         .find(|c| c.id == fixture.request.command.target().call_id)
         .unwrap();
-    assert_eq!(call.status, ToolCallStatus::Pending);
+    assert_eq!(
+        call.status,
+        if matches!(fixture.mode, Mode::Settle) {
+            ToolCallStatus::Running
+        } else {
+            ToolCallStatus::Pending
+        }
+    );
+    assert!(call.result.is_none());
+    assert_eq!(
+        store
+            .list_messages(&fixture.session, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         store
             .list_events(&fixture.session, None, 100)
@@ -240,10 +287,15 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
     match fixture.mode {
         Mode::Claim => assert_eq!(snapshot.unwrap_err(), PhaseError::NotFound),
         Mode::Begin => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Claimed),
+        Mode::Settle => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Started),
         _ => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Uncertain),
     }
 }
 pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
+    if matches!(fixture.mode, Mode::Settle) {
+        verify_settlement_loss(store, fixture).await;
+        return;
+    }
     let receipt = store
         .lookup_phase_mutation(&fixture.session, &fixture.request.id)
         .await
@@ -301,23 +353,23 @@ pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
         Mode::Success => PhaseState::Completed,
         Mode::Failure => PhaseState::Failed,
         Mode::Refuse => PhaseState::Uncertain,
+        Mode::Settle => unreachable!(),
     };
     assert_eq!(receipt.phase.state, expected);
 }
 
 pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture) {
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
-    if matches!(fixture.mode, Mode::Claim | Mode::Begin) {
+    if matches!(fixture.mode, Mode::Claim | Mode::Begin | Mode::Settle) {
         // A reaped worker's opaque authority is gone. The same outbox must not
         // turn a retry into dispatch permission, even when BEGIN rolled back.
-        assert_eq!(
-            execution
-                .mutate_phase(fixture.request.clone(), None)
-                .await
-                .unwrap_err(),
-            PhaseError::StaleOwner
-        );
-        if matches!(fixture.mode, Mode::Begin) {
+        let failure = if matches!(fixture.mode, Mode::Settle) {
+            execution.settle_tool_phase(settlement(fixture), None).await
+        } else {
+            execution.mutate_phase(fixture.request.clone(), None).await
+        };
+        assert_eq!(failure.unwrap_err(), PhaseError::StaleOwner);
+        if matches!(fixture.mode, Mode::Begin | Mode::Settle) {
             let command = PhaseCommand::MarkStoppedUncertain {
                 target: fixture.request.command.target().clone(),
                 claim: crate::PhaseResolverClaim {
@@ -351,4 +403,86 @@ pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture)
             matches!(execution.mutate_phase(fixture.request.clone(), None).await.unwrap(), PhaseMutationOutcome::Replayed(r) if r == receipt)
         );
     }
+}
+
+fn settlement(fixture: &Fixture) -> crate::PhaseSettlement {
+    crate::PhaseSettlement {
+        completion: fixture.request.clone(),
+        message_id: crabber_core::MessageId(format!(
+            "phase-result-{}",
+            fixture.request.command.target().id
+        )),
+        part_id: crabber_core::PartId(format!(
+            "phase-part-{}",
+            fixture.request.command.target().id
+        )),
+        turn_id: None,
+        created_at: time::OffsetDateTime::UNIX_EPOCH,
+        duration_ms: 1,
+    }
+}
+async fn verify_settlement_loss(store: &impl Store, fixture: Fixture) {
+    let receipt = store
+        .lookup_phase_mutation(&fixture.session, &fixture.request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let request = settlement(&fixture);
+    assert_eq!(
+        receipt.semantic_digest,
+        request
+            .fingerprint(&fixture.session, &fixture.fence.run_id)
+            .unwrap()
+    );
+    assert_eq!(receipt.phase.state, PhaseState::Completed);
+    assert_eq!(receipt.phase.quiescence, crate::PhaseQuiescence::Complete);
+    assert_eq!(
+        store
+            .tool_phase(&fixture.fence.run_id, &receipt.phase.target.id)
+            .await
+            .unwrap()
+            .phase,
+        receipt.phase
+    );
+    assert_eq!(
+        store.session_revision(&fixture.session).await.unwrap(),
+        receipt.revision
+    );
+    assert_eq!(
+        store
+            .list_unfinished_tool_calls(&fixture.fence.run_id)
+            .await
+            .unwrap(),
+        [] as [ToolCallRecord; 0]
+    );
+    let messages = store.list_messages(&fixture.session, None).await.unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].id, request.message_id);
+    let events = store
+        .list_events(&fixture.session, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), fixture.mode.preoperations() + 3);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolCallSettled)
+            .count(),
+        1
+    );
+    let execution = store.execution(fixture.fence).await.unwrap();
+    assert!(
+        matches!(execution.settle_tool_phase(request, None).await.unwrap(), PhaseMutationOutcome::Replayed(saved) if saved == receipt)
+    );
+    assert_eq!(
+        store.list_messages(&fixture.session, None).await.unwrap(),
+        messages
+    );
+    assert_eq!(
+        store
+            .list_events(&fixture.session, None, 100)
+            .await
+            .unwrap(),
+        events
+    );
 }

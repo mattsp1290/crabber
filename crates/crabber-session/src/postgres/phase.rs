@@ -53,6 +53,27 @@ impl PostgresExecution {
         request: PhaseMutation,
         authority: Option<PhaseWriteAuthority>,
     ) -> Result<Outcome, Error> {
+        self.change_phase_inner(request, authority, None).await
+    }
+    pub(super) async fn settle_phase(
+        &self,
+        settlement: crate::PhaseSettlement,
+        authority: Option<PhaseAuthority>,
+    ) -> Result<Outcome, Error> {
+        settlement.output()?;
+        self.change_phase_inner(
+            settlement.completion.clone(),
+            authority.map(PhaseWriteAuthority::Phase),
+            Some(settlement),
+        )
+        .await
+    }
+    async fn change_phase_inner(
+        &self,
+        request: PhaseMutation,
+        authority: Option<PhaseWriteAuthority>,
+        settlement: Option<crate::PhaseSettlement>,
+    ) -> Result<Outcome, Error> {
         phase::validate_request(&request)?;
         let (mut tx, run) = self
             .store
@@ -66,7 +87,13 @@ impl PostgresExecution {
                 }
             })?;
         let result = self
-            .apply_phase(&mut tx, &run, &request, authority.as_ref())
+            .apply_phase(
+                &mut tx,
+                &run,
+                &request,
+                authority.as_ref(),
+                settlement.as_ref(),
+            )
             .await;
         #[cfg(test)]
         let result = if self
@@ -99,11 +126,20 @@ impl PostgresExecution {
         run: &Run,
         request: &PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
+        settlement: Option<&crate::PhaseSettlement>,
     ) -> Result<Outcome, Error> {
-        let digest = request.fingerprint(&run.session_id, &run.id)?;
+        let digest = if let Some(settlement) = settlement {
+            settlement.fingerprint(&run.session_id, &run.id)?
+        } else {
+            request.fingerprint(&run.session_id, &run.id)?
+        };
         if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
             if receipt.phase.run_id != run.id || receipt.semantic_digest != digest {
                 return Err(Error::SemanticConflict);
+            }
+            if let Some(settlement) = settlement {
+                let call = calls::load(tx, run, &receipt.phase.target.call_id).await?;
+                settlement.verify_replay(&receipt, &call)?;
             }
             return Ok(Outcome::Replayed(receipt));
         }
@@ -120,12 +156,19 @@ impl PostgresExecution {
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let revision = current.next().map_err(|_| Error::RevisionExhausted)?;
         let insert = matches!(request.command, PhaseCommand::Claim { .. });
-        let (record, authority) = prepare(tx, run, request, authority, now).await?;
+        let (mut record, authority) = prepare(tx, run, request, authority, now).await?;
         if matches!(request.command, PhaseCommand::Begin { .. }) {
             calls::begin(tx, run, &record.snapshot.target.call_id).await?;
         }
+        if let Some(settlement) = settlement {
+            calls::settle(tx, run, settlement).await?;
+            record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
+        }
+        let revision = records::revision(tx, &run.session_id)
+            .await?
+            .next()
+            .map_err(|_| Error::RevisionExhausted)?;
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, now).await?;

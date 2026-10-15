@@ -21,6 +21,8 @@ pub use execution_binding::{
 };
 mod attempt;
 mod phase;
+mod phase_settlement;
+pub use phase_settlement::{PhaseSettlement, PhaseSettlementRecords};
 pub mod phase_contract;
 pub use phase::*;
 pub mod attempt_contract;

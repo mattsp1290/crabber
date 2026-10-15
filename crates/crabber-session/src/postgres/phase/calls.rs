@@ -39,3 +39,26 @@ pub(super) async fn begin(
         .execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
     Ok(())
 }
+
+pub(super) async fn settle(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    settlement: &crate::PhaseSettlement,
+) -> Result<(), Error> {
+    let mut call = load(tx, run, &settlement.completion.command.target().call_id).await?;
+    let records = settlement.materialize(run, &call)?;
+    super::super::insert_message(tx, run, &records.message)
+        .await
+        .map_err(sql::unknown)?;
+    super::super::insert_event(tx, run, &records.event)
+        .await
+        .map_err(sql::unknown)?;
+    call.status = records.call_status;
+    call.result = Some(records.result);
+    let accounting = snapshot::call_record(&call).map_err(sql::unknown)?;
+    sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_record=$4,snapshot_parts=$5,snapshot_text=$6,snapshot_bytes=$7 WHERE id=$1")
+        .bind(&call.id.0).bind(call_status(call.status)).bind(json(&call).map_err(sql::unknown)?)
+        .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
+        .execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+    Ok(())
+}

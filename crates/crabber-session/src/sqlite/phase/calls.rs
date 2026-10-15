@@ -36,3 +36,24 @@ pub(super) async fn begin(
         .await
         .map_err(sql::unknown)
 }
+
+pub(super) async fn settle(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    settlement: &crate::PhaseSettlement,
+) -> Result<(), Error> {
+    let mut call = load(tx, run, &settlement.completion.command.target().call_id).await?;
+    let records = settlement.materialize(run, &call)?;
+    super::super::records::insert_message(tx, run, &records.message)
+        .await
+        .map_err(sql::unknown)?;
+    super::super::records::insert_event(tx, run, &records.event)
+        .await
+        .map_err(sql::unknown)?;
+    call.status = records.call_status;
+    call.result = Some(records.result);
+    super::super::records::save_call(tx, &call.id, &call)
+        .await
+        .map_err(sql::unknown)?;
+    Ok(())
+}

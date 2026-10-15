@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn settle_tool_phase(
+        &self,
+        settlement: crate::PhaseSettlement,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.settle_phase(settlement, authority).await
+    }
+
     async fn mutate_phase(
         &self,
         request: crate::PhaseMutation,

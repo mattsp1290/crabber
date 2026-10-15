@@ -426,6 +426,18 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Atomically complete a started owned phase, record the worker's assertion
+    /// of quiescence, settle its logical call, append protected result history
+    /// and events, and retain its receipt. Invoke only after all phase resources
+    /// have actually joined. Replay grants no authority and appends nothing.
+    async fn settle_tool_phase(
+        &self,
+        _settlement: crate::PhaseSettlement,
+        _authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
+
     /// Experimental atomic phase transition. Only a fresh Applied Begin permits
     /// dispatch. Outcome persistence does not imply logical call settlement or
     /// prove worker quiescence. Cleanup requires actual owned-task completion.

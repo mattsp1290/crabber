@@ -66,6 +66,27 @@ impl MemoryExecution {
         request: PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
     ) -> Result<PhaseMutationOutcome, Error> {
+        self.change_phase_inner(request, authority, None)
+    }
+    pub(super) fn settle_phase(
+        &self,
+        settlement: &crate::PhaseSettlement,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<PhaseMutationOutcome, Error> {
+        settlement.output()?;
+        let authority = authority.map(PhaseWriteAuthority::Phase);
+        self.change_phase_inner(
+            settlement.completion.clone(),
+            authority.as_ref(),
+            Some(settlement),
+        )
+    }
+    fn change_phase_inner(
+        &self,
+        request: PhaseMutation,
+        authority: Option<&PhaseWriteAuthority>,
+        settlement: Option<&crate::PhaseSettlement>,
+    ) -> Result<PhaseMutationOutcome, Error> {
         phase::validate_request(&request)?;
         let result = self.store.transact(|state| {
             let run = state
@@ -73,21 +94,14 @@ impl MemoryExecution {
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
-            let digest = request.fingerprint(&run.session_id, &run.id)?;
+            let digest = if let Some(settlement) = settlement {
+                settlement.fingerprint(&run.session_id, &run.id)?
+            } else {
+                request.fingerprint(&run.session_id, &run.id)?
+            };
             let key = (run.session_id.clone(), request.id.clone());
-            if let Some(saved) = state.operation_receipts.get(&key) {
-                let OperationReceipt::Phase(receipt) = saved else {
-                    return Err(Error::SemanticConflict);
-                };
-                if receipt.phase.session_id != run.session_id || receipt.operation_id != request.id
-                {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-                verify(state, receipt)?;
-                if receipt.phase.run_id != run.id || receipt.semantic_digest != digest {
-                    return Err(Error::SemanticConflict);
-                }
-                return Ok(PhaseMutationOutcome::Replayed(receipt.clone()));
+            if let Some(replayed) = replay(state, &run, &request, &digest, settlement)? {
+                return Ok(replayed);
             }
             let now = self.store.clock.now();
             crate::attempt::verify_run(&run, &self.fence, now).map_err(|_| Error::StaleOwner)?;
@@ -102,9 +116,14 @@ impl MemoryExecution {
             if current != request.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let revision = current.next().map_err(|_| Error::RevisionExhausted)?;
-            let (record, authority) = prepare_record(state, &run, &request, authority, now)?;
-            let mut event = phase::event(&run, &request, &record.snapshot, now)?;
+            let (mut record, authority) = prepare_record(state, &run, &request, authority, now)?;
+            if let Some(settlement) = settlement {
+                settle_call(state, &run, &mut record, settlement)?;
+            }
+            let revision = revision(state, &run.session_id)
+                .next()
+                .map_err(|_| Error::RevisionExhausted)?;
+            let mut event = phase::event(&run, &request, &record.snapshot, now, digest.clone())?;
             let cursor = EventCursor(state.events.len() as u64 + 1);
             event.cursor = Some(cursor);
             let receipt = PhaseReceipt {
@@ -162,6 +181,69 @@ impl MemoryExecution {
         result
     }
 }
+fn replay(
+    state: &State,
+    run: &Run,
+    request: &PhaseMutation,
+    digest: &crabber_core::InputFingerprint,
+    settlement: Option<&crate::PhaseSettlement>,
+) -> Result<Option<PhaseMutationOutcome>, Error> {
+    let key = (run.session_id.clone(), request.id.clone());
+    if let Some(saved) = state.operation_receipts.get(&key) {
+        let OperationReceipt::Phase(receipt) = saved else {
+            return Err(Error::SemanticConflict);
+        };
+        if receipt.phase.session_id != run.session_id || receipt.operation_id != request.id {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        verify(state, receipt)?;
+        if receipt.phase.run_id != run.id || &receipt.semantic_digest != digest {
+            return Err(Error::SemanticConflict);
+        }
+        if let Some(settlement) = settlement {
+            settlement.verify_replay(
+                receipt,
+                state
+                    .calls
+                    .get(&receipt.phase.target.call_id)
+                    .ok_or(Error::UnknownStoreOutcome)?,
+            )?;
+        }
+        return Ok(Some(PhaseMutationOutcome::Replayed(receipt.clone())));
+    }
+    Ok(None)
+}
+
+fn settle_call(
+    state: &mut State,
+    run: &Run,
+    record: &mut phase::PhaseRecord,
+    settlement: &crate::PhaseSettlement,
+) -> Result<(), Error> {
+    let call = state
+        .calls
+        .get(&record.snapshot.target.call_id)
+        .ok_or(Error::NotFound)?;
+    let records = settlement.materialize(run, call)?;
+    super::insert_message(state, run, records.message).map_err(|_| Error::UnknownStoreOutcome)?;
+    super::insert_event(state, run, records.event).map_err(|_| Error::UnknownStoreOutcome)?;
+    let call = state
+        .calls
+        .get_mut(&record.snapshot.target.call_id)
+        .ok_or(Error::NotFound)?;
+    call.status = records.call_status;
+    call.result = Some(records.result);
+    let snapshot_revision = state
+        .snapshot_revisions
+        .entry(run.session_id.clone())
+        .or_default();
+    *snapshot_revision = snapshot_revision
+        .checked_add(1)
+        .ok_or(Error::RevisionExhausted)?;
+    record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
+    Ok(())
+}
+
 fn prepare_record(
     state: &State,
     run: &Run,

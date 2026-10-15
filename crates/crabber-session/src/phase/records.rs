@@ -45,6 +45,7 @@ pub(crate) fn event(
     request: &PhaseMutation,
     snapshot: &PhaseSnapshot,
     now: OffsetDateTime,
+    digest: InputFingerprint,
 ) -> Result<EventRecord, PhaseError> {
     Ok(EventRecord {
         cursor: None,
@@ -55,7 +56,7 @@ pub(crate) fn event(
         payload: serde_json::to_value(PhaseEvent {
             version: 1,
             operation: operation(&request.command),
-            semantic_digest: request.fingerprint(&run.session_id, &run.id)?,
+            semantic_digest: digest,
             phase: snapshot.clone(),
             resolver: resolver(&request.command),
         })

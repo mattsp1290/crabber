@@ -668,6 +668,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn settle_tool_phase(
+        &self,
+        settlement: crate::PhaseSettlement,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.settle_phase(&settlement, authority)
+    }
+
     async fn mutate_phase(
         &self,
         request: crate::PhaseMutation,

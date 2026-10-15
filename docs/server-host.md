@@ -259,7 +259,29 @@ Custom adapters default to `Unsupported`. `mutate_phase` commits a
 phase record, source event, revision and receipt together. A fresh claim returns
 opaque authority; only a fresh applied begin permits dispatch. The authority is
 never serialized into a receipt or returned on replay. These APIs are not yet
-wired to the runtime's tool pipeline or logical result/history settlement.
+wired to the runtime's tool pipeline.
+
+`ExecutionStore::settle_tool_phase` atomically completes a started phase and its
+logical tool call, records the worker's assertion of complete quiescence, appends
+protected typed result history and source events, and commits the final revision
+and receipt. Invoke it only after joining every phase-owned resource. The Store
+cannot inspect native tasks or prove external cleanup itself. The operation uses
+`PhaseSettlement` with an exact `PhaseCommand::Complete`, generated presentation
+IDs/timing and final protected output. It cannot turn an uncertain phase into a
+completion, and the legacy logical-settlement API still rejects phase-owned calls.
+
+Retain the original completion key/revision/target/output after an unknown
+acknowledgement. Compare `PhaseSettlement::fingerprint` with
+`lookup_phase_mutation`, since this compound operation has a separate digest
+domain from metadata-only `mutate_phase(Complete)`. Those operations cannot replay
+as one another. Generated presentation IDs/timing are excluded from semantics;
+replay appends no message/event and grants no worker authority. Custom adapters
+can use `PhaseSettlement::materialize` for canonical protected result records and
+`verify_replay` for semantic/result checks; native fence and persisted receipt/event
+verification remain the adapter's responsibility. The shared phase conformance
+suite includes mixed media, changed choices, duplicate-message rollback and lost
+commit acknowledgements. SQLite/PostgreSQL also kill writers after all compound
+writes but before commit and reconcile committed receipts in fresh processes.
 
 A lost claimed or started phase becomes uncertain, including a retry-safe call.
 The host can resolve its exact target as success with supplied typed output,
@@ -280,8 +302,8 @@ suite qualify these native transitions. SQLite/PostgreSQL process tests kill
 writers before commit and reconcile lost acknowledgements in fresh processes.
 Worker capabilities stay inside the writer; phase validation checks its parent
 without returning the broader attempt capability. An owner can finish phase
-quiescence after reporting incomplete attempt cleanup. Runtime task joining
-remains under implementation.
+quiescence after reporting incomplete attempt cleanup. Connecting runtime task
+joins to these durable phase/attempt transitions remains under implementation.
 
 If the initial execution cannot acknowledge its interruption/failure terminal
 write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID
