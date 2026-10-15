@@ -237,3 +237,47 @@ async fn check_answer(
         crate::AttemptError::Busy
     );
 }
+
+#[tokio::test]
+async fn recovery_rejects_coherently_changed_consumed_answer() {
+    let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let store = store.with_clock(clock.clone());
+    let p = crate::approval_contract::recovery::prepare(&store, &clock).await;
+    clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));
+    let data: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
+        .bind(&p.original.continuation.id.0)
+        .fetch_one(&store.writer)
+        .await
+        .unwrap();
+    for change in 0..2 {
+        let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&data).unwrap();
+        if change == 0 {
+            record.questions[0].answer.as_mut().unwrap().reply = crate::ApprovalReply::Deny;
+            record.questions[0].view.state = crabber_core::InteractionState::Denied;
+        } else {
+            record.batch.calls[2].decision = crate::CallApproval::Deny;
+        }
+        record
+            .validate(&p.original.session_id, &p.original.run_id)
+            .unwrap();
+        sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+            .bind(&p.original.continuation.id.0)
+            .bind(serde_json::to_string(&record).unwrap())
+            .execute(&store.writer)
+            .await
+            .unwrap();
+        let before = crate::approval_contract::recovery::evidence(&store, &p).await;
+        assert_eq!(
+            store
+                .reclaim_approval_continuation(p.request.clone())
+                .await
+                .unwrap_err(),
+            Error::UnknownStoreOutcome
+        );
+        assert_eq!(
+            crate::approval_contract::recovery::evidence(&store, &p).await,
+            before
+        );
+    }
+}

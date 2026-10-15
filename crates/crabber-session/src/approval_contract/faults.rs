@@ -49,6 +49,8 @@ pub async fn run_fault_contract(
     clock: &ManualClock,
     inject: impl Fn(FaultPoint),
 ) {
+    super::recovery::fault_contract(store, clock, &inject).await;
+    clock.set(time::OffsetDateTime::UNIX_EPOCH);
     for case in [Case::Suspend, Case::Answer, Case::Claim] {
         for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommit] {
             let (f, operation) = pending(store, clock, case).await;

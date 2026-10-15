@@ -74,4 +74,46 @@ impl Agent {
             },
         )
     }
+    /// Explicitly recover only an expired consumed approval that never began.
+    /// # Errors
+    /// Retain both operation identities; receipt replay never starts another worker.
+    pub async fn recover_approval_continuation(
+        &self,
+        request: super::RecoverApproval,
+    ) -> Result<Continuation, RuntimeError> {
+        self.recover_approval_continuation_with_context(request, None)
+            .await
+    }
+    /// Host trace correlation does not grant recovery or execution authority.
+    /// # Errors
+    /// Returns the same eligibility and ownership failures as explicit recovery.
+    pub async fn recover_approval_continuation_with_context(
+        &self,
+        request: super::RecoverApproval,
+        context: Option<TraceContext>,
+    ) -> Result<Continuation, RuntimeError> {
+        if let Some(receipt) = self.runtime.lookup_approval_recovery(&request).await? {
+            return Ok(Continuation::Replayed(receipt));
+        }
+        self.initialize_extensions().await?;
+        Ok(
+            match self
+                .runtime
+                .recover_approval_continuation_with_context(request, context)
+                .await?
+            {
+                crabber_runtime::Continuation::Started {
+                    receipt,
+                    handle: inner,
+                } => Continuation::Started {
+                    receipt,
+                    handle: RunHandle {
+                        run_id: inner.run_id().clone(),
+                        inner,
+                    },
+                },
+                crabber_runtime::Continuation::Replayed(receipt) => Continuation::Replayed(receipt),
+            },
+        )
+    }
 }

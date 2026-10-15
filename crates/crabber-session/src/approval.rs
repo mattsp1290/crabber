@@ -2,6 +2,10 @@
 mod audit;
 mod boundary;
 mod records;
+mod recovery;
+pub use recovery::ApprovalContinuationRecovery;
+mod recovery_provenance;
+pub(crate) use recovery_provenance::{activate_recovery, verify_recovery_answer};
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod sql;
 mod validation;
@@ -33,6 +37,8 @@ pub enum ApprovalError {
     GenerationConflict,
     #[error("approval owner is stale")]
     StaleOwner,
+    #[error("approval continuation owner lease is live")]
+    LiveOwner,
     #[error("approval response set is incomplete")]
     Pending,
     #[error("approval expired")]
@@ -216,6 +222,11 @@ pub enum ApprovalOutcome {
     },
     Claimed {
         continuation: ContinuationTarget,
+        attempt: AttemptSnapshot,
+    },
+    ReclaimedUnstarted {
+        continuation: ContinuationTarget,
+        original_claim_id: ControlId,
         attempt: AttemptSnapshot,
     },
 }

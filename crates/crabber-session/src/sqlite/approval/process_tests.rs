@@ -18,7 +18,7 @@ async fn process_helper() {
     } else {
         super::SqliteStore::connect(&path).await.unwrap()
     }
-    .with_clock(process::clock());
+    .with_clock(process::fixture_clock(&fixture));
     if std::env::var_os("CRABBER_APPROVAL_WRITE").is_some() {
         process::write(&store, &fixture, |_| {}, false)
             .await
@@ -30,9 +30,10 @@ async fn process_helper() {
 #[tokio::test]
 async fn lost_acknowledgements_reconcile_in_fresh_process() {
     let (store, path, _directory) = crate::sqlite::tests::temp_store().await;
-    let store = store.with_clock(process::clock());
+    let clock = process::clock();
+    let store = store.with_clock(clock.clone());
     for mode in process::Mode::ALL {
-        let fixture = process::pending(&store, mode).await;
+        let fixture = process::pending(&store, mode, &clock).await;
         let result = process::write(
             &store,
             &fixture,
@@ -62,9 +63,10 @@ async fn lost_acknowledgements_reconcile_in_fresh_process() {
 async fn killed_writer_rolls_back_suspend_answer_and_claim() {
     let _guard = crate::sqlite::test_support::BARRIER_LOCK.lock().await;
     let (store, path, directory) = crate::sqlite::tests::temp_store().await;
-    let store = store.with_clock(process::clock());
+    let clock = process::clock();
+    let store = store.with_clock(clock.clone());
     for (index, mode) in process::Mode::ALL.into_iter().enumerate() {
-        let fixture = process::pending(&store, mode).await;
+        let fixture = process::pending(&store, mode, &clock).await;
         let marker = directory.path().join(format!("approval-{index}.marker"));
 
         // The temporary database is dedicated to this fixture.

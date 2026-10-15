@@ -154,6 +154,15 @@ fn ready(
     if run.usage != record.batch.usage {
         return Err(Error::SemanticConflict);
     }
+    let calls = validate_calls(state, run, &record)?;
+    Ok((record, calls))
+}
+
+pub(super) fn validate_calls(
+    state: &super::super::State,
+    run: &crabber_core::Run,
+    record: &approval::ApprovalRecord,
+) -> Result<Vec<crate::GrantedApproval>, Error> {
     let calls = record.grants()?;
     let unfinished = state
         .calls
@@ -183,5 +192,5 @@ fn ready(
             return Err(Error::SemanticConflict);
         }
     }
-    Ok((record, calls))
+    Ok(calls)
 }

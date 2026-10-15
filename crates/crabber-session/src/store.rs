@@ -247,6 +247,14 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
         Err(crate::ApprovalError::Unsupported)
     }
+    /// Reclaim only a positively Unstarted consumed approval after both leases expire.
+    /// A fresh application issues new private authority; replay is metadata only.
+    async fn reclaim_approval_continuation(
+        &self,
+        _request: crate::ApprovalContinuationRecovery,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
     /// Atomically consume the complete accepted set and reserve its next attempt.
     /// Only a fresh result grants native ownership; replay returns metadata.
     async fn claim_approval_continuation(

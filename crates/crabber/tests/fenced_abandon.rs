@@ -1,8 +1,9 @@
 pub use crabber::session::{
-    ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState,
-    ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome, ApprovalReceipt,
-    ApprovalReply, ApprovalResolverClaim, ApprovalSnapshot, ApprovalSuspension, CallApproval,
-    ContinuationTarget, GrantedApproval, GrantedDecision, MAX_APPROVAL_CALLS, PreparedApproval,
+    ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationRecovery,
+    ApprovalContinuationState, ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome,
+    ApprovalReceipt, ApprovalReply, ApprovalResolverClaim, ApprovalSnapshot, ApprovalSuspension,
+    CallApproval, ContinuationTarget, GrantedApproval, GrantedDecision, MAX_APPROVAL_CALLS,
+    PreparedApproval,
 };
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
@@ -31,9 +32,15 @@ mod approval_audit;
 #[path = "../../crabber-session/src/approval/records.rs"]
 #[allow(dead_code)]
 mod approval_records;
+#[path = "../../crabber-session/src/approval/recovery_provenance.rs"]
+#[allow(dead_code)]
+mod approval_recovery_provenance;
 mod approval {
     pub(crate) use crate::approval_audit::{event, verify_receipt};
     pub(crate) use crate::approval_records::*;
+    pub(crate) use crate::approval_recovery_provenance::{
+        activate_recovery, verify_recovery_answer,
+    };
 }
 #[path = "../../crabber-session/src/approval_contract.rs"]
 #[allow(dead_code)]

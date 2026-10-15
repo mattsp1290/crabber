@@ -10,7 +10,7 @@ async fn process_helper() {
     )
     .await
     .unwrap()
-    .with_clock(process::clock());
+    .with_clock(process::fixture_clock(&fixture));
     if std::env::var_os("CRABBER_APPROVAL_WRITE").is_some() {
         process::write(&store, &fixture, |_| {}, false)
             .await
@@ -26,12 +26,13 @@ async fn lost_acknowledgements_reconcile_in_fresh_process() {
     };
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     super::PostgresStore::migrate(&url).await.unwrap();
+    let clock = process::clock();
     let store = super::PostgresStore::connect(&url)
         .await
         .unwrap()
-        .with_clock(process::clock());
+        .with_clock(clock.clone());
     for mode in process::Mode::ALL {
-        let fixture = process::pending(&store, mode).await;
+        let fixture = process::pending(&store, mode, &clock).await;
         let result = process::write(
             &store,
             &fixture,
@@ -64,16 +65,21 @@ async fn killed_writer_rolls_back_suspend_answer_and_claim() {
     };
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     super::PostgresStore::migrate(&url).await.unwrap();
+    let clock = process::clock();
     let store = super::PostgresStore::connect(&url)
         .await
         .unwrap()
-        .with_clock(process::clock());
+        .with_clock(clock.clone());
     for mode in process::Mode::ALL {
-        crash(&store, mode).await;
+        crash(&store, mode, &clock).await;
     }
 }
-async fn crash(store: &super::PostgresStore, mode: process::Mode) {
-    let fixture = process::pending(store, mode).await;
+async fn crash(
+    store: &super::PostgresStore,
+    mode: process::Mode,
+    clock: &crabber_core::ManualClock,
+) {
+    let fixture = process::pending(store, mode, clock).await;
     let name = format!("approval_barrier_{}", uuid::Uuid::new_v4().simple());
     let key = &fixture.key().0;
     // The session, operation key and SQL identifier are generated test UUIDs.

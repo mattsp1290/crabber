@@ -33,7 +33,7 @@ pub(crate) async fn uncommitted(store: &impl Store, f: &Fixture) {
     assert_eq!(run.claim_token, f.fence.claim_token);
     assert_eq!(
         run.status,
-        if matches!(f.mode, Mode::Suspend) {
+        if matches!(f.mode, Mode::Suspend | Mode::Recover) {
             RunStatus::Running
         } else {
             RunStatus::Paused
@@ -45,10 +45,19 @@ pub(crate) async fn uncommitted(store: &impl Store, f: &Fixture) {
         .unwrap()
         .unwrap()
         .attempt;
-    assert_eq!(attempt.target, f.batch.attempt);
+    assert_eq!(
+        attempt.target,
+        if matches!(f.mode, Mode::Recover) {
+            f.batch.next_attempt.clone()
+        } else {
+            f.batch.attempt.clone()
+        }
+    );
     assert_eq!(
         attempt.state,
-        if matches!(f.mode, Mode::Suspend) {
+        if matches!(f.mode, Mode::Recover) {
+            AttemptState::Unstarted
+        } else if matches!(f.mode, Mode::Suspend) {
             AttemptState::Started
         } else {
             AttemptState::Suspended
@@ -56,7 +65,7 @@ pub(crate) async fn uncommitted(store: &impl Store, f: &Fixture) {
     );
     assert_eq!(
         attempt.cleanup,
-        if matches!(f.mode, Mode::Suspend) {
+        if matches!(f.mode, Mode::Suspend | Mode::Recover) {
             AttemptCleanup::Pending
         } else {
             AttemptCleanup::Complete
@@ -104,6 +113,37 @@ pub(crate) async fn verify_loss(store: &impl Store, f: &Fixture) {
                     .await
                     .unwrap(),
                 receipt
+            );
+        }
+        Mode::Recover => {
+            assert_eq!(run.status, RunStatus::Running);
+            assert_ne!(run.claim_token, f.fence.claim_token);
+            let before = f.before.as_ref().unwrap();
+            assert_eq!(snapshot.interactions, before.interactions);
+            assert_eq!(snapshot.calls, before.calls);
+            let attempt = store
+                .latest_execution_attempt(&f.run)
+                .await
+                .unwrap()
+                .unwrap()
+                .attempt;
+            assert_eq!(attempt.target, f.batch.next_attempt);
+            assert_eq!(attempt.state, AttemptState::Unstarted);
+            assert_eq!(attempt.cleanup, AttemptCleanup::Pending);
+            assert!(
+                matches!(store.reclaim_approval_continuation(f.recovery.clone().unwrap()).await.unwrap(),
+                ApprovalClaimOutcome::Replayed(saved) if saved == receipt)
+            );
+            assert!(matches!(
+                store
+                    .claim_approval_continuation(f.claim.clone().unwrap())
+                    .await
+                    .unwrap(),
+                ApprovalClaimOutcome::Replayed(_)
+            ));
+            assert_eq!(
+                store.list_all_messages(&f.session).await.unwrap().len(),
+                f.messages
             );
         }
         Mode::Claim => {

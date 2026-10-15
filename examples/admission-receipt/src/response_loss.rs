@@ -64,6 +64,12 @@ impl Store for LostAdmissionReply {
     ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
         self.inner.answer_approval(answer).await
     }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crabber::session::ApprovalContinuationRecovery,
+    ) -> Result<crabber::session::ApprovalClaimOutcome, crabber::session::ApprovalError> {
+        self.inner.reclaim_approval_continuation(request).await
+    }
     async fn claim_approval_continuation(
         &self,
         claim: crabber::session::ApprovalContinuationClaim,

@@ -14,6 +14,8 @@ mod presentation;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 #[path = "approval_contract/process.rs"]
 pub(crate) mod process;
+#[path = "approval_contract/recovery.rs"]
+pub(crate) mod recovery;
 use crate::{
     ApprovalClaimOutcome, ApprovalError as Error, ApprovalReply, AttemptCommand, AttemptError,
     AttemptMutation, AttemptMutationOutcome, Store,
@@ -34,6 +36,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     integrity::run(&store, &clock).await;
     changed_batch::run(&store, &clock).await;
     expiration(&store, &clock).await;
+    recovery::run(&store, &clock).await;
 }
 async fn lifecycle(store: &impl Store, clock: &ManualClock) {
     let mut f = staged(store, clock).await;

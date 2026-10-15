@@ -28,6 +28,7 @@ use std::sync::{
 use tokio::sync::{Barrier, Notify, oneshot};
 
 mod approval_order;
+mod approval_recovery;
 #[path = "tests/durable_approval.rs"]
 mod durable_approval;
 mod native_phase;
@@ -1971,6 +1972,11 @@ struct SettlementGate {
     checkpoint_override: Mutex<Option<Value>>,
     call_arguments_override: Mutex<Option<Value>>,
     begin_ack_lost: std::sync::atomic::AtomicBool,
+    approval_claim_ack_lost: std::sync::atomic::AtomicBool,
+    approval_recovery_ack_lost: std::sync::atomic::AtomicBool,
+    approval_recovery_gate: std::sync::atomic::AtomicBool,
+    approval_recovery_entered: Notify,
+    approval_recovery_release: Notify,
     reserve_ack_lost: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
@@ -2038,11 +2044,37 @@ impl Store for DelayedTerminalStore {
     ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
         self.inner.answer_approval(answer).await
     }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crabber_session::ApprovalContinuationRecovery,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        if self.gate.approval_recovery_gate.load(Ordering::SeqCst) {
+            self.gate.approval_recovery_entered.notify_one();
+            self.gate.approval_recovery_release.notified().await;
+        }
+        let outcome = self.inner.reclaim_approval_continuation(request).await?;
+        if matches!(
+            outcome,
+            crabber_session::ApprovalClaimOutcome::Applied { .. }
+        ) && self.gate.approval_recovery_ack_lost.load(Ordering::SeqCst)
+        {
+            return Err(crabber_session::ApprovalError::UnknownStoreOutcome);
+        }
+        Ok(outcome)
+    }
     async fn claim_approval_continuation(
         &self,
         claim: crabber_session::ApprovalContinuationClaim,
     ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
-        self.inner.claim_approval_continuation(claim).await
+        let outcome = self.inner.claim_approval_continuation(claim).await?;
+        if matches!(
+            outcome,
+            crabber_session::ApprovalClaimOutcome::Applied { .. }
+        ) && self.gate.approval_claim_ack_lost.load(Ordering::SeqCst)
+        {
+            return Err(crabber_session::ApprovalError::UnknownStoreOutcome);
+        }
+        Ok(outcome)
     }
 
     async fn latest_execution_attempt(

@@ -8,7 +8,7 @@ pub use host::ExecutionContext;
 
 pub use agent::{
     Admission, Agent, AgentBuilder, AgentConfig, BuildError, Continuation, ContinueApproval,
-    RunEvents, RunHandle,
+    RecoverApproval, RunEvents, RunHandle,
 };
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,

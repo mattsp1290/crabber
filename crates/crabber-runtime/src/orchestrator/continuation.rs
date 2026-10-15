@@ -29,12 +29,16 @@ pub enum Continuation {
     Replayed(ApprovalReceipt),
 }
 pub(super) struct ApprovalResume {
-    claim: ApprovalContinuationClaim,
-    sender: oneshot::Sender<Claimed>,
+    pub(super) control: ApprovalControl,
+    pub(super) sender: oneshot::Sender<Claimed>,
 }
-enum Claimed {
+pub(super) enum Claimed {
     Fresh(ApprovalReceipt),
     Replay(ApprovalReceipt),
+}
+pub(super) enum ApprovalControl {
+    Claim(ApprovalContinuationClaim),
+    Recover(crabber_session::ApprovalContinuationRecovery),
 }
 pub(super) struct ApprovedCalls {
     pub calls: Vec<GrantedApproval>,
@@ -49,7 +53,7 @@ pub(super) struct ResumeAuthority {
     pub approved: Option<ApprovedCalls>,
 }
 impl ContinueApproval {
-    fn claim(&self, run: &Run) -> Result<ApprovalContinuationClaim, RuntimeError> {
+    pub(super) fn claim(&self, run: &Run) -> Result<ApprovalContinuationClaim, RuntimeError> {
         if self.session_id != run.session_id || self.run_id != run.id {
             return Err(StoreError::NotFound.into());
         }
@@ -154,7 +158,10 @@ impl Orchestrator {
         let claim = request.claim(&run)?;
         let validated = self.validated_session(&run).await?;
         let (sender, receiver) = oneshot::channel();
-        let control = ApprovalResume { claim, sender };
+        let control = ApprovalResume {
+            control: ApprovalControl::Claim(claim),
+            sender,
+        };
         let handle = self.spawn_worker(
             run.session_id.clone(),
             run.id.clone(),
@@ -162,17 +169,7 @@ impl Orchestrator {
                 Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
             },
         );
-        match receiver.await {
-            Ok(Claimed::Fresh(receipt)) => Ok(Continuation::Started { receipt, handle }),
-            Ok(Claimed::Replay(receipt)) => {
-                let _ = handle.done().await;
-                Ok(Continuation::Replayed(receipt))
-            }
-            Err(_) => match handle.done().await {
-                Err(error) => Err(error),
-                Ok(_) => Err(ApprovalError::UnknownStoreOutcome.into()),
-            },
-        }
+        claim_result(handle, receiver).await
     }
     pub(super) async fn acquire_resume(
         &self,
@@ -180,16 +177,41 @@ impl Orchestrator {
         control: Option<ApprovalResume>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
         if let Some(control) = control {
-            return match self
-                .store
-                .claim_approval_continuation(control.claim)
-                .await?
-            {
+            let outcome = match &control.control {
+                ApprovalControl::Claim(claim) => {
+                    self.store
+                        .claim_approval_continuation(claim.clone())
+                        .await?
+                }
+                ApprovalControl::Recover(request) => {
+                    let outcome = self
+                        .store
+                        .reclaim_approval_continuation(request.clone())
+                        .await?;
+                    let receipt = match &outcome {
+                        ApprovalClaimOutcome::Applied { receipt, .. }
+                        | ApprovalClaimOutcome::Replayed(receipt) => receipt,
+                    };
+                    request.verify_receipt(receipt)?;
+                    outcome
+                }
+            };
+            return match outcome {
                 ApprovalClaimOutcome::Replayed(receipt) => {
                     let _ = control.sender.send(Claimed::Replay(receipt));
                     Ok(None)
                 }
                 ApprovalClaimOutcome::Applied { receipt, grant } => {
+                    if grant.usage != run.usage
+                        || Some(grant.turns_used)
+                            != run
+                                .checkpoint
+                                .as_ref()
+                                .and_then(|checkpoint| checkpoint.get("turns_used"))
+                                .and_then(serde_json::Value::as_u64)
+                    {
+                        return Err(ApprovalError::UnknownStoreOutcome.into());
+                    }
                     let authority = resume_authority(&receipt, *grant)?;
                     let _ = control.sender.send(Claimed::Fresh(receipt));
                     Ok(Some(authority))
@@ -224,7 +246,9 @@ fn resume_authority(
     receipt: &ApprovalReceipt,
     grant: ApprovalGrant,
 ) -> Result<ResumeAuthority, RuntimeError> {
-    let ApprovalOutcome::Claimed { attempt, .. } = &receipt.outcome else {
+    let (ApprovalOutcome::Claimed { attempt, .. }
+    | ApprovalOutcome::ReclaimedUnstarted { attempt, .. }) = &receipt.outcome
+    else {
         return Err(ApprovalError::UnknownStoreOutcome.into());
     };
     if grant.fence.run_id != receipt.run_id
@@ -252,4 +276,21 @@ fn resume_authority(
                 .map_err(|_| ApprovalError::UnknownStoreOutcome)?,
         }),
     })
+}
+
+pub(super) async fn claim_result(
+    handle: RunHandle,
+    receiver: oneshot::Receiver<Claimed>,
+) -> Result<Continuation, RuntimeError> {
+    match receiver.await {
+        Ok(Claimed::Fresh(receipt)) => Ok(Continuation::Started { receipt, handle }),
+        Ok(Claimed::Replay(receipt)) => {
+            let _ = handle.done().await;
+            Ok(Continuation::Replayed(receipt))
+        }
+        Err(_) => match handle.done().await {
+            Err(error) => Err(error),
+            Ok(_) => Err(ApprovalError::UnknownStoreOutcome.into()),
+        },
+    }
 }

@@ -72,6 +72,12 @@ impl Store for SqliteFixture {
     ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
         self.store.answer_approval(answer).await
     }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crabber_session::ApprovalContinuationRecovery,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        self.store.reclaim_approval_continuation(request).await
+    }
     async fn claim_approval_continuation(
         &self,
         claim: crabber::session::ApprovalContinuationClaim,

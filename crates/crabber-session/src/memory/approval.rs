@@ -3,6 +3,8 @@
 mod answer;
 #[path = "approval/claim.rs"]
 mod claim;
+#[path = "approval/recover.rs"]
+mod recover;
 #[path = "approval/suspend.rs"]
 mod suspend;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};

@@ -388,6 +388,12 @@ impl Store for MemoryStore {
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
         self.answer_approval_inner(&answer)
     }
+    async fn reclaim_approval_continuation(
+        &self,
+        request: crate::ApprovalContinuationRecovery,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.recover_approval(&request)
+    }
     async fn claim_approval_continuation(
         &self,
         claim: crate::ApprovalContinuationClaim,

@@ -2,6 +2,7 @@
 mod answer;
 mod claim;
 mod guards;
+mod recover;
 mod suspend;
 mod write;
 use super::{SqliteStore, db};

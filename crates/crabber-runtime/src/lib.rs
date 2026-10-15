@@ -21,9 +21,9 @@ mod policy;
 pub use orchestrator::{
     Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, DirectModelStream,
     ExecutionMode, INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver,
-    Observer, Orchestrator, OrchestratorBuilder, RecoverReport, RecoverySkipReason, Request,
-    RunControl, RunHandle, RunResult, RuntimeError, SkippedRun, TOOL_PIPELINE_HANDLER_ID,
-    TurnSnapshot,
+    Observer, Orchestrator, OrchestratorBuilder, RecoverApproval, RecoverReport,
+    RecoverySkipReason, Request, RunControl, RunHandle, RunResult, RuntimeError, SkippedRun,
+    TOOL_PIPELINE_HANDLER_ID, TurnSnapshot,
 };
 pub use policy::{
     IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, PermissionRule,

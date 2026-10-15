@@ -13,11 +13,11 @@ use crabber_extension::{
     Registry, Scope, StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
 };
 use crabber_providers::{Resolver, Selection};
-pub use crabber_runtime::ContinueApproval;
 use crabber_runtime::{
     CompactionPolicy, ExecutionMode, Observer, Orchestrator, PermissionPolicy, Request, RunResult,
     RuntimeError,
 };
+pub use crabber_runtime::{ContinueApproval, RecoverApproval};
 #[cfg(feature = "postgres")]
 use crabber_session::PostgresStore;
 #[cfg(feature = "sqlite")]

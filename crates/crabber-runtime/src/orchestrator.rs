@@ -2,6 +2,9 @@
 mod admission;
 #[path = "orchestrator/approval.rs"]
 mod approval;
+#[path = "orchestrator/approval_recovery.rs"]
+mod approval_recovery;
+pub use approval_recovery::RecoverApproval;
 #[path = "orchestrator/continuation.rs"]
 mod continuation;
 #[path = "orchestrator/phase_control.rs"]
