@@ -117,6 +117,24 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Experimental coherent attempt metadata; never returns worker authority.
+    async fn execution_attempt(
+        &self,
+        _run: &RunId,
+        _id: &crabber_core::AttemptId,
+    ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+    /// Metadata-only reconciliation of the original operation key.
+    /// Absence does not prove an in-flight operation cannot later commit.
+    async fn lookup_attempt_mutation(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::AttemptReceipt>, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+
     /// Read one coherent bounded public state/revision snapshot. Experimental.
     async fn public_state(
         &self,
@@ -259,6 +277,17 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Experimental atomic attempt transition with event, revision and receipt.
+    /// Only a fresh Applied Begin permits attempt work. Tool dispatch additionally
+    /// requires independent phase authority. Replay never grants dispatch.
+    async fn mutate_attempt(
+        &self,
+        _request: crate::AttemptMutation,
+        _authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
+
     /// Atomically replace public state/activity, commit its event/revision/receipt.
     /// Exact receipt replay precedes current ownership and revision checks.
     /// Experimental. `UnknownStoreOutcome` requires receipt reconciliation using

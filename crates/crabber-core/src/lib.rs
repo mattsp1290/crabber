@@ -315,6 +315,7 @@ pub struct EventCursor(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    ExecutionAttemptChanged,
     PublicStateSnapshot,
     RunAdmitted,
     RunStarted,

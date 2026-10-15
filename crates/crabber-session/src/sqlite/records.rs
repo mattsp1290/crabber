@@ -174,7 +174,11 @@ pub(super) async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
-    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+    if matches!(
+        event.kind,
+        crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::ExecutionAttemptChanged
+    ) {
         return Err(StoreError::Validation(
             "public state events require atomic state mutation".into(),
         ));

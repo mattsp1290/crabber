@@ -7,6 +7,7 @@
 //! connect remains read-only and requires explicit migration to schema v6.
 mod abandon;
 mod admission_execution;
+mod attempt;
 #[cfg(test)]
 mod lock_order_tests;
 mod public_state;
@@ -37,6 +38,8 @@ pub struct PostgresStore {
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -204,7 +207,11 @@ async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
-    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+    if matches!(
+        event.kind,
+        crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::ExecutionAttemptChanged
+    ) {
         return Err(StoreError::Validation(
             "public state events require atomic state mutation".into(),
         ));
@@ -370,6 +377,8 @@ impl PostgresStore {
             abandon_fault: Arc::default(),
             #[cfg(test)]
             public_state_fault: Arc::default(),
+            #[cfg(test)]
+            attempt_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -628,6 +637,21 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn execution_attempt(
+        &self,
+        run: &RunId,
+        id: &crabber_core::AttemptId,
+    ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
+        self.read_attempt(run, id).await
+    }
+    async fn lookup_attempt_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::AttemptReceipt>, crate::AttemptError> {
+        self.attempt_receipt(session, id).await
+    }
+
     async fn public_state(
         &self,
         session: &SessionId,
@@ -960,6 +984,14 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.change_attempt(request, authority).await
+    }
+
     async fn mutate_public_state(
         &self,
         mutation: crate::PublicStateMutation,
@@ -981,6 +1013,7 @@ impl ExecutionStore for PostgresExecution {
         run.lease_until = until;
         run.updated_at = now;
         save_run(&mut tx, &run).await?;
+        attempt::renew(&mut tx, &run).await?;
         tx.commit().await.map_err(db)
     }
     async fn append_message(&self, message: Message) -> Result<(), StoreError> {

@@ -688,7 +688,9 @@ impl Projector {
             EventKind::RunAdmitted | EventKind::RunStarted => unreachable!(),
             // State/activity projection is a separate durable-host contract.
             // Until implemented, fail closed instead of dropping a public update.
-            EventKind::PublicStateSnapshot => return Err(ProjectionError::Malformed),
+            EventKind::PublicStateSnapshot | EventKind::ExecutionAttemptChanged => {
+                return Err(ProjectionError::Malformed);
+            }
         }
         Ok(output)
     }

@@ -31,7 +31,7 @@ async fn session_gate_precedes_run_rows_for_existing_mutation_paths() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    for mode in 0..10 {
+    for mode in 0..11 {
         let now = clock.now();
         let keyed = crate::admission_execution_contract::keyed(&SessionId::new(), now);
         let KeyedAdmitOutcome::Started { receipt, admitted } =
@@ -40,7 +40,7 @@ async fn session_gate_precedes_run_rows_for_existing_mutation_paths() {
             panic!("fresh admission must start")
         };
         let execution = other.execution(admitted.fence.clone()).await.unwrap();
-        if mode < 6 || matches!(mode, 8 | 9) {
+        if mode < 6 || matches!(mode, 8..=10) {
             execution.begin_admission_execution().await.unwrap();
         }
         if matches!(mode, 4 | 5 | 7) {
@@ -183,7 +183,7 @@ async fn run_mutation(
                 KeyedAdmitOutcome::Replayed(_)
             ));
         }
-        _ => {
+        9 => {
             execution
                 .mutate_public_state(crate::PublicStateMutation {
                     id: crabber_core::ControlId::new(),
@@ -195,6 +195,15 @@ async fn run_mutation(
                 })
                 .await
                 .unwrap();
+        }
+        _ => {
+            let request = crate::attempt_contract::reserve(
+                writer_store
+                    .session_revision(&run.session_id)
+                    .await
+                    .unwrap(),
+            );
+            execution.mutate_attempt(request, None).await.unwrap();
         }
     }
 }

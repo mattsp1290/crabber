@@ -3,6 +3,7 @@
 
 mod abandon;
 mod admission_execution;
+mod attempt;
 mod execution;
 mod public_state;
 mod records;
@@ -43,6 +44,8 @@ pub struct SqliteStore {
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -132,6 +135,8 @@ async fn connect_with(
         abandon_fault: Arc::default(),
         #[cfg(test)]
         public_state_fault: Arc::default(),
+        #[cfg(test)]
+        attempt_fault: Arc::default(),
         #[cfg(test)]
         write_waiters: Arc::default(),
     })

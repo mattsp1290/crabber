@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.change_attempt(request, authority).await
+    }
+
     async fn mutate_public_state(
         &self,
         mutation: crate::PublicStateMutation,
@@ -44,6 +52,7 @@ impl ExecutionStore for SqliteExecution {
             run.lease_until = until;
             run.updated_at = now;
             save_run(&mut tx, &run).await?;
+            super::attempt::renew(&mut tx, &run).await?;
             Ok(())
         }
         .await;

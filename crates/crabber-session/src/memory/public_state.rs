@@ -1,4 +1,4 @@
-use super::{MemoryExecution, MemoryStore, State, bump_public_revision};
+use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{
     PublicStateError as Error, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
     public_state,
@@ -31,13 +31,17 @@ impl MemoryStore {
     ) -> Result<Option<PublicStateReceipt>, Error> {
         public_state::validate_id(id)?;
         let state = self.state.lock().unwrap();
-        let receipt = state
-            .public_state_receipts
-            .get(&(session.clone(), id.clone()))
-            .cloned();
-        if let Some(receipt) = &receipt {
-            verify(&state, receipt)?;
-        }
+        let receipt = match state.operation_receipts.get(&(session.clone(), id.clone())) {
+            Some(OperationReceipt::PublicState(receipt)) => {
+                if receipt.session_id != *session || receipt.operation_id != *id {
+                    return Err(Error::UnknownStoreOutcome);
+                }
+                verify(&state, receipt)?;
+                Some(receipt.clone())
+            }
+            Some(OperationReceipt::Attempt(_)) => return Err(Error::SemanticConflict),
+            None => None,
+        };
         Ok(receipt)
     }
 }
@@ -75,7 +79,13 @@ impl MemoryExecution {
             }
             let digest = mutation.fingerprint(&run.session_id, &run.id)?;
             let key = (run.session_id.clone(), mutation.id.clone());
-            if let Some(receipt) = state.public_state_receipts.get(&key) {
+            if let Some(saved) = state.operation_receipts.get(&key) {
+                let OperationReceipt::PublicState(receipt) = saved else {
+                    return Err(Error::SemanticConflict);
+                };
+                if receipt.session_id != run.session_id || receipt.operation_id != mutation.id {
+                    return Err(Error::UnknownStoreOutcome);
+                }
                 verify(state, receipt)?;
                 if receipt.run_id != run.id || receipt.semantic_digest != digest {
                     return Err(Error::SemanticConflict);
@@ -120,7 +130,9 @@ impl MemoryExecution {
             {
                 return Err(Error::UnknownStoreOutcome);
             }
-            state.public_state_receipts.insert(key, receipt.clone());
+            state
+                .operation_receipts
+                .insert(key, OperationReceipt::PublicState(receipt.clone()));
             Ok(receipt)
         });
         #[cfg(test)]

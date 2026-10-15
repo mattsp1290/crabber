@@ -105,6 +105,28 @@ and can qualify against `public_state_contract::run_contract` and the injected
 rollback/unknown-response contract. This state snapshot does not include history
 and therefore cannot validate a separately captured history snapshot.
 
+Experimental attempt primitives are implemented by Memory, SQLite and PostgreSQL.
+`Store::execution_attempt` returns coherent metadata and the current public revision.
+`ExecutionStore::mutate_attempt` reserves, begins, finishes, records cleanup or
+reclaims an expired unstarted attempt. Only a fresh applied reserve/reclaim returns
+ephemeral worker authority. Beginning is one-shot; receipt replay grants no new
+permission to execute. Individual tool phases require separate authority.
+
+Retain the operation key and original `AttemptMutation`. Reconcile an unknown
+response through `Store::lookup_attempt_mutation` and compare its fingerprint.
+Metadata lookup works without restoring a provider, plan or worker handle; a new
+execution handle still requires current ownership. Started or unknown attempts
+are never automatically reclaimed. Only a suspended attempt with completed
+cleanup can advance to another generation, and paused runs cannot begin work.
+
+Record complete cleanup only after the owner has proved its resources stopped.
+The stores additionally block it for running calls or unquiesced phase records.
+These primitives record that proof's result; metadata, a lease or a returned task
+alone does not establish quiescence. Runtime task ownership, phase transitions
+and continuation barriers remain under implementation. Custom stores default to
+`Unsupported` and can run `attempt_contract::run_contract` and its commit-fault
+conformance suite.
+
 If the initial execution cannot acknowledge its interruption/failure terminal
 write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID
 and storage cause. The task may have stopped while the retained run is still

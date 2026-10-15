@@ -2,6 +2,8 @@
 mod abandon;
 #[path = "memory/admission_execution.rs"]
 mod admission_execution;
+#[path = "memory/attempt.rs"]
+mod attempt;
 #[path = "memory/public_state.rs"]
 mod public_state;
 
@@ -33,6 +35,8 @@ pub struct MemoryStore {
     snapshot_key: String,
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    attempt_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
@@ -54,11 +58,17 @@ struct State {
     snapshot_revisions: BTreeMap<SessionId, u64>,
     public_revisions: BTreeMap<SessionId, crabber_core::SessionRevision>,
     public_contents: BTreeMap<SessionId, crabber_core::PublicStateContents>,
-    public_state_receipts:
-        BTreeMap<(SessionId, crabber_core::ControlId), crate::PublicStateReceipt>,
+    operation_receipts: BTreeMap<(SessionId, crabber_core::ControlId), OperationReceipt>,
+    attempts: BTreeMap<crabber_core::AttemptId, crate::attempt::AttemptRecord>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
+}
+
+#[derive(Clone)]
+enum OperationReceipt {
+    PublicState(crate::PublicStateReceipt),
+    Attempt(crate::AttemptReceipt),
 }
 
 #[derive(Clone)]
@@ -96,6 +106,8 @@ impl MemoryStore {
             snapshot_key: uuid::Uuid::new_v4().to_string(),
             #[cfg(test)]
             public_state_fault: Arc::default(),
+            #[cfg(test)]
+            attempt_fault: Arc::default(),
         }
     }
 
@@ -187,7 +199,11 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
 }
 
 fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
-    if event.kind == crabber_core::EventKind::PublicStateSnapshot {
+    if matches!(
+        event.kind,
+        crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::ExecutionAttemptChanged
+    ) {
         return Err(StoreError::Validation(
             "public state events require atomic state mutation".into(),
         ));
@@ -418,6 +434,21 @@ fn admit_transaction(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn execution_attempt(
+        &self,
+        run: &RunId,
+        id: &crabber_core::AttemptId,
+    ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
+        self.read_attempt(run, id)
+    }
+    async fn lookup_attempt_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::AttemptReceipt>, crate::AttemptError> {
+        self.attempt_receipt(session, id)
+    }
+
     async fn public_state(
         &self,
         session: &SessionId,
@@ -740,6 +771,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        self.change_attempt(request, authority.as_ref())
+    }
+
     async fn mutate_public_state(
         &self,
         mutation: crate::PublicStateMutation,
@@ -761,6 +800,13 @@ impl ExecutionStore for MemoryExecution {
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.lease_until = until;
             entry.updated_at = now;
+            for attempt in state
+                .attempts
+                .values_mut()
+                .filter(|a| a.snapshot.run_id == run.id && a.run_token == run.claim_token)
+            {
+                attempt.lease_until = until;
+            }
             Ok(())
         })
     }

@@ -1,15 +1,24 @@
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission, PublicStateError, PublicStateMutation,
-    PublicStateReceipt, PublicStateSnapshot, SnapshotContinuation, SnapshotLimit, SnapshotLimits,
-    SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError, ensure_storable,
+    AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptError,
+    AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot,
+    AttemptState, AttemptTarget, ClaimUnstartedAdmissionRequest, ClaimedAdmission,
+    PublicStateError, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage, StoreError, VersionedAttempt, ensure_storable,
     ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
 #[path = "../../crabber-session/src/abandonment_contract.rs"]
 mod abandonment_contract;
+#[path = "../../crabber-session/src/attempt/records.rs"]
+#[allow(dead_code)]
+mod attempt;
+#[path = "../../crabber-session/src/attempt_contract.rs"]
+#[allow(dead_code)]
+mod attempt_contract;
 #[path = "../../crabber-session/src/memory.rs"]
 #[allow(dead_code)]
 mod memory;

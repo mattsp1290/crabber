@@ -10,7 +10,14 @@ pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRe
 
 mod abandonment;
 mod admission_execution;
+mod attempt;
+pub mod attempt_contract;
 pub use admission_execution::*;
+pub use attempt::{
+    AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptError,
+    AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot,
+    AttemptState, AttemptTarget, VersionedAttempt,
+};
 pub mod admission_contract;
 #[cfg(test)]
 mod admission_execution_contract;
@@ -49,6 +56,10 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_attempt_contract() {
+        crate::attempt_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
     #[tokio::test]
     async fn memory_public_state_contract() {
         crate::public_state_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock))

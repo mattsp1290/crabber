@@ -143,6 +143,25 @@ async fn denied_writes(
     assert_eq!(execution.append_event(ev.clone()).await.unwrap_err(), error);
     assert_eq!(
         execution
+            .mutate_attempt(
+                crate::AttemptMutation {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: crabber_core::SessionRevision::INITIAL,
+                    command: crate::AttemptCommand::Reserve {
+                        target: crate::AttemptTarget {
+                            id: crabber_core::AttemptId::new(),
+                            generation: crabber_core::AttemptGeneration::INITIAL,
+                        }
+                    },
+                },
+                None
+            )
+            .await
+            .unwrap_err(),
+        crate::AttemptError::StaleOwner
+    );
+    assert_eq!(
+        execution
             .mutate_public_state(crate::PublicStateMutation {
                 id: crabber_core::ControlId::new(),
                 expected_revision: crabber_core::SessionRevision::INITIAL,
