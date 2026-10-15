@@ -316,7 +316,7 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         assert_eq!(close.pending_tasks, 1);
         assert!(matches!(
             agent.prompt(None, "closed registry").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
         assert!(!probes.reaped.observed());
         assert!(!probes.pipe_closed.observed());
@@ -326,7 +326,7 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         assert_drained(&probes, pid).await;
         assert!(matches!(
             agent.prompt(None, "still closed").await,
-            Err(RuntimeError::Extension(_))
+            Err(RuntimeError::HostClosed)
         ));
     })
     .await
