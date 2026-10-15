@@ -18,6 +18,7 @@ let provider = FakeProvider::scripted(vec![vec![
     StreamDelta::Completed,
 ]]);
 let agent = Agent::builder()
+    .behavior_version("my-host.v1")
     .memory()
     .provider(Arc::new(provider))
     .config(AgentConfig::new(Selection {
@@ -53,6 +54,7 @@ use std::sync::Arc;
 
 let resolver: Arc<dyn WorkspaceReaderResolver> = host_authorized_resolver();
 let agent = Agent::builder()
+    .behavior_version("my-host.v1")
     .memory()
     .provider(provider)
     .config(config) // persists the exact workspace ID/directory used for routing

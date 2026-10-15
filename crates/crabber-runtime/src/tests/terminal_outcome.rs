@@ -23,6 +23,7 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize) {
     stream.block_end = interrupted;
     stream.script = vec![(1, StreamDelta::TextDelta("partial".into()))];
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(DelayedTerminalStore {
             inner: inner.clone(),
             gate: gate.clone(),

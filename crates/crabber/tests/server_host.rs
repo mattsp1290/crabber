@@ -129,6 +129,7 @@ async fn one_configured_agent_admits_two_explicit_workspaces_without_mutating_de
     let installs = Arc::new(AtomicUsize::new(0));
     let observed = Arc::new(Mutex::new(vec![]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("configured")))
@@ -216,6 +217,7 @@ async fn explicit_keyed_context_replays_after_defaults_change_and_rejects_drift_
     let store = Arc::new(MemoryStore::new());
     let provider = Arc::new(FakeProvider::scripted(vec![done()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("unused-default")))
@@ -232,6 +234,7 @@ async fn explicit_keyed_context_replays_after_defaults_change_and_rejects_drift_
     };
     handle.done().await.unwrap();
     let replacement = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("different-default")))
@@ -250,6 +253,7 @@ async fn explicit_keyed_context_replays_after_defaults_change_and_rejects_drift_
     let installs = Arc::new(AtomicUsize::new(0));
     let drifted = context("keyed", "workspace", "/admitted/root/", "chosen");
     let guarded = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("configured")))
@@ -284,6 +288,7 @@ async fn empty_workspace_context_stays_unavailable_and_close_without_extensions_
     let store = Arc::new(MemoryStore::new());
     let provider = Arc::new(FakeProvider::scripted(vec![done(), done()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("default")))

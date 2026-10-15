@@ -76,6 +76,7 @@ fn agent(
         executor: Arc::new(UnusedTool),
     });
     let mut builder = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(AgentConfig::new(Selection {

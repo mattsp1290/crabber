@@ -142,6 +142,7 @@ pub fn agent(store: Arc<dyn Store>, capture: &Arc<Capture>, mode: &str) -> Agent
         None
     };
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(AgentConfig::new(Selection {

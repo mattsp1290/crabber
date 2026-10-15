@@ -29,6 +29,30 @@ impl Store for LostAdmissionReply {
             "injected unknown admission response".into(),
         ))
     }
+    async fn admit_bound_run(
+        &self,
+        request: crabber::session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_bound_run(request).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        mut request: crabber::session::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        request.keyed.request.lease = std::time::Duration::from_secs(2);
+        self.inner.admit_bound_keyed_run(request).await?;
+        // The actual transaction commits; its response never reaches the runtime.
+        Err(StoreError::Validation(
+            "injected unknown admission response".into(),
+        ))
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber::session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
     async fn load_admission_execution(
         &self,
         session: &SessionId,

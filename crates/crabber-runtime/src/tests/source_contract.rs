@@ -24,6 +24,7 @@ fn runtime(
     capture: Arc<Capture>,
 ) -> crate::OrchestratorBuilder {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(

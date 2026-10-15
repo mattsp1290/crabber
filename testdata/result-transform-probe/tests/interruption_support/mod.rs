@@ -188,6 +188,7 @@ pub fn agent_builder(
     accept_before_reduction: bool,
 ) -> AgentBuilder {
     Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store)
         .provider(probes.provider.clone())
         .config(AgentConfig::new(Selection {

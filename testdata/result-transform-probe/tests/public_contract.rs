@@ -174,6 +174,7 @@ async fn exercise(calls: &[(&str, &str)], error_flags: &[bool]) -> Arc<Observed>
     ]));
     let store = Arc::new(MemoryStore::new());
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(Selection {

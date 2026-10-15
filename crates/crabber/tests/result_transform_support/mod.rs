@@ -191,6 +191,7 @@ pub fn agent_builder(
     accept_before_reduction: bool,
 ) -> AgentBuilder {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(probes.provider.clone())
         .config(AgentConfig::new(Selection {

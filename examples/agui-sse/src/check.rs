@@ -95,7 +95,8 @@ pub fn builder(
     store: Arc<MemoryStore>,
     provider: Arc<dyn crabber::providers::Resolver>,
 ) -> crabber::AgentBuilder {
-    Agent::builder().store(Arc::new(crate::thread_store::ThreadStore(store))).provider(provider)
+    Agent::builder()
+        .behavior_version("example-host.v1").store(Arc::new(crate::thread_store::ThreadStore(store))).provider(provider)
         .config(AgentConfig::new(Selection { provider_id: "fake".into(), model_id: "scripted".into() }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .execution_mode(crabber::runtime::ExecutionMode::Parallel { max: 2 })

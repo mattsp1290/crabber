@@ -230,6 +230,7 @@ async fn assert_sibling_waiting(
 fn install_observer(harness: &mut Harness, mode: ExecutionMode, returned: Arc<SiblingReturned>) {
     harness.runtime = Some(
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(harness.store.clone())
             .resolver(Arc::new(harness.fake.clone()))
             .plan_provider(harness.registry.clone())

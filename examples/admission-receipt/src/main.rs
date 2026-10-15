@@ -111,6 +111,7 @@ async fn recover_initial(
     options: &AdmissionOptions,
 ) -> Result<(Agent, crabber::AdmissionReceipt, crabber::RunHandle), Box<dyn Error>> {
     let original = Agent::builder()
+        .behavior_fingerprint(options.behavior_fingerprint.clone())
         .store(Arc::new(response_loss::LostAdmissionReply {
             inner: store.clone(),
         }))
@@ -129,6 +130,7 @@ async fn recover_initial(
     assert_eq!(provider.requests().len(), 0);
     // A restarted host restores exactly the same semantic configuration.
     let agent = Agent::builder()
+        .behavior_fingerprint(options.behavior_fingerprint.clone())
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(Selection {

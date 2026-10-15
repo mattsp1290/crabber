@@ -212,6 +212,7 @@ fn runtime(
     backend: &WorkspaceBackend,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))
@@ -796,6 +797,7 @@ fn paused_runtime(
     store: Arc<dyn Store>,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))

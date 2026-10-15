@@ -24,6 +24,7 @@ async fn counter_state_survives_runs_and_is_bounded() {
     ]);
     let store = Arc::new(MemoryStore::new());
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(provider))
         .config(AgentConfig::new(Selection {
@@ -113,6 +114,7 @@ async fn keyed_wasm_replay_checks_configuration_without_reloading_artifact() {
     ]]));
     let build = |config: ModuleConfig| {
         Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .provider(provider.clone())
             .config(AgentConfig::new(Selection {

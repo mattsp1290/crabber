@@ -8,6 +8,14 @@ struct LedgerProvider {
 }
 #[async_trait]
 impl Resolver for LedgerProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        self.fake.binding_descriptor(selection)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -73,6 +81,7 @@ pub(super) fn agent(
         scripts
     });
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .observer(capture)
         .provider(Arc::new(LedgerProvider {

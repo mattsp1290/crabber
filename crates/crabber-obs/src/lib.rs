@@ -2354,6 +2354,7 @@ mod tests {
             executor: Arc::new(EchoTool),
         });
         let runtime = Orchestrator::builder()
+            .behavior_version("integration-fixture.v1")
             .store(Arc::new(MemoryStore::new()))
             .resolver(Arc::new(provider))
             .plan_provider(Arc::new(StaticPlanProvider::new(vec![tool], vec![])))
@@ -2457,6 +2458,7 @@ mod tests {
             c.logs_origin = Some(origin);
             let observer = DatadogObserver::new(&c);
             let runtime = Orchestrator::builder()
+                .behavior_version("integration-fixture.v1")
                 .store(Arc::new(MemoryStore::new()))
                 .resolver(Arc::new(FakeProvider::scripted(vec![deltas])))
                 .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))

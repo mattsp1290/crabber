@@ -241,8 +241,8 @@ encodes the complete descriptor and one `HOST_BEHAVIOR_COMPONENT` whose version 
 the declared opaque behavior fingerprint. The store hashes the complete runtime
 semantics and checks original input, selected route, limits, configuration and
 behavior rather than trusting the caller's claimed fingerprint. Credentials and
-transport correlation do not belong in these declarations. Actual execution and
-typed input are not yet wired to this capability.
+transport correlation do not belong in these declarations. The runtime now uses this capability for ordinary/keyed execution and recovery;
+the typed-input envelope remains separate and is not yet the admission codec.
 
 Custom adapters can use `KeyedAdmitRequest::validated_digest` before taking locks,
 `ExecutionBindingCapsule::validate`/`validate_keyed`, and the bounded

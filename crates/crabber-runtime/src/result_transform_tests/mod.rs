@@ -541,6 +541,7 @@ impl Harness {
     /// As [`Harness::fresh_runtime`], with a different model resolver (e.g. new scripted turns).
     pub(super) fn fresh_runtime_with(&self, resolver: Arc<dyn Resolver>) -> Orchestrator {
         let mut builder = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(Arc::clone(&self.store) as Arc<dyn Store>)
             .resolver(resolver)
             .plan_provider(Arc::clone(&self.registry) as Arc<dyn RunPlanProvider>)

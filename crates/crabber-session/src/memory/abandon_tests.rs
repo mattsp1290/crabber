@@ -151,6 +151,7 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         .await
         .unwrap();
     let agent = crabber::Agent::builder()
+        .behavior_version("abandon-fixture.v1")
         .store(Arc::new(PendingFacadeStore(store.clone())))
         .provider(Arc::new(crabber::FakeProvider::scripted(vec![])))
         .config(crabber::AgentConfig::new(crabber::Selection {
@@ -456,6 +457,7 @@ async fn facade_each_memory_candidate_boundary_rolls_back_including_private_comm
             .unwrap();
         let provider = Arc::new(crabber::FakeProvider::scripted(vec![]));
         let agent = crabber::Agent::builder()
+            .behavior_version("abandon-fixture.v1")
             .store(Arc::new(PendingFacadeStore(store.clone())))
             .provider(provider.clone())
             .config(crabber::AgentConfig::new(crabber::Selection {

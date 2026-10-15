@@ -116,6 +116,7 @@ async fn interrupt_closes_partial_text_message() {
     let store = Arc::new(MemoryStore::new());
     let (sender, receiver) = oneshot::channel();
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(FakeProvider::scripted(vec![text_script(
             "unused",
@@ -175,6 +176,7 @@ async fn paused_call_resumes_from_persisted_input() {
     let prepared = Arc::new(AtomicUsize::new(0));
     let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .observer(capture.clone())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(FakeProvider::scripted(vec![
@@ -221,6 +223,7 @@ async fn resumed_tool_stops_when_lease_is_reclaimed() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let completed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .clock(clock.clone())
         .heartbeat_interval(std::time::Duration::from_millis(10))
@@ -278,6 +281,7 @@ async fn paused_with_unstaged_assistant(
     ]);
     let executed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .clock(clock.clone())
         .resolver(Arc::new(fake.clone()))
@@ -534,6 +538,7 @@ async fn overflow_keeps_recent_tail_in_projected_retry() {
         text_script("after"),
     ]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -582,6 +587,27 @@ struct LimitedProvider {
 
 #[async_trait]
 impl Resolver for LimitedProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crabber_providers::ProviderBindingError>
+    {
+        crabber_core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "limited-fixture",
+            "1",
+            crabber_core::InputFingerprint::new(crabber_session::admission_config_hash(&json!([
+                self.limit,
+                self.block_summary,
+                self.block_acquisition
+            ])))
+            .unwrap(),
+            crabber_core::ProviderBindingLimits::default(),
+        )
+        .map_err(|_| crabber_providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -653,6 +679,7 @@ async fn real_size_limit_overflow_summarizes_bounded_input() {
     let store = Arc::new(MemoryStore::new());
     let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .observer(capture.clone())
         .store(store.clone())
         .resolver(Arc::new(provider.clone()))
@@ -729,6 +756,7 @@ async fn interrupt_cancels_blocked_compaction_summary() {
     };
     let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .observer(capture.clone())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(provider))
@@ -775,6 +803,7 @@ async fn interrupt_cancels_summary_stream_acquisition() {
     };
     let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .observer(capture.clone())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(provider))
@@ -908,6 +937,7 @@ async fn parallel_tools_execute_together_and_settle_in_assistant_order() {
     }
     script.push(StreamDelta::Completed);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(FakeProvider::scripted(vec![
             script,
@@ -973,47 +1003,27 @@ async fn crashed_run_admitted_under(
     let session = SessionId::new();
     let plan = plan_provider.acquire_plan(&session).await.unwrap();
     let stale = admitted_fingerprint.map(|stale| stale(&plan));
-    let declaration = plan_provider
-        .registration_fingerprint(&crabber_core::SessionContext::new(
-            session.clone(),
-            "test",
-            "/tmp",
-        ))
-        .unwrap();
-    let plan = Orchestrator::bind_plan_registration(plan, declaration).unwrap();
-    let fingerprint = stale.unwrap_or_else(|| plan.fingerprint().to_string());
     plan.release();
-    let message_id = crabber_core::MessageId::new();
-    let admitted = store
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: "/tmp".into(),
-            title: "test".into(),
-            user_message: Message {
-                id: message_id.clone(),
-                session_id: session,
-                run_id: None,
-                role: Role::User,
-                parent_id: None,
-                created_at: now,
-                parts: vec![Part {
-                    id: crabber_core::PartId::new(),
-                    message_id,
-                    ordinal: 0,
-                    kind: crabber_core::PartKind::UserInputText,
-                    content: ContentBlock::Text {
-                        text: "hello".into(),
-                    },
-                }],
-            },
-            config_hash: "test".into(),
-            plan_fingerprint: fingerprint,
-            owner: "crashed".into(),
-            lease: std::time::Duration::from_secs(30),
-        })
-        .await
+    let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .resolver(Arc::new(FakeProvider::scripted(Vec::new())))
+        .observer(observer)
+        .plan_provider(plan_provider)
+        .clock(clock.clone())
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
+        .build()
         .unwrap();
+    let mut original = request();
+    original.session_id = Some(session);
+    let (plan, mut prepared, _) = runtime.prepare_admission(&original).await.unwrap();
+    plan.release();
+    prepared.request.session_id = None;
+    if let Some(stale) = stale {
+        prepared.request.plan_fingerprint.clone_from(&stale);
+        prepared.binding.plan_fingerprint = crabber_core::InputFingerprint::new(stale).unwrap();
+    }
+    let admitted = store.admit_bound_run(prepared).await.unwrap();
     let execution = store.execution(admitted.fence).await.unwrap();
     for safe in [true, false] {
         let id = ToolCallId::new();
@@ -1059,15 +1069,6 @@ async fn crashed_run_admitted_under(
         }
     }
     clock.set(now + time::Duration::seconds(31));
-    let runtime = Orchestrator::builder()
-        .store(Arc::clone(&store) as Arc<dyn Store>)
-        .resolver(Arc::new(FakeProvider::scripted(Vec::new())))
-        .observer(observer)
-        .plan_provider(plan_provider)
-        .clock(clock)
-        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .build()
-        .unwrap();
     (runtime, store, executed, admitted.run.id)
 }
 
@@ -1273,6 +1274,7 @@ fn orchestrator(
     observer: Arc<RecordingObserver>,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1442,6 +1444,7 @@ async fn ask_policy_uses_default_deny_approver() {
     ]);
     let executed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1546,6 +1549,7 @@ async fn enum_and_nested_schema_failures_never_execute_tool() {
             }
         });
         let runtime = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(Arc::clone(&store) as Arc<dyn Store>)
             .resolver(Arc::new(fake.clone()))
             .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1626,6 +1630,7 @@ async fn heartbeat_keeps_gated_tool_run_owned_past_initial_lease() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1694,6 +1699,7 @@ async fn heartbeat_covers_model_stream_and_approval_waits() {
     let model_release = Arc::new(Notify::new());
     let approval_release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1755,7 +1761,10 @@ fn heartbeat_interval_requires_margin_inside_lease() {
         std::time::Duration::from_secs(30),
     ] {
         assert!(matches!(
-            Orchestrator::builder().heartbeat_interval(interval).build(),
+            Orchestrator::builder()
+                .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
+                .heartbeat_interval(interval)
+                .build(),
             Err(RuntimeError::InvalidConfiguration(_))
         ));
     }
@@ -1774,6 +1783,7 @@ async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
     let (approval_tx, approval_rx) = oneshot::channel();
     let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1836,6 +1846,7 @@ async fn completed_settlement_wins_heartbeat_tick_during_observer_callback() {
         released: Arc::clone(&released),
     });
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -1882,6 +1893,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
     let release = Arc::new(Notify::new());
     let completed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(
@@ -1961,6 +1973,26 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    async fn admit_bound_run(
+        &self,
+        request: crabber_session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_bound_run(request).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crabber_session::BoundKeyedAdmitRequest,
+    ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
+        self.inner.admit_bound_keyed_run(request).await
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(request).await
     }
@@ -2205,6 +2237,7 @@ async fn completed_commit_survives_heartbeat_channel_closing_before_settle_retur
     });
     let fake = FakeProvider::scripted(vec![text_script("done")]);
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -2267,6 +2300,7 @@ async fn recovery_selects_current_attempt_per_run_without_ambient_contamination(
     let capture = Arc::new(AttemptObserver::default());
     let executed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .clock(clock.clone())
         .observer(capture.clone())
@@ -2409,6 +2443,27 @@ struct OperationalStream {
 }
 #[async_trait]
 impl Resolver for OperationalStream {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crabber_providers::ProviderBindingError>
+    {
+        crabber_core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "operational-fixture",
+            "1",
+            crabber_core::InputFingerprint::new(crabber_session::admission_config_hash(&json!([
+                self.startup_error,
+                self.block_setup,
+                self.block_end
+            ])))
+            .unwrap(),
+            crabber_core::ProviderBindingLimits::default(),
+        )
+        .map_err(|_| crabber_providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -2445,6 +2500,7 @@ fn operational_runtime(
     stream: OperationalStream,
 ) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(stream))
         .plan_provider(Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new())))
@@ -2566,6 +2622,7 @@ async fn operational_lease_loss_is_local_once_and_does_not_settle_replacement() 
     stream.entered = Some(entered.clone());
     stream.block_setup = true;
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .clock(wall.clone())
         .monotonic_clock(clock)
@@ -2616,6 +2673,7 @@ async fn operational_tool_failure_remains_distinct_when_run_succeeds() {
     let capture = Arc::new(OperationalCapture::default());
     let clock = Arc::new(OperationalClock::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(MemoryStore::new()))
         .resolver(Arc::new(FakeProvider::scripted(vec![
             call_script(ToolCallId::new(), r#"{"text":"SECRET argument"}"#),
@@ -2725,6 +2783,7 @@ async fn operational_store_first_takeover_skips_settlement_initial_and_resume() 
             vec![text_script("initial")]
         };
         let mut builder = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store)
             .clock(wall.clone())
             .observer(capture.clone())
@@ -2800,6 +2859,7 @@ async fn operational_ordinary_store_conflict_keeps_runtime_error_and_settlement(
     });
     let capture = Arc::new(OperationalCapture::default());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(DelayedTerminalStore {
             inner: Arc::new(MemoryStore::new()),
             gate: gate.clone(),
@@ -2841,6 +2901,7 @@ async fn operational_tool_store_setup_error_is_not_tool_error() {
         let capture = Arc::new(OperationalCapture::default());
         let executed = Arc::new(AtomicUsize::new(0));
         let runtime = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(Arc::new(DelayedTerminalStore {
                 inner: Arc::new(MemoryStore::new()),
                 gate,
@@ -2924,6 +2985,7 @@ async fn operational_extension_setup_rejection_and_omission_are_runtime_errors()
         let fake = FakeProvider::scripted(vec![text_script("never")]);
         let capture = Arc::new(OperationalCapture::default());
         let runtime = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(Arc::new(MemoryStore::new()))
             .resolver(Arc::new(fake.clone()))
             .plan_provider(Arc::new(registry))
@@ -2959,6 +3021,7 @@ async fn admission_recovery_verifies_turn_limit_before_terminal_replay() {
     let plan = Arc::new(StaticPlanProvider::new(Vec::new(), Vec::new()));
     let make = |max_turns| {
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .resolver(provider.clone())
             .plan_provider(plan.clone())
@@ -3022,6 +3085,7 @@ async fn pipeline_cleanup_is_joined_by_the_host_owner() {
     let owner = crabber_extension::CleanupOwner::new();
     let completed = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(FakeProvider::scripted(vec![
             call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
@@ -3057,6 +3121,7 @@ async fn pipeline_cleanup_is_joined_by_the_host_owner() {
 async fn zero_output_cap_is_rejected_before_admission() {
     let store = Arc::new(MemoryStore::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![])))
         .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))

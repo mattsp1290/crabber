@@ -61,6 +61,7 @@ async fn default_cap_is_absent() {
     assert_eq!(config().max_output_tokens, None);
     let provider = Arc::new(FakeProvider::scripted(vec![text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(provider.clone())
         .config(config())
@@ -79,6 +80,7 @@ async fn default_cap_is_absent() {
 async fn facade_cap_sets_every_turn_request() {
     let provider = Arc::new(FakeProvider::scripted(vec![tool_call(), text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
@@ -139,6 +141,7 @@ async fn around_hook_overrides_or_preserves_facade_cap() {
     ] {
         let provider = Arc::new(FakeProvider::scripted(vec![text()]));
         let agent = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .memory()
             .provider(provider.clone())
             .config(config().max_output_tokens(4096))
@@ -158,6 +161,7 @@ async fn around_hook_overrides_or_preserves_facade_cap() {
 #[test]
 fn zero_cap_is_rejected_at_build() {
     let result = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(FakeProvider::scripted(vec![])))
         .config(config().max_output_tokens(0))
@@ -178,6 +182,7 @@ async fn cap_survives_pause_checkpoint_resume() {
     let store = Arc::new(MemoryStore::new());
     let provider = Arc::new(FakeProvider::scripted(vec![tool_call(), text()]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
@@ -200,6 +205,7 @@ async fn cap_survives_pause_checkpoint_resume() {
     );
     // A fresh host with a different config must restore the checkpoint's cap.
     let resumed = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider.clone())
         .config(config().max_output_tokens(64))

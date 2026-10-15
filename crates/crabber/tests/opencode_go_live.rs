@@ -32,6 +32,7 @@ async fn live_deepseek_v4_flash_accepts_tool_free_chat_completions_through_facad
         .try_with_user_agent_product("crabber-live-check/0.1")
         .unwrap();
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(HttpResolver::new().with_adapter(adapter)))
         .observer(observer.clone())

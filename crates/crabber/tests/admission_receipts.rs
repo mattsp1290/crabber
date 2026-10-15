@@ -23,6 +23,7 @@ fn config() -> AgentConfig {
 }
 fn build(store: Arc<MemoryStore>, provider: Arc<FakeProvider>, config: AgentConfig) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(config)
@@ -133,6 +134,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
             _ => {}
         }
         let mut builder = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store.clone())
             .provider(provider.clone())
             .config(config);

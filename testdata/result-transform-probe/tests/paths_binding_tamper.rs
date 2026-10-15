@@ -182,6 +182,7 @@ fn builder(
     policy: StaticPolicy,
 ) -> AgentBuilder {
     Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(Selection {

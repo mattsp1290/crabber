@@ -110,6 +110,7 @@ pub fn agent(capture: Arc<Capture>) -> Agent {
     }
     script.push(StreamDelta::Completed);
     Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(FakeProvider::scripted(vec![
             script,

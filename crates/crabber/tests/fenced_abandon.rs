@@ -133,6 +133,7 @@ fn admit_request(session: &SessionId) -> AdmitRequest {
 }
 fn agent(store: Arc<dyn Store>, counters: Arc<AtomicUsize>) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(Arc::new(Unavailable(counters.clone())))
         .shared_tool(Arc::new(crabber::ToolDefinition {

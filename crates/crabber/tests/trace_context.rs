@@ -28,6 +28,7 @@ fn options() -> AdmissionOptions {
 }
 fn build(capture: Arc<journey::Capture>, store: Arc<MemoryStore>) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(Arc::new(FakeProvider::scripted(vec![
             vec![
@@ -226,6 +227,7 @@ async fn legacy_observers_and_multiple_host_observers_receive_each_callback_once
     let first = Arc::new(Legacy(AtomicUsize::new(0), AtomicUsize::new(0)));
     let second = Arc::new(Legacy(AtomicUsize::new(0), AtomicUsize::new(0)));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(FakeProvider::scripted(vec![vec![
             StreamDelta::TextDelta("done".into()),

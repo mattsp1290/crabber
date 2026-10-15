@@ -8,10 +8,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use crabber_core::{
-    AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, ContentBlock, EpochId, EventCursor,
-    EventKind, EventRecord, InputFingerprint, ManualClock, Message, MessageId, Part, PartId,
-    PartKind, Role, Run, RunFence, RunId, RunStatus, Session, SessionId, ToolCallId,
-    ToolCallRecord, ToolCallStatus, ToolInfo,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, Clock, EpochId, EventCursor, EventKind,
+    EventRecord, InputFingerprint, ManualClock, Message, Run, RunFence, RunId, RunStatus, Session,
+    SessionId, ToolCallId, ToolCallRecord, ToolCallStatus, ToolInfo,
 };
 use crabber_extension::{
     ContextAssemble, Extension, ExtensionError, Point, Registrar, Registry, RunPlan,
@@ -27,7 +26,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use std::time::Duration;
 use time::OffsetDateTime;
 
 type Identity = (Option<String>, Option<String>);
@@ -224,6 +222,30 @@ impl DriftStore {
 }
 #[async_trait]
 impl Store for DriftStore {
+    async fn admit_bound_run(
+        &self,
+        request: crabber_session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_bound_run(request).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crabber_session::BoundKeyedAdmitRequest,
+    ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
+        let outcome = self.inner.admit_bound_keyed_run(request).await?;
+        if self.lose_admission.load(Ordering::SeqCst) {
+            return Err(StoreError::Validation("unknown admission response".into()));
+        }
+        Ok(outcome)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(request).await
     }
@@ -361,6 +383,7 @@ async fn host(
         acquired: AtomicUsize::new(0),
     });
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(store) as Arc<dyn Store>)
         .clock(clock.clone())
         .resolver(Arc::new(fake.clone()))
@@ -597,51 +620,14 @@ async fn row6_generic_recovery_of_paused_run_with_checkpoint_request() {
 /// Admits a run directly in the store and leaves it `Running` with one
 /// retry-safe pending call and no checkpoint, as a crashed host would.
 async fn crashed_running_run(h: &Harness, workspace_id: &str, directory: &str) -> RunId {
-    let session = SessionId::new();
-    let plan = h
-        .runtime
-        .acquire_execution_plan(&crabber_core::SessionContext::new(
-            session.clone(),
-            workspace_id,
-            directory,
-        ))
-        .await
-        .unwrap();
-    let fingerprint = plan.fingerprint().to_string();
-    plan.release();
     let now = h.clock.now();
-    let message_id = MessageId::new();
-    let admitted = h
-        .memory
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: workspace_id.into(),
-            directory: directory.into(),
-            title: "test".into(),
-            user_message: Message {
-                id: message_id.clone(),
-                session_id: session,
-                run_id: None,
-                role: Role::User,
-                parent_id: None,
-                created_at: now,
-                parts: vec![Part {
-                    id: PartId::new(),
-                    message_id,
-                    ordinal: 0,
-                    kind: PartKind::UserInputText,
-                    content: ContentBlock::Text {
-                        text: "hello".into(),
-                    },
-                }],
-            },
-            config_hash: "test".into(),
-            plan_fingerprint: fingerprint,
-            owner: "crashed".into(),
-            lease: Duration::from_secs(30),
-        })
+    let (plan, prepared, _) = h
+        .runtime
+        .prepare_admission(&request(None, workspace_id, directory))
         .await
         .unwrap();
+    plan.release();
+    let admitted = h.memory.admit_bound_run(prepared).await.unwrap();
     let execution = h.memory.execution(admitted.fence).await.unwrap();
     execution
         .create_tool_call(
@@ -880,6 +866,7 @@ async fn parallel_tool_calls_share_the_persisted_identity() {
     both.pop();
     both.extend(call_script());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store as Arc<dyn Store>)
         .clock(clock)
         .resolver(Arc::new(FakeProvider::scripted(vec![

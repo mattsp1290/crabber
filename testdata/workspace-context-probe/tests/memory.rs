@@ -287,6 +287,7 @@ async fn stale_fence_never_invokes_the_executor() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![
             tool_call(),

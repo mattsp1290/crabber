@@ -2,11 +2,10 @@
 
 use super::*;
 use crate::{INTERRUPTED_RESULT_TEXT, RuntimeError};
-use crabber_core::{ManualClock, MessageId, Part, PartId, PartKind, RunStatus, ToolResultStatus};
+use crabber_core::{ManualClock, RunStatus, ToolResultStatus};
 use crabber_extension::{
     InputUnavailable, ToolInput, ToolOutcomeClass, TransformOutput, TransformPhase,
 };
-use crabber_session::AdmitRequest;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy)]
@@ -96,27 +95,6 @@ fn recording_chain(seen: Observations) -> Arc<ClosureExtension> {
     })
 }
 
-fn user_message(session: SessionId, now: time::OffsetDateTime) -> Message {
-    let message_id = MessageId::new();
-    Message {
-        id: message_id.clone(),
-        session_id: session,
-        run_id: None,
-        role: Role::User,
-        parent_id: None,
-        created_at: now,
-        parts: vec![Part {
-            id: PartId::new(),
-            message_id,
-            ordinal: 0,
-            kind: PartKind::UserInputText,
-            content: ContentBlock::Text {
-                text: "hello".into(),
-            },
-        }],
-    }
-}
-
 struct Fixture {
     harness: Harness,
     pipeline: Arc<ReplayPipeline>,
@@ -147,32 +125,27 @@ impl Fixture {
         let session = SessionId::new();
         let plan = harness.registry.acquire_plan(&session).await.unwrap();
         let stale = admitted_fingerprint.map(|stale| stale(&plan));
-        let declaration = harness
-            .registry
-            .registration_fingerprint(&crabber_core::SessionContext::new(
-                session.clone(),
-                "test",
-                ".",
-            ))
-            .unwrap();
-        let plan = Orchestrator::bind_plan_registration(plan, declaration).unwrap();
-        let fingerprint = stale.unwrap_or_else(|| plan.fingerprint().to_string());
         plan.release();
-        let admitted = harness
-            .store
-            .admit_run(AdmitRequest {
-                session_id: None,
-                workspace_id: "test".into(),
-                directory: ".".into(),
-                title: "test".into(),
-                user_message: user_message(session, now),
-                config_hash: "test".into(),
-                plan_fingerprint: fingerprint,
-                owner: "crashed".into(),
-                lease: std::time::Duration::from_secs(30),
-            })
-            .await
+        let runtime = Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
+            .store(harness.store.clone() as Arc<dyn Store>)
+            .resolver(Arc::new(harness.fake.clone()))
+            .plan_provider(harness.registry.clone() as Arc<dyn RunPlanProvider>)
+            .policy(Arc::clone(&harness.policy))
+            .tool_pipeline(pipeline.clone())
+            .clock(clock.clone())
+            .build()
             .unwrap();
+        let mut original = request();
+        original.session_id = Some(session);
+        let (plan, mut prepared, _) = runtime.prepare_admission(&original).await.unwrap();
+        plan.release();
+        prepared.request.session_id = None;
+        if let Some(stale) = stale {
+            prepared.request.plan_fingerprint.clone_from(&stale);
+            prepared.binding.plan_fingerprint = crabber_core::InputFingerprint::new(stale).unwrap();
+        }
+        let admitted = harness.store.admit_bound_run(prepared).await.unwrap();
         let session = admitted.session.id;
         let run = admitted.run.id;
         let execution = harness.store.execution(admitted.fence).await.unwrap();
@@ -232,6 +205,7 @@ impl Fixture {
 
     fn fresh_runtime(&self) -> Orchestrator {
         Orchestrator::builder()
+            .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(self.harness.store.clone() as Arc<dyn Store>)
             .resolver(Arc::new(self.harness.fake.clone()))
             .plan_provider(self.harness.registry.clone() as Arc<dyn RunPlanProvider>)

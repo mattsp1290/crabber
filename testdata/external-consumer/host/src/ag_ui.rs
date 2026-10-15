@@ -3,7 +3,8 @@ use crabber::{Agent, AgentConfig, FakeProvider, Selection, StreamDelta};
 use crabber_agui::{Completion, ProjectionConfig, Projector, encode_sse, ag_ui_core::event::Event, ag_ui_encoder::CONTENT_TYPE};
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
-    let agent = Agent::builder().memory().provider(Arc::new(FakeProvider::scripted(vec![vec![
+    let agent = Agent::builder()
+        .behavior_version("example-host.v1").memory().provider(Arc::new(FakeProvider::scripted(vec![vec![
         StreamDelta::TextDelta("external host".into()), StreamDelta::Completed,
     ]])))
         .config(AgentConfig::new(Selection { provider_id:"fake".into(), model_id:"scripted".into() })).build()?;

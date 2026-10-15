@@ -70,6 +70,7 @@ pub enum BuildError {
 }
 
 pub struct AgentBuilder {
+    behavior_fingerprint: Option<crabber_core::InputFingerprint>,
     observers: Vec<Arc<dyn Observer>>,
     monotonic_clock: Option<Arc<dyn crabber_runtime::MonotonicClock>>,
     store: Option<Arc<dyn Store>>,
@@ -90,6 +91,25 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Declare the nonsecret version of native callbacks/policy for this host.
+    #[must_use]
+    pub fn behavior_fingerprint(mut self, fingerprint: crabber_core::InputFingerprint) -> Self {
+        self.behavior_fingerprint = Some(fingerprint);
+        self
+    }
+    /// Hash an explicit host behavior version; credentials are excluded.
+    /// # Panics
+    /// Panics only if a library SHA-256 digest ceases to be a valid fingerprint.
+    #[must_use]
+    pub fn behavior_version(self, version: &str) -> Self {
+        let fingerprint =
+            crabber_core::InputFingerprint::new(crabber_session::admission_config_hash(
+                &serde_json::json!(["crabber.host-behavior.v1", version]),
+            ))
+            .expect("SHA-256 is a valid fingerprint");
+        self.behavior_fingerprint(fingerprint)
+    }
+
     /// Injects execution timing independently of event/lease wall time.
     #[must_use]
     pub fn monotonic_clock(mut self, clock: Arc<dyn crabber_runtime::MonotonicClock>) -> Self {
@@ -344,6 +364,9 @@ impl AgentBuilder {
             .execution_mode(self.execution_mode)
             .compaction(self.compaction)
             .observer(observer);
+        if let Some(behavior) = self.behavior_fingerprint {
+            runtime = runtime.behavior_fingerprint(behavior);
+        }
         if let Some(workspace_reader_resolver) = self.workspace_reader_resolver {
             runtime = runtime.workspace_reader_resolver(workspace_reader_resolver);
         }
@@ -480,6 +503,12 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Declared native behavior identity to retain with keyed requests.
+    #[must_use]
+    pub fn behavior_fingerprint(&self) -> &crabber_core::InputFingerprint {
+        self.runtime.behavior_fingerprint()
+    }
+
     pub(crate) async fn initialize_extensions(&self) -> Result<(), RuntimeError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(RuntimeError::HostClosed);
@@ -560,6 +589,7 @@ impl Agent {
     #[must_use]
     pub fn builder() -> AgentBuilder {
         AgentBuilder {
+            behavior_fingerprint: None,
             observers: Vec::new(),
             monotonic_clock: None,
             store: None,
@@ -1191,6 +1221,7 @@ mod tests {
             StreamDelta::Completed,
         ]]);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(fake.clone()))
             .config(AgentConfig::new(Selection {
@@ -1281,6 +1312,7 @@ mod tests {
         let second = Arc::new(CloseCapture::default());
         let bound = Duration::from_millis(50);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![])))
             .config(AgentConfig::new(Selection {
@@ -1364,6 +1396,7 @@ mod tests {
     #[tokio::test]
     async fn close_without_extensions_is_terminal() {
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
                 StreamDelta::TextDelta("done".into()),
@@ -1408,6 +1441,7 @@ mod tests {
         config.timeout = Duration::from_millis(40);
         let capture = Arc::new(Capture(std::sync::atomic::AtomicU64::new(0)));
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
                 StreamDelta::Error(ProviderError {
@@ -1459,6 +1493,7 @@ mod tests {
             }),
         ]]);
         let agent = Agent::builder()
+            .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(provider))
             .config(AgentConfig::new(Selection {

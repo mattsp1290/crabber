@@ -51,6 +51,7 @@ async fn composed_callbacks_keep_attempt_context_and_broadcast_native_tool_turn(
     let clock = Arc::new(Clock::default());
     let id = ToolCallId::new();
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .monotonic_clock(clock.clone())
         .provider(Arc::new(FakeProvider::scripted(vec![

@@ -24,6 +24,23 @@ impl Store for ThreadStore {
         request.session_id = None;
         self.0.admit_run(request).await
     }
+    async fn admit_bound_run(
+        &self,
+        mut request: crabber::session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        if request.request.session_id.as_ref() != Some(&request.request.user_message.session_id) {
+            return Err(StoreError::Validation("thread identity mismatch".into()));
+        }
+        request.request.session_id = None;
+        self.0.admit_bound_run(request).await
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber::session::RetainedExecutionBinding>, StoreError> {
+        self.0.execution_binding(session, run).await
+    }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         self.0.execution(fence).await
     }

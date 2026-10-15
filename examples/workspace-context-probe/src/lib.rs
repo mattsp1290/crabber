@@ -255,6 +255,8 @@ pub fn host(
 
 /// Mounts the probe using the caller's permission policy.
 #[must_use]
+/// # Panics
+/// Panics if the fixed fixture fingerprint is invalid.
 pub fn host_with_policy(
     observations: &Arc<Observations>,
     scripts: Vec<Vec<StreamDelta>>,
@@ -262,6 +264,7 @@ pub fn host_with_policy(
     policy: Arc<dyn PermissionPolicy>,
 ) -> AgentBuilder {
     crabber::Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(config)
         .policy(policy)

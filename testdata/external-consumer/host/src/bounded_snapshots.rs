@@ -12,6 +12,12 @@ macro_rules! forward_store {
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.0.admit_run(request).await
     }
+    async fn admit_bound_run(&self, request: BoundAdmitRequest) -> Result<AdmitOutcome, StoreError> {
+        self.0.admit_bound_run(request).await
+    }
+    async fn execution_binding(&self, session: &SessionId, run: &RunId) -> Result<Option<RetainedExecutionBinding>, StoreError> {
+        self.0.execution_binding(session, run).await
+    }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
         self.0.execution(fence).await
     }
@@ -100,6 +106,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     ));
     let store = Arc::new(BoundedStore(MemoryStore::new()));
     let agent = crabber::Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(Arc::new(crabber::FakeProvider::scripted(vec![vec![
             crabber::StreamDelta::TextDelta("fake".into()),

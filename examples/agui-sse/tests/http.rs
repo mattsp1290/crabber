@@ -208,6 +208,25 @@ struct Controlled {
 struct ControlledResolver(Arc<Controlled>);
 #[async_trait]
 impl Resolver for ControlledResolver {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        crabber::core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "ControlledResolver-fixture",
+            "1",
+            crabber::core::InputFingerprint::new("c".repeat(64)).unwrap(),
+            crabber::core::ProviderBindingLimits {
+                context_tokens: None,
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| crabber::providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(self.0.clone())
     }
@@ -556,6 +575,25 @@ async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
 struct StartupFailure;
 #[async_trait]
 impl Resolver for StartupFailure {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        crabber::core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "StartupFailure-fixture",
+            "1",
+            crabber::core::InputFingerprint::new("c".repeat(64)).unwrap(),
+            crabber::core::ProviderBindingLimits {
+                context_tokens: None,
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| crabber::providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(Self))
     }

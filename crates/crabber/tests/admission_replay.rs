@@ -49,6 +49,14 @@ impl Provider {
 }
 #[async_trait]
 impl Resolver for Provider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        self.fake.binding_descriptor(selection)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         self.resolves.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(self.clone()))
@@ -124,6 +132,7 @@ fn agent(
     config.workspace_id = "replay-workspace".into();
     config.directory = "/admitted/replay".into();
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(Arc::new(provider.clone()))
         .config(config)

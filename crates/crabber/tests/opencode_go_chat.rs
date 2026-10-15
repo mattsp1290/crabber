@@ -74,6 +74,7 @@ fn builder(url: &str) -> crabber::AgentBuilder {
         .try_with_user_agent_product("crabber-channels/0.1.0")
         .unwrap();
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(HttpResolver::new().with_adapter(adapter)))
         .config(

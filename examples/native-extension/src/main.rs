@@ -138,6 +138,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ]);
     let observed = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider.clone()))
         .config(AgentConfig::new(Selection {

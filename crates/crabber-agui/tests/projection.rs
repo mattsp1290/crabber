@@ -348,6 +348,7 @@ async fn real_runtime_transcript_matches_store_and_retry_never_reports_success()
             StreamDelta::Completed,
         ]);
         let agent = Agent::builder()
+            .behavior_version("integration-fixture.v1")
             .store(store.clone())
             .provider(Arc::new(FakeProvider::scripted(scripts)))
             .config(AgentConfig::new(Selection {

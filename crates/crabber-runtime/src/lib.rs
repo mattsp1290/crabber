@@ -39,3 +39,6 @@ mod prompt_contribution_tests;
 
 #[cfg(test)]
 mod model_middleware_tests;
+
+#[cfg(test)]
+mod bound_provider_tests;

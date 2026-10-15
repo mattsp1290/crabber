@@ -21,6 +21,7 @@ pub(super) struct Retained {
     pub receipt: AdmissionReceipt,
     pub record: AdmissionExecutionRecord,
     pub run: Run,
+    pub binding: crabber_session::ExecutionBindingCapsule,
 }
 impl Orchestrator {
     /// Verify an existing request without initialization or execution authority.
@@ -126,6 +127,9 @@ impl Orchestrator {
             request.directory.clone(),
         );
         self.validate_context(&context).await?;
+        if options.behavior_fingerprint != self.behavior_fingerprint {
+            return Err(StoreError::AdmissionConflict.into());
+        }
         let Some(receipt) = self
             .store
             .lookup_admission(session_id, &options.key)
@@ -149,12 +153,22 @@ impl Orchestrator {
             .get_run(&receipt.run_id)
             .await?
             .ok_or(StoreError::NotFound)?;
+        let binding = self.stored_binding(session_id, &receipt.run_id).await?;
+        if binding.request != record.capsule.request
+            || binding.runtime_semantics != record.capsule.runtime_semantics
+            || binding.behavior_fingerprint != record.capsule.behavior_fingerprint
+        {
+            return Err(StoreError::AdmissionConflict.into());
+        }
+        self.verify_binding_request(request, session_id, &binding)?;
+        self.verify_declared_provider(&binding)?;
         self.verify_retained(request, options, &receipt, &record, &run, &context)?;
         Ok(Some(Retained {
             session,
             receipt,
             record,
             run,
+            binding,
         }))
     }
     fn verify_retained(

@@ -1,5 +1,7 @@
 #[path = "orchestrator/admission.rs"]
 mod admission;
+#[path = "orchestrator/binding.rs"]
+mod binding;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
     ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
@@ -98,6 +100,7 @@ enum InitialEntry {
 struct InitialRequest {
     request: Request,
     entry: InitialEntry,
+    bound: Option<crabber_providers::BoundProvider>,
 }
 
 impl Request {
@@ -195,6 +198,8 @@ pub enum RuntimeError {
     AdmissionExecution(#[from] AdmissionExecutionError),
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
+    #[error("provider binding: {0}")]
+    ProviderBinding(#[from] crabber_providers::ProviderBindingError),
     #[error("extension: {0}")]
     Extension(String),
     #[error(transparent)]
@@ -389,6 +394,7 @@ impl Streamer for SingleUseStreamer {
 #[derive(Clone)]
 pub struct Orchestrator {
     store: Arc<dyn Store>,
+    behavior_fingerprint: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
@@ -420,14 +426,12 @@ pub(crate) type ResultContextObserver = Arc<dyn Fn(&ToolResultContext) + Send + 
 struct RunSession {
     id: SessionId,
     workspace: WorkspaceContext,
-    context: SessionContext,
 }
 impl From<&Session> for RunSession {
     fn from(session: &Session) -> Self {
         Self {
             id: session.id.clone(),
             workspace: WorkspaceContext::from_persisted(&session.workspace_id, &session.directory),
-            context: SessionContext::from(session),
         }
     }
 }
@@ -495,6 +499,7 @@ impl CheckpointRequest {
 
 #[derive(Default)]
 pub struct OrchestratorBuilder {
+    behavior_fingerprint: Option<crabber_core::InputFingerprint>,
     store: Option<Arc<dyn Store>>,
     resolver: Option<Arc<dyn Resolver>>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
@@ -521,6 +526,26 @@ impl OrchestratorBuilder {
     pub(crate) fn context_observer(mut self, observer: ResultContextObserver) -> Self {
         self.context_observer = Some(observer);
         self
+    }
+
+    /// Declare the nonsecret version of opaque native policy/callback behavior.
+    /// Change it whenever relevant behavior changes; credentials are excluded.
+    #[must_use]
+    pub fn behavior_fingerprint(mut self, value: crabber_core::InputFingerprint) -> Self {
+        self.behavior_fingerprint = Some(value);
+        self
+    }
+    /// Hash an explicit host behavior version in the library's versioned domain.
+    /// # Panics
+    /// Panics only if a library SHA-256 digest ceases to be a valid fingerprint.
+    #[must_use]
+    pub fn behavior_version(self, version: &str) -> Self {
+        let fingerprint = crabber_core::InputFingerprint::new(admission_config_hash(&json!([
+            "crabber.host-behavior.v1",
+            version
+        ])))
+        .expect("SHA-256 is a valid fingerprint");
+        self.behavior_fingerprint(fingerprint)
     }
 
     #[must_use]
@@ -658,6 +683,9 @@ impl OrchestratorBuilder {
             plan_provider: self
                 .plan_provider
                 .ok_or(RuntimeError::Missing("plan provider"))?,
+            behavior_fingerprint: self
+                .behavior_fingerprint
+                .ok_or(RuntimeError::Missing("host behavior fingerprint"))?,
             clock: self.clock.unwrap_or_else(|| Arc::new(SystemClock)),
             monotonic_clock: self
                 .monotonic_clock
@@ -864,6 +892,12 @@ impl Orchestrator {
         OrchestratorBuilder::default()
     }
 
+    /// Declared nonsecret native behavior identity, required for exact recovery.
+    #[must_use]
+    pub fn behavior_fingerprint(&self) -> &crabber_core::InputFingerprint {
+        &self.behavior_fingerprint
+    }
+
     /// Joins retained initial, keyed-recovery and resume workers within a shared
     /// deadline. A dropped run handle leaves its worker retained here.
     /// This does not stop ingress, cancel work, or prove durable settlement or
@@ -1043,11 +1077,25 @@ impl Orchestrator {
         {
             return Err(StoreError::AdmissionRecoveryRequired.into());
         }
-        let plan = self.acquire_execution_plan(&session.context).await?;
-        if plan.fingerprint().to_string() != run.plan_fingerprint {
+        if run.status.is_terminal()
+            || (run.status != RunStatus::Paused && run.lease_until > self.clock.now())
+        {
+            return Err(StoreError::Conflict.into());
+        }
+        let binding = self.stored_binding(&session.id, run_id).await?;
+        if let Some(saved) = &saved {
+            self.verify_binding_request(saved, &session.id, &binding)?;
+        }
+        let original = Request::from_admission(binding.request.clone());
+        let (plan, prepared, _) = self.prepare_admission(&original).await?;
+        if prepared.binding.provider != binding.provider {
+            return Err(crabber_providers::ProviderBindingError::VersionConflict.into());
+        }
+        if prepared.binding != binding || plan.fingerprint().to_string() != run.plan_fingerprint {
             plan.release();
             return Err(RuntimeError::PlanChanged);
         }
+        let bound = self.restore_provider(&plan, &binding.provider).await?;
         let fence = self
             .store
             .claim_expired_run(run_id, &RunId::new().to_string())
@@ -1202,6 +1250,7 @@ impl Orchestrator {
                         &session,
                         &request,
                         &plan,
+                        &bound,
                         &work_cancellation,
                         false,
                         usage,
@@ -1358,6 +1407,22 @@ impl Orchestrator {
                         reason,
                     });
                 }
+                Err(
+                    RuntimeError::ProviderBinding(
+                        crabber_providers::ProviderBindingError::Unavailable
+                        | crabber_providers::ProviderBindingError::VersionConflict,
+                    )
+                    | RuntimeError::AdmissionExecution(
+                        AdmissionExecutionError::MissingEvidence
+                        | AdmissionExecutionError::Unsupported,
+                    ),
+                ) => {
+                    report.skipped.push(SkippedRun {
+                        session_id,
+                        run_id,
+                        reason: StoreError::HostUnsupported,
+                    });
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -1503,7 +1568,7 @@ impl Orchestrator {
         let (plan, admission, _) = runtime.prepare_admission(&request).await?;
         let admitted = self
             .store
-            .admit_run(admission)
+            .admit_bound_run(admission)
             .await
             .map_err(admission_error)?;
         Ok(runtime.spawn_admitted(
@@ -1512,6 +1577,7 @@ impl Orchestrator {
             admitted.fence,
             &admitted.session,
             InitialEntry::Unkeyed,
+            None,
         ))
     }
 
@@ -1549,7 +1615,7 @@ impl Orchestrator {
         let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
         match self
             .store
-            .admit_keyed_run(keyed)
+            .admit_bound_keyed_run(keyed)
             .await
             .map_err(admission_error)?
         {
@@ -1561,6 +1627,7 @@ impl Orchestrator {
                     admitted.fence,
                     &admitted.session,
                     InitialEntry::Keyed,
+                    None,
                 ),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
@@ -1602,9 +1669,14 @@ impl Orchestrator {
             receipt,
             record,
             run: _,
+            binding: original_binding,
         } = retained;
         let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
         let (plan, keyed) = self.prepare_keyed_admission(&request, options).await?;
+        if keyed.binding != original_binding {
+            return Err(StoreError::AdmissionConflict.into());
+        }
+        let keyed = keyed.keyed;
         let capsule = keyed
             .execution
             .as_ref()
@@ -1633,6 +1705,9 @@ impl Orchestrator {
         if run.status.is_terminal() || record.state == AdmissionExecutionState::Started {
             return Ok(Admission::Replayed(receipt));
         }
+        let bound = self
+            .restore_provider(&plan, &original_binding.provider)
+            .await?;
         let claimed = self
             .store
             .claim_unstarted_admission(ClaimUnstartedAdmissionRequest {
@@ -1659,6 +1734,7 @@ impl Orchestrator {
                 claimed.fence,
                 &persisted,
                 InitialEntry::Keyed,
+                Some(bound),
             ),
         })
     }
@@ -1667,8 +1743,12 @@ impl Orchestrator {
         &self,
         request: &Request,
         options: AdmissionOptions,
-    ) -> Result<(RunPlan, KeyedAdmitRequest), RuntimeError> {
-        let (plan, admission, runtime_semantics) = self.prepare_admission(request).await?;
+    ) -> Result<(RunPlan, crabber_session::BoundKeyedAdmitRequest), RuntimeError> {
+        if options.behavior_fingerprint != self.behavior_fingerprint {
+            return Err(StoreError::AdmissionConflict.into());
+        }
+        let (plan, bound, runtime_semantics) = self.prepare_admission(request).await?;
+        let admission = bound.request;
         let mut keyed = KeyedAdmitRequest {
             request: admission,
             options,
@@ -1686,7 +1766,13 @@ impl Orchestrator {
         };
         capsule.validate(&keyed)?;
         keyed.execution = Some(capsule);
-        Ok((plan, keyed))
+        Ok((
+            plan,
+            crabber_session::BoundKeyedAdmitRequest {
+                keyed,
+                binding: bound.binding,
+            },
+        ))
     }
 
     // A generic store Conflict is not evidence of lease loss. Verify retained
@@ -1751,10 +1837,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn prepare_admission(
+    pub(crate) async fn prepare_admission(
         &self,
         request: &Request,
-    ) -> Result<(RunPlan, AdmitRequest, Value), RuntimeError> {
+    ) -> Result<(RunPlan, crabber_session::BoundAdmitRequest, Value), RuntimeError> {
         if request.max_output_tokens == Some(0) {
             return Err(RuntimeError::InvalidConfiguration(
                 "max output tokens must be positive",
@@ -1769,6 +1855,8 @@ impl Orchestrator {
         );
         self.validate_context(&context).await?;
         let plan = self.acquire_execution_plan(&context).await?;
+        let provider = self.describe_provider(&plan, &request.selection)?;
+        let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
         // Hash structured, independently observed semantics, never a caller's claim.
         let mut config = json!([
             "crabber.runtime.admission.v1",
@@ -1806,13 +1894,34 @@ impl Orchestrator {
             workspace_id: request.workspace_id.clone(),
             directory: request.directory.clone(),
             title: request.title.clone(),
-            user_message: user_message(session_id, request.text.clone(), now),
+            user_message: user_message(session_id.clone(), request.text.clone(), now),
             config_hash,
             plan_fingerprint: plan.fingerprint().to_string(),
             owner: RunId::new().to_string(),
             lease: Duration::from_secs(30),
         };
-        Ok((plan, admission, config))
+        let mut stable = request.clone();
+        stable.session_id = Some(session_id);
+        let binding = crabber_session::ExecutionBindingCapsule {
+            version: 2,
+            provider,
+            request: stable.admission_data()?,
+            runtime_semantics: config.clone(),
+            config_hash: crabber_core::InputFingerprint::new(admission.config_hash.clone())?,
+            plan_fingerprint: crabber_core::InputFingerprint::new(
+                admission.plan_fingerprint.clone(),
+            )?,
+            behavior_fingerprint: self.behavior_fingerprint.clone(),
+        };
+        binding.validate(&admission)?;
+        Ok((
+            plan,
+            crabber_session::BoundAdmitRequest {
+                request: admission,
+                binding,
+            },
+            config,
+        ))
     }
 
     /// Every admitted run is bound to the workspace identity of the persisted
@@ -1824,6 +1933,7 @@ impl Orchestrator {
         fence: RunFence,
         session: &Session,
         entry: InitialEntry,
+        bound: Option<crabber_providers::BoundProvider>,
     ) -> RunHandle {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
@@ -1834,7 +1944,17 @@ impl Orchestrator {
         let run_id = fence.run_id.clone();
         let task = self.execution_tasks.spawn(run_id.clone(), async move {
             let result = runtime
-                .run(fence, work_session, request, plan, work_cancellation, entry)
+                .run(
+                    fence,
+                    work_session,
+                    InitialRequest {
+                        request,
+                        entry,
+                        bound,
+                    },
+                    plan,
+                    work_cancellation,
+                )
                 .await;
             let _ = sender.send(result);
             let _ = completion_sender.send(true);
@@ -1856,10 +1976,9 @@ impl Orchestrator {
         &self,
         fence: RunFence,
         session: RunSession,
-        request: Request,
+        initial: InitialRequest,
         plan: RunPlan,
         cancellation: CancellationToken,
-        entry: InitialEntry,
     ) -> Result<RunResult, RuntimeError> {
         let lost = AtomicBool::new(false);
         let mut measurement = Measurement::new(
@@ -1875,7 +1994,7 @@ impl Orchestrator {
             .run_inner(
                 fence.clone(),
                 session.clone(),
-                InitialRequest { request, entry },
+                initial,
                 plan,
                 cancellation.clone(),
                 &lost,
@@ -1899,7 +2018,16 @@ impl Orchestrator {
         observed_lost: &AtomicBool,
     ) -> Result<RunResult, RuntimeError> {
         let session_id = session.id.clone();
-        let InitialRequest { request, entry } = initial;
+        let InitialRequest {
+            request,
+            entry,
+            bound: prebound,
+        } = initial;
+        let binding = self.stored_binding(&session_id, &fence.run_id).await?;
+        self.verify_binding_request(&request, &session_id, &binding)?;
+        if plan.fingerprint().to_string() != binding.plan_fingerprint.as_str() {
+            return Err(RuntimeError::PlanChanged);
+        }
         let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
         if matches!(entry, InitialEntry::Keyed) {
             execution.begin_admission_execution().await?;
@@ -1926,21 +2054,30 @@ impl Orchestrator {
         });
         let current_turn = std::sync::Mutex::new(None);
         let outcome = {
-            let run_future = crabber_extension::with_state_sink(
-                state_sink,
+            let run_future = crabber_extension::with_state_sink(state_sink, async {
+                let bound = if let Some(bound) = prebound {
+                    if bound.descriptor() != &binding.provider {
+                        return Err(crabber_providers::ProviderBindingError::VersionConflict.into());
+                    }
+                    bound
+                } else {
+                    self.restore_provider(&plan, &binding.provider).await?
+                };
                 self.run_loop(
                     execution.as_ref(),
                     &run_id,
                     &session,
                     &request,
                     &plan,
+                    &bound,
                     &cancellation,
                     true,
                     Usage::default(),
                     lost.as_ref(),
                     &current_turn,
-                ),
-            );
+                )
+                .await
+            });
             tokio::pin!(run_future);
             loop {
                 tokio::select! {
@@ -2046,12 +2183,16 @@ impl Orchestrator {
         session: &RunSession,
         request: &Request,
         plan: &RunPlan,
+        bound: &crabber_providers::BoundProvider,
         cancellation: &CancellationToken,
         initial: bool,
         mut usage: Usage,
         lease_lost: &AtomicBool,
         current_turn: &std::sync::Mutex<Option<TurnId>>,
     ) -> Result<Usage, RuntimeError> {
+        if cancellation.is_cancelled() {
+            return Err(RuntimeError::Interrupted);
+        }
         let session_id = &session.id;
         let run_started_at = self.clock.now();
         if initial {
@@ -2064,15 +2205,7 @@ impl Orchestrator {
             self.emit_durable(execution, session_id, run_id, plan, EventKind::RunStarted)
                 .await?;
         }
-        let streamer = if let Some(provider) = plan
-            .providers
-            .iter()
-            .find(|p| p.info().id == request.selection.provider_id)
-        {
-            provider.build(&request.selection).await?
-        } else {
-            self.resolver.resolve(&request.selection).await?
-        };
+        let streamer = bound.streamer();
         for _ in 0..self.max_turns {
             if cancellation.is_cancelled() {
                 return Err(RuntimeError::Interrupted);
@@ -2088,39 +2221,28 @@ impl Orchestrator {
             let mut snapshot = self.snapshot(run_id, session, request, plan).await?;
             snapshot.identity.turn_id = turn_id.clone();
             let mut compacted = false;
-            if let Some(provider) = plan
-                .providers
-                .iter()
-                .find(|provider| provider.info().id == request.selection.provider_id)
-            {
-                let models = provider.models().await?;
-                if let Some(model) = models
-                    .iter()
-                    .find(|model| model.id == request.selection.model_id)
+            if let Some(context_limit) = bound.descriptor().limits().context_tokens {
+                let estimated =
+                    serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len() / 4);
+                #[allow(clippy::cast_precision_loss)]
+                if snapshot.messages.len() > self.compaction.keep_tail_messages
+                    && context_limit > 0
+                    && (estimated as f64) >= (context_limit as f64 * self.compaction.trigger_ratio)
                 {
-                    let estimated =
-                        serde_json::to_vec(&snapshot.messages).map_or(0, |bytes| bytes.len() / 4);
-                    #[allow(clippy::cast_precision_loss)]
-                    if snapshot.messages.len() > self.compaction.keep_tail_messages
-                        && model.context_limit > 0
-                        && (estimated as f64)
-                            >= (model.context_limit as f64 * self.compaction.trigger_ratio)
-                    {
-                        self.compact(
-                            execution,
-                            run_id,
-                            session_id,
-                            &snapshot,
-                            plan,
-                            Arc::clone(&streamer),
-                            false,
-                            cancellation,
-                            lease_lost,
-                        )
-                        .await?;
-                        snapshot.messages = self.store.list_messages(session_id, None).await?;
-                        compacted = true;
-                    }
+                    self.compact(
+                        execution,
+                        run_id,
+                        session_id,
+                        &snapshot,
+                        plan,
+                        Arc::clone(&streamer),
+                        false,
+                        cancellation,
+                        lease_lost,
+                    )
+                    .await?;
+                    snapshot.messages = self.store.list_messages(session_id, None).await?;
+                    compacted = true;
                 }
             }
             plan.dispatcher

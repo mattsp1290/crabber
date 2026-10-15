@@ -96,6 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     config.workspace_id = expected.workspace_id().expect("workspace id").to_owned();
     config.directory = expected.directory().expect("directory").to_owned();
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider.clone()))
         .config(config)

@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ],
     ]);
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider))
         .config(AgentConfig::new(Selection {

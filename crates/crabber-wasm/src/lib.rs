@@ -1390,6 +1390,7 @@ mod tests {
             ]]);
             let store = Arc::new(MemoryStore::new());
             let runtime = Orchestrator::builder()
+                .behavior_version("wasm-runtime-fixture.v1")
                 .store(store.clone())
                 .resolver(Arc::new(fake))
                 .plan_provider(registry.clone())

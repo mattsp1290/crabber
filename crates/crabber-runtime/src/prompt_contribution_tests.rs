@@ -100,6 +100,7 @@ fn error_script(kind: ProviderErrorKind) -> Vec<StreamDelta> {
 }
 fn runtime(store: Arc<MemoryStore>, fake: &FakeProvider, registry: Registry) -> Orchestrator {
     Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))

@@ -236,6 +236,7 @@ async fn harness(
         .await
         .unwrap();
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(registry))

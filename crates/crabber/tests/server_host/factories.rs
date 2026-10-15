@@ -221,6 +221,7 @@ async fn configured_agent_uses_real_session_instances_and_preserves_shared_tools
         done(),
     ]));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(provider.clone())
         .config(AgentConfig::new(selection("configured")))

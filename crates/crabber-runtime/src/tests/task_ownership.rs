@@ -88,6 +88,7 @@ async fn abandoned_resume_waiter_leaves_claim_and_work_owned() {
     let release = Arc::new(Notify::new());
     let completed = Arc::new(AtomicUsize::new(0));
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![
             call_script(ToolCallId::new(), r#"{"text":"resume"}"#),
@@ -147,6 +148,7 @@ async fn panicked_worker_join_does_not_invent_durable_terminal_outcome() {
     }
     let store = Arc::new(MemoryStore::new());
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![text_script(
             "unused",

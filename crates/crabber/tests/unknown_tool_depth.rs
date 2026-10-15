@@ -52,6 +52,7 @@ async fn unknown_tool_depth(store: Arc<dyn Store>) {
         StreamDelta::Completed,
     ];
     let runtime = Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .resolver(Arc::new(FakeProvider::scripted(vec![
             script,

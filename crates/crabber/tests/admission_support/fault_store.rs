@@ -70,6 +70,78 @@ impl Store for FaultStore {
         }
         Ok(outcome)
     }
+    async fn admit_bound_run(
+        &self,
+        request: crabber_session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.inner.admit_bound_run(request).await
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        mut request: crabber_session::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        if self.mode == "precommit" {
+            return Err(StoreError::Validation("injected before commit".into()));
+        }
+        if self.mode == "delayed" {
+            fs::write(self.dir.join("waiting"), "ready").unwrap();
+            wait(&self.dir.join("release")).await;
+        }
+        if self.mode == "commit-loss" && !self.dir.join("text-only").exists() {
+            // The host never sees the successful Store outcome or its fence.
+            request.keyed.request.lease = Duration::from_millis(20);
+        }
+        if self.dir.join("short-admission-lease").exists() {
+            request.keyed.request.lease = Duration::from_secs(1);
+        }
+        let outcome = self.inner.admit_bound_keyed_run(request).await?;
+        let receipt = match &outcome {
+            KeyedAdmitOutcome::Started { receipt, .. } | KeyedAdmitOutcome::Replayed(receipt) => {
+                receipt
+            }
+        };
+        if let KeyedAdmitOutcome::Started { .. } = &outcome {
+            fs::write(
+                self.dir.join("committed.json"),
+                serde_json::to_vec(receipt).unwrap(),
+            )
+            .unwrap();
+        }
+        if self.mode == "commit-loss" {
+            assert_eq!(
+                self.inner
+                    .lookup_admission(&receipt.session_id, &options().key)
+                    .await?,
+                Some(receipt.clone())
+            );
+            assert!(self.inner.get_run(&receipt.run_id).await?.is_some());
+            let record = self
+                .inner
+                .load_admission_execution(&receipt.session_id, &options().key)
+                .await
+                .expect("execution evidence must commit atomically")
+                .unwrap();
+            assert_eq!(record.receipt, *receipt);
+            assert_eq!(
+                record.state,
+                crabber_session::AdmissionExecutionState::Unstarted
+            );
+            // Let this abandoned owner's positive lease expire before fresh recovery.
+            if !self.dir.join("text-only").exists() {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            // Same sanitized error category as a real backend commit acknowledgement loss.
+            return Err(StoreError::Validation(self.failure.into()));
+        }
+        Ok(outcome)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
     async fn load_admission_execution(
         &self,
         session: &SessionId,

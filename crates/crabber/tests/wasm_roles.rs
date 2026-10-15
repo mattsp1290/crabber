@@ -133,6 +133,7 @@ impl PermissionPolicy for PausePolicy {
 async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc<dyn Store>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let first = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .provider(Arc::new(provider(call("native-resume", &json!({})))))
         .config(config())
@@ -162,6 +163,7 @@ async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc
     drop(first);
 
     let second = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&resume_store))
         .provider(Arc::new(FakeProvider::scripted(vec![vec![
             StreamDelta::TextDelta("resumed".into()),
@@ -222,38 +224,46 @@ async fn freshly_connected_postgres_agent_resumes_native_and_wasm_plan() {
 async fn admit_expired_retry_safe_run(
     store: &Arc<dyn Store>,
     clock: &ManualClock,
-    fingerprint: String,
+    mut binding: crabber::session::ExecutionBindingCapsule,
 ) -> RunId {
     let session_id = SessionId::new();
     let message_id = MessageId::new();
     let now = clock.now();
+    binding.request.session_id = session_id.clone();
+    binding.request.workspace_id = "test".into();
+    binding.request.directory = ".".into();
+    binding.request.title = "recovery".into();
+    binding.request.text = "recover".into();
     let admitted = store
-        .admit_run(AdmitRequest {
-            session_id: None,
-            workspace_id: "test".into(),
-            directory: ".".into(),
-            title: "recovery".into(),
-            user_message: Message {
-                id: message_id.clone(),
-                session_id,
-                run_id: None,
-                role: Role::User,
-                parent_id: None,
-                parts: vec![Part {
-                    id: PartId::new(),
-                    message_id,
-                    ordinal: 0,
-                    kind: PartKind::UserInputText,
-                    content: ContentBlock::Text {
-                        text: "recover".into(),
-                    },
-                }],
-                created_at: now,
+        .admit_bound_run(crabber::session::BoundAdmitRequest {
+            request: AdmitRequest {
+                session_id: None,
+                workspace_id: "test".into(),
+                directory: ".".into(),
+                title: "recovery".into(),
+                user_message: Message {
+                    id: message_id.clone(),
+                    session_id,
+                    run_id: None,
+                    role: Role::User,
+                    parent_id: None,
+                    parts: vec![Part {
+                        id: PartId::new(),
+                        message_id,
+                        ordinal: 0,
+                        kind: PartKind::UserInputText,
+                        content: ContentBlock::Text {
+                            text: "recover".into(),
+                        },
+                    }],
+                    created_at: now,
+                },
+                config_hash: binding.config_hash.as_str().into(),
+                plan_fingerprint: binding.plan_fingerprint.as_str().into(),
+                owner: "expired".into(),
+                lease: Duration::from_secs(30),
             },
-            config_hash: "test".into(),
-            plan_fingerprint: fingerprint,
-            owner: "expired".into(),
-            lease: Duration::from_secs(30),
+            binding,
         })
         .await
         .unwrap();
@@ -297,6 +307,7 @@ async fn fresh_agent_recovers_expired_running_run(
 ) {
     let calls = Arc::new(AtomicUsize::new(0));
     let first = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store))
         .provider(Arc::new(FakeProvider::scripted(vec![vec![
             StreamDelta::TextDelta("seed".into()),
@@ -324,9 +335,16 @@ async fn fresh_agent_recovers_expired_running_run(
         .unwrap()
         .plan_fingerprint;
     drop(first);
-    let run_id = admit_expired_retry_safe_run(&store, &clock, fingerprint.clone()).await;
+    let binding = store
+        .execution_binding(&seed.session_id, &seed.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .capsule;
+    let run_id = admit_expired_retry_safe_run(&store, &clock, binding).await;
 
     let second = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&resume_store))
         .provider(Arc::new(FakeProvider::scripted(Vec::new())))
         .config(config())
@@ -368,6 +386,7 @@ async fn echo_executes_through_runtime() {
     let fake = provider(call("echo", &json!({"value":"hello"})));
     let store = Arc::new(MemoryStore::new());
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())
@@ -391,6 +410,7 @@ async fn policy_denies_dangerous_tool() {
     let fake = provider(call("dangerous", &json!({})));
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake))
         .config(config())
@@ -413,6 +433,7 @@ async fn policy_denies_dangerous_tool() {
 async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
     let calls = Arc::new(AtomicUsize::new(0));
     let allow_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("safe", &json!({})))))
         .config(config())
@@ -431,6 +452,7 @@ async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let ask_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("ask_me", &json!({})))))
         .config(config())
@@ -455,6 +477,7 @@ async fn policy_guest_receives_permission_and_run_context() {
     let mut info = native_tool("contextual", &calls).info.clone();
     info.required_permissions = vec!["network".into()];
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(provider(call("contextual", &json!({})))))
         .config(config())
@@ -487,6 +510,7 @@ async fn policy_guest_state_persists_across_runs() {
     let store = Arc::new(MemoryStore::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())
@@ -530,6 +554,7 @@ async fn prompt_section_renders_for_each_run_with_its_run_id() {
         vec![StreamDelta::TextDelta("two".into()), StreamDelta::Completed],
     ]);
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
@@ -568,6 +593,7 @@ async fn banner_reaches_model_request() {
         StreamDelta::Completed,
     ]]);
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
@@ -596,6 +622,7 @@ async fn middleware_rewrites_tool_output() {
     let store = Arc::new(MemoryStore::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .provider(Arc::new(fake))
         .config(config())

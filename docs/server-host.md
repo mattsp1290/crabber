@@ -99,8 +99,7 @@ files or cancel active executions. Closure rejects new plans for that owner.
 Cleanup that exceeds its bound returns a typed incomplete/timeout error and stays
 owned; a later close can establish completion. Other owners remain available.
 
-Immutable provider-binding restoration, the common
-owned initial/resumed execution lifecycle, typed admission, authoritative controls
+The common owned initial/resumed execution lifecycle, typed admission, authoritative controls
 and session management remain part of this implementation. Their completion is
 required before claiming the durable server-host contract delivered.
 
@@ -118,8 +117,24 @@ text request/runtime codec and existing admission receipt remain version 1. It
 is bounded to 16 MiB encoded JSON and 64 levels of configuration nesting. No new
 migration is needed: it uses the allocated `run_execution_bindings` table. Custom
 adapters default to `HostUnsupported` and must implement the atomic capability.
-The runtime has not yet switched to these APIs or held frozen implementations;
-typed input, exact provider restoration and the common driver remain unfinished.
+The runtime uses these atomic APIs for both ordinary and keyed admission. It
+restores the retained backend/configuration before recovery claims, holds the
+same implementation across turns and compaction, and uses captured limits rather
+than querying a live model catalog. Missing legacy binding evidence fails closed.
+Typed input and the complete common execution driver remain unfinished.
+
+Every Agent/Orchestrator builder requires an explicit `behavior_fingerprint` or
+`behavior_version` declaration for opaque native policy, tool and callback behavior.
+Bump it when that behavior changes; keyed options must carry the configured
+fingerprint (available through `agent.behavior_fingerprint()`). Credentials and
+transport correlation are excluded. Provider implementations must separately
+declare their immutable route/backend/configuration through `binding_descriptor`.
+Built-in HTTP adapters compute pure declarations from their endpoint, protocol,
+implementation version and user agent, with unknown model limits left unknown.
+Custom resolvers and opaque custom HTTP callbacks require an explicit
+`VersionedResolver`/`VersionedAdapter` allowlist; no declaration means unavailable.
+Known keyed replay checks retained metadata before factory initialization and
+never reacquires a provider or grants execution authority.
 
 The experimental core `InputEnvelope` validates bounded ordered input and defines
 the versioned canonical hash for typed admission. It preserves supplied message,

@@ -11,6 +11,7 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
+mod binding;
 #[cfg(feature = "custom-http")]
 mod client;
 #[cfg(feature = "custom-http")]
@@ -508,6 +509,13 @@ impl Streamer for HttpAdapter {
 }
 #[async_trait]
 impl ProviderAdapter for HttpAdapter {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crate::ProviderBindingError> {
+        self.builtin_binding(selection)
+    }
+
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: self.id.clone(),
@@ -600,6 +608,16 @@ impl HttpResolver {
 }
 #[async_trait]
 impl Resolver for HttpResolver {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber_core::ProviderBindingDescriptor, crate::ProviderBindingError> {
+        self.adapters
+            .get(&selection.provider_id)
+            .ok_or(crate::ProviderBindingError::Unavailable)?
+            .binding_descriptor(selection)
+    }
+
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         let adapter = self
             .adapters

@@ -118,6 +118,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     // crabber:glue-start
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(Arc::clone(&store))
         .provider(resolver)
         .config(AgentConfig::new(selection))

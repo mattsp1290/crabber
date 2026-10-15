@@ -1,7 +1,7 @@
 # Embedding Crabber
 
 The default facade has no provider credentials, database, WASM, observability or
-AG-UI dependency. Begin with `Agent::builder().memory()` and a FakeProvider;
+AG-UI dependency. Begin with `Agent::builder().behavior_version("my-host.v1").memory()` and a FakeProvider;
 subscribe to live events, then await the run's durable completion. Enable only
 capabilities your host uses.
 Use [per-attempt prompt contributions](#per-attempt-prompt-contributions) for current native instructions.

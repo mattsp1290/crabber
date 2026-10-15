@@ -52,6 +52,39 @@ impl Store for FaultStore {
         }
         Ok(outcome)
     }
+    async fn admit_bound_run(
+        &self,
+        request: crabber_session::BoundAdmitRequest,
+    ) -> Result<AdmitOutcome, StoreError> {
+        let outcome = self.inner.admit_bound_run(request).await?;
+        if self.fault == Fault::UnkeyedAdmissionLost {
+            return Err(StoreError::Validation(
+                "unknown unkeyed admission response".into(),
+            ));
+        }
+        Ok(outcome)
+    }
+    async fn admit_bound_keyed_run(
+        &self,
+        request: crabber_session::BoundKeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        let outcome = self.inner.admit_bound_keyed_run(request).await?;
+        if self.fault == Fault::AdmissionLost {
+            return Err(StoreError::Validation("unknown admission response".into()));
+        }
+        if self.fault == Fault::AdmissionDelayed {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(outcome)
+    }
+    async fn execution_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::RetainedExecutionBinding>, StoreError> {
+        self.inner.execution_binding(session, run).await
+    }
     async fn load_admission_execution(
         &self,
         session: &SessionId,
@@ -238,6 +271,7 @@ impl ExecutionStore for FaultExecution {
 
 fn host(store: Arc<dyn Store>, provider: Arc<FakeProvider>) -> Agent {
     Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider)
         .config(config())
@@ -548,6 +582,7 @@ async fn semantic_drift_conflicts_before_claim_and_after_terminal_replay() {
                 _ => (),
             }
             let mut builder = Agent::builder()
+                .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
                 .store(store.clone())
                 .provider(provider.clone())
                 .config(cfg);
@@ -659,6 +694,7 @@ async fn failed_begin_blocks_business_hooks_but_allows_pre_admission_setup() {
         let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let agent = Agent::builder()
+            .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
             .store(fault(store.clone(), kind))
             .provider(provider.clone())
             .config(config())
@@ -766,6 +802,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
     // Create a real current-library ordinary admission, then lose its reply
     // before spawn. This retains the actual registration and plan fingerprints.
     let ordinary_agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(fault(store.clone(), Fault::UnkeyedAdmissionLost))
         .provider(provider.clone())
         .config(config())
@@ -786,6 +823,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     // The public facade wrapper must forward classification as well as claim.
     let agent = Agent::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(fault(store.clone(), Fault::BeginRejected))
         .provider(provider.clone())
         .config(config())
@@ -848,6 +886,7 @@ async fn generic_unstarted_classification_does_not_acquire_an_unavailable_plan()
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     let runtime = crabber::runtime::Orchestrator::builder()
+        .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store.clone())
         .resolver(provider.clone())
         .clock(clock)

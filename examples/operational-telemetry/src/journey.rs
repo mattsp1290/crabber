@@ -77,6 +77,25 @@ fn error() -> ProviderError {
 }
 #[async_trait]
 impl Resolver for Provider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<crabber::core::ProviderBindingDescriptor, crabber::providers::ProviderBindingError>
+    {
+        crabber::core::ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "Provider-fixture",
+            "1",
+            crabber::core::InputFingerprint::new("c".repeat(64)).unwrap(),
+            crabber::core::ProviderBindingLimits {
+                context_tokens: None,
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| crabber::providers::ProviderBindingError::InvalidDescriptor)
+    }
+
     async fn resolve(&self, _: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         Ok(Arc::new(self.clone()))
     }
@@ -171,6 +190,7 @@ fn agent(
 ) -> Agent {
     let clock = provider.clock.clone();
     let mut builder = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .provider(Arc::new(provider))
         .monotonic_clock(clock.clone())
@@ -553,6 +573,7 @@ async fn lease() -> Vec<OperationalObservation> {
     );
     let entered = provider.entered.clone();
     let runtime = Orchestrator::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .clock(wall.clone())
         .monotonic_clock(provider.clock.clone())
@@ -859,6 +880,7 @@ async fn outage_overflow() {
     let capture = Arc::new(Capture::default());
     let clock = Arc::new(Clock::default());
     let host = Agent::builder()
+        .behavior_version("example-host.v1")
         .memory()
         .monotonic_clock(clock.clone())
         .provider(Arc::new(Provider::new(clock, vec![text()])))
@@ -1107,6 +1129,7 @@ async fn cardinality() {
             }
         }
         let host = Agent::builder()
+            .behavior_version("example-host.v1")
             .memory()
             .provider(Arc::new(Provider::new(clock.clone(), vec![script, text()])))
             .monotonic_clock(clock.clone())

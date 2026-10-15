@@ -100,6 +100,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let tool = Arc::new(AtomicUsize::new(0));
     let mount = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder()
+        .behavior_version("example-host.v1")
         .store(store.clone())
         .provider(Arc::new(Unavailable(counters.clone())))
         .shared_tool(Arc::new(crabber::ToolDefinition {
