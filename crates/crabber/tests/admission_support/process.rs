@@ -74,6 +74,7 @@ mod provider;
 use provider::agent;
 
 mod child;
+mod reconcile_started;
 mod recovery;
 
 struct ChildGuard(Child);
@@ -275,14 +276,28 @@ async fn fault_restart_journey(kind: BackendKind) {
     finish(second).await;
     finish(spawn(&backend, &dir.0, "reconcile")).await;
     evidence(&backend, &dir.0, &session, 2, 1).await;
-    // Kill a genuine OS worker after its running tool effect is durable. Recovery
-    // interrupts that running call rather than repeating an ambiguous effect.
+    // Kill a genuine OS worker after its running effect is durable. Generic
+    // resume must refuse Started work; explicit host reconciliation records
+    // stopped ownership, joined in-process resources and a failed tool result.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     let mut lost = spawn(&backend, &dir.0, "tool-loss");
     wait(&dir.0.join("tool-running")).await;
+    let pid = lost.0.id();
     lost.0.kill().unwrap();
-    lost.0.wait().unwrap();
+    let status = lost.0.wait().unwrap();
+    assert!(!status.success());
+    let receipt: AdmissionReceipt =
+        serde_json::from_slice(&fs::read(dir.0.join("committed.json")).unwrap()).unwrap();
+    fs::write(
+        dir.0.join("owner-stop-proof"),
+        serde_json::to_vec(&serde_json::json!({
+            "pid":pid,"run_id":receipt.run_id,"joined":true,"status":status.to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    // Expiry alone still cannot settle an externally ambiguous effect.
     // The first heartbeat renews the live execution lease to 30 seconds.
     tokio::time::sleep(Duration::from_secs(31)).await;
     finish(spawn(&backend, &dir.0, "recover")).await;

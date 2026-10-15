@@ -17,6 +17,24 @@ impl Store for FaultStore {
     fn supports_pre_effect_approvals(&self) -> bool {
         self.inner.supports_pre_effect_approvals()
     }
+    async fn list_tool_phases(
+        &self,
+        request: crabber::session::PhasePageRequest,
+    ) -> Result<crabber::session::PhasePage, crabber::session::PhaseError> {
+        self.inner.list_tool_phases(request).await
+    }
+    async fn mark_phase_uncertain(
+        &self,
+        request: crabber::session::PhaseUncertainty,
+    ) -> Result<crabber::session::PhaseControlOutcome, crabber::session::PhaseError> {
+        self.inner.mark_phase_uncertain(request).await
+    }
+    async fn record_phase_cleanup(
+        &self,
+        request: crabber::session::PhaseCleanup,
+    ) -> Result<crabber::session::PhaseControlOutcome, crabber::session::PhaseError> {
+        self.inner.record_phase_cleanup(request).await
+    }
     async fn tool_phase(
         &self,
         run: &crabber::core::RunId,

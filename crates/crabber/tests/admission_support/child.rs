@@ -113,28 +113,18 @@ async fn facade_child() {
         return;
     }
     if mode == "recover" {
-        let current = TraceContext::new("9876543210abcdef9876543210abcdef", "9876543210abcdef")
-            .unwrap()
-            .linked_to(&context)
-            .unwrap();
-        recover(
+        super::reconcile_started::recover(
             &agent,
             store.as_ref(),
             &session,
             &receipt,
             before.unwrap(),
-            current.clone(),
+            &dir,
         )
         .await;
-        assert!(!capture.0.lock().unwrap().is_empty());
         assert!(
-            capture
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(event, observed)| event.run_id == receipt.run_id
-                    && observed.as_ref() == Some(&current))
+            capture.0.lock().unwrap().is_empty(),
+            "metadata controls do not notify business observers"
         );
     }
     if mode != "recover" {
@@ -156,44 +146,5 @@ async fn facade_child() {
     println!(
         "child={mode} session={} receipt={} run={} user_message={}",
         receipt.session_id, receipt.run_id, receipt.run_id, receipt.user_message_id
-    );
-}
-
-async fn recover(
-    agent: &Agent,
-    store: &dyn Store,
-    session: &SessionId,
-    receipt: &AdmissionReceipt,
-    old: Run,
-    context: TraceContext,
-) {
-    let stale = RunFence {
-        run_id: old.id.clone(),
-        claim_token: old.claim_token,
-    };
-    let result = agent
-        .resume_with_context(&receipt.run_id, Some(context))
-        .await
-        .unwrap();
-    assert_eq!(result.status, RunStatus::Interrupted);
-    assert_ne!(
-        store
-            .get_run(&receipt.run_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .claim_token,
-        stale.claim_token
-    );
-    assert!(
-        store.execution(stale).await.is_err(),
-        "old owner remains fenced"
-    );
-    assert_eq!(
-        agent
-            .lookup_admission(session, &options().key)
-            .await
-            .unwrap(),
-        Some(receipt.clone())
     );
 }
