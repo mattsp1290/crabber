@@ -885,7 +885,6 @@ fn append_registration_components(
         });
     }
     let service_presence = [
-        r.services.user_prompter.is_some(),
         r.services.subprocess.is_some(),
         r.services.workspace_fs.is_some(),
     ];

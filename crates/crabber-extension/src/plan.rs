@@ -82,6 +82,10 @@ pub fn compute_fingerprint(components: &[ComponentIdentity]) -> PlanFingerprint 
             crate::MAX_TOOL_RESOURCE_TASKS
         ),
     });
+    canonical.push(ComponentIdentity {
+        id: "contract:crabber/tool/interaction".into(),
+        version: crate::TOOL_INTERACTION_CONTRACT_VERSION.to_string(),
+    });
     canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
     let bytes = serde_json::to_vec(&canonical).expect("component identities serialize");
     PlanFingerprint(Sha256::digest(bytes).into())
@@ -96,6 +100,8 @@ pub struct PromptSection {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExtensionError {
+    #[error(transparent)]
+    DurableInteractionUnsupported(#[from] crate::DurableInteractionUnsupported),
     #[error("frozen registration declarations are unavailable")]
     RegistrationDescriptorUnavailable,
     #[error("extension plan failed: {0}")]
@@ -407,7 +413,8 @@ mod tests {
     }
 
     /// Pins component identities plus result-transform version 3 and the
-    /// native tool resource contract (version 1, capacity 64). Workspace routing
+    /// native tool resource contract (version 1, capacity 64), and interaction
+    /// contract version 2 (no live human hooks). Workspace routing
     /// values remain excluded; old execution plans fail closed on restoration.
     #[test]
     fn fingerprint_of_fixed_components_is_pinned() {
@@ -423,7 +430,7 @@ mod tests {
         ];
         assert_eq!(
             compute_fingerprint(&components).to_string(),
-            "161885cf6d0af0eff06a2a8328bf72a84f4b31149c156be629865ea0f3168594"
+            "93bf2ff9832167d300758536cab78d4a46acf926fbf0dc03717525ae43229fd4"
         );
         let provider = StaticPlanProvider::new(
             Vec::new(),
@@ -435,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             provider.plan.fingerprint.to_string(),
-            "a63503dbc0ad3aea4b24d8e54ee827b21dae40fec1d88c48d2281ce1148a6f84"
+            "e08bfe40d5a0f5d4864df53908f3f297b9d8d16ad85790aad075ab30c86c5546"
         );
     }
 

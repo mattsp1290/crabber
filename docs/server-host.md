@@ -80,6 +80,14 @@ attempt before business work. Native phase dispatch, durable cancellation and fu
 orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
+The live `ApprovalFacade::request` and `UserPrompter::ask` APIs have been removed.
+Ordinary `ToolContext::request_interaction` returns the finite
+`DurableInteractionUnsupported` error synchronously. It invokes no host callback
+and does not create an awaiting question. Explicit typed suspension and the
+runtime's durable pre-effect approval gate remain under implementation. Frozen
+plans include interaction contract version 2 so older hook-bearing plans cannot
+silently resume with these capabilities removed.
+
 Native tools can register task-owned resources with `ToolContext::resources()`.
 A call accepts at most 64 tasks. Registration is sealed when its tool-call future
 returns, is cancelled or panics; retained context clones then receive a typed

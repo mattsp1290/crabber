@@ -1002,7 +1002,6 @@ mod tests {
             crabber_extension::HostServices::default(),
             crabber_extension::WorkspaceContext::from_persisted("native-ws", "/native/root"),
             Arc::new(|_| {}),
-            None,
         );
         assert_eq!(
             format!("{:?}", turn_metadata(Some(&context))),

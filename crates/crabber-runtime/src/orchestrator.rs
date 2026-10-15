@@ -27,13 +27,13 @@ use crabber_core::{
     ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    ApprovalFacade, Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext,
-    GuardDecision, HostServices, InputUnavailable, ModelCompleted, ModelRequestError,
-    ModelRequested, ModelStream as ExtensionModelStream, PromptAttemptContext,
-    PromptContributionOutcome, RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled,
-    RunStarted, StateSink, ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass,
-    ToolPrepare, ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare,
-    TurnStarted, WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
+    Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext, GuardDecision,
+    HostServices, InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
+    ModelStream as ExtensionModelStream, PromptAttemptContext, PromptContributionOutcome,
+    RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, StateSink,
+    ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass, ToolPrepare,
+    ToolResultContext, ToolResultOutcome, TransformOutput, TurnCompleted, TurnPrepare, TurnStarted,
+    WorkspaceContext, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
     WorkspaceReaderResolver, collect_prompt_contributions_with_resolver,
     prompt_contribution_failed_message, result_transform_failed_message,
 };
@@ -4127,11 +4127,6 @@ impl Orchestrator {
             self.host_services.with_overrides(&plan.host_services),
             workspace,
             progress,
-            Some(Arc::new(HostApproval {
-                approver: Arc::clone(&self.approver),
-                tool: tool.info.clone(),
-                arguments: arguments.clone(),
-            })),
         );
         let context = context.with_resources(resources.clone());
         let executor = Arc::clone(&tool.executor);
@@ -4376,18 +4371,6 @@ fn validate_arguments(tool: &ToolInfo, arguments: &Value) -> Result<(), String> 
     validator
         .validate(arguments)
         .map_err(|error| format!("invalid tool arguments: {error}"))
-}
-
-struct HostApproval {
-    approver: Arc<dyn ApprovalRequester>,
-    tool: ToolInfo,
-    arguments: Value,
-}
-#[async_trait]
-impl ApprovalFacade for HostApproval {
-    async fn request(&self, _reason: &str) -> bool {
-        self.approver.approve(&self.tool, &self.arguments).await
-    }
 }
 
 struct RetryDecision {

@@ -236,7 +236,6 @@ async fn configured_agent_uses_real_session_instances_and_preserves_shared_tools
             crabber::extension::HostServices {
                 workspace_fs: Some(Arc::new(ScopedFs("wrong-global-root".into()))),
                 subprocess: Some(Arc::new(SharedProcess)),
-                ..Default::default()
             },
         )
         .extension_factory(Arc::new(Factory {

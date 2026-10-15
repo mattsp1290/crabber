@@ -1,5 +1,7 @@
 #[path = "server_host/factories.rs"]
 mod factories;
+#[path = "server_host/interaction_hooks.rs"]
+mod interaction_hooks;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,

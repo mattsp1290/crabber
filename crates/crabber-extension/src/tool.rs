@@ -6,14 +6,14 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub type ProgressSink = Arc<dyn Fn(ContentBlock) + Send + Sync>;
-#[async_trait]
-pub trait ApprovalFacade: Send + Sync {
-    async fn request(&self, reason: &str) -> bool;
-}
-#[async_trait]
-pub trait UserPrompter: Send + Sync {
-    async fn ask(&self, prompt: &str) -> Result<String, String>;
-}
+/// Ordinary tool contexts cannot park a phase on a remote answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("durable interaction requires a resumable tool phase")]
+pub struct DurableInteractionUnsupported;
+
+/// Included in every frozen execution plan; removed hooks cannot be restored.
+pub const TOOL_INTERACTION_CONTRACT_VERSION: u32 = 2;
+
 #[async_trait]
 pub trait Subprocess: Send + Sync {
     async fn run(&self, program: &str, arguments: &[String]) -> Result<Value, String>;
@@ -22,9 +22,18 @@ pub trait Subprocess: Send + Sync {
 pub trait WorkspaceFs: Send + Sync {
     async fn read(&self, relative_path: &str) -> Result<Vec<u8>, String>;
 }
+/// Shared native capabilities do not include a live human question hook.
+/// ```compile_fail
+/// fn live(host: crabber_extension::HostServices) { let _ = host.user_prompter; }
+/// ```
+/// ```compile_fail
+/// use crabber_extension::UserPrompter;
+/// ```
+/// ```compile_fail
+/// use crabber_extension::ApprovalFacade;
+/// ```
 #[derive(Clone, Default)]
 pub struct HostServices {
-    pub user_prompter: Option<Arc<dyn UserPrompter>>,
     pub subprocess: Option<Arc<dyn Subprocess>>,
     pub workspace_fs: Option<Arc<dyn WorkspaceFs>>,
 }
@@ -36,7 +45,6 @@ impl HostServices {
     }
     pub(crate) fn overlay(self, overrides: Self) -> Self {
         Self {
-            user_prompter: overrides.user_prompter.or(self.user_prompter),
             subprocess: overrides.subprocess.or(self.subprocess),
             workspace_fs: overrides.workspace_fs.or(self.workspace_fs),
         }
@@ -83,6 +91,10 @@ impl WorkspaceContext {
         self.directory.as_deref()
     }
 }
+/// Ordinary tools have no live approval callback.
+/// ```compile_fail
+/// fn live(context: crabber_extension::ToolContext) { context.approval(); }
+/// ```
 #[derive(Clone)]
 pub struct ToolContext {
     pub session_id: SessionId,
@@ -92,12 +104,10 @@ pub struct ToolContext {
     pub host: HostServices,
     workspace: WorkspaceContext,
     progress: ProgressSink,
-    approval: Option<Arc<dyn ApprovalFacade>>,
     resources: crate::ToolResources,
 }
 impl ToolContext {
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: SessionId,
         run_id: RunId,
@@ -106,7 +116,6 @@ impl ToolContext {
         host: HostServices,
         workspace: WorkspaceContext,
         progress: ProgressSink,
-        approval: Option<Arc<dyn ApprovalFacade>>,
     ) -> Self {
         Self {
             session_id,
@@ -116,7 +125,6 @@ impl ToolContext {
             host,
             workspace,
             progress,
-            approval,
             resources: crate::ToolResources::default(),
         }
     }
@@ -138,9 +146,16 @@ impl ToolContext {
     pub fn progress(&self, content: ContentBlock) {
         (self.progress)(content);
     }
-    #[must_use]
-    pub fn approval(&self) -> Option<&Arc<dyn ApprovalFacade>> {
-        self.approval.as_ref()
+    /// Ordinary tools return promptly when requesting a capability that needs
+    /// durable suspension. Opt-in tools instead return a typed suspension from
+    /// their phase handler; no host callback is invoked from this context.
+    /// # Errors
+    /// Always returns the finite unsupported error without creating a future.
+    pub fn request_interaction(
+        &self,
+        _description: &crabber_core::InteractionDescription,
+    ) -> Result<std::convert::Infallible, DurableInteractionUnsupported> {
+        Err(DurableInteractionUnsupported)
     }
 }
 
@@ -179,7 +194,6 @@ mod tests {
             HostServices::default(),
             workspace.clone(),
             Arc::new(|_| {}),
-            None,
         );
         assert_eq!(context.workspace(), &workspace);
     }
