@@ -1,3 +1,5 @@
+#[path = "pristine.rs"]
+pub(crate) mod pristine;
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptMutation, AttemptReceipt, AttemptSnapshot,
     AttemptState,
@@ -85,7 +87,9 @@ pub(crate) fn verify_receipt(
         return Err(AttemptError::UnknownStoreOutcome);
     }
     let valid = match &saved.command {
-        AttemptCommand::Reserve { .. } | AttemptCommand::ReclaimUnstarted { .. } => {
+        AttemptCommand::ReserveBound { .. }
+        | AttemptCommand::Reserve { .. }
+        | AttemptCommand::ReclaimUnstarted { .. } => {
             saved.attempt.state == AttemptState::Unstarted
                 && saved.attempt.cleanup == AttemptCleanup::Pending
         }

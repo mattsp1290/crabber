@@ -5,7 +5,7 @@ use crate::{
 };
 use crabber_core::{RunId, SessionId};
 
-fn read(
+pub(super) fn read(
     state: &State,
     session: &SessionId,
     id: &RunId,

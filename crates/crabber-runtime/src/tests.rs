@@ -27,6 +27,9 @@ use std::sync::{
 };
 use tokio::sync::{Barrier, Notify, oneshot};
 
+#[path = "tests/native_attempt.rs"]
+pub(crate) mod native_attempt;
+
 #[path = "tests/task_ownership.rs"]
 mod task_ownership;
 #[path = "tests/terminal_outcome.rs"]
@@ -1119,27 +1122,37 @@ async fn resume_refuses_run_admitted_under_pre_contract_fingerprint() {
 }
 
 #[tokio::test]
-async fn resume_reexecutes_only_retry_safe_pending_call() {
+async fn legacy_retry_safe_pending_calls_do_not_grant_native_dispatch() {
     let (runtime, store, executed, run_id) = crashed_run_with_calls(false).await;
-    let result = runtime.resume(&run_id).await.unwrap();
-    assert_eq!(result.status, RunStatus::Interrupted);
-    assert_eq!(executed.load(Ordering::SeqCst), 1);
+    let before = store.list_unfinished_tool_calls(&run_id).await.unwrap();
+    assert!(matches!(
+        runtime.resume(&run_id).await,
+        Err(RuntimeError::Attempt(
+            crabber_session::AttemptError::InvalidTransition
+        ))
+    ));
+    assert_eq!(executed.load(Ordering::SeqCst), 0);
     assert_eq!(
         store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
+        before
     );
 }
 
 #[tokio::test]
-async fn recover_interrupts_expired_running_call() {
+async fn legacy_running_call_cannot_be_declared_interrupted_by_recovery() {
     let (runtime, store, executed, run_id) = crashed_run_with_calls(true).await;
-    let result = runtime.recover().await.unwrap().recovered;
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].status, RunStatus::Interrupted);
+    let before = store.list_unfinished_tool_calls(&run_id).await.unwrap();
+    let report = runtime.recover().await.unwrap();
+    assert_eq!(report.recovered, Vec::new());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(
+        report.skipped[0].reason,
+        crate::RecoverySkipReason::Attempt(crabber_session::AttemptError::InvalidTransition)
+    );
     assert_eq!(executed.load(Ordering::SeqCst), 0);
     assert_eq!(
         store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
+        before
     );
 }
 
@@ -1385,6 +1398,8 @@ async fn text_tool_text_has_exact_order_and_three_generated_messages() {
             .map(|event| event.kind.clone())
             .collect::<Vec<_>>(),
         vec![
+            EventKind::ExecutionAttemptChanged,
+            EventKind::ExecutionAttemptChanged,
             EventKind::RunAdmitted,
             EventKind::RunStarted,
             EventKind::TurnStarted,
@@ -1397,6 +1412,7 @@ async fn text_tool_text_has_exact_order_and_three_generated_messages() {
             EventKind::MessageCommitted,
             EventKind::TurnCompleted,
             EventKind::RunSettled,
+            EventKind::ExecutionAttemptChanged,
         ]
     );
     assert!(durable.iter().all(|event| !event.live_only));
@@ -1616,10 +1632,13 @@ async fn stream_eof_without_completed_fails_without_assistant_commit() {
             .map(|event| event.kind.clone())
             .collect::<Vec<_>>(),
         vec![
+            EventKind::ExecutionAttemptChanged,
+            EventKind::ExecutionAttemptChanged,
             EventKind::RunAdmitted,
             EventKind::RunStarted,
             EventKind::TurnStarted,
             EventKind::RunSettled,
+            EventKind::ExecutionAttemptChanged,
         ]
     );
 }
@@ -1964,6 +1983,7 @@ struct SettlementGate {
     fail_settle: std::sync::atomic::AtomicBool,
     fail_permission_event: std::sync::atomic::AtomicBool,
     terminal_fault: AtomicUsize,
+    begin_ack_lost: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
@@ -1981,6 +2001,16 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -2129,6 +2159,57 @@ impl Store for DelayedTerminalStore {
 
 #[async_trait]
 impl ExecutionStore for DelayedTerminalExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crabber_session::AttemptMutation,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        let begin = matches!(
+            request.command,
+            crabber_session::AttemptCommand::Begin { .. }
+        );
+        let result = self.inner.mutate_attempt(request, authority).await;
+        if begin && result.is_ok() && self.gate.begin_ack_lost.load(Ordering::SeqCst) {
+            return Err(crabber_session::AttemptError::UnknownStoreOutcome);
+        }
+        result
+    }
+    async fn conclude_attempt(
+        &self,
+        conclusion: crabber_session::AttemptConclusion,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        use crabber_session::AttemptError;
+        if matches!(
+            &conclusion.boundary,
+            crabber_session::RunBoundary::Suspended { .. }
+        ) {
+            return self.inner.conclude_attempt(conclusion, authority).await;
+        }
+        self.gate.settlements.fetch_add(1, Ordering::SeqCst);
+        if self.gate.terminal_fault.load(Ordering::SeqCst) == 1 {
+            return Err(AttemptError::UnknownStoreOutcome);
+        }
+        let completed = matches!(
+            &conclusion.boundary,
+            crabber_session::RunBoundary::Terminal {
+                status: RunStatus::Completed,
+                ..
+            }
+        );
+        let result = self.inner.conclude_attempt(conclusion, authority).await;
+        if self.gate.terminal_fault.load(Ordering::SeqCst) == 2 && result.is_ok() {
+            return Err(AttemptError::UnknownStoreOutcome);
+        }
+        if completed && result.is_ok() {
+            if let Some(sender) = self.gate.entered.lock().unwrap().take() {
+                let _ = sender.send(());
+            }
+            self.gate.release.notified().await;
+        }
+        result
+    }
+
     async fn begin_admission_execution(
         &self,
     ) -> Result<(), crabber_session::AdmissionExecutionError> {
@@ -2391,49 +2472,30 @@ async fn recovery_selects_current_attempt_per_run_without_ambient_contamination(
 }
 
 #[tokio::test]
-async fn linked_expired_recovery_preserves_pending_and_running_interruption_policy() {
+async fn linked_expired_legacy_recovery_cannot_grant_dispatch() {
     for running in [false, true] {
         let capture = Arc::new(AttemptObserver::default());
         let (runtime, store, executed, run_id) =
             crashed_run_with_observer(running, capture.clone()).await;
-        let prior =
-            crabber_core::TraceContext::new("1234567890abcdef", "1234567890abcdef").unwrap();
-        let current = crabber_core::TraceContext::new("9876543210abcdef", "9876543210abcdef")
-            .unwrap()
-            .linked_to(&prior)
-            .unwrap();
-        let old = store.get_run(&run_id).await.unwrap().unwrap();
-        let results = runtime
+        let before = store.list_unfinished_tool_calls(&run_id).await.unwrap();
+        let current =
+            crabber_core::TraceContext::new("9876543210abcdef", "9876543210abcdef").unwrap();
+        let report = runtime
             .recover_with_context(|_| Some(current.clone()))
             .await
-            .unwrap()
-            .recovered;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].run_id, run_id);
-        assert_eq!(results[0].status, RunStatus::Interrupted);
-        assert_eq!(executed.load(Ordering::SeqCst), usize::from(!running));
+            .unwrap();
+        assert_eq!(report.recovered, Vec::new());
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(
+            report.skipped[0].reason,
+            crate::RecoverySkipReason::Attempt(crabber_session::AttemptError::InvalidTransition)
+        );
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
         assert_eq!(
             store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-            [] as [crabber_core::ToolCallRecord; 0]
+            before
         );
-        let new = store.get_run(&run_id).await.unwrap().unwrap();
-        assert_ne!(old.claim_token, new.claim_token);
-        assert!(
-            store
-                .execution(RunFence {
-                    run_id: run_id.clone(),
-                    claim_token: old.claim_token
-                })
-                .await
-                .is_err()
-        );
-        let events = capture.0.lock().unwrap();
-        assert!(!events.is_empty());
-        assert!(
-            events
-                .iter()
-                .all(|(id, observed)| id == &run_id && observed.as_ref() == Some(&current))
-        );
+        assert!(capture.0.lock().unwrap().is_empty());
     }
 }
 

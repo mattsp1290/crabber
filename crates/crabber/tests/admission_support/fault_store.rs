@@ -8,6 +8,16 @@ pub(super) struct FaultStore {
 }
 #[async_trait]
 impl Store for FaultStore {
+    fn supports_owned_attempts(&self) -> bool {
+        self.inner.supports_owned_attempts()
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -261,6 +271,21 @@ struct FaultExecution {
 }
 #[async_trait]
 impl ExecutionStore for FaultExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crabber_session::AttemptMutation,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.mutate_attempt(request, authority).await
+    }
+    async fn conclude_attempt(
+        &self,
+        conclusion: crabber_session::AttemptConclusion,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.conclude_attempt(conclusion, authority).await
+    }
+
     async fn renew_lease(&self, until: time::OffsetDateTime) -> Result<(), StoreError> {
         self.inner.renew_lease(until).await
     }

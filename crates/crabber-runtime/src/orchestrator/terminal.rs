@@ -41,7 +41,13 @@ impl Orchestrator {
         }
         // An unknown terminal write is reconciled from durable state, never
         // followed by a second attempt to manufacture another outcome.
-        if matches!(error, RuntimeError::TerminalOutcomeUnknown { .. }) {
+        if matches!(
+            error,
+            RuntimeError::TerminalOutcomeUnknown { .. }
+                | RuntimeError::AttemptBoundaryUnknown { .. }
+                | RuntimeError::AttemptCleanupIncomplete { .. }
+                | RuntimeError::ToolOutcomeUnknown { .. }
+        ) {
             return Err(error);
         }
         if lost.load(Ordering::SeqCst)
@@ -51,6 +57,15 @@ impl Orchestrator {
             observed_lost.store(true, Ordering::SeqCst);
             return Err(error);
         }
+        if !self
+            .execution_tasks
+            .join_run_resources(run, super::attempt::RESOURCE_JOIN_BOUND)
+            .await
+        {
+            return Err(RuntimeError::AttemptCleanupIncomplete {
+                run_id: run.clone(),
+            });
+        }
         self.settle_unfinished_calls(execution, session, run, plan, true, turn)
             .await?;
         let status = if matches!(error, RuntimeError::Interrupted) {
@@ -58,19 +73,19 @@ impl Orchestrator {
         } else {
             RunStatus::Failed
         };
-        let settled = self.run_settled_event(session, run, status, &Usage::default(), started_at);
-        execution
-            .settle_run(
-                status,
-                Some(storable_error_text(&error)),
-                Usage::default(),
-                settled.clone(),
+        let settled = self
+            .conclude_owned_attempt(
+                execution,
+                run,
+                crabber_session::RunBoundary::Terminal {
+                    status,
+                    error: Some(storable_error_text(&error)),
+                    usage: Usage::default(),
+                },
+                None,
+                started_at,
             )
-            .await
-            .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
-                run_id: run.clone(),
-                reason,
-            })?;
+            .await?;
         self.observer.emit(&settled);
         let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
         plan.dispatcher

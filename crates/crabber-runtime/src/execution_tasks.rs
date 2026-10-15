@@ -142,6 +142,40 @@ impl ExecutionTasks {
         }
         while joins.next().await.is_some() {}
     }
+    /// Called after the worker has dropped every tool future. This joins only
+    /// that run's sealed resource scopes, never the worker awaiting this method.
+    pub(crate) async fn join_run_resources(&self, run: &RunId, bound: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + bound;
+        let scopes = self
+            .owners
+            .lock()
+            .unwrap()
+            .resources
+            .iter()
+            .filter(|scope| scope.run_id == *run)
+            .cloned()
+            .collect::<Vec<_>>();
+        for scope in &scopes {
+            if !scope.owner.snapshot().sealed {
+                return false;
+            }
+            scope
+                .owner
+                .drain(deadline.saturating_duration_since(tokio::time::Instant::now()))
+                .await;
+        }
+        // Recheck under the ownership lock so a late scope cannot be omitted.
+        self.owners
+            .lock()
+            .unwrap()
+            .resources
+            .iter()
+            .filter(|scope| scope.run_id == *run)
+            .all(|scope| {
+                let report = scope.owner.snapshot();
+                report.sealed && report.pending == 0 && report.failures.is_empty()
+            })
+    }
     pub(crate) fn spawn(
         &self,
         run_id: RunId,

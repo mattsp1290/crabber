@@ -222,6 +222,16 @@ impl DriftStore {
 }
 #[async_trait]
 impl Store for DriftStore {
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -666,16 +676,40 @@ async fn crashed_running_run(h: &Harness, workspace_id: &str, directory: &str) -
 }
 
 #[tokio::test]
-async fn row7_reclaimed_running_run_without_checkpoint_is_not_missing_context() {
+async fn row7_legacy_running_run_cannot_authorize_execution_from_context_alone() {
     let h = harness(Vec::new(), allow()).await;
     let run_id = crashed_running_run(&h, "ws-c", "/c").await;
-    let run = h.memory.get_run(&run_id).await.unwrap().unwrap();
-    assert_eq!(run.status, RunStatus::Running);
-    assert!(run.checkpoint.is_none());
+    let before = h.memory.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(before.status, RunStatus::Running);
+    assert!(before.checkpoint.is_none());
     expire(&h.clock);
-    let recovered = h.runtime.recover().await.unwrap().recovered;
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(h.seen.tools(), [identity("ws-c", "/c")]);
+    let report = h.runtime.recover().await.unwrap();
+    assert_eq!(report.recovered, Vec::new());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(
+        report.skipped[0].reason,
+        crate::RecoverySkipReason::Attempt(crabber_session::AttemptError::InvalidTransition)
+    );
+    assert_eq!(h.seen.tools(), Vec::new());
+    let after = h.memory.get_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        (
+            after.status,
+            after.checkpoint,
+            after.config_hash,
+            after.plan_fingerprint
+        ),
+        (
+            before.status,
+            before.checkpoint,
+            before.config_hash,
+            before.plan_fingerprint
+        )
+    );
+    assert_eq!(
+        h.memory.latest_execution_attempt(&run_id).await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -839,10 +873,16 @@ async fn recover_sweep_skips_and_reports_bad_runs_and_recovers_the_rest() {
         .collect();
     skipped.sort_by(|a, b| a.0.cmp(&b.0));
     let mut expected = vec![
-        (runs[1].1.clone(), StoreError::SessionIdentityMismatch),
-        (runs[2].1.clone(), invalid),
-        (runs[3].1.clone(), StoreError::NotFound),
-        (runs[4].1.clone(), corrupt),
+        (
+            runs[1].1.clone(),
+            crate::RecoverySkipReason::Store(StoreError::SessionIdentityMismatch),
+        ),
+        (runs[2].1.clone(), crate::RecoverySkipReason::Store(invalid)),
+        (
+            runs[3].1.clone(),
+            crate::RecoverySkipReason::Store(StoreError::NotFound),
+        ),
+        (runs[4].1.clone(), crate::RecoverySkipReason::Store(corrupt)),
     ];
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(skipped, expected);

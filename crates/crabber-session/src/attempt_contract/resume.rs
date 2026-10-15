@@ -87,6 +87,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
         Error::NotFound
     );
     lifecycle(store, clock).await;
+    running_work_blocks_new_generation(store, clock).await;
     legacy_pause_cannot_gain_attempt_authority(store, clock).await;
 }
 async fn lifecycle(store: &impl Store, clock: &ManualClock) {
@@ -345,6 +346,87 @@ async fn legacy_pause_cannot_gain_attempt_authority(store: &impl Store, clock: &
     assert_eq!(
         store.session_revision(&admitted.session.id).await.unwrap(),
         request.expected_revision
+    );
+    assert_eq!(
+        store
+            .get_run(&admitted.run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Paused
+    );
+}
+
+async fn running_work_blocks_new_generation(store: &impl Store, clock: &ManualClock) {
+    let (admitted, _, _, previous) = suspended(store, clock).await;
+    let fence = store
+        .claim_expired_run(&admitted.run.id, "barrier-host")
+        .await
+        .unwrap();
+    let execution = store.execution(fence).await.unwrap();
+    let event = |kind| crabber_core::EventRecord {
+        cursor: None,
+        session_id: admitted.session.id.clone(),
+        run_id: admitted.run.id.clone(),
+        turn_id: None,
+        kind,
+        payload: serde_json::Value::Null,
+        correlation: None,
+        live_only: false,
+        created_at: clock.now(),
+    };
+    let call = crabber_core::ToolCallId::new();
+    execution
+        .create_tool_call(
+            crabber_core::ToolCallRecord {
+                id: call.clone(),
+                run_id: admitted.run.id.clone(),
+                name: "legacy-owner".into(),
+                arguments: json!({}),
+                status: crabber_core::ToolCallStatus::Pending,
+                retry_safe: true,
+                result: None,
+            },
+            event(crabber_core::EventKind::ToolCallPending),
+        )
+        .await
+        .unwrap();
+    execution
+        .claim_tool_call(&call, event(crabber_core::EventKind::ToolCallRunning))
+        .await
+        .unwrap();
+    let revision = store.session_revision(&admitted.session.id).await.unwrap();
+    let mut next = reserve(revision);
+    if let AttemptCommand::Reserve { target } = &mut next.command {
+        target.generation = previous.attempt.target.generation.next().unwrap();
+    }
+    assert_eq!(
+        execution
+            .mutate_attempt(next.clone(), None)
+            .await
+            .unwrap_err(),
+        Error::CleanupBlocked
+    );
+    assert_eq!(
+        store.session_revision(&admitted.session.id).await.unwrap(),
+        revision
+    );
+    assert_eq!(
+        store
+            .lookup_attempt_mutation(&admitted.session.id, &next.id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .latest_execution_attempt(&admitted.run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt,
+        previous.attempt
     );
     assert_eq!(
         store

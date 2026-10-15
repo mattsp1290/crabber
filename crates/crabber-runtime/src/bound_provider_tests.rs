@@ -224,7 +224,7 @@ async fn recovery_rejects_changed_backend_before_claim() {
     assert_eq!(report.skipped.len(), 1);
     assert_eq!(
         report.skipped[0].reason,
-        crabber_session::StoreError::HostUnsupported
+        crate::RecoverySkipReason::Store(crabber_session::StoreError::HostUnsupported)
     );
     assert_eq!(store.get_run(&admitted.run.id).await.unwrap(), run_before);
 }

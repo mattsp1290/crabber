@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
     async fn tool_phase(
         &self,
         run: &RunId,

@@ -213,7 +213,7 @@ async fn save(
     .map_err(db)?;
     Ok(())
 }
-async fn read(
+pub(super) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,

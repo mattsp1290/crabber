@@ -178,13 +178,9 @@ pub(super) async fn exists(
         .map_err(db)
         .map_err(sql::unknown)
 }
-pub(super) async fn quiet(
-    tx: &mut Transaction<'_, Sqlite>,
-    run: &RunId,
-    id: &AttemptId,
-) -> Result<bool, Error> {
-    let phases: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND attempt_id=$2 AND (quiescence_state<>'Complete' OR state IN ('Claimed','Started','Uncertain')))")
-        .bind(&run.0).bind(&id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+pub(super) async fn quiet(tx: &mut Transaction<'_, Sqlite>, run: &RunId) -> Result<bool, Error> {
+    let phases: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND (quiescence_state<>'Complete' OR state IN ('Claimed','Started','Uncertain')))")
+        .bind(&run.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
     let calls: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND json_extract(data,'$.status')='running')")
         .bind(&run.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
     Ok(!phases && !calls)

@@ -71,11 +71,13 @@ its result after preparation returns a handle.
 
 These joins do not prove durable terminal outcome, callback/child-process cleanup
 or notification-task completion. Terminal-write errors, including lost acknowledgements
-after commit, return `RuntimeError::TerminalOutcomeUnknown` without a second terminal
+after commit, return `RuntimeError::AttemptBoundaryUnknown` without a second terminal
 write. Reconcile the durable run and events; live terminal events require an
 acknowledged commit. Facade readiness/context checks before entering the runtime
-are outside this ownership scope. Native attempt/phase integration, durable
-cancellation and full orderly close remain unfinished. Result/completion signals
+are outside this ownership scope. Initial workers, expired Unstarted recovery and
+eligible suspended continuation now reserve/reclaim and one-shot Begin a native
+attempt before business work. Native phase dispatch, durable cancellation and full
+orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
 Native tools can register task-owned resources with `ToolContext::resources()`.
@@ -91,12 +93,18 @@ The runtime retains the actual task joins independently of the worker result.
 `sealed`, `pending` and `failures`. An active scope stays open during a snapshot
 drain; a sealed scope resumes its retained joins under the remaining deadline.
 A timeout preserves ownership, and failures remain visible across repeated drains.
-Worker completion and a committed logical outcome do not imply those resources
-were cleaned up. These are local task observations; durable phase quiescence,
+Before committing a tool result or run boundary, the worker closes and joins its
+registered resources under a one-second bound. Pending joins or failures stop
+continuation with `AttemptCleanupIncomplete`, retain ownership and leave the native
+attempt uncompleted. A later drain does not automatically resume execution or
+manufacture a successful result. These are local task observations; durable phase quiescence,
 external-effect reconciliation and explicit session-owned job transfer are still
 part of the pending native phase integration. They must not be inferred from
 this report. Execution fingerprints include resource contract version 1 and its
-capacity; old plans fail closed and require their matching binary to finish.
+capacity. Native attempt driver version 1 and its join bound are also fingerprinted;
+old plans fail closed and require their matching binary to finish. Custom stores
+must explicitly declare `supports_owned_attempts()` and implement its full contract;
+ordinary admission rejects unsupported adapters before accepting work.
 
 Register shareable state explicitly with `shared_tool`, `shared_extension`,
 `shared_wasm_extension`, or `shared_host_services`. These replace the old builder
@@ -233,6 +241,17 @@ rollback/unknown-response contract. This state snapshot does not include history
 and therefore cannot validate a separately captured history snapshot.
 
 Experimental attempt primitives are implemented by Memory, SQLite and PostgreSQL.
+The runtime's first reservation uses `ReserveBound`: within the same fenced
+transaction, validate its retained typed binding and exact original input prefix,
+reject a checkpoint/nonzero usage or execution events/calls/phases/attempts, and
+allow only admission's original context epoch. The check and fresh reservation
+commit together. This recovers an admitted run whose process died before its first
+reservation, including a lost keyed admission-Begin acknowledgment, without taking
+absence of an attempt read as dispatch authority. Exact retries return metadata.
+A Started native attempt, including a lost native Begin acknowledgment, never
+re-enters this path. Recovery reports ineligible native attempts through
+`RecoverySkipReason::Attempt` and continues with other eligible runs.
+
 `Store::execution_attempt` returns coherent metadata and the current public revision.
 `latest_execution_attempt(run)` discovers the highest generation without requiring
 its ID or returning authority. An existing run with no reservation returns `None`;
@@ -250,7 +269,9 @@ execution handle still requires current ownership. Started or unknown attempts
 are never automatically reclaimed. Only a suspended attempt with completed
 cleanup can advance to another generation. After claiming the paused run's fresh
 fence, a new reservation atomically changes it to Running and creates an Unstarted
-attempt. Only its fresh authority and one-shot Begin permit execution. A replay
+attempt. The reservation rechecks current run-wide phase quiescence and running
+calls, even when the preceding attempt already recorded complete cleanup. Only
+its fresh authority and one-shot Begin permit execution. A replay
 returns metadata, and an old generation's authority cannot begin the new attempt.
 A legacy pause without native suspended-attempt evidence cannot activate this path.
 
@@ -270,8 +291,9 @@ Terminal outcomes reject pending tool calls too. A completed run with pending
 inbox input returns `AttemptError::PendingInput` without ending its attempt or
 writing a receipt, so the worker can incorporate that input and continue.
 A suspension can retain pending calls and a bounded private checkpoint, with
-usage recorded on the run. Incomplete/uncertain cleanup and the runtime's adoption
-of this operation remain part of the pending attempt driver.
+usage recorded on the run. The runtime uses this operation for terminal and pause
+boundaries. Incomplete/uncertain cleanup blocks continuation; native phase recovery
+and the full public lifecycle/control interface remain unfinished.
 
 Retain the original `AttemptConclusion` finish key/revision/target and boundary
 after an unknown acknowledgement. Compare `AttemptConclusion::fingerprint` with

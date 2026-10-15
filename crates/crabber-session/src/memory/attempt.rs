@@ -1,3 +1,5 @@
+#[path = "attempt/pristine.rs"]
+mod pristine;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,
@@ -138,6 +140,9 @@ impl MemoryExecution {
             if let Some(conclusion) = conclusion {
                 check_boundary(state, &run, conclusion)?;
             }
+            if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
+                pristine::check(state, &run)?;
+            }
             let id = &request.command.target().id;
             let (record, grant) =
                 prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
@@ -238,8 +243,10 @@ fn apply_run_transition(
 ) -> Result<(), Error> {
     if let Some(conclusion) = conclusion {
         apply_boundary(state, run, conclusion, now)?;
-    } else if matches!(request.command, AttemptCommand::Reserve { .. })
-        && run.status == crabber_core::RunStatus::Paused
+    } else if matches!(
+        request.command,
+        AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
+    ) && run.status == crabber_core::RunStatus::Paused
     {
         let mut activated = run.clone();
         activated.status = crabber_core::RunStatus::Running;
@@ -300,7 +307,10 @@ fn prepare_record(
 ) -> Result<(attempt::AttemptRecord, bool), Error> {
     let id = &request.command.target().id;
     Ok(
-        if matches!(request.command, AttemptCommand::Reserve { .. }) {
+        if matches!(
+            request.command,
+            AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
+        ) {
             if state.attempts.contains_key(id) {
                 return Err(Error::SemanticConflict);
             }
@@ -310,7 +320,11 @@ fn prepare_record(
                 .filter(|r| r.snapshot.run_id == run.id)
                 .max_by_key(|r| r.snapshot.target.generation)
                 .map(|r| &r.snapshot);
-            (attempt::AttemptRecord::reserve(run, request, latest)?, true)
+            let record = attempt::AttemptRecord::reserve(run, request, latest)?;
+            if latest.is_some() && !is_quiet(state, run) {
+                return Err(Error::CleanupBlocked);
+            }
+            (record, true)
         } else {
             let mut record = state
                 .attempts
@@ -320,19 +334,7 @@ fn prepare_record(
                 .ok_or(Error::NotFound)?;
             // Legacy Running calls are owned work too. The phase store adds
             // its independently tracked quiescence predicate when integrated.
-            let quiet = !state.phases.values().any(|p| {
-                p.snapshot.run_id == run.id
-                    && (p.snapshot.quiescence != crate::PhaseQuiescence::Complete
-                        || matches!(
-                            p.snapshot.state,
-                            crate::PhaseState::Claimed
-                                | crate::PhaseState::Started
-                                | crate::PhaseState::Uncertain
-                        ))
-            }) && !state
-                .calls
-                .values()
-                .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running);
+            let quiet = is_quiet(state, run);
             let grant = record.change(run, request, authority, now, quiet)?;
             if conclusion {
                 record.cleanup(crate::AttemptCleanupResult::Complete, quiet)?;
@@ -340,6 +342,22 @@ fn prepare_record(
             (record, grant)
         },
     )
+}
+
+fn is_quiet(state: &State, run: &crabber_core::Run) -> bool {
+    !state.phases.values().any(|p| {
+        p.snapshot.run_id == run.id
+            && (p.snapshot.quiescence != crate::PhaseQuiescence::Complete
+                || matches!(
+                    p.snapshot.state,
+                    crate::PhaseState::Claimed
+                        | crate::PhaseState::Started
+                        | crate::PhaseState::Uncertain
+                ))
+    }) && !state
+        .calls
+        .values()
+        .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running)
 }
 
 #[cfg(test)]

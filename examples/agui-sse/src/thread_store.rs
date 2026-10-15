@@ -17,6 +17,16 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(crate) struct ThreadStore(pub Arc<MemoryStore>);
 #[async_trait]
 impl Store for ThreadStore {
+    fn supports_owned_attempts(&self) -> bool {
+        self.0.supports_owned_attempts()
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber::session::VersionedAttempt>, crabber::session::AttemptError> {
+        self.0.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,

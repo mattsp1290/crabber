@@ -15,6 +15,16 @@ pub(super) struct LostAdmissionReply {
 }
 #[async_trait]
 impl Store for LostAdmissionReply {
+    fn supports_owned_attempts(&self) -> bool {
+        self.inner.supports_owned_attempts()
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber::session::VersionedAttempt>, crabber::session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,

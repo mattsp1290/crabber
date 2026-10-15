@@ -1,5 +1,7 @@
 #[path = "orchestrator/admission.rs"]
 mod admission;
+#[path = "orchestrator/attempt.rs"]
+mod attempt;
 #[path = "orchestrator/binding.rs"]
 mod binding;
 #[path = "orchestrator/input.rs"]
@@ -178,8 +180,9 @@ pub struct RunResult {
 }
 
 /// Outcome of a recovery sweep: the runs it recovered and the expired runs it
-/// left unfinished. A skipped run keeps its status and fence; the host can
-/// inspect it with `resume` and dispose of it with fenced abandonment.
+/// left unfinished. Reconciliation never dispatches a Started/unknown attempt.
+/// A failed atomic first-reservation check may already have rotated an expired
+/// run fence; that ownership change does not establish an execution outcome.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecoverReport {
     pub recovered: Vec<RunResult>,
@@ -191,7 +194,13 @@ pub struct RecoverReport {
 pub struct SkippedRun {
     pub session_id: SessionId,
     pub run_id: RunId,
-    pub reason: StoreError,
+    pub reason: RecoverySkipReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoverySkipReason {
+    Store(StoreError),
+    Attempt(crabber_session::AttemptError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -204,6 +213,8 @@ pub enum RuntimeError {
     Store(#[from] StoreError),
     #[error("admission execution: {0}")]
     AdmissionExecution(#[from] AdmissionExecutionError),
+    #[error("execution attempt: {0}")]
+    Attempt(#[from] crabber_session::AttemptError),
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
     #[error("provider binding: {0}")]
@@ -232,6 +243,15 @@ pub enum RuntimeError {
         #[source]
         reason: StoreError,
     },
+    #[error("attempt boundary persistence outcome is unknown")]
+    AttemptBoundaryUnknown {
+        run_id: RunId,
+        reason: crabber_session::AttemptError,
+    },
+    #[error("attempt resource cleanup is incomplete")]
+    AttemptCleanupIncomplete { run_id: RunId },
+    #[error("tool execution outcome requires reconciliation")]
+    ToolOutcomeUnknown { run_id: RunId, call_id: ToolCallId },
     #[error("run paused")]
     Paused,
     #[error("run plan changed since checkpoint")]
@@ -405,6 +425,7 @@ pub struct Orchestrator {
     store: Arc<dyn Store>,
     behavior_fingerprint: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
+    owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
@@ -696,6 +717,7 @@ impl OrchestratorBuilder {
         }
         Ok(Orchestrator {
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
+            owned_attempt: None,
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
             workspace_reader_resolver: self.workspace_reader_resolver,
@@ -1219,6 +1241,25 @@ impl Orchestrator {
             return Err(RuntimeError::PlanChanged);
         }
         let bound = self.restore_provider(&plan, &binding.provider).await?;
+        if !self.store.supports_owned_attempts() {
+            return Err(StoreError::HostUnsupported.into());
+        }
+        let native_unstarted = match self.store.latest_execution_attempt(run_id).await? {
+            Some(previous)
+                if previous.attempt.state == crabber_session::AttemptState::Unstarted =>
+            {
+                true
+            }
+            Some(previous)
+                if previous.attempt.state == crabber_session::AttemptState::Suspended
+                    && previous.attempt.cleanup == crabber_session::AttemptCleanup::Complete =>
+            {
+                false
+            }
+            Some(_) => return Err(crabber_session::AttemptError::Busy.into()),
+            None if run.status == RunStatus::Running => true,
+            None => return Err(crabber_session::AttemptError::InvalidTransition.into()),
+        };
         let fence = self
             .store
             .claim_expired_run(run_id, &RunId::new().to_string())
@@ -1244,6 +1285,12 @@ impl Orchestrator {
             }
         };
         let execution: Arc<dyn ExecutionStore> = execution.into();
+        let mut worker = self.clone();
+        worker.owned_attempt = Some(Arc::new(
+            self.begin_owned_attempt(execution.as_ref(), &run.session_id, run_id, true)
+                .await?,
+        ));
+        let self_ = &worker;
         let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
             Arc::clone(&self.store),
@@ -1271,35 +1318,43 @@ impl Orchestrator {
             let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
             execution.append_event(resumed.clone()).await?;
             self.observer.emit(&resumed);
+            if native_unstarted {
+                let usage = self_
+                    .run_loop(
+                        execution.as_ref(),
+                        run_id,
+                        &session,
+                        &original,
+                        &plan,
+                        &bound,
+                        &work_cancellation,
+                        true,
+                        run.usage.clone(),
+                        lost.as_ref(),
+                        &work_turn,
+                    )
+                    .await?;
+                return Ok(RunResult {
+                    session_id: run.session_id.clone(),
+                    run_id: run_id.clone(),
+                    status: RunStatus::Completed,
+                    usage,
+                });
+            }
             let committed_turn = self
                 .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
                 .await?;
-            let mut interrupted = false;
-            // D10 fixed settlement: Running calls and non-retry-safe Pending calls
-            // outside a Paused run get only runtime-authored interrupted text.
-            // No executor, pre-stage, result transform or final redactor runs here.
+            // A stopped attempt cannot manufacture an outcome for a call whose
+            // body may already have caused an external effect.
             for call in self.store.list_unfinished_tool_calls(run_id).await? {
-                if call.status == ToolCallStatus::Running
-                    || (run.status != RunStatus::Paused && !call.retry_safe)
-                {
-                    if call.status == ToolCallStatus::Pending {
-                        let event = self.event(&run.session_id, run_id, EventKind::ToolCallRunning);
-                        execution.claim_tool_call(&call.id, event).await?;
-                    }
-                    self.settle_interrupted_call(
-                        execution.as_ref(),
-                        &run.session_id,
-                        run_id,
-                        &plan,
-                        &call,
-                        None,
-                    )
-                    .await?;
-                    interrupted = true;
-                    continue;
+                if call.status == ToolCallStatus::Running {
+                    return Err(RuntimeError::ToolOutcomeUnknown {
+                        run_id: run_id.clone(),
+                        call_id: call.id,
+                    });
                 }
-                // D10 re-execution: retain durable identity and input, skip ToolPrepare,
-                // and rerun the executor, pre-stage and full result chain.
+                // Only Pending calls behind the native suspension barrier can
+                // enter the execution chain, retaining their prepared identity.
                 let pending = PendingCall {
                     message_id: None,
                     turn_id: None,
@@ -1326,24 +1381,27 @@ impl Orchestrator {
                 && let Some(checkpoint) = &run.checkpoint
                 && let Some(request) = saved
             {
-                let usage = checkpoint
+                let usage: Usage = checkpoint
                     .get("usage")
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
                     .unwrap_or_default();
                 if committed_turn == Some(false) {
-                    let event = self.run_settled_event(
-                        &run.session_id,
-                        run_id,
-                        RunStatus::Completed,
-                        &usage,
-                        run.created_at,
-                    );
-                    match execution
-                        .settle_run(RunStatus::Completed, None, usage.clone(), event.clone())
+                    match self_
+                        .conclude_owned_attempt(
+                            execution.as_ref(),
+                            run_id,
+                            crabber_session::RunBoundary::Terminal {
+                                status: RunStatus::Completed,
+                                error: None,
+                                usage: usage.clone(),
+                            },
+                            None,
+                            run.created_at,
+                        )
                         .await
                     {
-                        Ok(()) => {
+                        Ok(event) => {
                             self.observer.emit(&event);
                             plan.release();
                             return Ok(RunResult {
@@ -1353,18 +1411,13 @@ impl Orchestrator {
                                 usage,
                             });
                         }
-                        Err(StoreError::PendingInput) => {
+                        Err(RuntimeError::Attempt(crabber_session::AttemptError::PendingInput)) => {
                             self.claim_input(execution.as_ref(), InboxKind::Steer)
                                 .await?;
                             self.claim_input(execution.as_ref(), InboxKind::FollowUp)
                                 .await?;
                         }
-                        Err(reason) => {
-                            return Err(RuntimeError::TerminalOutcomeUnknown {
-                                run_id: run_id.clone(),
-                                reason,
-                            });
-                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 self.emit_durable(
@@ -1375,7 +1428,7 @@ impl Orchestrator {
                     EventKind::TurnCompleted,
                 )
                 .await?;
-                let outcome = self
+                let outcome = self_
                     .run_loop(
                         execution.as_ref(),
                         run_id,
@@ -1408,20 +1461,20 @@ impl Orchestrator {
                 plan.release();
                 return result;
             }
-            let status = if interrupted || run.status != RunStatus::Paused {
-                RunStatus::Interrupted
-            } else {
-                RunStatus::Completed
-            };
-            let event =
-                self.run_settled_event(&run.session_id, run_id, status, &run.usage, run.created_at);
-            execution
-                .settle_run(status, None, run.usage.clone(), event.clone())
-                .await
-                .map_err(|reason| RuntimeError::TerminalOutcomeUnknown {
-                    run_id: run_id.clone(),
-                    reason,
-                })?;
+            let status = RunStatus::Completed;
+            let event = self_
+                .conclude_owned_attempt(
+                    execution.as_ref(),
+                    run_id,
+                    crabber_session::RunBoundary::Terminal {
+                        status,
+                        error: None,
+                        usage: run.usage.clone(),
+                    },
+                    None,
+                    run.created_at,
+                )
+                .await?;
             self.observer.emit(&event);
             plan.release();
             Ok(RunResult {
@@ -1449,20 +1502,21 @@ impl Orchestrator {
             Ok(result) => Ok(result),
             Err(error) => {
                 let turn = current_turn.lock().expect("turn context poisoned").clone();
-                self.finish_failed_run(
-                    terminal::FailureContext {
-                        execution: failure_execution.as_ref(),
-                        fence: &fence,
-                        session: &failure_session,
-                        plan: &failure_plan,
-                        started_at: failure_started_at,
-                        lost: failure_lost.as_ref(),
-                        observed_lost: measurement_lost.as_ref(),
-                    },
-                    error,
-                    turn.as_ref(),
-                )
-                .await
+                self_
+                    .finish_failed_run(
+                        terminal::FailureContext {
+                            execution: failure_execution.as_ref(),
+                            fence: &fence,
+                            session: &failure_session,
+                            plan: &failure_plan,
+                            started_at: failure_started_at,
+                            lost: failure_lost.as_ref(),
+                            observed_lost: measurement_lost.as_ref(),
+                        },
+                        error,
+                        turn.as_ref(),
+                    )
+                    .await
             }
         };
         failure_plan.release();
@@ -1485,10 +1539,9 @@ impl Orchestrator {
 
     /// Selects fresh correlation independently for each eligible run.
     /// The selector cannot grant a lease; live leases and competing claims stay fenced.
-    /// Running calls and non-retry-safe Pending calls outside Paused runs settle
-    /// with runtime-only interrupted text, bypassing the pre-stage and result chain.
-    /// Other Pending calls re-execute the full chain from their stored IDs and input
-    /// without rerunning `ToolPrepare`. There is no caller-visible cancellation source.
+    /// Only an expired Unstarted reservation, a pristine bound admission or a
+    /// fully quiescent suspended attempt can enter the driver. Started, unknown
+    /// and incomplete attempts stay unfinished and are reported for reconciliation.
     /// # Errors
     /// Returns the same store and execution errors as `recover`.
     pub async fn recover_with_context<F>(
@@ -1521,9 +1574,21 @@ impl Orchestrator {
                     report.skipped.push(SkippedRun {
                         session_id,
                         run_id,
-                        reason,
+                        reason: RecoverySkipReason::Store(reason),
                     });
                 }
+                Err(RuntimeError::Attempt(
+                    reason @ (crabber_session::AttemptError::Busy
+                    | crabber_session::AttemptError::LiveOwner
+                    | crabber_session::AttemptError::CleanupBlocked
+                    | crabber_session::AttemptError::InvalidTransition
+                    | crabber_session::AttemptError::Unsupported
+                    | crabber_session::AttemptError::StaleOwner),
+                )) => report.skipped.push(SkippedRun {
+                    session_id,
+                    run_id,
+                    reason: RecoverySkipReason::Attempt(reason),
+                }),
                 Err(
                     RuntimeError::ProviderBinding(
                         crabber_providers::ProviderBindingError::Unavailable
@@ -1537,7 +1602,7 @@ impl Orchestrator {
                     report.skipped.push(SkippedRun {
                         session_id,
                         run_id,
-                        reason: StoreError::HostUnsupported,
+                        reason: RecoverySkipReason::Store(StoreError::HostUnsupported),
                     });
                 }
                 Err(error) => return Err(error),
@@ -2025,6 +2090,9 @@ impl Orchestrator {
         &self,
         request: &Request,
     ) -> Result<(RunPlan, crabber_session::BoundAdmitRequest, Value), RuntimeError> {
+        if !self.store.supports_owned_attempts() {
+            return Err(StoreError::HostUnsupported.into());
+        }
         if request.max_output_tokens == Some(0) {
             return Err(RuntimeError::InvalidConfiguration(
                 "max output tokens must be positive",
@@ -2208,16 +2276,15 @@ impl Orchestrator {
             &cancellation,
             &lost,
         );
-        let result = self
-            .run_inner(
-                fence.clone(),
-                session.clone(),
-                initial,
-                plan,
-                cancellation.clone(),
-                &lost,
-            )
-            .await;
+        let result = Box::pin(self.run_inner(
+            fence.clone(),
+            session.clone(),
+            initial,
+            plan,
+            cancellation.clone(),
+            &lost,
+        ))
+        .await;
         if result.is_err() && self.verified_lease_loss(&fence).await {
             lost.store(true, Ordering::SeqCst);
         }
@@ -2252,6 +2319,12 @@ impl Orchestrator {
         if matches!(entry, InitialEntry::Keyed) {
             execution.begin_admission_execution().await?;
         }
+        let mut worker = self.clone();
+        worker.owned_attempt = Some(Arc::new(
+            self.begin_owned_attempt(execution.as_ref(), &session_id, &fence.run_id, false)
+                .await?,
+        ));
+        let self_ = &worker;
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
             .await?;
@@ -2283,20 +2356,21 @@ impl Orchestrator {
                 } else {
                     self.restore_provider(&plan, &binding.provider).await?
                 };
-                self.run_loop(
-                    execution.as_ref(),
-                    &run_id,
-                    &session,
-                    &request,
-                    &plan,
-                    &bound,
-                    &cancellation,
-                    true,
-                    Usage::default(),
-                    lost.as_ref(),
-                    &current_turn,
-                )
-                .await
+                self_
+                    .run_loop(
+                        execution.as_ref(),
+                        &run_id,
+                        &session,
+                        &request,
+                        &plan,
+                        &bound,
+                        &cancellation,
+                        true,
+                        Usage::default(),
+                        lost.as_ref(),
+                        &current_turn,
+                    )
+                    .await
             });
             tokio::pin!(run_future);
             loop {
@@ -2321,20 +2395,21 @@ impl Orchestrator {
             }),
             Err(error) => {
                 let turn = current_turn.lock().expect("turn context poisoned").clone();
-                self.finish_failed_run(
-                    terminal::FailureContext {
-                        execution: execution.as_ref(),
-                        fence: &fence,
-                        session: &session_id,
-                        plan: &plan,
-                        started_at: run_started_at,
-                        lost: lost.as_ref(),
-                        observed_lost,
-                    },
-                    error,
-                    turn.as_ref(),
-                )
-                .await
+                self_
+                    .finish_failed_run(
+                        terminal::FailureContext {
+                            execution: execution.as_ref(),
+                            fence: &fence,
+                            session: &session_id,
+                            plan: &plan,
+                            started_at: run_started_at,
+                            lost: lost.as_ref(),
+                            observed_lost,
+                        },
+                        error,
+                        turn.as_ref(),
+                    )
+                    .await
             }
         };
         plan.release();
@@ -2455,9 +2530,12 @@ impl Orchestrator {
                             == InterruptPolicy::Pause
                     })
             }) {
-                let event = self.turn_event(session_id, run_id, &turn_id, EventKind::RunPaused);
-                execution.pause_run(json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
-                    "request": CheckpointRequest::new(request), "usage":usage}), event.clone()).await?;
+                let event = self.conclude_owned_attempt(execution, run_id,
+                    crabber_session::RunBoundary::Suspended {
+                        checkpoint: json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
+                            "request": CheckpointRequest::new(request), "usage": usage}),
+                        usage: usage.clone(),
+                    }, Some(turn_id.clone()), run_started_at).await?;
                 self.observer.emit(&event);
                 return Err(RuntimeError::Paused);
             }
@@ -2520,18 +2598,21 @@ impl Orchestrator {
             .await?;
             if !had_tools && claimed == 0 {
                 ensure_lease(lease_lost)?;
-                let settled = self.run_settled_event(
-                    session_id,
-                    run_id,
-                    RunStatus::Completed,
-                    &usage,
-                    run_started_at,
-                );
-                match execution
-                    .settle_run(RunStatus::Completed, None, usage.clone(), settled.clone())
+                match self
+                    .conclude_owned_attempt(
+                        execution,
+                        run_id,
+                        crabber_session::RunBoundary::Terminal {
+                            status: RunStatus::Completed,
+                            error: None,
+                            usage: usage.clone(),
+                        },
+                        None,
+                        run_started_at,
+                    )
                     .await
                 {
-                    Ok(()) => {
+                    Ok(settled) => {
                         self.observer.emit(&settled);
                         let projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
                         plan.dispatcher
@@ -2540,7 +2621,7 @@ impl Orchestrator {
                         plan.dispatcher.notify::<RunSettled>(projection).await;
                         return Ok(usage);
                     }
-                    Err(StoreError::PendingInput) => {
+                    Err(RuntimeError::Attempt(crabber_session::AttemptError::PendingInput)) => {
                         if self.claim_input(execution, InboxKind::Steer).await?
                             + self.claim_input(execution, InboxKind::FollowUp).await?
                             == 0
@@ -2548,12 +2629,7 @@ impl Orchestrator {
                             return Err(RuntimeError::Store(StoreError::PendingInput));
                         }
                     }
-                    Err(reason) => {
-                        return Err(RuntimeError::TerminalOutcomeUnknown {
-                            run_id: run_id.clone(),
-                            reason,
-                        });
-                    }
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -3098,24 +3174,6 @@ impl Orchestrator {
         })
         .expect("event payload serializes");
         self.publish_event(execution, plan, event).await
-    }
-
-    fn run_settled_event(
-        &self,
-        session_id: &SessionId,
-        run_id: &RunId,
-        status: RunStatus,
-        usage: &Usage,
-        started_at: OffsetDateTime,
-    ) -> EventRecord {
-        let mut event = self.event(session_id, run_id, EventKind::RunSettled);
-        let duration = event.created_at - started_at;
-        event.payload = json!({"status": status, "usage": usage,
-            "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-            "duration_ms": duration.whole_milliseconds(),
-            "duration_ns": duration.whole_nanoseconds()});
-        event.correlation = Some(run_id.to_string());
-        event
     }
 
     async fn emit_durable(
@@ -3885,6 +3943,12 @@ impl Orchestrator {
             TerminalReason::Success
         };
         drop(measurement);
+        let cleanup = resources.drain(attempt::RESOURCE_JOIN_BOUND).await;
+        if !cleanup.sealed || cleanup.pending != 0 || !cleanup.failures.is_empty() {
+            return Err(RuntimeError::AttemptCleanupIncomplete {
+                run_id: run_id.clone(),
+            });
+        }
         let content = output.to_content_blocks();
         let result = ToolResult {
             status,

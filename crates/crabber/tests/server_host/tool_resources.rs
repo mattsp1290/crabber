@@ -101,15 +101,15 @@ fn agent(fixture: Arc<Fixture>, mode: &str, block_body: bool) -> Agent {
 }
 
 #[tokio::test]
-async fn completed_worker_retains_noncooperative_resource_join_after_timeout() {
+async fn incomplete_worker_retains_noncooperative_resource_join_after_timeout() {
     let fixture = Arc::new(Fixture::default());
     let agent = agent(fixture.clone(), "noncooperative", false);
     let handle = agent.prompt(None, "work").await.unwrap();
     let run_id = handle.run_id().clone();
-    assert_eq!(
-        timeout(BOUND, handle.done()).await.unwrap().unwrap().status,
-        RunStatus::Completed
-    );
+    assert!(matches!(
+        timeout(BOUND, handle.done()).await.unwrap(),
+        Err(crabber::RuntimeError::AttemptCleanupIncomplete { .. })
+    ));
     let report = agent.drain_execution_tasks(Duration::from_millis(1)).await;
     assert_eq!(report.resources.len(), 1);
     assert_eq!(report.resources[0].run_id, run_id);
@@ -151,15 +151,16 @@ async fn interrupted_tool_seals_scope_and_joins_cooperative_resources() {
 }
 
 #[tokio::test]
-async fn resource_failure_remains_visible_after_worker_success_and_repeated_drains() {
+async fn resource_failure_blocks_worker_success_and_remains_visible_across_drains() {
     let fixture = Arc::new(Fixture::default());
     let agent = agent(fixture.clone(), "failed", false);
     let handle = agent.prompt(None, "fail cleanup").await.unwrap();
-    assert_eq!(
-        timeout(BOUND, handle.done()).await.unwrap().unwrap().status,
-        RunStatus::Completed
-    );
+    timeout(BOUND, fixture.entered.notified()).await.unwrap();
     fixture.release.notify_one();
+    assert!(matches!(
+        timeout(BOUND, handle.done()).await.unwrap(),
+        Err(crabber::RuntimeError::AttemptCleanupIncomplete { .. })
+    ));
     for _ in 0..2 {
         let report = agent.drain_execution_tasks(BOUND).await;
         assert_eq!(report.resources[0].resources.pending, 0);

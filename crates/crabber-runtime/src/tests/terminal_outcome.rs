@@ -55,7 +55,7 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize, provider_error: b
         .await
         .unwrap()
         .unwrap_err();
-    let RuntimeError::TerminalOutcomeUnknown {
+    let RuntimeError::AttemptBoundaryUnknown {
         run_id: uncertain_run,
         reason,
     } = error
@@ -63,10 +63,7 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize, provider_error: b
         panic!("terminal acknowledgement failure must remain explicit: {error:?}");
     };
     assert_eq!(uncertain_run, run_id);
-    assert_eq!(
-        reason,
-        StoreError::Validation("terminal acknowledgement unavailable".into())
-    );
+    assert_eq!(reason, crabber_session::AttemptError::UnknownStoreOutcome);
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
     let expected = if interrupted {
         RunStatus::Interrupted
@@ -168,14 +165,13 @@ async fn resumed_missing_terminal_ack(fault: usize, interrupted: bool) {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(matches!(error, RuntimeError::TerminalOutcomeUnknown { run_id, .. } if run_id == run));
+    assert!(matches!(error, RuntimeError::AttemptBoundaryUnknown { run_id, .. } if run_id == run));
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
     assert_eq!(
         inner.get_run(&run).await.unwrap().unwrap().status,
         if fault == 1 {
-            // The claim rotates ownership; a rejected terminal write retains
-            // the previously committed logical status.
-            RunStatus::Paused
+            // The fresh reservation activates the run before its Begin.
+            RunStatus::Running
         } else if interrupted {
             RunStatus::Interrupted
         } else {

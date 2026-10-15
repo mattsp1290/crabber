@@ -357,6 +357,9 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
     async fn tool_phase(
         &self,
         run: &RunId,

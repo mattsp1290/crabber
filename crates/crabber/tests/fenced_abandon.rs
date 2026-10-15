@@ -1,17 +1,19 @@
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
-    AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
-    AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptConclusion,
-    AttemptError, AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt,
-    AttemptSnapshot, AttemptState, AttemptTarget, BoundAdmitRequest, BoundKeyedAdmitRequest,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission, PhaseAuthority, PhaseCommand, PhaseError,
-    PhaseMutation, PhaseMutationOutcome, PhaseOperation, PhaseQuiescence, PhaseQuiescenceResult,
-    PhaseReceipt, PhaseResolverClaim, PhaseSettlement, PhaseSettlementRecords, PhaseSnapshot,
-    PhaseState, PhaseTarget, PhaseWriteAuthority, PublicStateError, PublicStateMutation,
-    PublicStateReceipt, PublicStateSnapshot, RetainedExecutionBinding, RunBoundary,
-    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
-    SnapshotRequest, SnapshotUsage, StoreError, UncertainPhaseChoice, VersionedAttempt,
-    VersionedPhase, ensure_storable, ensure_storable_text,
+    AdmissionExecutionCapsule, AdmissionExecutionError, AdmissionExecutionRecord,
+    AdmissionExecutionState, AdmissionRequestData, AdmitOutcome, AttemptAuthority, AttemptCleanup,
+    AttemptCleanupResult, AttemptCommand, AttemptConclusion, AttemptError, AttemptFinish,
+    AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot, AttemptState,
+    AttemptTarget, BoundAdmitRequest, BoundKeyedAdmitRequest, ClaimUnstartedAdmissionRequest,
+    ClaimedAdmission, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT, PROVIDER_BINDING_COMPONENT,
+    PhaseAuthority, PhaseCommand, PhaseError, PhaseMutation, PhaseMutationOutcome, PhaseOperation,
+    PhaseQuiescence, PhaseQuiescenceResult, PhaseReceipt, PhaseResolverClaim, PhaseSettlement,
+    PhaseSettlementRecords, PhaseSnapshot, PhaseState, PhaseTarget, PhaseWriteAuthority,
+    PublicStateError, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
+    RetainedExecutionBinding, RunBoundary, SnapshotContinuation, SnapshotLimit, SnapshotLimits,
+    SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError,
+    UncertainPhaseChoice, VersionedAttempt, VersionedPhase, admission_config_hash, ensure_storable,
+    ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
@@ -28,6 +30,9 @@ mod attempt_conclusion;
 mod attempt_contract;
 #[path = "../../crabber-session/src/binding_fault.rs"]
 mod binding_fault;
+#[path = "../../crabber-session/src/execution_binding_contract/fixture.rs"]
+#[allow(dead_code)]
+mod execution_binding_contract;
 #[path = "../../crabber-session/src/memory.rs"]
 #[allow(dead_code)]
 mod memory;
@@ -46,6 +51,9 @@ mod public_state_contract;
 #[path = "../../crabber-session/src/snapshot.rs"]
 #[allow(dead_code)]
 mod snapshot;
+#[path = "../../crabber-session/src/typed_admission_contract/fixture.rs"]
+#[allow(dead_code)]
+mod typed_admission_contract;
 use async_trait::async_trait;
 use crabber::core::*;
 use crabber::extension::{Extension, ExtensionError, Registrar, Scope};

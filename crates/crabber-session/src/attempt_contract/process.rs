@@ -15,14 +15,16 @@ use std::{path::Path, process::Command, time::Duration};
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum Mode {
     Reserve,
+    ReserveBound,
     Begin,
     Complete,
     Suspend,
     Resume,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Reserve,
+        Self::ReserveBound,
         Self::Begin,
         Self::Complete,
         Self::Suspend,
@@ -33,7 +35,7 @@ impl Mode {
     }
     pub(crate) fn state(self) -> &'static str {
         match self {
-            Self::Reserve | Self::Resume => "Unstarted",
+            Self::Reserve | Self::ReserveBound | Self::Resume => "Unstarted",
             Self::Begin => "Started",
             Self::Complete => "Completed",
             Self::Suspend => "Suspended",
@@ -48,6 +50,17 @@ pub(crate) struct Fixture {
     pub mode: Mode,
 }
 pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
+    if matches!(mode, Mode::ReserveBound) {
+        let admitted = super::bound::admit(store, time::OffsetDateTime::now_utc()).await;
+        let request =
+            super::bound::request(store.session_revision(&admitted.session.id).await.unwrap());
+        return Fixture {
+            fence: admitted.fence,
+            session: admitted.session.id,
+            request,
+            mode,
+        };
+    }
     if matches!(mode, Mode::Resume) {
         return resume::pending(store).await;
     }
@@ -87,7 +100,10 @@ async fn prepare_authority(
     execution: &dyn crate::ExecutionStore,
     fixture: &Fixture,
 ) -> Option<crate::AttemptAuthority> {
-    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
+    if matches!(
+        fixture.mode,
+        Mode::Reserve | Mode::ReserveBound | Mode::Resume
+    ) {
         return None;
     }
     let (reserved, authority) = applied(
@@ -216,7 +232,10 @@ pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
             target: receipt.attempt.target.clone(),
         },
     };
-    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
+    if matches!(
+        fixture.mode,
+        Mode::Reserve | Mode::ReserveBound | Mode::Resume
+    ) {
         let (claimed, authority) =
             applied(replacement.mutate_attempt(reclaim, None).await.unwrap());
         let begin = AttemptMutation {
@@ -320,7 +339,10 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         .await
         .unwrap()
         .len();
-    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
+    if matches!(
+        fixture.mode,
+        Mode::Reserve | Mode::ReserveBound | Mode::Resume
+    ) {
         assert_eq!(snapshot.unwrap_err(), Error::NotFound);
         assert_eq!(
             count,
@@ -377,7 +399,10 @@ pub(crate) async fn retry_crash(
         );
         return;
     }
-    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
+    if matches!(
+        fixture.mode,
+        Mode::Reserve | Mode::ReserveBound | Mode::Resume
+    ) {
         let execution = store.execution(fixture.fence.clone()).await.unwrap();
         applied(
             execution

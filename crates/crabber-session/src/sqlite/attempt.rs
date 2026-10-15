@@ -1,4 +1,5 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
+mod pristine;
 mod records;
 use super::{SqliteExecution, SqliteStore, admission_execution, db};
 use crate::{
@@ -175,21 +176,28 @@ impl SqliteExecution {
         if let Some(conclusion) = conclusion {
             check_boundary(tx, run, conclusion).await?;
         }
+        if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
+            pristine::check(tx, run).await?;
+        }
         let id = &request.command.target().id;
-        let insert = matches!(request.command, AttemptCommand::Reserve { .. });
+        let insert = matches!(
+            request.command,
+            AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
+        );
         let (record, grant) = if insert {
             if records::exists(tx, id).await? {
                 return Err(Error::SemanticConflict);
             }
             let latest = records::load(tx, &run.id, None, true).await?;
-            (
-                attempt::AttemptRecord::reserve(
-                    run,
-                    request,
-                    latest.as_ref().map(|(r, _)| &r.snapshot),
-                )?,
-                true,
-            )
+            let record = attempt::AttemptRecord::reserve(
+                run,
+                request,
+                latest.as_ref().map(|(record, _)| &record.snapshot),
+            )?;
+            if latest.is_some() && !records::quiet(tx, &run.id).await? {
+                return Err(Error::CleanupBlocked);
+            }
+            (record, true)
         } else {
             let (mut record, _) = records::load(tx, &run.id, Some(id), true)
                 .await?
@@ -197,7 +205,7 @@ impl SqliteExecution {
             let quiet = if conclusion.is_some()
                 || matches!(request.command, AttemptCommand::RecordCleanup { .. })
             {
-                records::quiet(tx, &run.id, id).await?
+                records::quiet(tx, &run.id).await?
             } else {
                 true
             };
@@ -298,8 +306,10 @@ async fn apply_run_transition(
         super::records::save_run(tx, &updated)
             .await
             .map_err(sql::unknown)?;
-    } else if matches!(request.command, AttemptCommand::Reserve { .. })
-        && run.status == crabber_core::RunStatus::Paused
+    } else if matches!(
+        request.command,
+        AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
+    ) && run.status == crabber_core::RunStatus::Paused
     {
         let mut activated = run.clone();
         activated.status = crabber_core::RunStatus::Running;

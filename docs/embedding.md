@@ -160,7 +160,7 @@ are only compared with the session.
 | `prompt` into an existing session | host-presented: `AgentConfig` workspace ID and directory against the session, inside the admission transaction | `SessionIdentityMismatch`; no run is created |
 | `prompt_keyed` | host-presented, inside the admission transaction, before the receipt lookup | `SessionIdentityMismatch`; no run, no replay |
 | `resume`, `resume_with_context` of a paused run | stored-record: the checkpoint request against the session, before plan acquisition, the claim and any pending tool | `SessionIdentityMismatch`; no plan, fence or lease is taken and the run keeps its status |
-| `resume` of a reclaimed `Running` run with no checkpoint request | none | n/a |
+| `resume` of a reclaimed `Running` run with no checkpoint request | retained binding and either an expired native Unstarted reservation or an atomic pristine-input check | a Started/unknown attempt never dispatches; failed pristine checks grant no authority |
 | `recover`, `recover_with_context` | as `resume`, per run | the run is skipped, listed in the returned `RecoverReport`, and the sweep continues |
 | `recover_admission` | host-presented, before the receipt lookup and before any replay | `SessionIdentityMismatch`; no claim, no replayed receipt |
 
@@ -169,8 +169,13 @@ later attempt; it does not heal itself, and its session stays busy. `recover`
 returns a `RecoverReport`: the runs it recovered, plus a `SkippedRun` with the
 reason for each expired run it left unfinished: an identity mismatch, a session that is
 missing or cannot be decoded, a checkpoint request without identity
-(`Validation`), a live competing claim or an unstarted keyed admission. Dispose
-of a skipped run through [fenced abandonment](fenced-abandon.md).
+(`Validation`), a live competing claim or an unstarted keyed admission. Its typed
+`RecoverySkipReason` distinguishes Store errors from ineligible native attempts.
+Started/unknown attempts and incomplete cleanup stay unfinished; the sweep can
+continue with other eligible runs. A first-reservation failure may have rotated
+an expired fence, but creates no dispatch authority or execution outcome.
+[Fenced abandonment](fenced-abandon.md) revokes run authority; it does not resolve
+an uncertain phase or prove external resource cleanup.
 
 ### Unsupported context
 

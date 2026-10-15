@@ -23,6 +23,12 @@ impl Entry {
             Self::Resume => runtime.resume(run).await,
             Self::Recover => {
                 let report = runtime.recover().await?;
+                if report.skipped.len() == 1
+                    && let crate::RecoverySkipReason::Attempt(reason) = report.skipped[0].reason
+                {
+                    assert_eq!(report.recovered, Vec::new());
+                    return Err(RuntimeError::Attempt(reason));
+                }
                 assert_eq!(report.skipped, [] as [crate::SkippedRun; 0]);
                 assert_eq!(report.recovered.len(), 1);
                 let result = report.recovered.into_iter().next().unwrap();
@@ -196,18 +202,23 @@ impl Fixture {
             call.status = ToolCallStatus::Running;
         }
         if paused {
-            execution
-                .pause_run(
+            if running {
+                execution
+                    .pause_run(json!({"legacy": true}), event(EventKind::RunPaused))
+                    .await
+                    .unwrap();
+            } else {
+                crate::tests::native_attempt::suspend_fixture(harness.store.as_ref(), execution.as_ref(), &session,
                     json!({"request": {
                         "version": 2, "input_digest": input_digest,
                         "workspace_id": "test", "directory": ".", "title": "test", "text": "hello",
                         "provider_id": "fake", "model_id": "scripted", "system_prompt": null, "max_output_tokens": null
                     }}),
-                    event(EventKind::RunPaused),
-                )
-                .await
-                .unwrap();
+                    now,
+                ).await;
+            }
         }
+
         clock.set(now + time::Duration::seconds(31));
         Self {
             harness,
@@ -357,7 +368,7 @@ fn pre_contract_fingerprint(plan: &crabber_extension::RunPlan) -> String {
 }
 
 #[tokio::test]
-async fn public_entrypoints_apply_the_full_d10_state_matrix() {
+async fn public_entrypoints_require_native_suspension_before_replaying_pending_calls() {
     for entry in [Entry::Resume, Entry::Recover] {
         for paused in [false, true] {
             for running in [false, true] {
@@ -366,6 +377,32 @@ async fn public_entrypoints_apply_the_full_d10_state_matrix() {
                     let arguments = json!({"text": PREPARE_REJECTED});
                     let fixture =
                         Fixture::new(paused, running, safe, ECHO, arguments.clone(), None).await;
+                    if !paused || running {
+                        let before = fixture
+                            .harness
+                            .store
+                            .list_events(&fixture.session, None, 1000)
+                            .await
+                            .unwrap();
+                        assert!(matches!(
+                            entry.invoke(&fixture.fresh_runtime(), &fixture.run).await,
+                            Err(RuntimeError::Attempt(
+                                crabber_session::AttemptError::InvalidTransition
+                            ))
+                        ));
+                        assert_eq!(fixture.harness.probe.executed(), Vec::new());
+                        assert!(fixture.pipeline.seen.lock().unwrap().is_empty());
+                        assert_eq!(
+                            before,
+                            fixture
+                                .harness
+                                .store
+                                .list_events(&fixture.session, None, 1000)
+                                .await
+                                .unwrap()
+                        );
+                        continue;
+                    }
                     let result = entry
                         .invoke(&fixture.fresh_runtime(), &fixture.run)
                         .await

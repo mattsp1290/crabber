@@ -100,6 +100,11 @@ pub struct AttemptTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AttemptCommand {
+    /// Initial reservation guarded atomically by retained typed admission input
+    /// and absence of execution history. Safe after admission acknowledgment loss.
+    ReserveBound {
+        target: AttemptTarget,
+    },
     Reserve {
         target: AttemptTarget,
     },
@@ -122,7 +127,8 @@ impl AttemptCommand {
     #[must_use]
     pub fn target(&self) -> &AttemptTarget {
         match self {
-            Self::Reserve { target }
+            Self::ReserveBound { target }
+            | Self::Reserve { target }
             | Self::ReclaimUnstarted { target }
             | Self::Begin { target }
             | Self::Finish { target, .. }

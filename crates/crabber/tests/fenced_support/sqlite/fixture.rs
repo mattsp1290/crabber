@@ -23,6 +23,16 @@ impl SqliteFixture {
 }
 #[async_trait]
 impl Store for SqliteFixture {
+    fn supports_owned_attempts(&self) -> bool {
+        self.store.supports_owned_attempts()
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.store.latest_execution_attempt(run).await
+    }
+
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.store.admit_run(request).await
     }

@@ -29,6 +29,16 @@ struct FaultExecution {
 }
 #[async_trait]
 impl Store for FaultStore {
+    fn supports_owned_attempts(&self) -> bool {
+        self.inner.supports_owned_attempts()
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crabber_session::VersionedAttempt>, crabber_session::AttemptError> {
+        self.inner.latest_execution_attempt(run).await
+    }
+
     async fn session_revision(
         &self,
         session: &SessionId,
@@ -188,6 +198,21 @@ impl Store for FaultStore {
 
 #[async_trait]
 impl ExecutionStore for FaultExecution {
+    async fn mutate_attempt(
+        &self,
+        request: crabber_session::AttemptMutation,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.mutate_attempt(request, authority).await
+    }
+    async fn conclude_attempt(
+        &self,
+        conclusion: crabber_session::AttemptConclusion,
+        authority: Option<crabber_session::AttemptAuthority>,
+    ) -> Result<crabber_session::AttemptMutationOutcome, crabber_session::AttemptError> {
+        self.inner.conclude_attempt(conclusion, authority).await
+    }
+
     async fn renew_lease(&self, until: OffsetDateTime) -> Result<(), StoreError> {
         self.inner.renew_lease(until).await
     }
@@ -527,7 +552,7 @@ async fn claim_response_loss_and_begin_rollback_preserve_unstarted_liveness() {
 }
 
 #[tokio::test]
-async fn lost_begin_acknowledgement_never_executes_and_generic_recovery_interrupts() {
+async fn lost_admission_begin_ack_requires_a_fresh_guarded_native_start() {
     let (clock, store, provider, session) = fixture();
     let Admission::Started { handle, receipt } =
         host(fault(store.clone(), Fault::BeginLost), provider.clone())
@@ -559,9 +584,19 @@ async fn lost_begin_acknowledgement_never_executes_and_generic_recovery_interrup
     clock.set(OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(30));
     assert_eq!(
         agent.resume(&receipt.run_id).await.unwrap().status,
-        RunStatus::Interrupted
+        RunStatus::Completed
     );
-    assert_eq!(provider.requests().len(), 0);
+    assert_eq!(provider.requests().len(), 1);
+    let attempt = store
+        .latest_execution_attempt(&receipt.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(attempt.state, AttemptState::Completed);
+    assert_eq!(attempt.cleanup, AttemptCleanup::Complete);
+    assert!(agent.resume(&receipt.run_id).await.is_err());
+    assert_eq!(provider.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -847,7 +882,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
     let recovered = agent.recover().await.unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].run_id, ordinary.id);
-    assert_eq!(recovered[0].status, RunStatus::Interrupted);
+    assert_eq!(recovered[0].status, RunStatus::Completed);
     assert_eq!(store.get_run(&receipt.run_id).await.unwrap(), before);
     assert_eq!(
         store
@@ -871,7 +906,7 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         store.list_events(&session, None, 100).await.unwrap(),
         Vec::new()
     );
-    assert_eq!(provider.requests().len(), 0);
+    assert_eq!(provider.requests().len(), 1);
 }
 
 struct UnavailablePlan(Arc<std::sync::atomic::AtomicUsize>);

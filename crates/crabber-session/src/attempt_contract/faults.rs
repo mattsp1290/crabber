@@ -9,6 +9,7 @@ use crabber_core::{Clock, ControlId, ManualClock};
 #[derive(Clone, Copy)]
 enum Case {
     Reserve,
+    ReserveBound,
     Reclaim,
     Begin,
     Finish,
@@ -24,6 +25,7 @@ pub async fn run_fault_contract(
 ) {
     for case in [
         Case::Reserve,
+        Case::ReserveBound,
         Case::Reclaim,
         Case::Begin,
         Case::Finish,
@@ -126,6 +128,13 @@ async fn fixture(
     AttemptMutation,
     Option<AttemptAuthority>,
 ) {
+    if matches!(case, Case::ReserveBound) {
+        let admitted = super::bound::admit(store, clock.now()).await;
+        let execution = store.execution(admitted.fence.clone()).await.unwrap();
+        let request =
+            super::bound::request(store.session_revision(&admitted.session.id).await.unwrap());
+        return (admitted, execution, request, None);
+    }
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
     let mut execution = store.execution(admitted.fence.clone()).await.unwrap();
     let mut request = reserve(store.session_revision(&admitted.session.id).await.unwrap());

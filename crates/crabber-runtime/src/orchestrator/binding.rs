@@ -34,11 +34,11 @@ impl Orchestrator {
         descriptor: &ProviderBindingDescriptor,
         behavior: &InputFingerprint,
     ) -> Result<RunPlan, RuntimeError> {
-        if plan
-            .components
-            .iter()
-            .any(|c| c.id == PROVIDER_BINDING_COMPONENT || c.id == HOST_BEHAVIOR_COMPONENT)
-        {
+        if plan.components.iter().any(|c| {
+            c.id == PROVIDER_BINDING_COMPONENT
+                || c.id == HOST_BEHAVIOR_COMPONENT
+                || c.id == super::attempt::DRIVER_COMPONENT
+        }) {
             return Err(ProviderBindingError::InvalidDescriptor.into());
         }
         plan.components.push(ComponentIdentity {
@@ -49,6 +49,10 @@ impl Orchestrator {
         plan.components.push(ComponentIdentity {
             id: HOST_BEHAVIOR_COMPONENT.into(),
             version: behavior.as_str().into(),
+        });
+        plan.components.push(ComponentIdentity {
+            id: super::attempt::DRIVER_COMPONENT.into(),
+            version: super::attempt::DRIVER_VERSION.into(),
         });
         plan.fingerprint = compute_fingerprint(&plan.components);
         Ok(plan)

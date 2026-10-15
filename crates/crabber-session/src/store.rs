@@ -224,6 +224,14 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Pure capability check for native attempt reservation, one-shot Begin and
+    /// atomic logical run conclusion. Custom adapters must opt in only when all
+    /// of those operations (including `ReserveBound`'s atomic pristine-admission
+    /// guard) and metadata reads implement the native contract.
+    fn supports_owned_attempts(&self) -> bool {
+        false
+    }
+
     /// Atomic admission plus retained provider-binding evidence. No fallback to
     /// legacy admission is safe: custom adapters must implement this capability,
     /// enforce an expected revision under the same mutation lock, and preserve
@@ -469,6 +477,9 @@ pub trait ExecutionStore: Send + Sync {
         Err(crate::PhaseError::Unsupported)
     }
     /// Experimental atomic attempt transition with event, revision and receipt.
+    /// `ReserveBound` verifies the retained typed input and absence of execution
+    /// history in this transaction; a metadata read of None is not permission.
+    /// Later generations additionally recheck current run-wide quiescence.
     /// Only a fresh Applied Begin permits attempt work. Tool dispatch additionally
     /// requires independent phase authority. Replay never grants dispatch.
     async fn mutate_attempt(

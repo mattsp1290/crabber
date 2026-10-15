@@ -670,6 +670,9 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    fn supports_owned_attempts(&self) -> bool {
+        true
+    }
     async fn tool_phase(
         &self,
         run: &RunId,

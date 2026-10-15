@@ -47,9 +47,14 @@ impl AttemptRecord {
         mutation: &AttemptMutation,
         latest: Option<&AttemptSnapshot>,
     ) -> Result<Self, AttemptError> {
-        if !matches!(mutation.command, AttemptCommand::Reserve { .. })
-            || !matches!(run.status, RunStatus::Running | RunStatus::Paused)
+        if !matches!(
+            mutation.command,
+            AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
+        ) || !matches!(run.status, RunStatus::Running | RunStatus::Paused)
         {
+            return Err(AttemptError::InvalidTransition);
+        }
+        if matches!(mutation.command, AttemptCommand::ReserveBound { .. }) && latest.is_some() {
             return Err(AttemptError::InvalidTransition);
         }
         let expected = if let Some(previous) = latest {
@@ -145,7 +150,9 @@ impl AttemptRecord {
             AttemptCommand::RecordCleanup { result, .. } => {
                 self.cleanup(result, phases_quiescent)?;
             }
-            AttemptCommand::Reserve { .. } | AttemptCommand::ReclaimUnstarted { .. } => {
+            AttemptCommand::ReserveBound { .. }
+            | AttemptCommand::Reserve { .. }
+            | AttemptCommand::ReclaimUnstarted { .. } => {
                 return Err(AttemptError::InvalidTransition);
             }
         }
