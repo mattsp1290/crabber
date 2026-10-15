@@ -64,6 +64,9 @@ mod abandonment_contract;
 #[path = "../../crabber-session/src/approval/audit.rs"]
 #[allow(dead_code)]
 mod approval_audit;
+#[path = "../../crabber-session/src/approval/origin.rs"]
+#[allow(dead_code)]
+mod approval_origin;
 #[path = "../../crabber-session/src/approval/records.rs"]
 #[allow(dead_code)]
 mod approval_records;

@@ -48,6 +48,7 @@ impl super::super::MemoryStore {
                 .get(current)
                 .cloned()
                 .ok_or(Error::UnknownStoreOutcome)?;
+            super::verify_record(state, &run, &record)?;
             let parent = receipt(state, &run.session_id, &original.id)?.ok_or(Error::NotFound)?;
             let now = self.clock.now();
             let calls = record.recovery_grants(&run, request, &parent, now)?;

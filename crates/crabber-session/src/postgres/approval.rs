@@ -2,6 +2,7 @@
 mod answer;
 mod claim;
 mod guards;
+mod origin;
 mod recover;
 mod suspend;
 mod terminate;
@@ -124,6 +125,7 @@ async fn load(
         return Err(Error::UnknownStoreOutcome);
     }
     verify_questions(tx, &record).await?;
+    origin::verify(tx, &record).await?;
     Ok(Some((record, revision)))
 }
 async fn receipt(

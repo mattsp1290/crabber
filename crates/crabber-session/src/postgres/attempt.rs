@@ -1,7 +1,7 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
 mod control;
 mod pristine;
-mod records;
+pub(super) mod records;
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,

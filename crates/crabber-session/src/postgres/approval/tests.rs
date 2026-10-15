@@ -281,7 +281,7 @@ async fn recovery_rejects_coherently_changed_consumed_answer() {
             .execute(&store.pool)
             .await
             .unwrap();
-        let before = crate::approval_contract::recovery::evidence(&store, &p).await;
+        let before = crate::approval_contract::origin::evidence(&store, &p).await;
         assert_eq!(
             store
                 .reclaim_approval_continuation(p.request.clone())
@@ -290,8 +290,56 @@ async fn recovery_rejects_coherently_changed_consumed_answer() {
             Error::UnknownStoreOutcome
         );
         assert_eq!(
-            crate::approval_contract::recovery::evidence(&store, &p).await,
+            crate::approval_contract::origin::evidence(&store, &p).await,
             before
         );
     }
+}
+
+#[tokio::test]
+async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    super::super::PostgresStore::migrate(&url).await.unwrap();
+    let store = super::super::PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    crate::approval_contract::origin::run(&store, &clock, |id, case| {
+        let pool = store.pool.clone();
+        async move {
+            let data: String =
+                sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
+                    .bind(&id.0)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let mut record: crate::approval::ApprovalRecord = serde_json::from_str(&data).unwrap();
+            let fingerprint = record
+                .batch
+                .fingerprint(&record.session_id, &record.run_id)
+                .unwrap();
+            crate::approval_contract::origin::corrupt(&mut record, case);
+            record.validate(&record.session_id, &record.run_id).unwrap();
+            assert_eq!(
+                record
+                    .batch
+                    .fingerprint(&record.session_id, &record.run_id)
+                    .unwrap(),
+                fingerprint
+            );
+            sqlx::query("UPDATE continuations SET data_json=$2 WHERE id=$1")
+                .bind(&record.batch.continuation.id.0)
+                .bind(serde_json::to_string(&record).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    })
+    .await;
 }

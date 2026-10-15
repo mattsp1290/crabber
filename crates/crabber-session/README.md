@@ -357,6 +357,12 @@ unanswered interaction whose Store-clock deadline has passed. Accepted answers
 remain recorded and unconsumed. Other unanswered questions become expired only
 when their own deadlines passed; otherwise they become cancelled.
 
+Fresh approval reads and controls authenticate continuation creation time against
+the original suspension audit and source turn/time against the committed native
+pause. Coherent private changes to creation time and question deadlines cannot
+extend or shorten the decision window. Generated presentation fields may differ
+on an original-key retry; its committed receipt still replays as metadata.
+
 Only a waiting batch whose latest suspended attempt has fully joined is eligible.
 Adapters verify the frozen suspension and answer receipts, pending call bindings,
 absence of native phases for prepared calls, and every historical phase's

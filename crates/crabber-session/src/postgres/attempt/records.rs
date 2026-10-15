@@ -78,7 +78,7 @@ pub(super) async fn load(
         })
         .transpose()
 }
-pub(super) async fn receipt(
+pub(in super::super) async fn receipt(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &ControlId,

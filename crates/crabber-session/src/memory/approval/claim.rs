@@ -123,7 +123,7 @@ fn ready(
         .get(current)
         .cloned()
         .ok_or(Error::UnknownStoreOutcome)?;
-    record.validate(&run.session_id, &run.id)?;
+    super::verify_record(state, run, &record)?;
     if record.batch.continuation != claim.continuation || record.run_id != run.id {
         return Err(Error::GenerationConflict);
     }

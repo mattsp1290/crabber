@@ -45,7 +45,7 @@ impl super::super::MemoryStore {
                 .get(&id)
                 .cloned()
                 .ok_or(Error::UnknownStoreOutcome)?;
-            record.validate(&run.session_id, &run.id)?;
+            super::verify_record(state, &run, &record)?;
             validate_native(state, &run, &record)?;
             validate_calls(state, &run, &record)?;
             let now = self.clock.now();

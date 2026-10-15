@@ -102,7 +102,7 @@ fn validate_predecessor(
 ) -> Result<(), Error> {
     if let Some(id) = state.approval_barriers.get(&run.session_id) {
         let previous = state.approvals.get(id).ok_or(Error::UnknownStoreOutcome)?;
-        previous.validate(&run.session_id, &run.id)?;
+        super::verify_record(state, run, previous)?;
         if previous.run_id != run.id
             || previous.state != ApprovalContinuationState::Claimed
             || previous.batch.next_attempt != batch.attempt

@@ -9,6 +9,9 @@ mod finish;
 pub(crate) mod fixture;
 #[path = "approval_contract/integrity.rs"]
 mod integrity;
+#[cfg(test)]
+#[path = "approval_contract/origin.rs"]
+pub(crate) mod origin;
 #[path = "approval_contract/presentation.rs"]
 mod presentation;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]

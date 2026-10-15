@@ -41,7 +41,7 @@ async fn recovery_rejects_coherently_changed_consumed_answer() {
                 .validate(&p.original.session_id, &p.original.run_id)
                 .unwrap();
         }
-        let before = crate::approval_contract::recovery::evidence(&store, &p).await;
+        let before = crate::approval_contract::origin::evidence(&store, &p).await;
         assert_eq!(
             store
                 .reclaim_approval_continuation(p.request.clone())
@@ -50,8 +50,35 @@ async fn recovery_rejects_coherently_changed_consumed_answer() {
             crate::ApprovalError::UnknownStoreOutcome
         );
         assert_eq!(
-            crate::approval_contract::recovery::evidence(&store, &p).await,
+            crate::approval_contract::origin::evidence(&store, &p).await,
             before
         );
     }
+}
+
+#[tokio::test]
+async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::approval_contract::origin::run(&store, &clock, |id, case| {
+        let mut state = store.state.lock().unwrap();
+        let record = state.approvals.get_mut(&id).unwrap();
+        let fingerprint = record
+            .batch
+            .fingerprint(&record.session_id, &record.run_id)
+            .unwrap();
+        crate::approval_contract::origin::corrupt(record, case);
+        record.validate(&record.session_id, &record.run_id).unwrap();
+        assert_eq!(
+            record
+                .batch
+                .fingerprint(&record.session_id, &record.run_id)
+                .unwrap(),
+            fingerprint
+        );
+        std::future::ready(())
+    })
+    .await;
 }

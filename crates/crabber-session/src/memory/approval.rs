@@ -3,6 +3,8 @@
 mod answer;
 #[path = "approval/claim.rs"]
 mod claim;
+#[path = "approval/origin.rs"]
+mod origin;
 #[path = "approval/recover.rs"]
 mod recover;
 #[path = "approval/suspend.rs"]
@@ -12,6 +14,7 @@ mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{ApprovalError as Error, ApprovalOutcome, ApprovalReceipt};
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run, SessionId};
+pub(super) use origin::verify as verify_record;
 use time::OffsetDateTime;
 
 fn receipt(
@@ -108,9 +111,7 @@ pub(super) fn guard_attempt(
         .approvals
         .get(id)
         .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
-    record
-        .validate(&run.session_id, &run.id)
-        .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    verify_record(state, run, record).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     if record.run_id != run.id
         || record.state != crate::ApprovalContinuationState::Claimed
         || *request.command.target() != record.batch.next_attempt
@@ -129,11 +130,13 @@ pub(super) fn release_terminal(
     };
     let record = state
         .approvals
+        .get(&id)
+        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
+    verify_record(state, run, record).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    let record = state
+        .approvals
         .get_mut(&id)
         .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
-    record
-        .validate(&run.session_id, &run.id)
-        .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     if record.state != crate::ApprovalContinuationState::Claimed
         || record.batch.next_attempt != *request.command.target()
         || record.questions.iter().any(|q| !q.view.consumed)
@@ -161,7 +164,7 @@ impl MemoryStore {
             .max_by_key(|record| record.batch.continuation.generation);
         record
             .map(|record| {
-                record.validate(session, run)?;
+                verify_record(&state, state.runs.get(run).ok_or(Error::NotFound)?, record)?;
                 Ok(record.snapshot(revision(&state, session)))
             })
             .transpose()

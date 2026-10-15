@@ -1,6 +1,7 @@
 //! Durable approval of a complete prepared batch, before any call starts.
 mod audit;
 mod boundary;
+mod origin;
 mod records;
 mod recovery;
 pub use recovery::ApprovalContinuationRecovery;
