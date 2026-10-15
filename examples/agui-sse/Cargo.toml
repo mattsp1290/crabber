@@ -14,7 +14,7 @@ serde_json = "1"
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 crabber-agui = { path = "../../crates/crabber-agui" }
-ag-ui-client = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "5cc34b11fb41c6f068c27410b5756dbebcb367dd" }
+ag-ui-client = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }
 
 [lints]
 workspace = true
