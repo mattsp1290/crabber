@@ -33,7 +33,7 @@ pub(in super::super) async fn release_terminal(
         return Err(Error::CleanupBlocked);
     }
     record.state = ApprovalContinuationState::Released;
-    super::answer::save(tx, &record)
+    super::write::save(tx, &record)
         .await
         .map_err(|_| Error::UnknownStoreOutcome)?;
     let result = sqlx::query("DELETE FROM continuation_barriers WHERE session_id=$1 AND run_id=$2 AND continuation_id=$3")
@@ -63,7 +63,7 @@ async fn active(
         .await
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::Busy)?;
-    super::answer::active(tx, &record)
+    super::write::active(tx, &record)
         .await
         .map_err(|error| match error {
             crate::ApprovalError::GenerationConflict => Error::Busy,

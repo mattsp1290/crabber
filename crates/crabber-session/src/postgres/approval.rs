@@ -1,12 +1,15 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
 mod answer;
+mod claim;
 mod guards;
+mod suspend;
+mod write;
 use super::{PostgresStore, db};
 use crate::{
     ApprovalError as Error, ApprovalReceipt, ApprovalSnapshot, ContinuationTarget,
     approval::{self, sql},
 };
-use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, RunId, SessionId};
+use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use guards::{guard_attempt, release_terminal};
 use sqlx::{Postgres, Row, Transaction};
 
@@ -49,6 +52,31 @@ impl PostgresStore {
         let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
         let result = receipt(&mut tx, session, id).await;
         finish(tx, result).await
+    }
+}
+impl PostgresStore {
+    async fn approval_transaction(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
+        // Reject foreign routing before acquiring another session's mutation gate.
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND id=$2)")
+                .bind(&session.0)
+                .bind(&run.0)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
+        if !exists {
+            return Err(Error::NotFound);
+        }
+        let (tx, saved) = self.run_transaction(run).await.map_err(sql::unknown)?;
+        if saved.session_id != *session || saved.id != *run {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok((tx, saved))
     }
 }
 async fn load(
@@ -181,3 +209,9 @@ async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> R
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compound_tests;
+
+#[cfg(test)]
+mod process_tests;

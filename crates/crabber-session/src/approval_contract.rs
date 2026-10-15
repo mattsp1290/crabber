@@ -1,4 +1,6 @@
 //! Store-adapter qualification for durable pre-effect approvals and single claims.
+#[path = "approval_contract/changed_batch.rs"]
+mod changed_batch;
 #[path = "approval_contract/faults.rs"]
 mod faults;
 #[path = "approval_contract/finish.rs"]
@@ -7,6 +9,9 @@ mod finish;
 pub(crate) mod fixture;
 #[path = "approval_contract/integrity.rs"]
 mod integrity;
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+#[path = "approval_contract/process.rs"]
+pub(crate) mod process;
 use crate::{
     ApprovalClaimOutcome, ApprovalError as Error, ApprovalReply, AttemptCommand, AttemptError,
     AttemptMutation, AttemptMutationOutcome, Store,
@@ -25,6 +30,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let store = factory(clock.clone());
     lifecycle(&store, &clock).await;
     integrity::run(&store, &clock).await;
+    changed_batch::run(&store, &clock).await;
     expiration(&store, &clock).await;
 }
 async fn lifecycle(store: &impl Store, clock: &ManualClock) {

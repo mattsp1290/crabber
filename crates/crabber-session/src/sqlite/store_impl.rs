@@ -18,6 +18,13 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn claim_approval_continuation(
+        &self,
+        claim: crate::ApprovalContinuationClaim,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.claim_approval(&claim).await
+    }
+
     async fn answer_approval(
         &self,
         answer: crate::ApprovalAnswer,

@@ -98,52 +98,10 @@ async fn seed_record(
         clock.now(),
     )
     .unwrap();
-    let original = serde_json::to_string(&record).unwrap();
-    let now = clock.now();
     f.execution
-        .conclude_attempt(
-            crate::AttemptConclusion {
-                finish: crate::AttemptMutation {
-                    id: crabber_core::ControlId::new(),
-                    expected_revision: f.batch.expected_revision,
-                    command: crate::AttemptCommand::Finish {
-                        target: f.batch.attempt.clone(),
-                        outcome: crate::AttemptFinish::Suspended,
-                    },
-                },
-                boundary: crate::RunBoundary::Suspended {
-                    checkpoint: serde_json::json!({"version":3,"approval":f.batch.continuation}),
-                    usage: f.batch.usage.clone(),
-                },
-                created_at: now,
-                turn_id: None,
-                elapsed: std::time::Duration::ZERO,
-            },
-            Some(f.owner.clone()),
-        )
+        .suspend_for_approval(f.batch.clone(), f.owner.clone())
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
-    sqlx::query("INSERT INTO continuations(id,session_id,run_id,generation,state,format_version,data_json) VALUES($1,$2,$3,1,'waiting',1,$4)")
-        .bind(&record.batch.continuation.id.0).bind(&f.run.session_id.0).bind(&f.run.id.0)
-        .bind(&original).execute(&mut *tx).await.unwrap();
-    for call in &record.batch.calls {
-        if let crate::CallApproval::Ask { id, .. } = &call.decision {
-            sqlx::query("INSERT INTO continuation_interactions(id,continuation_id,run_id,call_id) VALUES($1,$2,$3,$4)")
-                .bind(&id.0).bind(&record.batch.continuation.id.0).bind(&f.run.id.0)
-                .bind(&call.target.call_id.0).execute(&mut *tx).await.unwrap();
-        }
-    }
-    sqlx::query(
-        "INSERT INTO continuation_barriers(session_id,run_id,continuation_id) VALUES($1,$2,$3)",
-    )
-    .bind(&record.session_id.0)
-    .bind(&record.run_id.0)
-    .bind(&record.batch.continuation.id.0)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
     record
 }
 

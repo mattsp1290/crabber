@@ -3,7 +3,7 @@ use crate::{PhaseError as Error, phase::sql, sql_snapshot as snapshot};
 use crabber_core::{Run, ToolCallId, ToolCallRecord, ToolCallStatus};
 use sqlx::{Postgres, Row, Transaction};
 
-pub(super) async fn load(
+pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     id: &ToolCallId,

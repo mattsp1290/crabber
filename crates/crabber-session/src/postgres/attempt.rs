@@ -134,7 +134,7 @@ impl PostgresExecution {
         }
         result
     }
-    async fn apply_attempt(
+    pub(super) async fn apply_attempt(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         run: &Run,

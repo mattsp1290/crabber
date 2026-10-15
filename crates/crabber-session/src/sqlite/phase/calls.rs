@@ -3,7 +3,7 @@ use crate::{PhaseError as Error, phase::sql};
 use crabber_core::{Run, ToolCallId, ToolCallRecord, ToolCallStatus};
 use sqlx::{Row, Sqlite, Transaction};
 
-pub(super) async fn load(
+pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     id: &ToolCallId,

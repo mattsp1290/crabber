@@ -147,6 +147,20 @@ fn ready(
         return Err(Error::CleanupBlocked);
     }
     let calls = record.grants()?;
+    let unfinished = state
+        .calls
+        .values()
+        .filter(|call| {
+            call.run_id == run.id
+                && matches!(
+                    call.status,
+                    crabber_core::ToolCallStatus::Pending | crabber_core::ToolCallStatus::Running
+                )
+        })
+        .count();
+    if unfinished != calls.len() {
+        return Err(Error::InvalidTransition);
+    }
     for call in &calls {
         let current = state
             .calls

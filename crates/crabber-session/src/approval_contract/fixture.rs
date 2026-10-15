@@ -179,3 +179,49 @@ async fn prepared_calls(
 
     calls
 }
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+/// A child writer will acquire and begin this first native attempt itself.
+pub(crate) async fn unstarted_batch(
+    store: &impl Store,
+    clock: &ManualClock,
+) -> (Run, crabber_core::RunFence, ApprovalSuspension) {
+    let mut prepared = crate::typed_admission_contract::fixture(
+        &SessionId::new(),
+        clock.now(),
+        "approval-process",
+    );
+    prepared.keyed.request.session_id = None;
+    let admitted = store
+        .admit_bound_run(BoundAdmitRequest {
+            request: prepared.keyed.request,
+            binding: prepared.binding,
+        })
+        .await
+        .unwrap();
+    let execution = store.execution(admitted.fence.clone()).await.unwrap();
+    let attempt = crate::AttemptTarget {
+        id: crabber_core::AttemptId::new(),
+        generation: crabber_core::AttemptGeneration::INITIAL,
+    };
+    let next_attempt = crate::AttemptTarget {
+        id: crabber_core::AttemptId::new(),
+        generation: attempt.generation.next().unwrap(),
+    };
+    let calls = prepared_calls(execution.as_ref(), &admitted.run, &next_attempt, clock).await;
+    let revision = store.session_revision(&admitted.session.id).await.unwrap();
+    let batch = ApprovalSuspension {
+        id: ControlId::new(),
+        expected_revision: revision.next().unwrap().next().unwrap(),
+        attempt,
+        expected_plan: InputFingerprint::new(admitted.run.plan_fingerprint.clone()).unwrap(),
+        continuation: ContinuationTarget {
+            id: ContinuationId::new(),
+            generation: ContinuationGeneration::INITIAL,
+        },
+        next_attempt,
+        calls,
+        usage: Usage::default(),
+    };
+    (admitted.run, admitted.fence, batch)
+}

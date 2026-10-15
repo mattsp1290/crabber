@@ -1,0 +1,169 @@
+//! Physical crash fixtures never serialize native attempt authority.
+#[path = "process/child.rs"]
+pub(crate) mod child;
+#[path = "process/verify.rs"]
+pub(crate) mod verify;
+use super::fixture;
+use crate::{
+    ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalError,
+    ApprovalReceipt, ApprovalReply, ApprovalSnapshot, ApprovalSuspension, AttemptAuthority,
+    AttemptCommand, AttemptMutation, AttemptMutationOutcome, Store,
+};
+use crabber_core::{ControlId, ManualClock, RunFence, RunId, SessionId, SessionRevision};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum Mode {
+    Suspend,
+    Answer,
+    Claim,
+}
+impl Mode {
+    pub(crate) const ALL: [Self; 3] = [Self::Suspend, Self::Answer, Self::Claim];
+}
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Fixture {
+    pub mode: Mode,
+    pub session: SessionId,
+    pub run: RunId,
+    pub fence: RunFence,
+    pub batch: ApprovalSuspension,
+    pub answer: Option<ApprovalAnswer>,
+    pub claim: Option<ApprovalContinuationClaim>,
+    pub revision: SessionRevision,
+    pub events: usize,
+    pub before: Option<ApprovalSnapshot>,
+}
+impl Fixture {
+    pub(crate) fn key(&self) -> &ControlId {
+        match self.mode {
+            Mode::Suspend => &self.batch.id,
+            Mode::Answer => &self.answer.as_ref().unwrap().id,
+            Mode::Claim => &self.claim.as_ref().unwrap().id,
+        }
+    }
+}
+pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
+    let clock = ManualClock::new(time::OffsetDateTime::UNIX_EPOCH);
+    let (run, fence, batch, answer, claim) = if matches!(mode, Mode::Suspend) {
+        let (run, fence, batch) = fixture::unstarted_batch(store, &clock).await;
+        (run, fence, batch, None, None)
+    } else {
+        let f = fixture::staged(store, &clock).await;
+        f.execution
+            .suspend_for_approval(f.batch.clone(), f.owner.clone())
+            .await
+            .unwrap();
+        let fence = RunFence {
+            run_id: f.run.id.clone(),
+            claim_token: f.run.claim_token.clone(),
+        };
+        let (answer, claim) = if matches!(mode, Mode::Answer) {
+            (
+                Some(fixture::answer(store, &f, 0, ApprovalReply::Grant).await),
+                None,
+            )
+        } else {
+            for index in 0..2 {
+                let answer = fixture::answer(store, &f, index, ApprovalReply::Grant).await;
+                store.answer_approval(answer).await.unwrap();
+            }
+            (None, Some(fixture::claim(store, &f).await))
+        };
+        (f.run, fence, f.batch, answer, claim)
+    };
+    Fixture {
+        revision: store.session_revision(&run.session_id).await.unwrap(),
+        events: store
+            .list_events(&run.session_id, None, 1000)
+            .await
+            .unwrap()
+            .len(),
+        before: store
+            .approval_snapshot(&run.session_id, &run.id)
+            .await
+            .unwrap(),
+        session: run.session_id,
+        run: run.id,
+        fence,
+        batch,
+        answer,
+        claim,
+        mode,
+    }
+}
+pub(crate) async fn write(
+    store: &impl Store,
+    f: &Fixture,
+    inject: impl Fn(u8),
+    lost_ack: bool,
+) -> Result<ApprovalReceipt, ApprovalError> {
+    inject(0);
+    let owner = if matches!(f.mode, Mode::Suspend) {
+        Some(begin(store, f).await)
+    } else {
+        None
+    };
+    inject(if lost_ack { 2 } else { 0 });
+    let result = match f.mode {
+        Mode::Suspend => {
+            store
+                .execution(f.fence.clone())
+                .await
+                .unwrap()
+                .suspend_for_approval(f.batch.clone(), owner.unwrap())
+                .await
+        }
+        Mode::Answer => store.answer_approval(f.answer.clone().unwrap()).await,
+        Mode::Claim => match store
+            .claim_approval_continuation(f.claim.clone().unwrap())
+            .await
+        {
+            Ok(
+                ApprovalClaimOutcome::Applied { receipt, .. }
+                | ApprovalClaimOutcome::Replayed(receipt),
+            ) => Ok(receipt),
+            Err(error) => Err(error),
+        },
+    };
+    inject(0);
+    result
+}
+async fn begin(store: &impl Store, f: &Fixture) -> AttemptAuthority {
+    let execution = store.execution(f.fence.clone()).await.unwrap();
+    let reserve = AttemptMutation {
+        id: ControlId::new(),
+        expected_revision: f.revision,
+        command: AttemptCommand::Reserve {
+            target: f.batch.attempt.clone(),
+        },
+    };
+    let AttemptMutationOutcome::Applied {
+        receipt,
+        authority: Some(owner),
+    } = execution.mutate_attempt(reserve, None).await.unwrap()
+    else {
+        panic!("fresh native reserve");
+    };
+    execution
+        .mutate_attempt(
+            AttemptMutation {
+                id: ControlId::new(),
+                expected_revision: receipt.revision,
+                command: AttemptCommand::Begin {
+                    target: f.batch.attempt.clone(),
+                },
+            },
+            Some(owner.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.session_revision(&f.session).await.unwrap(),
+        f.batch.expected_revision
+    );
+    owner
+}
+pub(crate) fn clock() -> std::sync::Arc<ManualClock> {
+    std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH))
+}

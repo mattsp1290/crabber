@@ -691,6 +691,13 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn claim_approval_continuation(
+        &self,
+        claim: crate::ApprovalContinuationClaim,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.claim_approval(&claim).await
+    }
+
     async fn answer_approval(
         &self,
         answer: crate::ApprovalAnswer,
@@ -1032,6 +1039,14 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn suspend_for_approval(
+        &self,
+        batch: crate::ApprovalSuspension,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.suspend_approval(batch, &authority).await
+    }
+
     async fn conclude_attempt(
         &self,
         conclusion: crate::AttemptConclusion,

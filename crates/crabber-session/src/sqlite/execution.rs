@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn suspend_for_approval(
+        &self,
+        batch: crate::ApprovalSuspension,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.suspend_approval(batch, &authority).await
+    }
+
     async fn conclude_attempt(
         &self,
         conclusion: crate::AttemptConclusion,

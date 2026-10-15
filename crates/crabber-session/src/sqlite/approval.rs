@@ -1,12 +1,15 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
 mod answer;
+mod claim;
 mod guards;
+mod suspend;
+mod write;
 use super::{SqliteStore, db};
 use crate::{
     ApprovalError as Error, ApprovalReceipt, ApprovalSnapshot, ContinuationTarget,
     approval::{self, sql},
 };
-use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, RunId, SessionId};
+use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use guards::{guard_attempt, release_terminal};
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -54,6 +57,38 @@ impl SqliteStore {
             .map_err(sql::unknown)?;
         let result = receipt(&mut tx, session, id).await;
         finish(tx, result).await
+    }
+}
+impl SqliteStore {
+    async fn approval_transaction(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
+        let mut tx = self.begin_write().await.map_err(sql::unknown)?;
+        let result = async {
+            let row = sqlx::query("SELECT data FROM runs WHERE session_id=$1 AND id=$2")
+                .bind(&session.0)
+                .bind(&run.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?
+                .ok_or(Error::NotFound)?;
+            let saved: Run = super::records::decode_row(&row, "data").map_err(sql::unknown)?;
+            if saved.session_id != *session || saved.id != *run {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            Ok(saved)
+        }
+        .await;
+        match result {
+            Ok(run) => Ok((tx, run)),
+            Err(error) => {
+                tx.rollback().await.map_err(db).map_err(sql::unknown)?;
+                Err(error)
+            }
+        }
     }
 }
 async fn load(
@@ -177,3 +212,9 @@ async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Res
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compound_tests;
+
+#[cfg(test)]
+mod process_tests;

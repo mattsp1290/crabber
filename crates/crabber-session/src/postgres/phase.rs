@@ -1,5 +1,6 @@
 //! Native phase writes share the session/run gate and operation-key namespace.
 mod calls;
+pub(super) use calls::load as load_call;
 mod records;
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
 use crate::{

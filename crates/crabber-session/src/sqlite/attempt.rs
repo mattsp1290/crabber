@@ -138,7 +138,7 @@ impl SqliteExecution {
         }
         result
     }
-    async fn apply_attempt(
+    pub(super) async fn apply_attempt(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         run: &Run,
