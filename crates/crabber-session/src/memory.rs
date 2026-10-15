@@ -17,6 +17,8 @@ mod management;
 mod phase;
 #[path = "memory/public_state.rs"]
 mod public_state;
+#[path = "memory/tool_result.rs"]
+mod tool_result;
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -422,6 +424,12 @@ impl Store for MemoryStore {
         answer: crate::ApprovalAnswer,
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
         self.answer_approval_inner(&answer)
+    }
+    async fn terminate_approval(
+        &self,
+        request: crate::ApprovalTermination,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.end_approval(&request)
     }
     async fn reclaim_approval_continuation(
         &self,

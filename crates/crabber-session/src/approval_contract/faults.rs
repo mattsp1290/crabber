@@ -12,11 +12,14 @@ enum Case {
     Suspend,
     Answer,
     Claim,
+    TerminateCancel,
+    TerminateExpire,
 }
 enum Operation {
     Suspend,
     Answer(ApprovalAnswer),
     Claim(ApprovalContinuationClaim),
+    Terminate(crate::ApprovalTermination),
 }
 impl Operation {
     fn id(&self, f: &Fixture) -> ControlId {
@@ -24,10 +27,12 @@ impl Operation {
             Self::Suspend => f.batch.id.clone(),
             Self::Answer(a) => a.id.clone(),
             Self::Claim(c) => c.id.clone(),
+            Self::Terminate(c) => c.id.clone(),
         }
     }
     async fn execute(&self, store: &impl Store, f: &Fixture) -> Result<ApprovalReceipt, Error> {
         match self {
+            Self::Terminate(c) => store.terminate_approval(c.clone()).await,
             Self::Suspend => {
                 f.execution
                     .suspend_for_approval(f.batch.clone(), f.owner.clone())
@@ -51,7 +56,13 @@ pub async fn run_fault_contract(
 ) {
     super::recovery::fault_contract(store, clock, &inject).await;
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
-    for case in [Case::Suspend, Case::Answer, Case::Claim] {
+    for case in [
+        Case::Suspend,
+        Case::Answer,
+        Case::Claim,
+        Case::TerminateCancel,
+        Case::TerminateExpire,
+    ] {
         for point in [FaultPoint::BeforeCommit, FaultPoint::AfterCommit] {
             let (f, operation) = pending(store, clock, case).await;
             let id = operation.id(&f);
@@ -107,7 +118,9 @@ pub async fn run_fault_contract(
                     .list_events(&f.run.session_id, None, 1000)
                     .await
                     .unwrap();
+                inject(FaultPoint::AfterCommit);
                 assert_eq!(operation.execute(store, &f).await.unwrap(), saved);
+                inject(FaultPoint::Off);
                 if let Operation::Claim(claim) = &operation {
                     assert!(
                         matches!(store.claim_approval_continuation(claim.clone()).await.unwrap(), ApprovalClaimOutcome::Replayed(receipt) if receipt == saved)
@@ -137,6 +150,14 @@ async fn pending(store: &impl Store, clock: &ManualClock, case: Case) -> (Fixtur
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
         .await
         .unwrap();
+    if matches!(case, Case::TerminateCancel | Case::TerminateExpire) {
+        let expire = matches!(case, Case::TerminateExpire);
+        if expire {
+            clock.set(crabber_core::Clock::now(clock) + time::Duration::seconds(2));
+        }
+        let request = super::termination::request(store, &f, expire).await;
+        return (f, Operation::Terminate(request));
+    }
     if matches!(case, Case::Answer) {
         let answer = answer(store, &f, 0, ApprovalReply::Grant).await;
         return (f, Operation::Answer(answer));

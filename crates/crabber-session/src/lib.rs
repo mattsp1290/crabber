@@ -20,6 +20,8 @@ pub use execution_binding::{
     PROVIDER_BINDING_COMPONENT, RetainedExecutionBinding,
 };
 mod approval;
+mod approval_termination;
+pub use approval_termination::{ApprovalTermination, ApprovalTerminationKind};
 pub mod approval_contract;
 pub use approval::*;
 mod attempt;

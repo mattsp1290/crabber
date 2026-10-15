@@ -101,6 +101,9 @@ pub(crate) async fn verify_loss(store: &impl Store, f: &Fixture) {
             assert_eq!(attempt.state, AttemptState::Suspended);
             assert_eq!(attempt.cleanup, AttemptCleanup::Complete);
         }
+        Mode::Cancel | Mode::Expire => {
+            verify_terminated(store, f, &receipt, &run, &snapshot).await;
+        }
         Mode::Answer => {
             assert_eq!(run.status, RunStatus::Paused);
             assert_eq!(
@@ -167,4 +170,35 @@ pub(crate) async fn verify_loss(store: &impl Store, f: &Fixture) {
         store.session_revision(&f.session).await.unwrap(),
         receipt.revision
     );
+}
+
+async fn verify_terminated(
+    store: &impl Store,
+    f: &Fixture,
+    receipt: &crate::ApprovalReceipt,
+    run: &crabber_core::Run,
+    snapshot: &crate::ApprovalSnapshot,
+) {
+    let request = f.termination.clone().unwrap();
+    request.verify_receipt(receipt).unwrap();
+    assert_eq!(run.status, request.run_status());
+    assert_ne!(run.claim_token, f.fence.claim_token);
+    assert_eq!(snapshot.termination, Some(request.kind.clone()));
+    assert!(snapshot.interactions.iter().all(|q| !q.consumed));
+    assert_eq!(&store.terminate_approval(request).await.unwrap(), receipt);
+    assert_eq!(
+        store.list_all_messages(&f.session).await.unwrap().len(),
+        f.messages + f.batch.calls.len()
+    );
+    let calls = crate::approval_contract::termination::calls(store, &f.session).await;
+    assert_eq!(calls.len(), f.batch.calls.len());
+    assert!(calls.iter().all(|call| call.result.is_some()));
+    let attempt = store
+        .latest_execution_attempt(&f.run)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(attempt.state, AttemptState::Suspended);
+    assert_eq!(attempt.cleanup, AttemptCleanup::Complete);
 }

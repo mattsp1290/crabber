@@ -1,11 +1,11 @@
 pub use crabber::session::{
-    ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
-    SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,
     ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationRecovery,
     ApprovalContinuationState, ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome,
     ApprovalReceipt, ApprovalReply, ApprovalResolverClaim, ApprovalSnapshot, ApprovalSuspension,
-    CallApproval, ContinuationTarget, GrantedApproval, GrantedDecision, MAX_APPROVAL_CALLS,
-    PreparedApproval,
+    ApprovalTermination, ApprovalTerminationKind, CallApproval, ContinuationTarget,
+    GrantedApproval, GrantedDecision, ListSessions, MAX_APPROVAL_CALLS, ManageSession,
+    ManagementError, ManagementReceipt, PreparedApproval, SessionChange, SessionDefaults,
+    SessionListCursor, SessionListPage, SessionSummary,
 };
 #[path = "../../crabber-session/src/management/records.rs"]
 #[allow(dead_code)]

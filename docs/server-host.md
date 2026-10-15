@@ -76,15 +76,19 @@ write. Reconcile the durable run and events; live terminal events require an
 acknowledged commit. Facade readiness/context checks before entering the runtime
 are outside this ownership scope. Initial workers, expired Unstarted recovery and
 eligible suspended continuation now reserve/reclaim and one-shot Begin a native
-attempt before business work. Native phase dispatch, durable cancellation and full
-orderly close remain unfinished. Result/completion signals
+attempt before business work. Native tool calls claim and begin their own phases
+before dispatch and atomically settle protected output after their resources join.
+Durable cancellation of active work and full orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
 The live `ApprovalFacade::request` and `UserPrompter::ask` APIs have been removed.
 Ordinary `ToolContext::request_interaction` returns the finite
 `DurableInteractionUnsupported` error synchronously. It invokes no host callback
-and does not create an awaiting question. Explicit typed suspension and the
-runtime's durable pre-effect approval gate remain under implementation. Frozen
+and does not create an awaiting question. Explicit typed tool suspension remains under implementation. The runtime's
+durable pre-effect approval gate persists the complete prepared batch before
+dispatch; host answers and continuation claims use separate atomic controls.
+`terminate_approval` can cancel or expire a fully joined waiting batch without
+initializing execution resources. Frozen
 plans include interaction contract version 2 so older hook-bearing plans cannot
 silently resume with these capabilities removed.
 

@@ -17,7 +17,7 @@ fn identity(value: &str, max: usize) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(super) fn fingerprint(value: &impl Serialize) -> Result<InputFingerprint, Error> {
+pub(crate) fn fingerprint(value: &impl Serialize) -> Result<InputFingerprint, Error> {
     if crate::snapshot::encoded_bytes(value, 4 * 1024 * 1024).is_none() {
         return Err(Error::InvalidRequest);
     }

@@ -344,3 +344,30 @@ only. SQLite schema 5 creates this representation only on fresh files and refuse
 older files; its schema assembly replaces the still-empty legacy receipt table
 so management receipts may reference their separate session audit. Existing run
 control receipts retain their mandatory run-event relationship.
+
+
+### Waiting approval cancellation and expiry
+
+`Store::terminate_approval` and its Runtime/Agent delegates accept an exact
+session/run/continuation generation, revision, operation key and host resolver
+claim. The host authenticates administrative authority separately from permission
+to execute. These pure controls remain available after extension shutdown.
+Cancellation selects `Interrupted`; expiry selects `Failed` and requires a named,
+unanswered interaction whose Store-clock deadline has passed. Accepted answers
+remain recorded and unconsumed. Other unanswered questions become expired only
+when their own deadlines passed; otherwise they become cancelled.
+
+Only a waiting batch whose latest suspended attempt has fully joined is eligible.
+Adapters verify the frozen suspension and answer receipts, pending call bindings,
+absence of native phases for prepared calls, and every historical phase's
+terminal output and complete cleanup. The transaction writes a fixed empty error
+result for each prepared call in original order, terminal source events, run
+outcome and revoked fence, barrier release, audit and receipt. It invokes no tool,
+provider or middleware and does not invent a native execution outcome. Claimed,
+started and uncertain work require their separate ownership controls.
+
+Retain the entire original request when acknowledgement is lost. Exact retries
+replay metadata before current eligibility checks, including after another run
+is admitted. Changed scope, choice or authority conflicts. Memory, PostgreSQL
+and SQLite support the same atomic contract; custom Store defaults return
+`Unsupported`. No schema migration is added by this control.

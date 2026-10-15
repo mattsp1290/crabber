@@ -13,6 +13,7 @@ mod public_state;
 mod records;
 mod snapshot;
 mod store_impl;
+mod tool_result;
 mod transactions;
 use crate::StoreError;
 use crabber_core::{ByteLimits, Clock, SystemClock};

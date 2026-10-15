@@ -18,9 +18,18 @@ pub(crate) enum Mode {
     Answer,
     Claim,
     Recover,
+    Cancel,
+    Expire,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 4] = [Self::Suspend, Self::Answer, Self::Claim, Self::Recover];
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Suspend,
+        Self::Answer,
+        Self::Claim,
+        Self::Recover,
+        Self::Cancel,
+        Self::Expire,
+    ];
 }
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fixture {
@@ -32,6 +41,7 @@ pub(crate) struct Fixture {
     pub answer: Option<ApprovalAnswer>,
     pub claim: Option<ApprovalContinuationClaim>,
     pub recovery: Option<crate::ApprovalContinuationRecovery>,
+    pub termination: Option<crate::ApprovalTermination>,
     pub clock_at: time::OffsetDateTime,
     pub revision: SessionRevision,
     pub events: usize,
@@ -45,40 +55,14 @@ impl Fixture {
             Mode::Answer => &self.answer.as_ref().unwrap().id,
             Mode::Claim => &self.claim.as_ref().unwrap().id,
             Mode::Recover => &self.recovery.as_ref().unwrap().id,
+            Mode::Cancel | Mode::Expire => &self.termination.as_ref().unwrap().id,
         }
     }
 }
 pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock) -> Fixture {
     clock.set(time::OffsetDateTime::UNIX_EPOCH);
     if matches!(mode, Mode::Recover) {
-        let p = super::recovery::prepare(store, clock).await;
-        clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));
-        return Fixture {
-            mode,
-            session: p.original.session_id.clone(),
-            run: p.original.run_id.clone(),
-            fence: p.grant.fence,
-            batch: p.fixture.batch,
-            answer: None,
-            claim: Some(p.original),
-            recovery: Some(p.request),
-            clock_at: time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31),
-            revision: p.receipt.revision,
-            events: store
-                .list_events(&p.fixture.run.session_id, None, 1000)
-                .await
-                .unwrap()
-                .len(),
-            messages: store
-                .list_all_messages(&p.fixture.run.session_id)
-                .await
-                .unwrap()
-                .len(),
-            before: store
-                .approval_snapshot(&p.fixture.run.session_id, &p.fixture.run.id)
-                .await
-                .unwrap(),
-        };
+        return recovered(store, clock).await;
     }
     let (run, fence, batch, answer, claim) = if matches!(mode, Mode::Suspend) {
         let (run, fence, batch) = fixture::unstarted_batch(store, clock).await;
@@ -98,6 +82,8 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock)
                 Some(fixture::answer(store, &f, 0, ApprovalReply::Grant).await),
                 None,
             )
+        } else if matches!(mode, Mode::Cancel | Mode::Expire) {
+            (None, None)
         } else {
             for index in 0..2 {
                 let answer = fixture::answer(store, &f, index, ApprovalReply::Grant).await;
@@ -106,6 +92,35 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock)
             (None, Some(fixture::claim(store, &f).await))
         };
         (f.run, fence, f.batch, answer, claim)
+    };
+    let termination = if matches!(mode, Mode::Cancel | Mode::Expire) {
+        if matches!(mode, Mode::Expire) {
+            clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(2));
+        }
+        let crate::CallApproval::Ask { id, description } = &batch.calls[0].decision else {
+            panic!("question")
+        };
+        Some(crate::ApprovalTermination {
+            id: ControlId::new(),
+            session_id: run.session_id.clone(),
+            run_id: run.id.clone(),
+            continuation: batch.continuation.clone(),
+            expected_revision: store.session_revision(&run.session_id).await.unwrap(),
+            resolver: crate::ApprovalResolverClaim {
+                resolver_id: "admin".into(),
+                authority: description.authority().clone(),
+                authority_claim: "host-verified-admin".into(),
+            },
+            kind: if matches!(mode, Mode::Expire) {
+                crate::ApprovalTerminationKind::Expire {
+                    interaction_id: id.clone(),
+                }
+            } else {
+                crate::ApprovalTerminationKind::Cancel
+            },
+        })
+    } else {
+        None
     };
     Fixture {
         revision: store.session_revision(&run.session_id).await.unwrap(),
@@ -130,7 +145,8 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode, clock: &ManualClock)
         answer,
         claim,
         recovery: None,
-        clock_at: time::OffsetDateTime::UNIX_EPOCH,
+        termination,
+        clock_at: crabber_core::Clock::now(clock),
         mode,
     }
 }
@@ -154,6 +170,11 @@ pub(crate) async fn write(
                 .await
                 .unwrap()
                 .suspend_for_approval(f.batch.clone(), owner.unwrap())
+                .await
+        }
+        Mode::Cancel | Mode::Expire => {
+            store
+                .terminate_approval(f.termination.clone().unwrap())
                 .await
         }
         Mode::Answer => store.answer_approval(f.answer.clone().unwrap()).await,
@@ -222,4 +243,37 @@ pub(crate) fn clock() -> std::sync::Arc<ManualClock> {
 
 pub(crate) fn fixture_clock(fixture: &Fixture) -> std::sync::Arc<ManualClock> {
     std::sync::Arc::new(ManualClock::new(fixture.clock_at))
+}
+
+async fn recovered(store: &impl Store, clock: &ManualClock) -> Fixture {
+    let mode = Mode::Recover;
+    let p = super::recovery::prepare(store, clock).await;
+    clock.set(time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31));
+    Fixture {
+        mode,
+        session: p.original.session_id.clone(),
+        run: p.original.run_id.clone(),
+        fence: p.grant.fence,
+        batch: p.fixture.batch,
+        answer: None,
+        claim: Some(p.original),
+        recovery: Some(p.request),
+        termination: None,
+        clock_at: time::OffsetDateTime::UNIX_EPOCH + time::Duration::milliseconds(31),
+        revision: p.receipt.revision,
+        events: store
+            .list_events(&p.fixture.run.session_id, None, 1000)
+            .await
+            .unwrap()
+            .len(),
+        messages: store
+            .list_all_messages(&p.fixture.run.session_id)
+            .await
+            .unwrap()
+            .len(),
+        before: store
+            .approval_snapshot(&p.fixture.run.session_id, &p.fixture.run.id)
+            .await
+            .unwrap(),
+    }
 }

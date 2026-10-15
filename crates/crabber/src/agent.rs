@@ -1,8 +1,8 @@
 #[path = "agent/approval.rs"]
 mod approval;
+mod management;
 #[path = "agent/phase.rs"]
 mod phase;
-mod management;
 use crate::ExecutionContext;
 pub use approval::Continuation;
 use async_trait::async_trait;

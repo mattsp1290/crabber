@@ -18,6 +18,13 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn terminate_approval(
+        &self,
+        request: crate::ApprovalTermination,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.terminate_approval_inner(&request).await
+    }
+
     async fn reclaim_approval_continuation(
         &self,
         request: crate::ApprovalContinuationRecovery,

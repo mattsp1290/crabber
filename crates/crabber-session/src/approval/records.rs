@@ -3,6 +3,8 @@
 mod answer;
 #[path = "integrity.rs"]
 mod integrity;
+#[path = "termination.rs"]
+mod termination;
 use super::{
     ApprovalAnswer, ApprovalContinuationState, ApprovalError as Error, ApprovalInteraction,
     ApprovalReply, ApprovalSnapshot, ApprovalSuspension, CallApproval, GrantedApproval,
@@ -10,6 +12,7 @@ use super::{
 };
 use crabber_core::{InteractionState, RunId, SessionId, SessionRevision};
 use serde::{Deserialize, Serialize};
+pub(crate) use termination::validate_termination_phase;
 use time::OffsetDateTime;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -23,6 +26,14 @@ pub(crate) struct ApprovalRecord {
     pub batch: ApprovalSuspension,
     pub state: ApprovalContinuationState,
     pub questions: Vec<ApprovalQuestionRecord>,
+    #[serde(default)]
+    pub termination: Option<ApprovalTerminationRecord>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApprovalTerminationRecord {
+    pub request: crate::ApprovalTermination,
+    pub ended_at: OffsetDateTime,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +52,10 @@ impl ApprovalRecord {
             attempt: self.batch.attempt.clone(),
             next_attempt: self.batch.next_attempt.clone(),
             state: self.state,
+            termination: self
+                .termination
+                .as_ref()
+                .map(|ended| ended.request.kind.clone()),
             calls: self.batch.calls.clone(),
             interactions: self.questions.iter().map(|q| q.view.clone()).collect(),
         }
@@ -126,6 +141,7 @@ impl ApprovalRecord {
             batch,
             state: ApprovalContinuationState::Waiting,
             questions,
+            termination: None,
         })
     }
 }

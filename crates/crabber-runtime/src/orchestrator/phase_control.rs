@@ -6,6 +6,16 @@ use crabber_session::{
 };
 
 impl Orchestrator {
+    /// Cancel or expire a waiting approval batch after its worker has joined.
+    /// Remains available without initializing execution resources.
+    /// # Errors
+    /// Returns unsupported, scope, revision, state or storage errors.
+    pub async fn terminate_approval(
+        &self,
+        request: crabber_session::ApprovalTermination,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        self.store.terminate_approval(request).await
+    }
     /// Record lost or host-asserted stopped ownership without dispatch.
     /// # Errors
     /// Returns unsupported, invalid scope, revision, state or storage errors.

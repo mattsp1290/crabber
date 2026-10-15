@@ -232,3 +232,80 @@ async fn lose_claim_ack(
     };
     receipt
 }
+
+#[tokio::test]
+async fn closed_host_cancels_waiting_approval_without_dispatch() {
+    use crabber::core::{AuthorityRequirement, ControlId, EventKind};
+    use crabber::session::{ApprovalTermination, ApprovalTerminationKind};
+    let store = Arc::new(MemoryStore::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::scripted(vec![call("cancel-wait"), done()]);
+    let agent = Agent::builder()
+        .behavior_version("public-cancel-approval.v1")
+        .store(store.clone())
+        .provider(Arc::new(provider.clone()))
+        .config(AgentConfig::new(selection("scripted")))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
+        .shared_tool(Arc::new(ToolDefinition {
+            info: ToolInfo {
+                name: "identity".into(),
+                description: "count".into(),
+                parameters: json!({"type":"object"}),
+                retry_safe: false,
+                required_permissions: vec![],
+            },
+            executor: Arc::new(CountEffect(effects.clone())),
+        }))
+        .build()
+        .unwrap();
+    let handle = agent.prompt(None, "wait").await.unwrap();
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    agent.close_extensions().await.unwrap();
+    let snapshot = agent
+        .approval_snapshot(&session, &run)
+        .await
+        .unwrap()
+        .unwrap();
+    let request = ApprovalTermination {
+        id: ControlId::new(),
+        session_id: session.clone(),
+        run_id: run.clone(),
+        continuation: snapshot.continuation,
+        expected_revision: snapshot.revision,
+        resolver: ApprovalResolverClaim {
+            resolver_id: "host-admin".into(),
+            authority: AuthorityRequirement::new("administration", "v1").unwrap(),
+            authority_claim: "host authenticated the cancellation".into(),
+        },
+        kind: ApprovalTerminationKind::Cancel,
+    };
+    let receipt = agent.terminate_approval(request.clone()).await.unwrap();
+    assert_eq!(agent.terminate_approval(request).await.unwrap(), receipt);
+    assert_eq!(
+        store.get_run(&run).await.unwrap().unwrap().status,
+        RunStatus::Interrupted
+    );
+    assert_eq!(
+        store.list_unfinished_tool_calls(&run).await.unwrap().len(),
+        0
+    );
+    let events = store.list_events(&session, None, 1000).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == EventKind::RunSettled)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == EventKind::TurnCompleted)
+            .count(),
+        1
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.requests().len(), 1);
+}

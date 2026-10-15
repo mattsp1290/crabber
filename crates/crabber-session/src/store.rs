@@ -282,6 +282,15 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         Err(crate::ApprovalError::Unsupported)
     }
+    /// Explicitly cancel or expire a fully quiescent waiting pre-effect batch.
+    /// Atomically records selected error results, terminal run outcome and barrier
+    /// release. Claimed, started or uncertain work is ineligible. No dispatch.
+    async fn terminate_approval(
+        &self,
+        _termination: crate::ApprovalTermination,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
     /// Atomically consume the complete accepted set and reserve its next attempt.
     /// Only a fresh result grants native ownership; replay returns metadata.
     async fn claim_approval_continuation(

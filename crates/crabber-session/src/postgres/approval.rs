@@ -4,6 +4,7 @@ mod claim;
 mod guards;
 mod recover;
 mod suspend;
+mod terminate;
 mod write;
 use super::{PostgresStore, db};
 use crate::{

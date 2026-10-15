@@ -15,6 +15,7 @@ mod lock_order_tests;
 mod management;
 mod phase;
 mod public_state;
+mod tool_result;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -703,6 +704,13 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn terminate_approval(
+        &self,
+        request: crate::ApprovalTermination,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.terminate_approval_inner(&request).await
+    }
+
     async fn reclaim_approval_continuation(
         &self,
         request: crate::ApprovalContinuationRecovery,

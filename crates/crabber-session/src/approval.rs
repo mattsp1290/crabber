@@ -19,6 +19,7 @@ use crabber_core::{
 pub(crate) use records::*;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+pub(crate) use validation::fingerprint as control_fingerprint;
 
 pub const MAX_APPROVAL_CALLS: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -43,6 +44,8 @@ pub enum ApprovalError {
     Pending,
     #[error("approval expired")]
     Expired,
+    #[error("approval deadline has not elapsed")]
+    NotExpired,
     #[error("approval authority claim does not match")]
     AuthorityMismatch,
     #[error("continuation cleanup is incomplete")]
@@ -206,6 +209,9 @@ pub struct ApprovalSnapshot {
     pub attempt: AttemptTarget,
     pub next_attempt: AttemptTarget,
     pub state: ApprovalContinuationState,
+    /// Selected administrative outcome; a released batch need not have executed.
+    #[serde(default)]
+    pub termination: Option<crate::ApprovalTerminationKind>,
     pub calls: Vec<PreparedApproval>,
     pub interactions: Vec<ApprovalInteraction>,
 }
@@ -228,6 +234,12 @@ pub enum ApprovalOutcome {
         continuation: ContinuationTarget,
         original_claim_id: ControlId,
         attempt: AttemptSnapshot,
+    },
+    Terminated {
+        continuation: ContinuationTarget,
+        kind: crate::ApprovalTerminationKind,
+        resolver: ApprovalResolverClaim,
+        status: crabber_core::RunStatus,
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

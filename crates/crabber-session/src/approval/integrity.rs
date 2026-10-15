@@ -28,7 +28,8 @@ impl ApprovalRecord {
         if expected.len() != self.questions.len() {
             return Err(Error::InvalidRequest);
         }
-        let consumed = self.state != ApprovalContinuationState::Waiting;
+        let terminated = self.validate_termination()?;
+        let consumed = !terminated && self.state != ApprovalContinuationState::Waiting;
         for ((id, description), question) in expected.iter().zip(&self.questions) {
             let expires_at = description
                 .expires_after_ms()
@@ -58,6 +59,22 @@ impl ApprovalRecord {
         authority: &crabber_core::AuthorityRequirement,
     ) -> Result<(), Error> {
         let Some(answer) = &question.answer else {
+            if let Some(ended) = &self.termination {
+                let expected = if question
+                    .view
+                    .expires_at
+                    .is_some_and(|at| at <= ended.ended_at)
+                {
+                    InteractionState::Expired
+                } else {
+                    InteractionState::Cancelled
+                };
+                return if question.view.state == expected && !question.view.consumed {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidRequest)
+                };
+            }
             if !matches!(
                 question.view.state,
                 InteractionState::Pending | InteractionState::Expired

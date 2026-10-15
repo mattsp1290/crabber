@@ -207,6 +207,12 @@ or phase evidence, or a session approval barrier, return
 [Memory/PostgreSQL abandonment and administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.
 
+For a waiting approval batch, `Agent::terminate_approval` cancels it or explicitly
+expires an unanswered question after its deadline. The Store requires the
+suspended worker and its resources to have joined, then atomically records fixed
+error results, the terminal run, barrier release and a replayable receipt. It
+executes no tools and grants no worker authority.
+
 For an already uncertain native tool phase, `Agent::resolve_uncertain_phase`
 records the host's asserted resolver identity, authority claim and selected
 external outcome. Supply final protected output for success, select failure, or

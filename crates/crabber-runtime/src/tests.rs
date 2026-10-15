@@ -2062,6 +2062,12 @@ impl Store for DelayedTerminalStore {
     ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
         self.inner.answer_approval(answer).await
     }
+    async fn terminate_approval(
+        &self,
+        request: crabber_session::ApprovalTermination,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        self.inner.terminate_approval(request).await
+    }
     async fn reclaim_approval_continuation(
         &self,
         request: crabber_session::ApprovalContinuationRecovery,

@@ -7,6 +7,8 @@ mod claim;
 mod recover;
 #[path = "approval/suspend.rs"]
 mod suspend;
+#[path = "approval/terminate.rs"]
+mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{ApprovalError as Error, ApprovalOutcome, ApprovalReceipt};
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run, SessionId};
@@ -190,3 +192,7 @@ fn before_commit(fault: u8) -> Result<(), Error> {
 #[cfg(test)]
 #[path = "approval/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "approval/termination_tests.rs"]
+mod termination_tests;

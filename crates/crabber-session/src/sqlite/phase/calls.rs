@@ -51,7 +51,7 @@ pub(super) async fn settle(
 ) -> Result<(), Error> {
     let call = load(tx, run, &settlement.completion.command.target().call_id).await?;
     let records = settlement.materialize(run, &call)?;
-    apply_result(tx, run, call, records).await
+    super::super::tool_result::apply(tx, run, call, records).await
 }
 
 pub(super) async fn resolve(
@@ -61,27 +61,7 @@ pub(super) async fn resolve(
 ) -> Result<(), Error> {
     let call = load(tx, run, &resolution.resolution.command.target().call_id).await?;
     if let Some(records) = resolution.materialize(run, &call)? {
-        apply_result(tx, run, call, records).await?;
+        super::super::tool_result::apply(tx, run, call, records).await?;
     }
-    Ok(())
-}
-
-async fn apply_result(
-    tx: &mut Transaction<'_, Sqlite>,
-    run: &Run,
-    mut call: ToolCallRecord,
-    records: crate::PhaseSettlementRecords,
-) -> Result<(), Error> {
-    super::super::records::insert_message(tx, run, &records.message)
-        .await
-        .map_err(sql::unknown)?;
-    super::super::records::insert_event(tx, run, &records.event)
-        .await
-        .map_err(sql::unknown)?;
-    call.status = records.call_status;
-    call.result = Some(records.result);
-    super::super::records::save_call(tx, &call.id, &call)
-        .await
-        .map_err(sql::unknown)?;
     Ok(())
 }
