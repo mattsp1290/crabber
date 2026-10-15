@@ -259,6 +259,18 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::SessionSummary, crate::ManagementError> {
         Err(crate::ManagementError::Unsupported)
     }
+    /// Latest run in native admission order with a captured public revision.
+    /// Bounds the complete metadata JSON before materialization, capped at 8 KiB.
+    /// SQL formatting overhead may conservatively require a larger byte budget.
+    /// Native stores bound projection before transfer/cloning and never decode
+    /// a private Run for this read. Custom stores fail closed by default.
+    async fn public_run_state(
+        &self,
+        _session: &SessionId,
+        _max_bytes: usize,
+    ) -> Result<crate::PublicRunOutcome, StoreError> {
+        Err(StoreError::SnapshotUnsupported)
+    }
     async fn list_sessions(
         &self,
         _request: crate::ListSessions,

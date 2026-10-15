@@ -9,6 +9,7 @@ mod execution;
 mod execution_binding;
 mod management;
 mod phase;
+mod public_run;
 mod public_state;
 mod records;
 mod snapshot;

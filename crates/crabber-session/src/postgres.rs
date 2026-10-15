@@ -14,6 +14,7 @@ mod execution_binding;
 mod lock_order_tests;
 mod management;
 mod phase;
+mod public_run;
 mod public_state;
 mod tool_result;
 use crate::{
@@ -743,6 +744,13 @@ impl Store for PostgresStore {
         id: &crabber_core::ControlId,
     ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
         self.management_receipt(session, id).await
+    }
+    async fn public_run_state(
+        &self,
+        session: &SessionId,
+        max_bytes: usize,
+    ) -> Result<crate::PublicRunOutcome, StoreError> {
+        self.read_public_run(session, max_bytes).await
     }
     async fn session_summary(
         &self,

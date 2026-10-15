@@ -401,3 +401,13 @@ remain available after extension close, without factories, providers or tools.
 Retain the original key and request after an unknown acknowledgement; exact
 retries and `lookup_attempt_mutation` reconcile without restoring authority.
 These controls do not implement durable cancel requests or orderly host close.
+
+`Store::public_run_state(session, max_bytes)` reads the latest admitted run's
+public identity, status, usage and timestamps with the session revision captured
+in the same native read. It returns `run: None` for an existing empty session,
+`NotFound` for a missing session, and `Limited` when the complete metadata JSON
+exceeds the supplied budget (at most 8 KiB). SQL formatting overhead may require
+a conservatively larger budget. Native implementations project and bound safe
+fields before transferring or cloning them; private checkpoints, configuration,
+errors, leases and owner tokens are never decoded by this read. This primitive
+must be combined with other reads only at matching captured revisions.

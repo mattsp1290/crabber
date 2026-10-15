@@ -559,3 +559,19 @@ async fn captured_public_revision_survives_metadata_changes_and_rejects_tamperin
     let (store, _path, _directory) = temp_store().await;
     crate::management_contract::captured_history_revision(&store).await;
 }
+
+#[tokio::test]
+async fn public_run_state_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::public_run::tests::run(&store).await;
+}
+
+#[test]
+fn public_run_private_allocation_is_bounded() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (store, _path, _directory) = runtime.block_on(temp_store());
+    crate::public_run::tests::allocation_contract(&runtime, &store);
+}

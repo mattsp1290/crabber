@@ -40,9 +40,10 @@ pub use crabber_wasm as wasm;
 pub use crabber_session::{
     AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
     AttemptUncertainty, AttemptUncertaintyCause, ListSessions, ManageSession, ManagementError,
-    ManagementReceipt, PendingCallDisposition, SessionChange, SessionDefaults, SessionListCursor,
-    SessionListPage, SessionSummary, SnapshotContinuation, SnapshotLimit, SnapshotLimits,
-    SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
+    ManagementReceipt, PendingCallDisposition, PublicRunOutcome, PublicRunState, PublicRunSummary,
+    SessionChange, SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,
+    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
+    SnapshotRequest, SnapshotUsage,
 };
 
 #[cfg(feature = "datadog")]

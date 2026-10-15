@@ -15,6 +15,8 @@ mod execution_binding;
 mod management;
 #[path = "memory/phase.rs"]
 mod phase;
+#[path = "memory/public_run.rs"]
+mod public_run;
 #[path = "memory/public_state.rs"]
 mod public_state;
 #[path = "memory/tool_result.rs"]
@@ -404,6 +406,13 @@ impl Store for MemoryStore {
         id: &crabber_core::ControlId,
     ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
         self.management_receipt(session, id)
+    }
+    async fn public_run_state(
+        &self,
+        session: &SessionId,
+        max_bytes: usize,
+    ) -> Result<crate::PublicRunOutcome, StoreError> {
+        self.read_public_run(session, max_bytes)
     }
     async fn session_summary(
         &self,

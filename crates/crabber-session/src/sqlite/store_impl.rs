@@ -58,6 +58,13 @@ impl Store for SqliteStore {
     ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
         self.management_receipt(session, id).await
     }
+    async fn public_run_state(
+        &self,
+        session: &SessionId,
+        max_bytes: usize,
+    ) -> Result<crate::PublicRunOutcome, StoreError> {
+        self.read_public_run(session, max_bytes).await
+    }
     async fn session_summary(
         &self,
         session: &SessionId,

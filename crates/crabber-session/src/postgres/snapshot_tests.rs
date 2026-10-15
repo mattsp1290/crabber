@@ -966,3 +966,29 @@ async fn captured_public_revision_survives_metadata_changes_and_rejects_tamperin
     let store = PostgresStore::connect(&url).await.unwrap();
     crate::management_contract::captured_history_revision(&store).await;
 }
+
+#[tokio::test]
+async fn public_run_state_contract() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    crate::public_run::tests::run(&store).await;
+}
+
+#[test]
+fn public_run_private_allocation_is_bounded() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = runtime.block_on(TEST_LOCK.lock());
+    runtime.block_on(PostgresStore::migrate(&url)).unwrap();
+    let store = runtime.block_on(PostgresStore::connect(&url)).unwrap();
+    crate::public_run::tests::allocation_contract(&runtime, &store);
+}

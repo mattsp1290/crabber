@@ -1,4 +1,8 @@
+#[path = "../../crabber-session/src/public_run.rs"]
+#[allow(dead_code)]
+mod public_run;
 pub use crabber::session::AdmissionSelectionPolicy;
+pub use crabber::session::{PublicRunOutcome, PublicRunState, PublicRunSummary};
 
 #[path = "../../crabber-session/src/attempt_control/turn.rs"]
 #[allow(dead_code)]

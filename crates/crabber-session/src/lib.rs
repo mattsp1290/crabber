@@ -62,9 +62,11 @@ pub use management::{
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;
+mod public_run;
 mod public_state;
 pub mod public_state_contract;
 mod snapshot;
+pub use public_run::{PublicRunOutcome, PublicRunState, PublicRunSummary};
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sql_snapshot;
 #[cfg(feature = "sqlite")]
@@ -94,6 +96,18 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn public_run_private_allocation_is_bounded() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        crate::public_run::tests::allocation_contract(&runtime, &crate::MemoryStore::new());
+    }
+    #[tokio::test]
+    async fn public_run_state_contract() {
+        crate::public_run::tests::run(&crate::MemoryStore::new()).await;
+    }
     #[tokio::test]
     async fn memory_approval_contract() {
         crate::approval_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
