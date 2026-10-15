@@ -372,3 +372,52 @@ async fn custom_restore_cannot_substitute_a_different_binding_before_recovery_cl
     );
     assert_eq!(fake.requests(), [] as [ModelRequest; 0]);
 }
+
+#[tokio::test]
+async fn compaction_keeps_captured_limits_and_respects_the_request_output_cap() {
+    for (requested, expected) in [(Some(32), 32), (None, 64)] {
+        let fake = FakeProvider::scripted(vec![
+            vec![StreamDelta::Error(ProviderError {
+                kind: crabber_providers::ProviderErrorKind::ContextOverflow,
+                message: "context full".into(),
+                retryable: false,
+            })],
+            vec![
+                StreamDelta::TextDelta("summary".into()),
+                StreamDelta::Completed,
+            ],
+            vec![
+                StreamDelta::TextDelta("done".into()),
+                StreamDelta::Completed,
+            ],
+        ]);
+        let descriptions = Arc::new(AtomicUsize::new(0));
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let runtime = Orchestrator::builder()
+            .behavior_version("compaction-binding-test.v1")
+            .store(Arc::new(MemoryStore::new()))
+            .resolver(Arc::new(MovingResolver {
+                fake: fake.clone(),
+                epoch: Arc::new(AtomicUsize::new(0)),
+                descriptions: descriptions.clone(),
+                resolutions: resolutions.clone(),
+            }))
+            .plan_provider(Arc::new(StaticPlanProvider::new(vec![], vec![])))
+            .build()
+            .unwrap();
+        let mut request = binding_request();
+        request.text = "x".repeat(3000);
+        request.max_output_tokens = requested;
+        let result = runtime.start(request).await.unwrap().done().await.unwrap();
+        assert_eq!(result.status, crabber_core::RunStatus::Completed);
+        let requests = fake.requests();
+        // The captured 8192-token context permits one summary chunk. Looking up
+        // an absent live catalog entry would split it using the fallback budget.
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].max_tokens, Some(expected));
+        assert_eq!(requests[1].tools, [] as [ToolInfo; 0]);
+        assert_eq!(requests[2].max_tokens, requested);
+        assert_eq!(descriptions.load(Ordering::SeqCst), 3);
+        assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+    }
+}

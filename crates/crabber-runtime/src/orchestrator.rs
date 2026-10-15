@@ -2276,7 +2276,6 @@ impl Orchestrator {
             self.emit_durable(execution, session_id, run_id, plan, EventKind::RunStarted)
                 .await?;
         }
-        let streamer = bound.streamer();
         for _ in 0..self.max_turns {
             if cancellation.is_cancelled() {
                 return Err(RuntimeError::Interrupted);
@@ -2312,7 +2311,7 @@ impl Orchestrator {
                         session_id,
                         &snapshot,
                         plan,
-                        Arc::clone(&streamer),
+                        bound,
                         false,
                         cancellation,
                         lease_lost,
@@ -2333,7 +2332,7 @@ impl Orchestrator {
                 &snapshot,
                 plan,
                 &session.workspace,
-                Arc::clone(&streamer),
+                bound,
                 compacted,
                 cancellation,
                 lease_lost,
@@ -2581,11 +2580,12 @@ impl Orchestrator {
         snapshot: &TurnSnapshot,
         plan: &RunPlan,
         workspace: &WorkspaceContext,
-        streamer: Arc<dyn Streamer>,
+        bound: &crabber_providers::BoundProvider,
         mut compacted: bool,
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
     ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
+        let streamer = bound.streamer();
         let mut snapshot = snapshot.clone();
         let mut retries = 0u32;
         let mut attempt = 0u32;
@@ -2636,7 +2636,7 @@ impl Orchestrator {
                             session_id,
                             &snapshot,
                             plan,
-                            Arc::clone(&streamer),
+                            bound,
                             true,
                             cancellation,
                             lease_lost,
@@ -2719,7 +2719,7 @@ impl Orchestrator {
         session_id: &SessionId,
         snapshot: &TurnSnapshot,
         plan: &RunPlan,
-        streamer: Arc<dyn Streamer>,
+        bound: &crabber_providers::BoundProvider,
         overflow: bool,
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
@@ -2730,20 +2730,14 @@ impl Orchestrator {
             .await?
             .ok_or(StoreError::NotFound)?;
         let messages = &snapshot.messages;
-        let context_limit = if let Some(provider) = plan
-            .providers
-            .iter()
-            .find(|provider| provider.info().id == snapshot.selection.provider_id)
-        {
-            provider
-                .models()
-                .await?
-                .into_iter()
-                .find(|model| model.id == snapshot.selection.model_id)
-                .map_or(0, |model| model.context_limit)
-        } else {
-            0
-        };
+        let streamer = bound.streamer();
+        let limits = bound.descriptor().limits();
+        let context_limit = limits.context_tokens.unwrap_or(0);
+        let summary_output_limit = snapshot
+            .max_output_tokens
+            .unwrap_or(1024)
+            .min(limits.output_tokens.unwrap_or(1024))
+            .min(1024);
         let budget_chars = usize::try_from(context_limit)
             .ok()
             .filter(|limit| *limit > 0)
@@ -2827,7 +2821,7 @@ impl Orchestrator {
                 messages: vec![user_message(session_id.clone(), input, self.clock.now())],
                 tools: Vec::new(),
                 temperature: None,
-                max_tokens: Some(1024),
+                max_tokens: Some(summary_output_limit),
                 tool_choice: None,
             };
             let mut measurement = Measurement::new(
