@@ -17,8 +17,8 @@ mod recovery;
 mod tamper;
 
 use crate::{
-    ApprovalRequester, ExecutionMode, Orchestrator, PermissionDecision, PermissionPolicy, Request,
-    RunHandle, ToolPipeline,
+    ExecutionMode, Orchestrator, PermissionDecision, PermissionPolicy, Request, RunHandle,
+    ToolPipeline,
 };
 use async_trait::async_trait;
 use crabber_core::{
@@ -298,6 +298,11 @@ impl PermissionPolicy for AskAndRefuse {
         }
     }
 }
+// Host fixture decisions are made after the durable worker has returned.
+#[async_trait]
+pub(super) trait ApprovalRequester: Send + Sync {
+    async fn approve(&self, tool: &ToolInfo, arguments: &Value) -> bool;
+}
 struct Refuse;
 #[async_trait]
 impl ApprovalRequester for Refuse {
@@ -566,9 +571,6 @@ impl Harness {
                     contexts.lock().unwrap().push(context.clone());
                 })
             });
-        if let Some(approver) = &self.approver {
-            builder = builder.approver(Arc::clone(approver));
-        }
         if let Some(pipeline) = &self.pipeline {
             builder = builder.tool_pipeline(Arc::clone(pipeline));
         }
@@ -594,12 +596,87 @@ impl Harness {
     pub(super) async fn start(&self) -> RunHandle {
         self.runtime().start(request()).await.unwrap()
     }
+    async fn answer_and_continue(&self, session: &SessionId, run: &RunId) {
+        use crabber_session::{ApprovalAnswer, ApprovalReply, ApprovalResolverClaim, CallApproval};
+        let snapshot = self
+            .store
+            .approval_snapshot(session, run)
+            .await
+            .unwrap()
+            .unwrap();
+        let calls = self.store.list_unfinished_tool_calls(run).await.unwrap();
+        let mut revision = snapshot.revision;
+        for prepared in &snapshot.calls {
+            let CallApproval::Ask { id, description } = &prepared.decision else {
+                continue;
+            };
+            let call = calls
+                .iter()
+                .find(|call| call.id == prepared.target.call_id)
+                .unwrap();
+            let info = ToolInfo {
+                name: call.name.clone(),
+                description: String::new(),
+                parameters: json!({}),
+                retry_safe: false,
+                required_permissions: vec![],
+            };
+            let grant = match &self.approver {
+                Some(host) => host.approve(&info, &call.arguments).await,
+                None => false,
+            };
+            let receipt = self
+                .store
+                .answer_approval(ApprovalAnswer {
+                    id: crabber_core::ControlId::new(),
+                    expected_revision: revision,
+                    session_id: session.clone(),
+                    run_id: run.clone(),
+                    continuation: snapshot.continuation.clone(),
+                    interaction_id: id.clone(),
+                    resolver: ApprovalResolverClaim {
+                        resolver_id: "test-host".into(),
+                        authority: description.authority().clone(),
+                        authority_claim: "fixture host decision".into(),
+                    },
+                    reply: if grant {
+                        ApprovalReply::Grant
+                    } else {
+                        ApprovalReply::Deny
+                    },
+                })
+                .await
+                .unwrap();
+            revision = receipt.revision;
+        }
+        let crate::Continuation::Started { handle, .. } = self
+            .runtime()
+            .continue_approval(crate::ContinueApproval {
+                id: crabber_core::ControlId::new(),
+                session_id: session.clone(),
+                run_id: run.clone(),
+                continuation: snapshot.continuation,
+                expected_revision: revision,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("fresh host continuation")
+        };
+        assert_eq!(
+            handle.done().await.unwrap().status,
+            crabber_core::RunStatus::Completed
+        );
+    }
     /// Run to completion and return handles for reading everything back.
     pub(super) async fn run(&self) -> Finished<'_> {
         let handle = self.start().await;
         let session_id = handle.session_id().clone();
         let run_id = handle.run_id().clone();
-        handle.done().await.unwrap();
+        let result = handle.done().await.unwrap();
+        if result.status == crabber_core::RunStatus::Paused {
+            self.answer_and_continue(&session_id, &run_id).await;
+        }
         Finished {
             harness: self,
             session_id,

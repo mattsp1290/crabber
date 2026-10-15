@@ -84,7 +84,7 @@ async fn panic_payload_drop_cannot_destroy_retained_join_evidence() {
 #[tokio::test]
 async fn resource_drain_cannot_hide_a_worker_started_during_its_wait() {
     let tasks = ExecutionTasks::default();
-    let scope = tasks.tool_resources(RunId::new(), ToolCallId::new());
+    let scope = tasks.tool_resources(RunId::new(), ToolCallId::new(), None);
     let release = Arc::new(Notify::new());
     let wait = release.clone();
     scope

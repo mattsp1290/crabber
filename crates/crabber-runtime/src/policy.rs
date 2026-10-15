@@ -71,20 +71,6 @@ impl PermissionPolicy for StaticPolicy {
 }
 
 #[async_trait]
-pub trait ApprovalRequester: Send + Sync {
-    async fn approve(&self, tool: &ToolInfo, arguments: &Value) -> bool;
-}
-
-pub struct DefaultDenyApprover;
-
-#[async_trait]
-impl ApprovalRequester for DefaultDenyApprover {
-    async fn approve(&self, _tool: &ToolInfo, _arguments: &Value) -> bool {
-        false
-    }
-}
-
-#[async_trait]
 pub trait ToolPipeline: Send + Sync {
     async fn prepare(&self, _tool: &ToolInfo, arguments: Value) -> Result<Value, String>;
     async fn transform_result(

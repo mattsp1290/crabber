@@ -96,6 +96,9 @@ impl SqliteStore {
                         fence,
                         authority,
                         calls,
+                        source_turn_id: record.batch.source_turn_id.clone(),
+                        usage: record.batch.usage.clone(),
+                        turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
                     }),
                 },
                 true,
@@ -126,7 +129,9 @@ async fn ready(
         return Err(Error::InvalidTransition);
     }
     if run.checkpoint.as_ref()
-        != Some(&serde_json::json!({"version":3,"approval":record.batch.continuation}))
+        != Some(
+            &serde_json::json!({"version":4,"approval":record.batch.continuation,"turns_used":record.batch.turns_used}),
+        )
     {
         return Err(Error::SemanticConflict);
     }
@@ -139,6 +144,9 @@ async fn ready(
         || old.snapshot.cleanup != AttemptCleanup::Complete
     {
         return Err(Error::CleanupBlocked);
+    }
+    if run.usage != record.batch.usage {
+        return Err(Error::SemanticConflict);
     }
     let calls = record.grants()?;
     super::suspend::validate_calls(tx, run, &record.batch).await?;

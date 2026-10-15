@@ -1,4 +1,6 @@
 //! Shared backend acceptance, including privately persisted domain states.
+#[path = "abandonment_contract/native_guards.rs"]
+mod native_guards;
 use crate::*;
 use crabber_core::*;
 use serde_json::json;
@@ -157,6 +159,7 @@ pub(crate) async fn assert_stale(execution: &dyn ExecutionStore, run: &Run, call
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run_contract<S: FixtureStore>(store: S, clock: Arc<ManualClock>) {
+    native_guards::run(&store, &clock).await;
     for status in [RunStatus::Pending, RunStatus::Running, RunStatus::Paused] {
         for authority in [
             AbandonAuthority::ExpiredLease,

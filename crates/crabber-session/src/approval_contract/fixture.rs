@@ -70,6 +70,9 @@ pub(crate) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
         next_attempt,
         calls,
         usage: Usage::default(),
+        turns_used: Some(1),
+        source_turn_id: None,
+        source_created_at: None,
     };
     Fixture {
         run: admitted.run,
@@ -222,6 +225,9 @@ pub(crate) async fn unstarted_batch(
         next_attempt,
         calls,
         usage: Usage::default(),
+        turns_used: Some(1),
+        source_turn_id: None,
+        source_created_at: None,
     };
     (admitted.run, admitted.fence, batch)
 }

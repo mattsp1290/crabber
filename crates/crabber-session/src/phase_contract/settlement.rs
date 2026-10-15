@@ -1,4 +1,6 @@
 //! Complete-phase + protected result history is one native transaction.
+#[path = "settlement/interruption.rs"]
+mod interruption;
 use super::{applied, fixture, mutation};
 use crate::{
     PhaseAuthority, PhaseCommand, PhaseError, PhaseMutationOutcome, PhaseQuiescence,
@@ -60,6 +62,11 @@ async fn started(
     )
     .unwrap();
     let settlement = PhaseSettlement {
+        result_status: if failed {
+            crabber_core::ToolResultStatus::Failed
+        } else {
+            crabber_core::ToolResultStatus::Completed
+        },
         completion: mutation(
             begun.revision,
             PhaseCommand::Complete {
@@ -82,6 +89,7 @@ pub(super) async fn run(store: &impl Store) {
     late_collision(store).await;
     operation_domains_are_distinct(store).await;
     uncertain_cannot_be_completed(store).await;
+    interruption::run(store).await;
 }
 async fn lifecycle(store: &impl Store, failed: bool) {
     let (admitted, execution, owner, settlement) = started(store, failed).await;
@@ -133,6 +141,7 @@ async fn lifecycle(store: &impl Store, failed: bool) {
         events
     );
     let mut changed = settlement.clone();
+    changed.result_status = crabber_core::ToolResultStatus::Completed;
     if let PhaseCommand::Complete { output, .. } = &mut changed.completion.command {
         *output = ToolOutput::from_json(&serde_json::json!("different choice")).unwrap();
     }

@@ -5,6 +5,9 @@ use crate::{
 };
 use crabber_core::InputFingerprint;
 use serde::{Deserialize, Serialize};
+#[path = "effects.rs"]
+mod effects;
+pub(crate) use effects::PhaseEffect;
 #[path = "transition.rs"]
 mod transition;
 use crabber_core::{EventKind, EventRecord, Run};

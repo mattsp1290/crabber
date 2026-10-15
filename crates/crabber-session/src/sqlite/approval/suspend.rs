@@ -3,8 +3,7 @@ use super::super::{SqliteExecution, db};
 use super::{Error, approval, finish, load, sql, write};
 use crate::{
     ApprovalContinuationState, ApprovalReceipt, ApprovalSuspension, AttemptAuthority,
-    AttemptCommand, AttemptConclusion, AttemptFinish, AttemptMutation, AttemptMutationOutcome,
-    RunBoundary,
+    AttemptMutationOutcome,
 };
 use crabber_core::{ContinuationGeneration, Run, RunStatus, SessionId, ToolCallStatus};
 use sqlx::{Sqlite, Transaction};
@@ -42,8 +41,7 @@ impl SqliteExecution {
                 .bind(&run.session_id.0).fetch_one(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
             let record = approval::ApprovalRecord::new(batch.clone(), run.session_id.clone(), run.id.clone(),
                 workspace.ok_or(Error::UnknownStoreOutcome)?, now)?;
-            let conclusion = conclusion(&run, &batch, now);
-            conclusion.validate().map_err(approval::attempt_error)?;
+            let conclusion = batch.conclusion(&run, now)?;
             let applied = self.apply_attempt(&mut tx, &run, &conclusion.finish, Some(authority), Some(&conclusion))
                 .await.map_err(approval::attempt_error)?;
             if !matches!(applied, AttemptMutationOutcome::Applied { .. }) { return Err(Error::SemanticConflict); }
@@ -149,27 +147,4 @@ pub(super) async fn validate_calls(
         }
     }
     Ok(())
-}
-fn conclusion(
-    run: &Run,
-    batch: &ApprovalSuspension,
-    now: time::OffsetDateTime,
-) -> AttemptConclusion {
-    AttemptConclusion {
-        finish: AttemptMutation {
-            id: approval::derived_id("suspend-attempt", &batch.id),
-            expected_revision: batch.expected_revision,
-            command: AttemptCommand::Finish {
-                target: batch.attempt.clone(),
-                outcome: AttemptFinish::Suspended,
-            },
-        },
-        boundary: RunBoundary::Suspended {
-            checkpoint: serde_json::json!({"version":3,"approval":batch.continuation}),
-            usage: batch.usage.clone(),
-        },
-        created_at: now,
-        turn_id: None,
-        elapsed: (now - run.created_at).try_into().unwrap_or_default(),
-    }
 }

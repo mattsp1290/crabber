@@ -15,7 +15,7 @@ async fn process_helper() {
             .await
             .unwrap();
     } else {
-        process::verify_loss(&store, fixture).await;
+        process::verify::verify_loss(&store, fixture).await;
     }
 }
 #[tokio::test]

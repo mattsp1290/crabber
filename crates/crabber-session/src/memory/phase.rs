@@ -66,7 +66,7 @@ impl MemoryExecution {
         request: PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
     ) -> Result<PhaseMutationOutcome, Error> {
-        self.change_phase_inner(request, authority, None)
+        self.change_phase_inner(request, authority, phase::PhaseEffect::Metadata)
     }
     pub(super) fn settle_phase(
         &self,
@@ -78,14 +78,27 @@ impl MemoryExecution {
         self.change_phase_inner(
             settlement.completion.clone(),
             authority.as_ref(),
-            Some(settlement),
+            phase::PhaseEffect::Settle(settlement),
+        )
+    }
+    pub(super) fn start_phase(
+        &self,
+        start: &crate::PhaseStart,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<PhaseMutationOutcome, Error> {
+        start.validate()?;
+        let authority = authority.map(PhaseWriteAuthority::Phase);
+        self.change_phase_inner(
+            start.begin.clone(),
+            authority.as_ref(),
+            phase::PhaseEffect::Start(start),
         )
     }
     fn change_phase_inner(
         &self,
         request: PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
-        settlement: Option<&crate::PhaseSettlement>,
+        effect: phase::PhaseEffect<'_>,
     ) -> Result<PhaseMutationOutcome, Error> {
         phase::validate_request(&request)?;
         let result = self.store.transact(|state| {
@@ -94,13 +107,9 @@ impl MemoryExecution {
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
-            let digest = if let Some(settlement) = settlement {
-                settlement.fingerprint(&run.session_id, &run.id)?
-            } else {
-                request.fingerprint(&run.session_id, &run.id)?
-            };
+            let digest = effect.fingerprint(&request, &run.session_id, &run.id)?;
             let key = (run.session_id.clone(), request.id.clone());
-            if let Some(replayed) = replay(state, &run, &request, &digest, settlement)? {
+            if let Some(replayed) = replay(state, &run, &request, &digest, effect)? {
                 return Ok(replayed);
             }
             let now = self.store.clock.now();
@@ -117,7 +126,15 @@ impl MemoryExecution {
                 return Err(Error::RevisionConflict);
             }
             let (mut record, authority) = prepare_record(state, &run, &request, authority, now)?;
-            if let Some(settlement) = settlement {
+            if let Some(start) = effect.start() {
+                let call = state
+                    .calls
+                    .get(&record.snapshot.target.call_id)
+                    .ok_or(Error::NotFound)?;
+                let event = start.materialize(&run, call)?;
+                super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
+            }
+            if let Some(settlement) = effect.settlement() {
                 settle_call(state, &run, &mut record, settlement)?;
             }
             let revision = revision(state, &run.session_id)
@@ -186,7 +203,7 @@ fn replay(
     run: &Run,
     request: &PhaseMutation,
     digest: &crabber_core::InputFingerprint,
-    settlement: Option<&crate::PhaseSettlement>,
+    effect: phase::PhaseEffect<'_>,
 ) -> Result<Option<PhaseMutationOutcome>, Error> {
     let key = (run.session_id.clone(), request.id.clone());
     if let Some(saved) = state.operation_receipts.get(&key) {
@@ -200,8 +217,8 @@ fn replay(
         if receipt.phase.run_id != run.id || &receipt.semantic_digest != digest {
             return Err(Error::SemanticConflict);
         }
-        if let Some(settlement) = settlement {
-            settlement.verify_replay(
+        if !matches!(effect, phase::PhaseEffect::Metadata) {
+            effect.verify_replay(
                 receipt,
                 state
                     .calls

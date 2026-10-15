@@ -9,6 +9,8 @@ mod finish;
 pub(crate) mod fixture;
 #[path = "approval_contract/integrity.rs"]
 mod integrity;
+#[path = "approval_contract/presentation.rs"]
+mod presentation;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 #[path = "approval_contract/process.rs"]
 pub(crate) mod process;
@@ -34,12 +36,8 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     expiration(&store, &clock).await;
 }
 async fn lifecycle(store: &impl Store, clock: &ManualClock) {
-    let f = staged(store, clock).await;
-    let suspended = f
-        .execution
-        .suspend_for_approval(f.batch.clone(), f.owner.clone())
-        .await
-        .unwrap();
+    let mut f = staged(store, clock).await;
+    let suspended = presentation::suspend(store, clock, &mut f).await;
     let run = store.get_run(&f.run.id).await.unwrap().unwrap();
     assert_eq!(run.status, RunStatus::Paused);
     assert!(matches!(

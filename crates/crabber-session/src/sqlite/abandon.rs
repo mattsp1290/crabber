@@ -66,6 +66,17 @@ async fn settle(
     if request.authority == AbandonAuthority::ExpiredLease && run.lease_until > now {
         return Err(AbandonError::LiveLease);
     }
+    let native: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+    )
+    .bind(&run.id.0)
+    .bind(&run.session_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    if native {
+        return Err(AbandonError::NativeReconciliationRequired);
+    }
     run.claim_token = uuid::Uuid::new_v4().to_string();
     run.lease_until = now;
     run.updated_at = now;

@@ -2,8 +2,7 @@
 use super::{Error, publish, replay};
 use crate::{
     ApprovalContinuationState, ApprovalOutcome, ApprovalSuspension, AttemptAuthority,
-    AttemptCommand, AttemptConclusion, AttemptFinish, AttemptMutation, AttemptMutationOutcome,
-    RunBoundary, approval,
+    AttemptMutationOutcome, approval,
 };
 use crabber_core::{ContinuationGeneration, RunStatus, ToolCallStatus};
 
@@ -54,24 +53,7 @@ impl super::super::MemoryExecution {
                     return Err(Error::SemanticConflict);
                 }
             }
-            let conclusion = AttemptConclusion {
-                finish: AttemptMutation {
-                    id: approval::derived_id("suspend-attempt", &batch.id),
-                    expected_revision: batch.expected_revision,
-                    command: AttemptCommand::Finish {
-                        target: batch.attempt.clone(),
-                        outcome: AttemptFinish::Suspended,
-                    },
-                },
-                boundary: RunBoundary::Suspended {
-                    checkpoint: serde_json::json!({"version":3,"approval":batch.continuation}),
-                    usage: batch.usage.clone(),
-                },
-                created_at: now,
-                turn_id: None,
-                elapsed: (now - run.created_at).try_into().unwrap_or_default(),
-            };
-            conclusion.validate().map_err(approval::attempt_error)?;
+            let conclusion = batch.conclusion(&run, now)?;
             let applied = self
                 .apply_attempt(
                     state,

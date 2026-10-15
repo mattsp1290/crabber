@@ -1,5 +1,6 @@
 //! Durable approval of a complete prepared batch, before any call starts.
 mod audit;
+mod boundary;
 mod records;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod sql;
@@ -70,6 +71,39 @@ pub struct PreparedApproval {
     pub call_binding: InputFingerprint,
     pub decision: CallApproval,
 }
+impl PreparedApproval {
+    /// Freeze exact stored call semantics. This descriptor grants no dispatch
+    /// authority; the Store verifies the complete batch under its transaction.
+    /// # Errors
+    /// Rejects a mismatched target or an unbounded stored call.
+    pub fn new(
+        target: PhaseTarget,
+        call: &crabber_core::ToolCallRecord,
+        decision: CallApproval,
+    ) -> Result<Self, ApprovalError> {
+        if target.call_id != call.id {
+            return Err(ApprovalError::InvalidRequest);
+        }
+        let call_binding =
+            crate::phase::call_binding(call).map_err(|_| ApprovalError::InvalidRequest)?;
+        Ok(Self {
+            target,
+            call_binding,
+            decision,
+        })
+    }
+    /// # Errors
+    /// Rejects a changed call identity, arguments, name, scope or retry declaration.
+    pub fn verify_call(&self, call: &crabber_core::ToolCallRecord) -> Result<(), ApprovalError> {
+        if self.target.call_id != call.id
+            || crate::phase::call_binding(call).map_err(|_| ApprovalError::InvalidRequest)?
+                != self.call_binding
+        {
+            return Err(ApprovalError::SemanticConflict);
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalSuspension {
@@ -81,6 +115,14 @@ pub struct ApprovalSuspension {
     pub next_attempt: AttemptTarget,
     pub calls: Vec<PreparedApproval>,
     pub usage: Usage,
+    /// Total model turns consumed by this run. Legacy missing counts are ambiguous.
+    #[serde(default)]
+    pub turns_used: Option<u64>,
+    /// Generated source presentation, excluded from semantic retry identity.
+    #[serde(default)]
+    pub source_turn_id: Option<crabber_core::TurnId>,
+    #[serde(default)]
+    pub source_created_at: Option<OffsetDateTime>,
 }
 impl std::fmt::Debug for ApprovalSuspension {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -206,6 +248,9 @@ pub struct ApprovalGrant {
     pub fence: RunFence,
     pub authority: AttemptAuthority,
     pub calls: Vec<GrantedApproval>,
+    pub source_turn_id: Option<crabber_core::TurnId>,
+    pub usage: Usage,
+    pub turns_used: u64,
 }
 impl std::fmt::Debug for ApprovalGrant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

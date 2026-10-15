@@ -26,10 +26,17 @@ pub(super) async fn begin(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     id: &ToolCallId,
+    start: Option<&crate::PhaseStart>,
 ) -> Result<(), Error> {
     let mut call = load(tx, run, id).await?;
     if call.status != ToolCallStatus::Pending || call.result.is_some() {
         return Err(Error::InvalidTransition);
+    }
+    if let Some(start) = start {
+        let event = start.materialize(run, &call)?;
+        super::super::insert_event(tx, run, &event)
+            .await
+            .map_err(sql::unknown)?;
     }
     call.status = ToolCallStatus::Running;
     let accounting = snapshot::call_record(&call).map_err(sql::unknown)?;

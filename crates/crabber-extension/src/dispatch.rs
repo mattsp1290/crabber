@@ -263,7 +263,13 @@ impl Dispatcher {
                     }
                 };
             }
-            let mut handler_context = context.clone().with_cleanup(handler.cleanup.clone());
+            let mut handler_context = if context.cleanup().is_phase_scoped() {
+                context
+                    .clone()
+                    .with_cleanup(context.cleanup().for_handler_mount(&handler.cleanup))
+            } else {
+                context.clone().with_cleanup(handler.cleanup.clone())
+            };
             handler_context.set_phase(handler.phase);
             handler_context.set_is_error(is_error);
             let current = accepted.as_ref().unwrap_or(&seed.result).clone();
@@ -571,6 +577,9 @@ fn around_at(
 }
 
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+#[path = "dispatch/phase_cleanup_tests.rs"]
+mod phase_cleanup_tests;
 tokio::task_local! { static ACTIVE_NEXT: u64; }
 tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
 pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {

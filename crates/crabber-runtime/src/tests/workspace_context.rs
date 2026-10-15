@@ -225,6 +225,53 @@ impl Store for DriftStore {
     fn supports_owned_attempts(&self) -> bool {
         true
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.inner.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.inner.supports_pre_effect_approvals()
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber_core::RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crabber_session::VersionedPhase, crabber_session::PhaseError> {
+        self.inner.tool_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber_core::SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::PhaseReceipt>, crabber_session::PhaseError> {
+        self.inner.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+    ) -> Result<Option<crabber_session::ApprovalSnapshot>, crabber_session::ApprovalError> {
+        self.inner.approval_snapshot(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber_core::SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::ApprovalReceipt>, crabber_session::ApprovalError> {
+        self.inner.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber_session::ApprovalAnswer,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        self.inner.answer_approval(answer).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber_session::ApprovalContinuationClaim,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        self.inner.claim_approval_continuation(claim).await
+    }
+
     async fn latest_execution_attempt(
         &self,
         run: &RunId,

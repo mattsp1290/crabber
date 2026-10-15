@@ -275,7 +275,7 @@ async fn initial_and_resumed_workers_with_the_same_run_have_separate_event_strea
     );
 }
 #[tokio::test]
-async fn resumed_handle_interrupt_commits_interruption_before_reporting_completion() {
+async fn resumed_handle_interrupt_reports_phase_uncertainty_without_a_terminal_event() {
     use crabber::core::EventKind;
     let probes = Arc::new(Probes::default());
     let (agent, store) = paused_agent(probes.clone());
@@ -288,28 +288,28 @@ async fn resumed_handle_interrupt_commits_interruption_before_reporting_completi
     let control = resumed.control().clone();
     assert_eq!(control.run_id(), &run);
     control.interrupt();
-    let result = timeout(BOUND, resumed.done()).await.unwrap().unwrap();
-    assert_eq!(result.status, RunStatus::Interrupted);
+    let crabber::RuntimeError::PhaseOutcomeUnknown { phase, .. } =
+        timeout(BOUND, resumed.done()).await.unwrap().unwrap_err()
+    else {
+        panic!("interrupted executor requires reconciliation")
+    };
+    let persisted = store.get_run(&run).await.unwrap().unwrap();
+    assert_eq!(persisted.status, RunStatus::Running);
     assert_eq!(
-        store.get_run(&run).await.unwrap().unwrap().status,
-        RunStatus::Interrupted
+        store.tool_phase(&run, &phase.id).await.unwrap().phase.state,
+        crabber::session::PhaseState::Uncertain
     );
     let records = collect(events).await;
-    let settled = records
-        .iter()
-        .find(|event| event.kind == EventKind::RunSettled)
-        .unwrap();
-    assert_eq!(settled.payload["status"], "interrupted");
-    let persisted = store.get_run(&run).await.unwrap().unwrap();
+    assert!(!records.iter().any(|event| matches!(
+        event.kind,
+        EventKind::RunSettled | EventKind::ToolCallSettled
+    )));
     let durable = store
         .list_events(&persisted.session_id, None, 1000)
         .await
         .unwrap();
-    assert!(
-        durable
-            .iter()
-            .any(|event| event.kind == EventKind::RunSettled
-                && event.cursor.is_some()
-                && event.payload == settled.payload)
-    );
+    assert!(!durable.iter().any(|event| matches!(
+        event.kind,
+        EventKind::RunSettled | EventKind::ToolCallSettled
+    )));
 }

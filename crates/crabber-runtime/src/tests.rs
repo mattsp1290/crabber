@@ -1,6 +1,6 @@
 use crate::{
-    ApprovalRequester, ExecutionMode, InterruptPolicy, ModelStream, Observer, Orchestrator,
-    PermissionDecision, PermissionPolicy, Request, RuntimeError, StaticPolicy, ToolPipeline,
+    ExecutionMode, InterruptPolicy, ModelStream, Observer, Orchestrator, PermissionDecision,
+    PermissionPolicy, Request, RuntimeError, StaticPolicy, ToolPipeline,
 };
 use async_trait::async_trait;
 use crabber_core::{
@@ -26,6 +26,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::{Barrier, Notify, oneshot};
+
+mod approval_order;
+#[path = "tests/durable_approval.rs"]
+mod durable_approval;
+mod native_phase;
+mod turn_budget;
+mod unstarted_batch;
 
 #[path = "tests/native_attempt.rs"]
 pub(crate) mod native_attempt;
@@ -146,7 +153,7 @@ async fn interrupt_closes_partial_text_message() {
 }
 
 #[tokio::test]
-async fn interrupt_settles_running_tool_and_run() {
+async fn interrupting_an_inflight_executor_retains_uncertainty() {
     let store = Arc::new(MemoryStore::new());
     let (entered_tx, entered_rx) = oneshot::channel();
     let completed = Arc::new(AtomicUsize::new(0));
@@ -164,17 +171,30 @@ async fn interrupt_settles_running_tool_and_run() {
     let run_id = handle.run_id().clone();
     entered_rx.await.unwrap();
     handle.interrupt();
-    let result = handle.done().await.unwrap();
-    assert_eq!(result.status, RunStatus::Interrupted);
+    let RuntimeError::PhaseOutcomeUnknown { phase, reason, .. } = handle.done().await.unwrap_err()
+    else {
+        panic!("interrupted executor needs reconciliation")
+    };
+    assert_eq!(reason, crabber_session::PhaseError::Uncertain);
     assert_eq!(completed.load(Ordering::SeqCst), 0);
+    let stored = store.tool_phase(&run_id, &phase.id).await.unwrap().phase;
+    assert_eq!(stored.state, crabber_session::PhaseState::Uncertain);
     assert_eq!(
-        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
+        stored.quiescence,
+        crabber_session::PhaseQuiescence::Complete
     );
+    let calls = store.list_unfinished_tool_calls(&run_id).await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].status, crabber_core::ToolCallStatus::Running);
+    assert!(calls[0].result.is_none());
     assert_eq!(
         store.get_run(&run_id).await.unwrap().unwrap().status,
-        RunStatus::Interrupted
+        RunStatus::Running
     );
+    assert!(matches!(
+        runtime.resume(&run_id).await,
+        Err(RuntimeError::Store(StoreError::Conflict))
+    ));
 }
 
 #[tokio::test]
@@ -270,7 +290,7 @@ async fn resumed_tool_stops_when_lease_is_reclaimed() {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn paused_with_unstaged_assistant(
+async fn paused_with_legacy_history_drift(
     has_tool: bool,
     compacted: bool,
 ) -> (
@@ -448,53 +468,48 @@ async fn paused_with_unstaged_assistant(
 }
 
 #[tokio::test]
-async fn recovery_does_not_request_model_after_committed_text_response() {
-    let (runtime, store, fake, executed, run_id) =
-        paused_with_unstaged_assistant(false, false).await;
-    let result = runtime.resume(&run_id).await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed);
-    assert_eq!(fake.requests().len(), 1);
-    assert_eq!(executed.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
-    );
-}
-
-#[tokio::test]
-async fn recovery_stages_committed_assistant_call_before_next_model_turn() {
-    let (runtime, store, fake, executed, run_id) =
-        paused_with_unstaged_assistant(true, false).await;
-    let result = runtime.resume(&run_id).await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed);
-    assert_eq!(executed.load(Ordering::SeqCst), 1);
-    assert_eq!(fake.requests().len(), 2);
-    assert_eq!(
-        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
-    );
-}
-
-#[tokio::test]
-async fn recovery_reconciles_text_after_compaction_hides_paused_anchor() {
-    let (runtime, _, fake, executed, run_id) = paused_with_unstaged_assistant(false, true).await;
-    let result = runtime.resume(&run_id).await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed);
-    assert_eq!(fake.requests().len(), 1);
-    assert_eq!(executed.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn recovery_stages_tool_after_compaction_hides_paused_anchor() {
-    let (runtime, store, fake, executed, run_id) = paused_with_unstaged_assistant(true, true).await;
-    let result = runtime.resume(&run_id).await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed);
-    assert_eq!(fake.requests().len(), 2);
-    assert_eq!(executed.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        store.list_unfinished_tool_calls(&run_id).await.unwrap(),
-        [] as [crabber_core::ToolCallRecord; 0]
-    );
+async fn recovery_refuses_history_that_drifted_from_the_native_pause() {
+    for has_tool in [false, true] {
+        for compacted in [false, true] {
+            // Legacy writes fabricated later progress after a genuine native
+            // suspension. It cannot replace the frozen continuation evidence.
+            let (runtime, store, provider, effects, run) =
+                paused_with_legacy_history_drift(has_tool, compacted).await;
+            let before = store.get_run(&run).await.unwrap().unwrap();
+            let revision = store.session_revision(&before.session_id).await.unwrap();
+            let messages = store.list_all_messages(&before.session_id).await.unwrap();
+            let events = store
+                .list_events(&before.session_id, None, 1000)
+                .await
+                .unwrap();
+            let attempt = store.latest_execution_attempt(&run).await.unwrap();
+            assert!(matches!(
+                runtime.resume(&run).await,
+                Err(RuntimeError::Approval(
+                    crabber_session::ApprovalError::SemanticConflict
+                ))
+            ));
+            assert_eq!(provider.requests().len(), 1);
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+            assert_eq!(store.get_run(&run).await.unwrap().unwrap(), before);
+            assert_eq!(
+                store.session_revision(&before.session_id).await.unwrap(),
+                revision
+            );
+            assert_eq!(
+                store.list_all_messages(&before.session_id).await.unwrap(),
+                messages
+            );
+            assert_eq!(
+                store
+                    .list_events(&before.session_id, None, 1000)
+                    .await
+                    .unwrap(),
+                events
+            );
+            assert_eq!(store.latest_execution_attempt(&run).await.unwrap(), attempt);
+        }
+    }
 }
 
 #[tokio::test]
@@ -1230,22 +1245,6 @@ impl ModelStream for GatedModelStream {
     }
 }
 
-struct GatedApprover {
-    entered: Mutex<Option<oneshot::Sender<()>>>,
-    release: Arc<Notify>,
-}
-
-#[async_trait]
-impl ApprovalRequester for GatedApprover {
-    async fn approve(&self, _tool: &crabber_core::ToolInfo, _arguments: &Value) -> bool {
-        if let Some(sender) = self.entered.lock().expect("approval gate poisoned").take() {
-            let _ = sender.send(());
-        }
-        self.release.notified().await;
-        true
-    }
-}
-
 #[async_trait]
 impl JsonToolExecutor for GatedTool {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError> {
@@ -1405,8 +1404,11 @@ async fn text_tool_text_has_exact_order_and_three_generated_messages() {
             EventKind::TurnStarted,
             EventKind::MessageCommitted,
             EventKind::ToolCallPending,
+            EventKind::ToolPhaseChanged,
             EventKind::ToolCallRunning,
+            EventKind::ToolPhaseChanged,
             EventKind::ToolCallSettled,
+            EventKind::ToolPhaseChanged,
             EventKind::TurnCompleted,
             EventKind::TurnStarted,
             EventKind::MessageCommitted,
@@ -1458,54 +1460,44 @@ async fn invalid_tool_arguments_settle_failed_and_continue() {
 }
 
 #[tokio::test]
-async fn ask_policy_uses_default_deny_approver() {
+async fn ask_policy_waits_for_a_durable_host_decision() {
     let store = Arc::new(MemoryStore::new());
-    let observer = Arc::new(RecordingObserver::default());
-    let fake = FakeProvider::scripted(vec![
-        call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
-        text_script("after denial"),
-    ]);
     let executed = Arc::new(AtomicUsize::new(0));
+    let fake = FakeProvider::scripted(vec![call_script(ToolCallId::new(), r#"{"text":"ok"}"#)]);
     let runtime = Orchestrator::builder()
-        .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
-        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .behavior_version("ask-test.v1")
+        .store(store.clone())
         .resolver(Arc::new(fake.clone()))
         .plan_provider(Arc::new(StaticPlanProvider::new(
-            vec![tool(Arc::new(EchoTool(Arc::clone(&executed))))],
-            Vec::new(),
+            vec![tool(Arc::new(EchoTool(executed.clone())))],
+            vec![],
         )))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
-        .observer(Arc::clone(&observer) as Arc<dyn Observer>)
         .build()
         .unwrap();
     let handle = runtime.start(request()).await.unwrap();
     let session = handle.session_id().clone();
-    handle.done().await.unwrap();
+    let run = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     assert_eq!(executed.load(Ordering::SeqCst), 0);
-    assert_eq!(fake.requests().len(), 2);
-    assert!(
-        observer
-            .0
-            .lock()
+    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(
+        store
+            .approval_snapshot(&session, &run)
+            .await
             .unwrap()
-            .contains(&EventKind::PermissionRequested)
+            .unwrap()
+            .interactions
+            .len(),
+        1
     );
     assert!(
-        observer
-            .0
-            .lock()
+        store
+            .list_unfinished_tool_calls(&run)
+            .await
             .unwrap()
-            .contains(&EventKind::PermissionDecided)
-    );
-    let messages = store.list_messages(&session, None).await.unwrap();
-    assert!(
-        messages
             .iter()
-            .flat_map(|message| &message.parts)
-            .any(|part| matches!(
-                &part.content,
-                ContentBlock::ToolResult { is_error: true, .. }
-            ))
+            .all(|call| call.result.is_none())
     );
 }
 
@@ -1712,7 +1704,7 @@ async fn heartbeat_keeps_gated_tool_run_owned_past_initial_lease() {
 }
 
 #[tokio::test]
-async fn heartbeat_covers_model_stream_and_approval_waits() {
+async fn heartbeat_covers_model_stream_and_ends_at_durable_approval() {
     let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
@@ -1721,9 +1713,7 @@ async fn heartbeat_covers_model_stream_and_approval_waits() {
         text_script("done"),
     ]);
     let (model_tx, model_rx) = oneshot::channel();
-    let (approval_tx, approval_rx) = oneshot::channel();
     let model_release = Arc::new(Notify::new());
-    let approval_release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
         .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
@@ -1739,10 +1729,6 @@ async fn heartbeat_covers_model_stream_and_approval_waits() {
             release: Arc::clone(&model_release),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
-        .approver(Arc::new(GatedApprover {
-            entered: Mutex::new(Some(approval_tx)),
-            release: Arc::clone(&approval_release),
-        }))
         .build()
         .unwrap();
     let handle = runtime.start(request()).await.unwrap();
@@ -1753,16 +1739,24 @@ async fn heartbeat_covers_model_stream_and_approval_waits() {
     clock.set(now + time::Duration::seconds(25));
     wait_for_lease(&store, now + time::Duration::seconds(50)).await;
     model_release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(2), approval_rx)
-        .await
-        .unwrap()
-        .unwrap();
-    clock.set(now + time::Duration::seconds(50));
-    wait_for_lease(&store, now + time::Duration::seconds(75)).await;
-    approval_release.notify_one();
+    let run = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    let lease = store.get_run(&run).await.unwrap().unwrap().lease_until;
+    clock.set(now + time::Duration::seconds(90));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     assert_eq!(
-        handle.done().await.unwrap().status,
-        crabber_core::RunStatus::Completed
+        store.get_run(&run).await.unwrap().unwrap().lease_until,
+        lease
+    );
+    assert_eq!(
+        store
+            .latest_execution_attempt(&run)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt
+            .state,
+        crabber_session::AttemptState::Suspended
     );
 }
 
@@ -1797,7 +1791,7 @@ fn heartbeat_interval_requires_margin_inside_lease() {
 }
 
 #[tokio::test]
-async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
+async fn reclaimed_lease_does_not_authorize_pending_approval() {
     let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let clock = Arc::new(ManualClock::new(now));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
@@ -1806,8 +1800,6 @@ async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
         text_script("must not run"),
     ]);
     let executed = Arc::new(AtomicUsize::new(0));
-    let (approval_tx, approval_rx) = oneshot::channel();
-    let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
         .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::clone(&store) as Arc<dyn Store>)
@@ -1819,29 +1811,21 @@ async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
         .clock(clock.clone())
         .heartbeat_interval(std::time::Duration::from_millis(10))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
-        .approver(Arc::new(GatedApprover {
-            entered: Mutex::new(Some(approval_tx)),
-            release: Arc::clone(&release),
-        }))
         .build()
         .unwrap();
     let handle = runtime.start(request()).await.unwrap();
     let session = handle.session_id().clone();
     let run_id = handle.run_id().clone();
-    tokio::time::timeout(std::time::Duration::from_secs(2), approval_rx)
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     clock.set(now + time::Duration::seconds(31));
     let new_fence = store
         .claim_expired_run(&run_id, "replacement owner")
         .await
         .unwrap();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.done())
-        .await
-        .unwrap();
-    assert!(matches!(result, Err(RuntimeError::LeaseLost)));
-    release.notify_one();
+    assert!(matches!(
+        runtime.resume(&run_id).await,
+        Err(RuntimeError::DurableContinuationRequired { .. })
+    ));
     assert_eq!(executed.load(Ordering::SeqCst), 0);
     assert_eq!(fake.requests().len(), 1);
     let kinds = store
@@ -1851,7 +1835,7 @@ async fn reclaimed_lease_cancels_pending_approval_before_tool_body() {
         .into_iter()
         .map(|event| event.kind)
         .collect::<Vec<_>>();
-    assert!(kinds.contains(&EventKind::PermissionRequested));
+    assert!(kinds.contains(&EventKind::RunPaused));
     assert!(!kinds.contains(&EventKind::PermissionDecided));
     assert!(!kinds.contains(&EventKind::ToolCallSettled));
     assert!(!kinds.contains(&EventKind::RunSettled));
@@ -1983,7 +1967,11 @@ struct SettlementGate {
     fail_settle: std::sync::atomic::AtomicBool,
     fail_permission_event: std::sync::atomic::AtomicBool,
     terminal_fault: AtomicUsize,
+    phase_fault: AtomicUsize,
+    checkpoint_override: Mutex<Option<Value>>,
+    call_arguments_override: Mutex<Option<Value>>,
     begin_ack_lost: std::sync::atomic::AtomicBool,
+    reserve_ack_lost: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
@@ -2004,6 +1992,53 @@ impl Store for DelayedTerminalStore {
     fn supports_owned_attempts(&self) -> bool {
         true
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.inner.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.inner.supports_pre_effect_approvals()
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber_core::RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crabber_session::VersionedPhase, crabber_session::PhaseError> {
+        self.inner.tool_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber_core::SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::PhaseReceipt>, crabber_session::PhaseError> {
+        self.inner.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+    ) -> Result<Option<crabber_session::ApprovalSnapshot>, crabber_session::ApprovalError> {
+        self.inner.approval_snapshot(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber_core::SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::ApprovalReceipt>, crabber_session::ApprovalError> {
+        self.inner.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber_session::ApprovalAnswer,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        self.inner.answer_approval(answer).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber_session::ApprovalContinuationClaim,
+    ) -> Result<crabber_session::ApprovalClaimOutcome, crabber_session::ApprovalError> {
+        self.inner.claim_approval_continuation(claim).await
+    }
+
     async fn latest_execution_attempt(
         &self,
         run: &RunId,
@@ -2094,7 +2129,12 @@ impl Store for DelayedTerminalStore {
         self.inner.get_session(id).await
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        let run = self.inner.get_run(id).await?;
+        let mut run = self.inner.get_run(id).await?;
+        if let Some(checkpoint) = self.gate.checkpoint_override.lock().unwrap().clone()
+            && let Some(run) = &mut run
+        {
+            run.checkpoint = Some(checkpoint);
+        }
         if run
             .as_ref()
             .is_some_and(|run| run.status == RunStatus::Completed)
@@ -2129,7 +2169,13 @@ impl Store for DelayedTerminalStore {
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
         self.gate.unfinished_reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.list_unfinished_tool_calls(run).await
+        let mut calls = self.inner.list_unfinished_tool_calls(run).await?;
+        if let Some(arguments) = self.gate.call_arguments_override.lock().unwrap().clone() {
+            for call in &mut calls {
+                call.arguments.clone_from(&arguments);
+            }
+        }
+        Ok(calls)
     }
     async fn admission_execution_state(
         &self,
@@ -2159,6 +2205,57 @@ impl Store for DelayedTerminalStore {
 
 #[async_trait]
 impl ExecutionStore for DelayedTerminalExecution {
+    async fn mutate_phase(
+        &self,
+        request: crabber_session::PhaseMutation,
+        authority: Option<crabber_session::PhaseWriteAuthority>,
+    ) -> Result<crabber_session::PhaseMutationOutcome, crabber_session::PhaseError> {
+        self.inner.mutate_phase(request, authority).await
+    }
+    async fn start_tool_phase(
+        &self,
+        start: crabber_session::PhaseStart,
+        authority: Option<crabber_session::PhaseAuthority>,
+    ) -> Result<crabber_session::PhaseMutationOutcome, crabber_session::PhaseError> {
+        if self.gate.fail_claim.load(Ordering::SeqCst)
+            || self.gate.phase_fault.load(Ordering::SeqCst) == 1
+        {
+            return Err(crabber_session::PhaseError::UnknownStoreOutcome);
+        }
+        let result = self.inner.start_tool_phase(start, authority).await;
+        if result.is_ok() && self.gate.phase_fault.load(Ordering::SeqCst) == 2 {
+            return Err(crabber_session::PhaseError::UnknownStoreOutcome);
+        }
+        result
+    }
+    async fn settle_tool_phase(
+        &self,
+        settlement: crabber_session::PhaseSettlement,
+        authority: Option<crabber_session::PhaseAuthority>,
+    ) -> Result<crabber_session::PhaseMutationOutcome, crabber_session::PhaseError> {
+        self.gate.tool_settlements.fetch_add(1, Ordering::SeqCst);
+        if self.gate.fail_settle.load(Ordering::SeqCst)
+            || self.gate.phase_fault.load(Ordering::SeqCst) == 3
+        {
+            return Err(crabber_session::PhaseError::UnknownStoreOutcome);
+        }
+        let result = self.inner.settle_tool_phase(settlement, authority).await;
+        if result.is_ok() && self.gate.phase_fault.load(Ordering::SeqCst) == 4 {
+            return Err(crabber_session::PhaseError::UnknownStoreOutcome);
+        }
+        result
+    }
+    async fn suspend_for_approval(
+        &self,
+        batch: crabber_session::ApprovalSuspension,
+        authority: crabber_session::AttemptAuthority,
+    ) -> Result<crabber_session::ApprovalReceipt, crabber_session::ApprovalError> {
+        if self.gate.fail_permission_event.load(Ordering::SeqCst) {
+            return Err(crabber_session::ApprovalError::UnknownStoreOutcome);
+        }
+        self.inner.suspend_for_approval(batch, authority).await
+    }
+
     async fn mutate_attempt(
         &self,
         request: crabber_session::AttemptMutation,
@@ -2168,7 +2265,21 @@ impl ExecutionStore for DelayedTerminalExecution {
             request.command,
             crabber_session::AttemptCommand::Begin { .. }
         );
+        let reserve = matches!(
+            &request.command,
+            crabber_session::AttemptCommand::Reserve { .. }
+                | crabber_session::AttemptCommand::ReserveBound { .. }
+        );
         let result = self.inner.mutate_attempt(request, authority).await;
+        if reserve
+            && matches!(
+                &result,
+                Ok(crabber_session::AttemptMutationOutcome::Applied { .. })
+            )
+            && self.gate.reserve_ack_lost.load(Ordering::SeqCst)
+        {
+            return Err(crabber_session::AttemptError::UnknownStoreOutcome);
+        }
         if begin && result.is_ok() && self.gate.begin_ack_lost.load(Ordering::SeqCst) {
             return Err(crabber_session::AttemptError::UnknownStoreOutcome);
         }
@@ -3013,17 +3124,31 @@ async fn operational_tool_store_setup_error_is_not_tool_error() {
             .observer(capture.clone())
             .build()
             .unwrap();
-        assert!(matches!(
-            runtime.start(request()).await.unwrap().done().await,
-            Err(RuntimeError::Store(StoreError::Validation(_)))
-        ));
+        let error = runtime
+            .start(request())
+            .await
+            .unwrap()
+            .done()
+            .await
+            .unwrap_err();
+        if permission_event {
+            assert!(matches!(
+                error,
+                RuntimeError::ApprovalBoundaryUnknown { .. }
+            ));
+        } else {
+            assert!(matches!(error, RuntimeError::PhaseOutcomeUnknown { .. }));
+        }
         assert_eq!(executed.load(Ordering::SeqCst), 0);
         let values = capture.values.lock().unwrap();
-        assert_eq!(values.len(), 3);
+        assert_eq!(values.len(), 2);
         assert_eq!(values[0].reason, crate::TerminalReason::Success);
-        assert!(matches!(values[1].kind, crate::OperationKind::Tool { .. }));
         assert_eq!(values[1].reason, crate::TerminalReason::RuntimeError);
-        assert_eq!(values[2].reason, crate::TerminalReason::RuntimeError);
+        assert!(
+            !values
+                .iter()
+                .any(|value| value.reason == crate::TerminalReason::ToolError)
+        );
     }
 }
 
@@ -3176,13 +3301,12 @@ impl ToolPipeline for PipelineCleanup {
 }
 
 #[tokio::test]
-async fn pipeline_cleanup_is_joined_by_the_host_owner() {
+async fn pipeline_cleanup_is_joined_before_native_phase_settlement() {
     let store = Arc::new(MemoryStore::new());
-    let owner = crabber_extension::CleanupOwner::new();
     let completed = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
         .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
-        .store(store)
+        .store(store.clone())
         .resolver(Arc::new(FakeProvider::scripted(vec![
             call_script(ToolCallId::new(), r#"{"text":"ok"}"#),
             text_script("done"),
@@ -3193,24 +3317,27 @@ async fn pipeline_cleanup_is_joined_by_the_host_owner() {
         )))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .tool_pipeline(Arc::new(PipelineCleanup(completed.clone())))
-        .pipeline_cleanup(owner.tracker())
         .build()
         .unwrap();
+    let handle = runtime.start(request()).await.unwrap();
+    let run = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+    tokio::time::timeout(std::time::Duration::from_secs(1), completed.notified())
+        .await
+        .unwrap();
+    let report = runtime
+        .drain_execution_tasks(std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(report.resources.len(), 1);
+    assert_eq!(report.resources[0].resources.pending, 0);
+    assert_eq!(report.resources[0].resources.joined, 1);
+    let phase = report.resources[0].phase.as_ref().unwrap();
+    let stored = store.tool_phase(&run, &phase.id).await.unwrap().phase;
+    assert_eq!(stored.state, crabber_session::PhaseState::Completed);
     assert_eq!(
-        runtime
-            .start(request())
-            .await
-            .unwrap()
-            .done()
-            .await
-            .unwrap()
-            .status,
-        RunStatus::Completed
+        stored.quiescence,
+        crabber_session::PhaseQuiescence::Complete
     );
-    assert_eq!(owner.tracker().pending(), 1);
-    owner.join(std::time::Duration::from_secs(1)).await.unwrap();
-    completed.notified().await;
-    assert_eq!(owner.tracker().pending(), 0);
 }
 
 #[tokio::test]

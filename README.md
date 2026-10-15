@@ -200,14 +200,16 @@ Run the complete operational host check with
 `cargo run -p operational-telemetry -- --check`; see
 [the example](examples/operational-telemetry/README.md) for offline fixtures and adoption.
 
-Hosts can settle stopped or expired work through `Agent::abandon` without running
-persisted providers, tools or extensions. See the [Memory/PostgreSQL abandonment and
-administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
+Hosts can settle eligible stopped or expired legacy work through `Agent::abandon`
+without running persisted providers, tools or extensions. Runs with native attempt
+or phase evidence, or a session approval barrier, return
+`AbandonError::NativeReconciliationRequired` without mutation. See the
+[Memory/PostgreSQL abandonment and administrative stop contract](crates/crabber-session/README.md#fenced-abandonment-memorystore)
 for ownership checks, the host's process-stop duty and retry semantics.
 
 The [fenced abandonment host protocol and acceptance map](docs/fenced-abandon.md)
-cover unknown-response retry, authoritative worker stop, retained session/inbox
-behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
+cover legacy settlement, unknown-response retry, authoritative worker stop,
+retained session/inbox behavior and crash proofs. Run `cargo run --quiet -p fenced-abandon` for Memory;
 with `CRABBER_POSTGRES_URL` configured, run
 `cargo run --quiet -p fenced-abandon --features postgres -- --postgres` for durable
 fresh-process readback. SQLite needs no variable:

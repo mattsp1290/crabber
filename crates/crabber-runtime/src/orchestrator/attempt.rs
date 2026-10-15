@@ -8,7 +8,7 @@ use crabber_session::{
 
 pub(super) const RESOURCE_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
 pub(super) const DRIVER_COMPONENT: &str = "crabber.native-attempt-driver";
-pub(super) const DRIVER_VERSION: &str = "1:resource-join-bound-ms=1000";
+pub(super) const DRIVER_VERSION: &str = "2:resource-join-bound-ms=1000:pre-effect-approval-v1:phase-start-v1:phase-settlement-v2:turn-budget-v1";
 
 pub(super) struct OwnedAttempt {
     pub target: AttemptTarget,
@@ -70,6 +70,23 @@ impl Orchestrator {
         Ok(OwnedAttempt { target, authority })
     }
 
+    pub(super) async fn begin_granted_attempt(
+        &self,
+        execution: &dyn ExecutionStore,
+        session: &SessionId,
+        owner: OwnedAttempt,
+    ) -> Result<OwnedAttempt, RuntimeError> {
+        self.apply_attempt(
+            execution,
+            session,
+            AttemptCommand::Begin {
+                target: owner.target.clone(),
+            },
+            Some(owner.authority.clone()),
+        )
+        .await?;
+        Ok(owner)
+    }
     async fn apply_attempt(
         &self,
         execution: &dyn ExecutionStore,

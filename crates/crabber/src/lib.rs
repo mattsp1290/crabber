@@ -6,7 +6,10 @@ mod agent;
 mod host;
 pub use host::ExecutionContext;
 
-pub use agent::{Admission, Agent, AgentBuilder, AgentConfig, BuildError, RunEvents, RunHandle};
+pub use agent::{
+    Admission, Agent, AgentBuilder, AgentConfig, BuildError, Continuation, ContinueApproval,
+    RunEvents, RunHandle,
+};
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
     SessionContext, SessionId, TraceContext, TraceContextError, TraceLink,

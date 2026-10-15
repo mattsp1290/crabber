@@ -42,6 +42,8 @@ pub enum AbandonError {
     LiveLease,
     #[error("expected run ownership is stale")]
     StaleOwner,
+    #[error("native execution requires explicit reconciliation controls")]
+    NativeReconciliationRequired,
     #[error("run was settled by another operation")]
     AlreadyTerminal,
     /// No success may be inferred from an error. Retry the identical request to

@@ -28,6 +28,13 @@ pub(super) fn fingerprint(value: &impl Serialize) -> Result<InputFingerprint, Er
 }
 impl ApprovalSuspension {
     pub(super) fn validate(&self) -> Result<(), Error> {
+        if self
+            .source_turn_id
+            .as_ref()
+            .is_some_and(|id| identity(&id.0, 512).is_err())
+        {
+            return Err(Error::InvalidRequest);
+        }
         for value in [
             &self.id.0,
             &self.attempt.id.0,
@@ -36,7 +43,8 @@ impl ApprovalSuspension {
         ] {
             id(value)?;
         }
-        if self.calls.is_empty()
+        if self.turns_used.is_none_or(|count| count == 0)
+            || self.calls.is_empty()
             || self.calls.len() > MAX_APPROVAL_CALLS
             || self.next_attempt.id == self.attempt.id
             || self.attempt.generation.next().ok() != Some(self.next_attempt.generation)
@@ -93,6 +101,7 @@ impl ApprovalSuspension {
             &self.next_attempt,
             &self.calls,
             &self.usage,
+            self.turns_used,
         ))
     }
 }
@@ -142,5 +151,50 @@ impl ApprovalContinuationClaim {
             &self.continuation,
             &self.expected_plan,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ApprovalError, MemoryStore};
+    use crabber_core::ManualClock;
+
+    #[tokio::test]
+    async fn missing_or_zero_turn_budget_is_not_legacy_zero() {
+        let clock = std::sync::Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
+        let store = MemoryStore::with_clock(clock.clone());
+        let fixture = crate::approval_contract::fixture::staged(&store, &clock).await;
+        let valid = fixture.batch;
+        assert!(
+            valid
+                .fingerprint(&fixture.run.session_id, &fixture.run.id)
+                .is_ok()
+        );
+        for count in [None, Some(0)] {
+            let mut invalid = valid.clone();
+            invalid.turns_used = count;
+            assert_eq!(
+                invalid.fingerprint(&fixture.run.session_id, &fixture.run.id),
+                Err(ApprovalError::InvalidRequest)
+            );
+        }
+        let mut legacy = serde_json::to_value(&valid).unwrap();
+        legacy.as_object_mut().unwrap().remove("turns_used");
+        let legacy: crate::ApprovalSuspension = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.turns_used, None);
+        assert_eq!(
+            legacy.fingerprint(&fixture.run.session_id, &fixture.run.id),
+            Err(ApprovalError::InvalidRequest)
+        );
+        let mut changed = valid.clone();
+        changed.turns_used = Some(2);
+        assert_ne!(
+            changed
+                .fingerprint(&fixture.run.session_id, &fixture.run.id)
+                .unwrap(),
+            valid
+                .fingerprint(&fixture.run.session_id, &fixture.run.id)
+                .unwrap()
+        );
     }
 }

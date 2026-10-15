@@ -43,6 +43,7 @@ pub async fn run_fault_contract(store: &impl Store, set_fault: impl Fn(FaultPoin
         }
     }
     super::settlement::faults(store, &set_fault).await;
+    super::start::faults(store, &set_fault).await;
 }
 async fn run_case(
     store: &impl Store,

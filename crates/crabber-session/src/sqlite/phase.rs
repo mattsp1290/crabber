@@ -55,18 +55,32 @@ impl SqliteExecution {
         request: PhaseMutation,
         authority: Option<PhaseWriteAuthority>,
     ) -> Result<Outcome, Error> {
-        self.change_phase_inner(request, authority, None).await
+        self.change_phase_inner(request, authority, phase::PhaseEffect::Metadata)
+            .await
     }
     pub(super) async fn settle_phase(
         &self,
-        settlement: crate::PhaseSettlement,
+        settlement: &crate::PhaseSettlement,
         authority: Option<PhaseAuthority>,
     ) -> Result<Outcome, Error> {
         settlement.output()?;
         self.change_phase_inner(
             settlement.completion.clone(),
             authority.map(PhaseWriteAuthority::Phase),
-            Some(settlement),
+            phase::PhaseEffect::Settle(settlement),
+        )
+        .await
+    }
+    pub(super) async fn start_phase(
+        &self,
+        start: &crate::PhaseStart,
+        authority: Option<PhaseAuthority>,
+    ) -> Result<Outcome, Error> {
+        start.validate()?;
+        self.change_phase_inner(
+            start.begin.clone(),
+            authority.map(PhaseWriteAuthority::Phase),
+            phase::PhaseEffect::Start(start),
         )
         .await
     }
@@ -74,7 +88,7 @@ impl SqliteExecution {
         &self,
         request: PhaseMutation,
         authority: Option<PhaseWriteAuthority>,
-        settlement: Option<crate::PhaseSettlement>,
+        effect: phase::PhaseEffect<'_>,
     ) -> Result<Outcome, Error> {
         phase::validate_request(&request)?;
         let mut tx = self.store.begin_write().await.map_err(sql::unknown)?;
@@ -91,14 +105,8 @@ impl SqliteExecution {
             {
                 return Err(Error::UnknownStoreOutcome);
             }
-            self.apply_phase(
-                &mut tx,
-                &run,
-                &request,
-                authority.as_ref(),
-                settlement.as_ref(),
-            )
-            .await
+            self.apply_phase(&mut tx, &run, &request, authority.as_ref(), effect)
+                .await
         }
         .await;
         #[cfg(test)]
@@ -132,20 +140,16 @@ impl SqliteExecution {
         run: &Run,
         request: &PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
-        settlement: Option<&crate::PhaseSettlement>,
+        effect: phase::PhaseEffect<'_>,
     ) -> Result<Outcome, Error> {
-        let digest = if let Some(settlement) = settlement {
-            settlement.fingerprint(&run.session_id, &run.id)?
-        } else {
-            request.fingerprint(&run.session_id, &run.id)?
-        };
+        let digest = effect.fingerprint(request, &run.session_id, &run.id)?;
         if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
             if receipt.phase.run_id != run.id || receipt.semantic_digest != digest {
                 return Err(Error::SemanticConflict);
             }
-            if let Some(settlement) = settlement {
+            if !matches!(effect, phase::PhaseEffect::Metadata) {
                 let call = calls::load(tx, run, &receipt.phase.target.call_id).await?;
-                settlement.verify_replay(&receipt, &call)?;
+                effect.verify_replay(&receipt, &call)?;
             }
             return Ok(Outcome::Replayed(receipt));
         }
@@ -165,9 +169,9 @@ impl SqliteExecution {
         let insert = matches!(request.command, PhaseCommand::Claim { .. });
         let (mut record, authority) = prepare(tx, run, request, authority, now).await?;
         if matches!(request.command, PhaseCommand::Begin { .. }) {
-            calls::begin(tx, run, &record.snapshot.target.call_id).await?;
+            calls::begin(tx, run, &record.snapshot.target.call_id, effect.start()).await?;
         }
-        if let Some(settlement) = settlement {
+        if let Some(settlement) = effect.settlement() {
             calls::settle(tx, run, settlement).await?;
             record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
         }

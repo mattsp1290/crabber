@@ -20,6 +20,53 @@ impl Store for ThreadStore {
     fn supports_owned_attempts(&self) -> bool {
         self.0.supports_owned_attempts()
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.0.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.0.supports_pre_effect_approvals()
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber::core::RunId,
+        id: &crabber::core::PhaseId,
+    ) -> Result<crabber::session::VersionedPhase, crabber::session::PhaseError> {
+        self.0.tool_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::PhaseReceipt>, crabber::session::PhaseError> {
+        self.0.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+    ) -> Result<Option<crabber::session::ApprovalSnapshot>, crabber::session::ApprovalError> {
+        self.0.approval_snapshot(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::ApprovalReceipt>, crabber::session::ApprovalError> {
+        self.0.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber::session::ApprovalAnswer,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.0.answer_approval(answer).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber::session::ApprovalContinuationClaim,
+    ) -> Result<crabber::session::ApprovalClaimOutcome, crabber::session::ApprovalError> {
+        self.0.claim_approval_continuation(claim).await
+    }
+
     async fn latest_execution_attempt(
         &self,
         run: &RunId,

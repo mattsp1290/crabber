@@ -19,14 +19,15 @@ pub use observation::{
 mod policy;
 
 pub use orchestrator::{
-    Admission, CompactionPolicy, ConfigSnapshot, DirectModelStream, ExecutionMode,
-    INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer,
-    Orchestrator, OrchestratorBuilder, RecoverReport, RecoverySkipReason, Request, RunControl,
-    RunHandle, RunResult, RuntimeError, SkippedRun, TOOL_PIPELINE_HANDLER_ID, TurnSnapshot,
+    Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, DirectModelStream,
+    ExecutionMode, INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver,
+    Observer, Orchestrator, OrchestratorBuilder, RecoverReport, RecoverySkipReason, Request,
+    RunControl, RunHandle, RunResult, RuntimeError, SkippedRun, TOOL_PIPELINE_HANDLER_ID,
+    TurnSnapshot,
 };
 pub use policy::{
-    ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
-    PermissionDecision, PermissionPolicy, PermissionRule, StaticPolicy, ToolPipeline,
+    IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, PermissionRule,
+    StaticPolicy, ToolPipeline,
 };
 
 /// Retained for the workspace scaffold's smoke test.

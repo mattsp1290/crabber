@@ -209,7 +209,7 @@ impl Fixture {
                     .unwrap();
             } else {
                 crate::tests::native_attempt::suspend_fixture(harness.store.as_ref(), execution.as_ref(), &session,
-                    json!({"request": {
+                    json!({"version":4,"turns_used":1,"pending_calls":[call.id],"request": {
                         "version": 2, "input_digest": input_digest,
                         "workspace_id": "test", "directory": ".", "title": "test", "text": "hello",
                         "provider_id": "fake", "model_id": "scripted", "system_prompt": null, "max_output_tokens": null
@@ -384,12 +384,24 @@ async fn public_entrypoints_require_native_suspension_before_replaying_pending_c
                             .list_events(&fixture.session, None, 1000)
                             .await
                             .unwrap();
-                        assert!(matches!(
-                            entry.invoke(&fixture.fresh_runtime(), &fixture.run).await,
-                            Err(RuntimeError::Attempt(
-                                crabber_session::AttemptError::InvalidTransition
-                            ))
-                        ));
+                        let result = entry.invoke(&fixture.fresh_runtime(), &fixture.run).await;
+                        if paused && running {
+                            // This raw legacy pause has no native continuation
+                            // or consumed-turn budget and cannot authorize replay.
+                            assert!(matches!(
+                                result,
+                                Err(RuntimeError::Store(
+                                    crabber_session::StoreError::HostUnsupported
+                                ))
+                            ));
+                        } else {
+                            assert!(matches!(
+                                result,
+                                Err(RuntimeError::Attempt(
+                                    crabber_session::AttemptError::InvalidTransition
+                                ))
+                            ));
+                        }
                         assert_eq!(fixture.harness.probe.executed(), Vec::new());
                         assert!(fixture.pipeline.seen.lock().unwrap().is_empty());
                         assert_eq!(

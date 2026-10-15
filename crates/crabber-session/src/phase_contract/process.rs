@@ -2,6 +2,8 @@
 //! process boundary; the writer acquires its own fresh native ownership.
 #[path = "process/child.rs"]
 pub(crate) mod child;
+#[path = "process/verify.rs"]
+pub(crate) mod verify;
 use super::{applied, mutation, output, resolver};
 use crate::{
     AttemptCommand, AttemptMutation, AttemptMutationOutcome, PhaseCommand, PhaseError,
@@ -18,15 +20,17 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Mode {
     Claim,
     Begin,
+    Start,
     Success,
     Failure,
     Refuse,
     Settle,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Claim,
         Self::Begin,
+        Self::Start,
         Self::Success,
         Self::Failure,
         Self::Refuse,
@@ -35,7 +39,7 @@ impl Mode {
     pub(crate) fn operation(self) -> &'static str {
         match self {
             Self::Claim => "claim",
-            Self::Begin => "begin",
+            Self::Begin | Self::Start => "begin",
             Self::Success => "resolve_success",
             Self::Failure => "resolve_failure",
             Self::Refuse => "resolve_refuse",
@@ -45,7 +49,7 @@ impl Mode {
     fn preoperations(self) -> usize {
         match self {
             Self::Claim => 2,
-            Self::Begin => 3,
+            Self::Begin | Self::Start => 3,
             _ => 4,
         }
     }
@@ -104,7 +108,7 @@ pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
     }
     let command = match mode {
         Mode::Claim => PhaseCommand::Claim { target },
-        Mode::Begin => PhaseCommand::Begin { target },
+        Mode::Begin | Mode::Start => PhaseCommand::Begin { target },
         Mode::Settle => PhaseCommand::Complete {
             target,
             output: output(),
@@ -138,7 +142,14 @@ pub(crate) async fn write(
     if lose_ack {
         inject(2);
     }
-    let result = if matches!(fixture.mode, Mode::Settle) {
+    let result = if matches!(fixture.mode, Mode::Start) {
+        let Some(PhaseWriteAuthority::Phase(worker)) = authority else {
+            panic!("phase worker missing");
+        };
+        execution
+            .start_tool_phase(start(fixture), Some(worker))
+            .await
+    } else if matches!(fixture.mode, Mode::Settle) {
         let Some(PhaseWriteAuthority::Phase(worker)) = authority else {
             panic!("phase worker missing");
         };
@@ -203,7 +214,7 @@ async fn prepare(
             .await
             .unwrap(),
     );
-    if matches!(fixture.mode, Mode::Begin) {
+    if matches!(fixture.mode, Mode::Begin | Mode::Start) {
         return Some(PhaseWriteAuthority::Phase(worker.unwrap()));
     }
     if matches!(fixture.mode, Mode::Settle) {
@@ -286,90 +297,28 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         .await;
     match fixture.mode {
         Mode::Claim => assert_eq!(snapshot.unwrap_err(), PhaseError::NotFound),
-        Mode::Begin => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Claimed),
+        Mode::Begin | Mode::Start => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Claimed),
         Mode::Settle => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Started),
         _ => assert_eq!(snapshot.unwrap().phase.state, PhaseState::Uncertain),
     }
 }
-pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
-    if matches!(fixture.mode, Mode::Settle) {
-        verify_settlement_loss(store, fixture).await;
-        return;
-    }
-    let receipt = store
-        .lookup_phase_mutation(&fixture.session, &fixture.request.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        receipt.semantic_digest,
-        fixture
-            .request
-            .fingerprint(&fixture.session, &fixture.fence.run_id)
-            .unwrap()
-    );
-    let current = store
-        .tool_phase(&fixture.fence.run_id, &receipt.phase.target.id)
-        .await
-        .unwrap();
-    assert_eq!(current.phase, receipt.phase);
-    assert_eq!(current.revision, receipt.revision);
-    let calls = store
-        .list_unfinished_tool_calls(&fixture.fence.run_id)
-        .await
-        .unwrap();
-    let call = calls
-        .iter()
-        .find(|c| c.id == receipt.phase.target.call_id)
-        .unwrap();
-    let expected_call = if matches!(fixture.mode, Mode::Begin) {
-        ToolCallStatus::Running
-    } else {
-        ToolCallStatus::Pending
-    };
-    assert_eq!(call.status, expected_call);
-    assert_eq!(
-        store
-            .list_events(&fixture.session, None, 100)
-            .await
-            .unwrap()
-            .len(),
-        fixture.mode.preoperations() + 2
-    );
-    let execution = store.execution(fixture.fence.clone()).await.unwrap();
-    assert!(
-        matches!(execution.mutate_phase(fixture.request, None).await.unwrap(), PhaseMutationOutcome::Replayed(r) if r == receipt)
-    );
-    assert_eq!(
-        store
-            .tool_phase(&fixture.fence.run_id, &receipt.phase.target.id)
-            .await
-            .unwrap(),
-        current
-    );
-    let expected = match fixture.mode {
-        Mode::Claim => PhaseState::Claimed,
-        Mode::Begin => PhaseState::Started,
-        Mode::Success => PhaseState::Completed,
-        Mode::Failure => PhaseState::Failed,
-        Mode::Refuse => PhaseState::Uncertain,
-        Mode::Settle => unreachable!(),
-    };
-    assert_eq!(receipt.phase.state, expected);
-}
-
 pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture) {
     let execution = store.execution(fixture.fence.clone()).await.unwrap();
-    if matches!(fixture.mode, Mode::Claim | Mode::Begin | Mode::Settle) {
+    if matches!(
+        fixture.mode,
+        Mode::Claim | Mode::Begin | Mode::Start | Mode::Settle
+    ) {
         // A reaped worker's opaque authority is gone. The same outbox must not
         // turn a retry into dispatch permission, even when BEGIN rolled back.
-        let failure = if matches!(fixture.mode, Mode::Settle) {
+        let failure = if matches!(fixture.mode, Mode::Start) {
+            execution.start_tool_phase(start(fixture), None).await
+        } else if matches!(fixture.mode, Mode::Settle) {
             execution.settle_tool_phase(settlement(fixture), None).await
         } else {
             execution.mutate_phase(fixture.request.clone(), None).await
         };
         assert_eq!(failure.unwrap_err(), PhaseError::StaleOwner);
-        if matches!(fixture.mode, Mode::Begin | Mode::Settle) {
+        if matches!(fixture.mode, Mode::Begin | Mode::Start | Mode::Settle) {
             let command = PhaseCommand::MarkStoppedUncertain {
                 target: fixture.request.command.target().clone(),
                 claim: crate::PhaseResolverClaim {
@@ -407,6 +356,7 @@ pub(crate) async fn recover_killed_writer(store: &impl Store, fixture: &Fixture)
 
 fn settlement(fixture: &Fixture) -> crate::PhaseSettlement {
     crate::PhaseSettlement {
+        result_status: crabber_core::ToolResultStatus::Completed,
         completion: fixture.request.clone(),
         message_id: crabber_core::MessageId(format!(
             "phase-result-{}",
@@ -421,68 +371,10 @@ fn settlement(fixture: &Fixture) -> crate::PhaseSettlement {
         duration_ms: 1,
     }
 }
-async fn verify_settlement_loss(store: &impl Store, fixture: Fixture) {
-    let receipt = store
-        .lookup_phase_mutation(&fixture.session, &fixture.request.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let request = settlement(&fixture);
-    assert_eq!(
-        receipt.semantic_digest,
-        request
-            .fingerprint(&fixture.session, &fixture.fence.run_id)
-            .unwrap()
-    );
-    assert_eq!(receipt.phase.state, PhaseState::Completed);
-    assert_eq!(receipt.phase.quiescence, crate::PhaseQuiescence::Complete);
-    assert_eq!(
-        store
-            .tool_phase(&fixture.fence.run_id, &receipt.phase.target.id)
-            .await
-            .unwrap()
-            .phase,
-        receipt.phase
-    );
-    assert_eq!(
-        store.session_revision(&fixture.session).await.unwrap(),
-        receipt.revision
-    );
-    assert_eq!(
-        store
-            .list_unfinished_tool_calls(&fixture.fence.run_id)
-            .await
-            .unwrap(),
-        [] as [ToolCallRecord; 0]
-    );
-    let messages = store.list_messages(&fixture.session, None).await.unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1].id, request.message_id);
-    let events = store
-        .list_events(&fixture.session, None, 100)
-        .await
-        .unwrap();
-    assert_eq!(events.len(), fixture.mode.preoperations() + 3);
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.kind == EventKind::ToolCallSettled)
-            .count(),
-        1
-    );
-    let execution = store.execution(fixture.fence).await.unwrap();
-    assert!(
-        matches!(execution.settle_tool_phase(request, None).await.unwrap(), PhaseMutationOutcome::Replayed(saved) if saved == receipt)
-    );
-    assert_eq!(
-        store.list_messages(&fixture.session, None).await.unwrap(),
-        messages
-    );
-    assert_eq!(
-        store
-            .list_events(&fixture.session, None, 100)
-            .await
-            .unwrap(),
-        events
-    );
+fn start(fixture: &Fixture) -> crate::PhaseStart {
+    crate::PhaseStart {
+        begin: fixture.request.clone(),
+        turn_id: None,
+        created_at: time::OffsetDateTime::UNIX_EPOCH,
+    }
 }

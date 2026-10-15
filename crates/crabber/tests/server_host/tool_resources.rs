@@ -3,8 +3,9 @@ use async_trait::async_trait;
 use crabber::{
     Agent, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
     Selection, StaticPolicy, StreamDelta, ToolDefinition,
-    core::{RunStatus, ToolCallId, ToolInfo},
+    core::{ToolCallId, ToolInfo},
     extension::{ResourceFailure, ResourceRegistrationError, ToolContext, ToolResources},
+    session::{MemoryStore, PhaseQuiescence, PhaseState, Store},
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,7 @@ use tokio::{
 const BOUND: Duration = Duration::from_secs(3);
 #[derive(Default)]
 struct Fixture {
+    store: Arc<MemoryStore>,
     entered: Notify,
     release: Notify,
     resources: Mutex<Option<ToolResources>>,
@@ -73,7 +75,7 @@ fn agent(fixture: Arc<Fixture>, mode: &str, block_body: bool) -> Agent {
     ];
     Agent::builder()
         .behavior_version("tool-resource-probe.v1")
-        .memory()
+        .store(fixture.store.clone())
         .provider(Arc::new(FakeProvider::scripted(vec![
             script,
             vec![
@@ -106,12 +108,10 @@ async fn incomplete_worker_retains_noncooperative_resource_join_after_timeout() 
     let agent = agent(fixture.clone(), "noncooperative", false);
     let handle = agent.prompt(None, "work").await.unwrap();
     let run_id = handle.run_id().clone();
-    assert!(matches!(
-        timeout(BOUND, handle.done()).await.unwrap(),
-        Err(crabber::RuntimeError::AttemptCleanupIncomplete { .. })
-    ));
+    let phase = assert_uncertain(handle, &fixture, PhaseQuiescence::Incomplete).await;
     let report = agent.drain_execution_tasks(Duration::from_millis(1)).await;
     assert_eq!(report.resources.len(), 1);
+    assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
     assert_eq!(report.resources[0].run_id, run_id);
     assert!(report.resources[0].resources.sealed);
     assert_eq!(report.resources[0].resources.pending, 1);
@@ -139,12 +139,10 @@ async fn interrupted_tool_seals_scope_and_joins_cooperative_resources() {
     let handle = agent.prompt(None, "interrupt").await.unwrap();
     timeout(BOUND, fixture.entered.notified()).await.unwrap();
     handle.interrupt();
-    assert_eq!(
-        timeout(BOUND, handle.done()).await.unwrap().unwrap().status,
-        RunStatus::Interrupted
-    );
+    let phase = assert_uncertain(handle, &fixture, PhaseQuiescence::Complete).await;
     let report = agent.drain_execution_tasks(BOUND).await;
     assert_eq!(report.resources.len(), 1);
+    assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
     assert_eq!(report.resources[0].resources.joined, 1);
     assert_eq!(report.resources[0].resources.pending, 0);
     assert_eq!(report.resources[0].resources.failures, []);
@@ -157,12 +155,10 @@ async fn resource_failure_blocks_worker_success_and_remains_visible_across_drain
     let handle = agent.prompt(None, "fail cleanup").await.unwrap();
     timeout(BOUND, fixture.entered.notified()).await.unwrap();
     fixture.release.notify_one();
-    assert!(matches!(
-        timeout(BOUND, handle.done()).await.unwrap(),
-        Err(crabber::RuntimeError::AttemptCleanupIncomplete { .. })
-    ));
+    let phase = assert_uncertain(handle, &fixture, PhaseQuiescence::Incomplete).await;
     for _ in 0..2 {
         let report = agent.drain_execution_tasks(BOUND).await;
+        assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
         assert_eq!(report.resources[0].resources.pending, 0);
         assert_eq!(
             report.resources[0].resources.failures,
@@ -191,12 +187,40 @@ async fn snapshot_drain_does_not_seal_an_active_tool_scope() {
         .spawn(async { Ok(()) })
         .unwrap();
     handle.interrupt();
-    assert_eq!(
-        timeout(BOUND, handle.done()).await.unwrap().unwrap().status,
-        RunStatus::Interrupted
-    );
+    let phase = assert_uncertain(handle, &fixture, PhaseQuiescence::Complete).await;
     let report = agent.drain_execution_tasks(BOUND).await;
+    assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
     assert_eq!(report.resources[0].resources.joined, 2);
     assert_eq!(report.resources[0].resources.pending, 0);
     assert_eq!(report.resources[0].resources.failures, []);
+}
+
+async fn assert_uncertain(
+    handle: crabber::RunHandle,
+    fixture: &Fixture,
+    quiescence: PhaseQuiescence,
+) -> crabber::session::PhaseTarget {
+    let run = handle.run_id().clone();
+    let crabber::RuntimeError::PhaseOutcomeUnknown { phase, reason, .. } =
+        timeout(BOUND, handle.done()).await.unwrap().unwrap_err()
+    else {
+        panic!("no terminal output without complete owned cleanup")
+    };
+    assert_eq!(reason, crabber::session::PhaseError::Uncertain);
+    let stored = fixture
+        .store
+        .tool_phase(&run, &phase.id)
+        .await
+        .unwrap()
+        .phase;
+    assert_eq!(stored.state, PhaseState::Uncertain);
+    assert_eq!(stored.quiescence, quiescence);
+    let calls = fixture
+        .store
+        .list_unfinished_tool_calls(&run)
+        .await
+        .unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].result.is_none());
+    *phase
 }

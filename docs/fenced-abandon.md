@@ -1,17 +1,23 @@
 # Fenced abandonment host protocol and acceptance evidence
 
-`Agent::abandon(AbandonRequest)` is a settlement operation. It does not load the
-persisted executable configuration, resolve a provider, mount extensions or hooks,
+`Agent::abandon(AbandonRequest)` settles eligible legacy work. Runs with any native
+attempt or phase evidence, or an active session approval barrier, return
+`AbandonError::NativeReconciliationRequired` without mutation. Process death or
+lease expiry does not establish an uncertain external result or prove resource
+cleanup. Such native work remains subject to explicit reconciliation.
+
+The legacy operation does not load the persisted executable configuration, resolve
+a provider, mount extensions or hooks,
 execute tools, or interpret a paused continuation. Pending, Running and Paused are
-eligible persisted states; each unfinished Pending/Running tool receives one
+eligible legacy states; each unfinished Pending/Running tool receives one
 Interrupted result, matching tool message/part and ToolCallSettled event. The run
 receives one Interrupted RunSettled event. Completed/Failed tools, previous history,
 usage, diagnostics, checkpoints and immutable admission receipts are retained.
 
 ## Agentcraft host decisions
 
-The host chooses abandonment when persisted work must stop without execution. Use
-the existing resume/recover APIs when the host intends their documented execution
+The host chooses abandonment when eligible legacy work must stop without execution.
+Use the existing resume/recover APIs when the host intends their documented execution
 or continuation behavior. Crabber imposes no automatic or bulk abandonment policy.
 No Agentcraft repository changes are included in this milestone.
 
@@ -47,7 +53,10 @@ No Agentcraft repository changes are included in this milestone.
    or replay authority changed; refresh evidence and make a new policy decision.
    `NotFound` means no such persisted run. `AlreadyTerminal` means an unrelated
    settlement, **not** successful abandonment. Inspect history rather than treat
-   these denials as success. Error/event payloads are not replay credentials.
+   these denials as success. `NativeReconciliationRequired` means the run has
+   native execution evidence or its session has an approval barrier; do not use
+   legacy abandonment to replace its outcome or release unresolved cleanup.
+   Error/event payloads are not replay credentials.
 
 SQLite performs these settlement steps in one write transaction
 (`shared_abandonment_contract`, `rollback_unknown_response_and_fresh_process_replay`).
@@ -80,9 +89,11 @@ cargo run --quiet -p fenced-abandon --features postgres -- --postgres
 cargo run --quiet -p fenced-abandon --features sqlite -- --sqlite
 ```
 
-All modes pause a persisted run containing unsafe Pending and Running tool work
-with unavailable configuration. They demonstrate ordinary live rejection, wait
-for authoritative child exit, administratively abandon and exactly replay. Output
+All modes stage legacy Pending and Running tool records and pause their run
+with unavailable configuration. These are legacy settlement fixtures, not recovery
+examples for current runtime-owned native phases. They demonstrate ordinary live
+rejection, wait for authoritative child exit, administratively abandon and exactly
+replay. Output
 reports compilation Git SHA and runtime Git SHA (asserted identical), backend, run
 ID, terminal event cursor, Interrupted, and measured zero provider/tool/extension
 mount counters. Extension installation panics if invoked, so executable hooks
@@ -145,8 +156,10 @@ request no longer matches its persisted session, and `recover` skips such a
 run. The rejection happens before the plan is acquired and before the run is
 claimed, so the run stays unfinished with its existing fence and is rejected on
 every later attempt. It is not recovered automatically: `recover` lists it as a
-`SkippedRun` in its report, and once its lease has expired, settle it with `abandon`
-under this protocol. See
+`SkippedRun` in its report. Once its lease has expired, `abandon` can settle it
+under this protocol only if it has no native attempt/phase evidence or session
+approval barrier. Native work requires explicit reconciliation; expiry does not
+resolve an external effect or establish cleanup. See
 [workspace context](embedding.md#workspace-context).
 
 ## SQLite evidence

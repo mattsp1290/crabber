@@ -49,6 +49,13 @@ impl Store for SqliteStore {
     fn supports_owned_attempts(&self) -> bool {
         true
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        true
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        true
+    }
+
     async fn tool_phase(
         &self,
         run: &RunId,

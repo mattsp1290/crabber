@@ -398,6 +398,13 @@ impl Store for MemoryStore {
     fn supports_owned_attempts(&self) -> bool {
         true
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        true
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        true
+    }
+
     async fn tool_phase(
         &self,
         run: &RunId,
@@ -716,6 +723,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn start_tool_phase(
+        &self,
+        start: crate::PhaseStart,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.start_phase(&start, authority)
+    }
+
     async fn suspend_for_approval(
         &self,
         batch: crate::ApprovalSuspension,
@@ -964,6 +979,18 @@ impl ExecutionStore for MemoryExecution {
     ) -> Result<(), StoreError> {
         let now = self.store.clock.now();
         self.store.fenced(&self.fence, |state, run| {
+            if state
+                .attempts
+                .values()
+                .any(|record| record.snapshot.run_id == run.id)
+                || state
+                    .phases
+                    .values()
+                    .any(|record| record.snapshot.run_id == run.id)
+                || state.approval_barriers.contains_key(&run.session_id)
+            {
+                return Err(StoreError::Conflict);
+            }
             insert_event(state, run, event)?;
             let entry = state.runs.get_mut(&run.id).expect("fenced run exists");
             entry.status = RunStatus::Paused;
@@ -984,6 +1011,18 @@ impl ExecutionStore for MemoryExecution {
     ) -> Result<(), StoreError> {
         let now = self.store.clock.now();
         self.store.fenced(&self.fence, |state, run| {
+            if state
+                .attempts
+                .values()
+                .any(|record| record.snapshot.run_id == run.id)
+                || state
+                    .phases
+                    .values()
+                    .any(|record| record.snapshot.run_id == run.id)
+                || state.approval_barriers.contains_key(&run.session_id)
+            {
+                return Err(StoreError::Conflict);
+            }
             if !status.is_terminal() {
                 return Err(StoreError::Validation(
                     "run settlement must be terminal".into(),

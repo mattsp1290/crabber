@@ -144,6 +144,8 @@ pub type ResultTransformCallback = Arc<
 pub struct CleanupTracker {
     tasks: TaskTracker,
     closing: CancellationToken,
+    resources: Option<crate::ToolResources>,
+    mount_tasks: Option<TaskTracker>,
 }
 impl CleanupTracker {
     /// A tracker with no owner: its close signal never fires and nothing joins it.
@@ -155,16 +157,90 @@ impl CleanupTracker {
     ///
     /// Used by `CleanupOwner` (crabber-2xrl), which keeps the other halves.
     pub(crate) fn from_parts(tasks: TaskTracker, closing: CancellationToken) -> Self {
-        Self { tasks, closing }
+        Self {
+            tasks,
+            closing,
+            resources: None,
+            mount_tasks: None,
+        }
+    }
+    pub(crate) fn for_resources(
+        resources: crate::ToolResources,
+        closing: CancellationToken,
+    ) -> Self {
+        Self {
+            tasks: TaskTracker::new(),
+            closing,
+            resources: Some(resources),
+            mount_tasks: None,
+        }
+    }
+    pub(crate) fn is_phase_scoped(&self) -> bool {
+        self.resources.is_some()
+    }
+    pub(crate) fn for_handler_mount(&self, mount: &Self) -> Self {
+        let mut tracker = self.clone();
+        tracker.mount_tasks = Some(mount.tasks.clone());
+        tracker
     }
     /// Spawns on the current Tokio runtime. The task is tracked until it
     /// finishes, whether or not the returned handle or the caller is dropped.
+    /// For a native phase tracker, the owner retains the actual task join;
+    /// aborting the returned output handle does not abort cleanup.
+    /// The future's output is data, including a returned `Result`: use
+    /// [`Self::spawn_checked`] to report a declared phase cleanup failure.
+    ///
+    /// # Panics
+    /// A native phase tracker rejects registration after its scope is sealed
+    /// or its task capacity is reached, before spawning or polling the task.
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.tasks.spawn(task)
+        if let Some(resources) = &self.resources {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let mount_token = self.mount_tasks.as_ref().map(TaskTracker::token);
+            let task = self.tasks.track_future(async move {
+                let _mount_token = mount_token;
+                task.await
+            });
+            resources
+                .spawn(async move {
+                    let output = task.await;
+                    let _ = sender.send(output);
+                    Ok(())
+                })
+                .expect("native phase cleanup registration rejected");
+            tokio::spawn(async move {
+                receiver
+                    .await
+                    .expect("native phase cleanup task did not return")
+            })
+        } else {
+            self.tasks.spawn(task)
+        }
+    }
+    /// Register cleanup whose declared failure remains visible in the native
+    /// phase owner's resource drain, together with task panics/cancellation.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` for ordinary mount/host trackers. Native phase
+    /// trackers also reject sealed scopes and exhausted capacity before polling
+    /// the supplied future.
+    pub fn spawn_checked<F>(&self, task: F) -> Result<(), crate::ResourceRegistrationError>
+    where
+        F: Future<Output = Result<(), crate::ResourceFailure>> + Send + 'static,
+    {
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or(crate::ResourceRegistrationError::Unsupported)?;
+        let mount_token = self.mount_tasks.as_ref().map(TaskTracker::token);
+        resources.spawn(self.tasks.track_future(async move {
+            let _mount_token = mount_token;
+            task.await
+        }))
     }
     /// Resolves when the owner starts closing. `'static`, so it can move into a task.
     pub fn closing(&self) -> WaitForCancellationFutureOwned {
@@ -185,9 +261,10 @@ impl CleanupTracker {
 ///
 /// Anyone can construct a value, for example in tests. Only the instance the
 /// runtime builds is authoritative: the runtime never reads a context back from
-/// a handler, and the driver replaces phase, effective `is_error` and tracker
-/// for every handler it invokes. The cancellation token is never part of any
-/// JSON.
+/// a handler, and the driver sets phase and effective `is_error` for every
+/// handler it invokes. It preserves native phase cleanup ownership, otherwise
+/// supplying the handler's mount tracker. The cancellation token is never
+/// part of any JSON.
 #[derive(Debug, Clone)]
 pub struct ToolResultContext {
     tool_name: String,

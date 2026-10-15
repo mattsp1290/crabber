@@ -263,6 +263,15 @@ pub trait Store: Send + Sync {
     fn supports_owned_attempts(&self) -> bool {
         false
     }
+    /// Pure capability declaration for native phase claim/start/settlement and
+    /// receipt reads. Never opens a transaction or probes database health.
+    fn supports_owned_tool_phases(&self) -> bool {
+        false
+    }
+    /// Pure declaration for durable prepared-batch approvals and their controls.
+    fn supports_pre_effect_approvals(&self) -> bool {
+        false
+    }
 
     /// Atomic admission plus retained provider-binding evidence. No fallback to
     /// legacy admission is safe: custom adapters must implement this capability,
@@ -405,6 +414,8 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
         Err(crate::AdmissionExecutionError::Unsupported)
     }
+    /// Legacy-only settlement: native attempts/phases and active approval barriers
+    /// require explicit reconciliation controls and are refused without mutation.
     /// Atomically revoke the expected fence and interrupt every unfinished tool
     /// and the run, retaining history, usage, receipts and unrelated inbox rows.
     /// Expiry must be checked under the transaction lock using the store clock.
@@ -475,6 +486,15 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Atomically acknowledge native phase Begin and its logical running source.
+    /// Only a fresh Applied result permits dispatch under the original authority.
+    async fn start_tool_phase(
+        &self,
+        _start: crate::PhaseStart,
+        _authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
     /// Freeze the whole prepared batch and its pending approvals, then conclude
     /// this attempt as suspended in the SAME transaction. Caller first joins
     /// its resources; no effectful phase in this batch may have started.
@@ -572,11 +592,15 @@ pub trait ExecutionStore: Send + Sync {
     ) -> Result<(), StoreError>;
     async fn start_epoch(&self, epoch: ContextEpoch) -> Result<(), StoreError>;
     async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError>;
+    /// Legacy boundary for runs without native attempt/phase evidence or a
+    /// continuation barrier. Native workers must use `conclude_attempt`.
     async fn pause_run(
         &self,
         checkpoint: serde_json::Value,
         event: EventRecord,
     ) -> Result<(), StoreError>;
+    /// Legacy terminal boundary; refuses native execution evidence and
+    /// continuation barriers instead of bypassing their result/cleanup proof.
     async fn settle_run(
         &self,
         status: RunStatus,

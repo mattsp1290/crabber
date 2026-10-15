@@ -91,6 +91,7 @@ async fn assert_settlement(
         .filter(|event| event.kind == EventKind::ToolCallSettled)
         .collect();
     assert_eq!(settled.len(), 1);
+    assert_native_settlement(store, run, &events).await;
     let payload = &settled[0].payload;
     assert_eq!(payload["call_id"], serde_json::json!(call.id));
     assert_eq!(payload["content"], serde_json::json!(result.content));
@@ -114,6 +115,53 @@ async fn assert_settlement(
             assert!(!persisted.contains(REDACTED_OUTPUT), "seed was accepted");
         }
     }
+}
+
+async fn assert_native_settlement(
+    store: &dyn Store,
+    run: &crabber::core::RunId,
+    events: &[crabber::core::EventRecord],
+) {
+    let source = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::ToolPhaseChanged)
+        .unwrap();
+    let phase: crabber::session::PhaseSnapshot =
+        serde_json::from_value(source.payload["phase"].clone()).unwrap();
+    let phase = store.tool_phase(run, &phase.target.id).await.unwrap().phase;
+    assert_eq!(phase.state, crabber::session::PhaseState::Failed);
+    assert_eq!(
+        phase.quiescence,
+        crabber::session::PhaseQuiescence::Complete
+    );
+}
+
+async fn assert_held_phase(store: &dyn Store, session: &SessionId, run: &crabber::core::RunId) {
+    assert_eq!(
+        store.get_run(run).await.unwrap().unwrap().status,
+        RunStatus::Running
+    );
+    let calls = store.list_unfinished_tool_calls(run).await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].status, ToolCallStatus::Running);
+    assert!(calls[0].result.is_none());
+    let events = store.list_events(session, None, 1000).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == EventKind::ToolCallSettled)
+    );
+    let source = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::ToolPhaseChanged)
+        .unwrap();
+    let phase: crabber::session::PhaseSnapshot =
+        serde_json::from_value(source.payload["phase"].clone()).unwrap();
+    let phase = store.tool_phase(run, &phase.target.id).await.unwrap().phase;
+    assert_eq!(phase.state, crabber::session::PhaseState::Started);
+    assert_eq!(phase.quiescence, crabber::session::PhaseQuiescence::Pending);
 }
 
 async fn assert_drained(probes: &Probes, pid: u32) {
@@ -149,28 +197,38 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
         assert_eq!(probes.permit_count(), 0);
         let interrupted = Instant::now();
         run.interrupt();
-        timeout(INTERRUPT_SETTLEMENT_BOUND, async {
-            assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
-            assert_settlement(
-                store.as_ref(),
-                &session,
-                &run_id,
-                &probes,
-                if accepted {
-                    REDACTED_OUTPUT
-                } else {
-                    INTERRUPTED_RESULT_TEXT
-                },
-            )
-            .await;
-        })
-        .await
-        .expect("durable interrupt settlement bound");
-        assert!(interrupted.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
-        assert_eq!(probes.redacted.observed(), accepted);
+        probes.callback_dropped.wait().await;
+        probes.kill_started.wait().await;
+        // Dropping the callback never proves that its child has been reaped.
+        // While the actual wait is held, no native or logical result is ready.
+        assert_eq!(probes.permit_count(), 0);
+        assert!(!probes.reaped.observed());
+        assert!(!probes.pipe_closed.observed());
         if accepted {
+            probes.redacted.wait().await;
+            // Only final redaction is timed; the Store reads below are fixture work.
             assert!(interrupted.elapsed() <= FINAL_REDACTION_DEADLINE);
         }
+        assert_held_phase(store.as_ref(), &session, &run_id).await;
+        probes.release_reap();
+        timeout(INTERRUPT_SETTLEMENT_BOUND, async {
+            assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
+        })
+        .await
+        .expect("durable interrupt settlement after actual cleanup");
+        assert_settlement(
+            store.as_ref(),
+            &session,
+            &run_id,
+            &probes,
+            if accepted {
+                REDACTED_OUTPUT
+            } else {
+                INTERRUPTED_RESULT_TEXT
+            },
+        )
+        .await;
+        assert_eq!(probes.redacted.observed(), accepted);
         let mut live_settlements = 0;
         while let Some(event) = events.recv().await.unwrap() {
             let serialized = serde_json::to_string(&event).unwrap();
@@ -194,13 +252,6 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
             }
         }
         assert_eq!(live_settlements, 1);
-        probes.callback_dropped.wait().await;
-        probes.kill_started.wait().await;
-        // Cleanup outlives the dropped callback and cannot release before wait().
-        assert_eq!(probes.permit_count(), 0);
-        assert!(!probes.reaped.observed());
-        assert!(!probes.pipe_closed.observed());
-        probes.release_reap();
         agent.close_extensions().await.unwrap();
         assert_drained(&probes, pid).await;
     })
@@ -282,24 +333,36 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         let run_id = run.run_id().clone();
         let pid = probes.ready().await;
         run.interrupt();
-        timeout(INTERRUPT_SETTLEMENT_BOUND, async {
-            assert_eq!(run.done().await.unwrap().status, RunStatus::Interrupted);
-            assert_settlement(
-                store.as_ref(),
-                &session,
-                &run_id,
-                &probes,
-                INTERRUPTED_RESULT_TEXT,
-            )
-            .await;
-        })
-        .await
-        .expect("durable interrupt settlement bound");
         probes.callback_dropped.wait().await;
         probes.kill_started.wait().await;
+        assert_held_phase(store.as_ref(), &session, &run_id).await;
         assert!(!probes.reaped.observed());
         assert!(!probes.pipe_closed.observed());
         assert_eq!(probes.permit_count(), 0);
+        let error = timeout(FIXTURE_BOUND, run.done())
+            .await
+            .expect("bounded incomplete native phase")
+            .unwrap_err();
+        let RuntimeError::PhaseOutcomeUnknown { phase, .. } = error else {
+            panic!("held child must leave a native uncertain phase");
+        };
+        let phase = store.tool_phase(&run_id, &phase.id).await.unwrap().phase;
+        assert_eq!(phase.state, crabber::session::PhaseState::Uncertain);
+        assert_eq!(
+            phase.quiescence,
+            crabber::session::PhaseQuiescence::Incomplete
+        );
+        assert_eq!(
+            store.get_run(&run_id).await.unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        let calls = store.list_unfinished_tool_calls(&run_id).await.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].result.is_none());
+        let retained = agent.drain_execution_tasks(Duration::ZERO).await;
+        assert!(retained.resources.iter().any(
+            |scope| scope.phase.as_ref() == Some(&phase.target) && scope.resources.pending == 1
+        ));
         // Real readiness and kill initiation precede the deterministic close clock.
         tokio::time::pause();
         let started = Instant::now();
@@ -319,6 +382,8 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         let close = &captured[0];
         assert_eq!(close.extension, extension);
         assert_eq!(close.bound, bound);
+        // The run worker has returned, but the same actual child remains
+        // tracked by both its native phase owner and its extension mount.
         assert_eq!(close.pending_tasks, 1);
         assert!(matches!(
             agent.prompt(None, "closed registry").await,
@@ -330,6 +395,23 @@ async fn close_timeout_retains_child_reaper_and_terminal_registry() {
         tokio::time::resume();
         probes.release_reap();
         assert_drained(&probes, pid).await;
+        let joined = agent.drain_execution_tasks(FIXTURE_BOUND).await;
+        assert!(
+            joined
+                .resources
+                .iter()
+                .all(|scope| scope.resources.pending == 0)
+        );
+        // A later local join cannot retrospectively assert a durable outcome.
+        assert_eq!(
+            store
+                .tool_phase(&run_id, &phase.target.id)
+                .await
+                .unwrap()
+                .phase
+                .quiescence,
+            crabber::session::PhaseQuiescence::Incomplete
+        );
         assert!(matches!(
             agent.prompt(None, "still closed").await,
             Err(RuntimeError::HostClosed)

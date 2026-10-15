@@ -1,5 +1,8 @@
 //! Locally owned tool tasks. Joining a task proves only that task terminated;
 //! native code must include the resources it owns in its cleanup future.
+#[cfg(test)]
+#[path = "tool_resources/cleanup_tests.rs"]
+mod cleanup_tests;
 use futures::StreamExt;
 use std::{
     future::Future,
@@ -10,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Library task-ownership contract, included in execution plan fingerprints.
-pub const TOOL_RESOURCE_CONTRACT_VERSION: u32 = 1;
+pub const TOOL_RESOURCE_CONTRACT_VERSION: u32 = 2;
 /// Maximum registered tasks in one native tool scope, including retained joins.
 pub const MAX_TOOL_RESOURCE_TASKS: usize = 64;
 
@@ -55,6 +58,11 @@ struct ResourceTask {
 /// boundary: retained clones cannot register after the call leaves its scope.
 #[derive(Clone, Default)]
 pub struct ToolResources(Option<Arc<Scope>>);
+impl std::fmt::Debug for ToolResources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolResources([redacted])")
+    }
+}
 impl ToolResources {
     /// Register all task-owned cleanup in the supplied future. The owner retains
     /// its join handle even if the tool drops this capability. No abort handle
@@ -114,6 +122,12 @@ impl ToolResourceOwner {
     #[must_use]
     pub fn resources(&self) -> ToolResources {
         ToolResources(Some(self.0.clone()))
+    }
+    /// Cleanup registration sharing this phase's sealing, cancellation and
+    /// retained task joins. Task failures remain visible in the phase drain.
+    #[must_use]
+    pub fn cleanup_tracker(&self) -> crate::CleanupTracker {
+        crate::CleanupTracker::for_resources(self.resources(), self.0.closing.clone())
     }
     /// Seal registration and request cooperative close under the same boundary
     /// used by registration. Idempotent; work keeps its actual join owner.

@@ -1,5 +1,10 @@
 #[path = "orchestrator/admission.rs"]
 mod admission;
+#[path = "orchestrator/approval.rs"]
+mod approval;
+#[path = "orchestrator/continuation.rs"]
+mod continuation;
+pub use continuation::{Continuation, ContinueApproval};
 #[path = "orchestrator/attempt.rs"]
 mod attempt;
 #[path = "orchestrator/binding.rs"]
@@ -8,10 +13,18 @@ mod binding;
 mod input;
 #[path = "orchestrator/terminal.rs"]
 mod terminal;
+#[path = "orchestrator/tool_batch.rs"]
+mod tool_batch;
+#[path = "orchestrator/tool_execution.rs"]
+mod tool_execution;
+#[path = "orchestrator/tool_invoke.rs"]
+mod tool_invoke;
+#[path = "orchestrator/tool_phase.rs"]
+mod tool_phase;
 use crate::observation::{Measurement, result_reason};
 use crate::policy::{
-    ApprovalRequester, DefaultDenyApprover, IdentityToolPipeline, InterruptPolicy,
-    PermissionDecision, PermissionPolicy, StaticPolicy, ToolPipeline,
+    IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, StaticPolicy,
+    ToolPipeline,
 };
 use crate::{
     ModelPurpose, MonotonicClock, OperationKind, OperationalObservation, SystemMonotonicClock,
@@ -27,8 +40,8 @@ use crabber_core::{
     ToolCallStatus, ToolInfo, ToolResult, ToolResultStatus, TurnId, Usage,
 };
 use crabber_extension::{
-    Callback, CleanupTracker, ContextAssemble, EventPublished, GuardContext, GuardDecision,
-    HostServices, InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
+    Callback, ContextAssemble, EventPublished, GuardContext, GuardDecision, HostServices,
+    InputUnavailable, ModelCompleted, ModelRequestError, ModelRequested,
     ModelStream as ExtensionModelStream, PromptAttemptContext, PromptContributionOutcome,
     RunAdmitted, RunBeforeExecute, RunPlan, RunPlanProvider, RunSettled, RunStarted, StateSink,
     ToolContext, ToolDefinition, ToolExecute, ToolInput, ToolOutcomeClass, ToolPrepare,
@@ -46,7 +59,7 @@ use crabber_session::{
     AdmissionRequestData, AdmitRequest, ClaimUnstartedAdmissionRequest, ExecutionStore, InboxKind,
     KeyedAdmitOutcome, KeyedAdmitRequest, Store, StoreError, admission_config_hash,
 };
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::StreamExt;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -215,6 +228,14 @@ pub enum RuntimeError {
     AdmissionExecution(#[from] AdmissionExecutionError),
     #[error("execution attempt: {0}")]
     Attempt(#[from] crabber_session::AttemptError),
+    #[error("durable approval: {0}")]
+    Approval(#[from] crabber_session::ApprovalError),
+    #[error("approval boundary persistence outcome is unknown")]
+    ApprovalBoundaryUnknown {
+        run_id: RunId,
+        operation_id: crabber_core::ControlId,
+        reason: crabber_session::ApprovalError,
+    },
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
     #[error("provider binding: {0}")]
@@ -250,6 +271,13 @@ pub enum RuntimeError {
     },
     #[error("attempt resource cleanup is incomplete")]
     AttemptCleanupIncomplete { run_id: RunId },
+    #[error("native tool phase outcome requires reconciliation")]
+    PhaseOutcomeUnknown {
+        run_id: RunId,
+        phase: Box<crabber_session::PhaseTarget>,
+        operation_id: Option<crabber_core::ControlId>,
+        reason: crabber_session::PhaseError,
+    },
     #[error("tool execution outcome requires reconciliation")]
     ToolOutcomeUnknown { run_id: RunId, call_id: ToolCallId },
     #[error("run requires its durable continuation claim")]
@@ -436,9 +464,7 @@ pub struct Orchestrator {
     observer: Arc<dyn Observer>,
     model_stream: Arc<dyn ModelStream>,
     policy: Arc<dyn PermissionPolicy>,
-    approver: Arc<dyn ApprovalRequester>,
     tool_pipeline: Arc<dyn ToolPipeline>,
-    pipeline_cleanup: CleanupTracker,
     host_services: HostServices,
     max_turns: usize,
     heartbeat_interval: Duration,
@@ -551,9 +577,7 @@ pub struct OrchestratorBuilder {
     observer: Option<Arc<dyn Observer>>,
     model_stream: Option<Arc<dyn ModelStream>>,
     policy: Option<Arc<dyn PermissionPolicy>>,
-    approver: Option<Arc<dyn ApprovalRequester>>,
     tool_pipeline: Option<Arc<dyn ToolPipeline>>,
-    pipeline_cleanup: Option<CleanupTracker>,
     host_services: Option<HostServices>,
     max_turns: Option<usize>,
     heartbeat_interval: Option<Duration>,
@@ -638,19 +662,8 @@ impl OrchestratorBuilder {
         self
     }
     #[must_use]
-    pub fn approver(mut self, value: Arc<dyn ApprovalRequester>) -> Self {
-        self.approver = Some(value);
-        self
-    }
-    #[must_use]
     pub fn tool_pipeline(mut self, value: Arc<dyn ToolPipeline>) -> Self {
         self.tool_pipeline = Some(value);
-        self
-    }
-    /// Tracker handed to the pre-stage. Default: a detached tracker.
-    #[must_use]
-    pub fn pipeline_cleanup(mut self, tracker: CleanupTracker) -> Self {
-        self.pipeline_cleanup = Some(tracker);
         self
     }
     #[must_use]
@@ -740,15 +753,9 @@ impl OrchestratorBuilder {
             policy: self
                 .policy
                 .unwrap_or_else(|| Arc::new(StaticPolicy::default())),
-            approver: self
-                .approver
-                .unwrap_or_else(|| Arc::new(DefaultDenyApprover)),
             tool_pipeline: self
                 .tool_pipeline
                 .unwrap_or_else(|| Arc::new(IdentityToolPipeline)),
-            pipeline_cleanup: self
-                .pipeline_cleanup
-                .unwrap_or_else(CleanupTracker::detached),
             host_services: self.host_services.unwrap_or_default(),
             max_turns: self.max_turns.unwrap_or(64),
             heartbeat_interval,
@@ -1163,7 +1170,7 @@ impl Orchestrator {
                 session_id,
                 run_id,
                 move |runtime, cancellation| async move {
-                    Box::pin(runtime.resume_loaded(run, validated, cancellation)).await
+                    Box::pin(runtime.resume_loaded(run, validated, cancellation, None)).await
                 },
             ))
         })
@@ -1217,6 +1224,7 @@ impl Orchestrator {
         run: crabber_core::Run,
         (session, saved): (RunSession, Option<Request>),
         cancellation: CancellationToken,
+        approval: Option<continuation::ApprovalResume>,
     ) -> Result<RunResult, RuntimeError> {
         let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
@@ -1224,15 +1232,17 @@ impl Orchestrator {
         {
             return Err(StoreError::AdmissionRecoveryRequired.into());
         }
-        if run.status.is_terminal()
-            || (run.status != RunStatus::Paused && run.lease_until > self.clock.now())
+        if approval.is_none()
+            && (run.status.is_terminal()
+                || (run.status != RunStatus::Paused && run.lease_until > self.clock.now()))
         {
             return Err(StoreError::Conflict.into());
         }
-        if run
-            .checkpoint
-            .as_ref()
-            .is_some_and(|checkpoint| checkpoint.get("approval").is_some())
+        if approval.is_none()
+            && run
+                .checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.get("approval").is_some())
         {
             return Err(RuntimeError::DurableContinuationRequired {
                 run_id: run.id.clone(),
@@ -1252,29 +1262,53 @@ impl Orchestrator {
             return Err(RuntimeError::PlanChanged);
         }
         let bound = self.restore_provider(&plan, &binding.provider).await?;
-        if !self.store.supports_owned_attempts() {
+        if !self.store.supports_owned_attempts()
+            || !self.store.supports_owned_tool_phases()
+            || !self.store.supports_pre_effect_approvals()
+        {
             return Err(StoreError::HostUnsupported.into());
         }
-        let native_unstarted = match self.store.latest_execution_attempt(run_id).await? {
-            Some(previous)
-                if previous.attempt.state == crabber_session::AttemptState::Unstarted =>
-            {
-                true
+        let resume_turns_used = match run.checkpoint.as_ref() {
+            Some(checkpoint) => checkpoint
+                .get("turns_used")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|count| *count > 0 && *count <= self.max_turns)
+                .ok_or(StoreError::HostUnsupported)?,
+            None if run.status == RunStatus::Running => {
+                match self.store.latest_execution_attempt(run_id).await? {
+                    None => 0,
+                    Some(previous)
+                        if previous.attempt.state == crabber_session::AttemptState::Unstarted =>
+                    {
+                        0
+                    }
+                    Some(_) => return Err(crabber_session::AttemptError::Busy.into()),
+                }
             }
-            Some(previous)
-                if previous.attempt.state == crabber_session::AttemptState::Suspended
-                    && previous.attempt.cleanup == crabber_session::AttemptCleanup::Complete =>
-            {
-                false
-            }
-            Some(_) => return Err(crabber_session::AttemptError::Busy.into()),
-            None if run.status == RunStatus::Running => true,
-            None => return Err(crabber_session::AttemptError::InvalidTransition.into()),
+            None => return Err(StoreError::HostUnsupported.into()),
         };
-        let fence = self
-            .store
-            .claim_expired_run(run_id, &RunId::new().to_string())
-            .await?;
+        if approval.is_none() && run.checkpoint.is_some() {
+            tool_batch::restore_paused_calls(
+                &run,
+                self.store.list_unfinished_tool_calls(run_id).await?,
+            )?;
+        }
+        let Some(acquisition) = self.acquire_resume(&run, approval).await? else {
+            plan.release();
+            return Ok(RunResult {
+                session_id: run.session_id,
+                run_id: run.id,
+                status: run.status,
+                usage: run.usage,
+            });
+        };
+        let continuation::ResumeAuthority {
+            fence,
+            native_unstarted,
+            granted,
+            approved,
+        } = acquisition;
         let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
         let mut measurement = Measurement::new(
@@ -1297,10 +1331,16 @@ impl Orchestrator {
         };
         let execution: Arc<dyn ExecutionStore> = execution.into();
         let mut worker = self.clone();
-        worker.owned_attempt = Some(Arc::new(
-            self.begin_owned_attempt(execution.as_ref(), &run.session_id, run_id, true)
-                .await?,
-        ));
+        worker.owned_attempt = Some(Arc::new(match granted {
+            Some(owner) => {
+                self.begin_granted_attempt(execution.as_ref(), &run.session_id, owner)
+                    .await?
+            }
+            None => {
+                self.begin_owned_attempt(execution.as_ref(), &run.session_id, run_id, true)
+                    .await?
+            }
+        }));
         let self_ = &worker;
         let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
@@ -1325,11 +1365,27 @@ impl Orchestrator {
         let failure_lost = lost.clone();
         let current_turn = Arc::new(std::sync::Mutex::new(None));
         let work_turn = current_turn.clone();
+        let approval_turn = approved.as_ref().and_then(|batch| batch.turn.clone());
+        let resumed_turn = approval_turn.clone().or_else(|| {
+            run.checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.get("source_turn_id"))
+                .and_then(Value::as_str)
+                .map(|id| TurnId(id.to_owned()))
+        });
+        let approval_usage = approved.as_ref().map(|batch| batch.usage.clone());
+        if approved
+            .as_ref()
+            .is_some_and(|batch| batch.turns_used != resume_turns_used)
+        {
+            return Err(crabber_session::ApprovalError::UnknownStoreOutcome.into());
+        }
+        let was_approval = approved.is_some();
         let resumed_work = async move {
             let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
             execution.append_event(resumed.clone()).await?;
             self.observer.emit(&resumed);
-            if native_unstarted {
+            if native_unstarted && run.checkpoint.is_none() {
                 let usage = self_
                     .run_loop(
                         execution.as_ref(),
@@ -1341,6 +1397,7 @@ impl Orchestrator {
                         &work_cancellation,
                         true,
                         run.usage.clone(),
+                        resume_turns_used,
                         lost.as_ref(),
                         &work_turn,
                     )
@@ -1352,44 +1409,103 @@ impl Orchestrator {
                     usage,
                 });
             }
-            let committed_turn = self
-                .reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
-                .await?;
+            let committed_turn = if run
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.get("version"))
+                .and_then(Value::as_u64)
+                == Some(4)
+            {
+                // Native v4 boundaries already committed the complete prepared
+                // batch. Later model history cannot add or reorder its calls.
+                None
+            } else {
+                self.reconcile_committed_assistant(execution.as_ref(), &run, &plan, lost.as_ref())
+                    .await?
+            };
             // A stopped attempt cannot manufacture an outcome for a call whose
             // body may already have caused an external effect.
-            for call in self.store.list_unfinished_tool_calls(run_id).await? {
-                if call.status == ToolCallStatus::Running {
-                    return Err(RuntimeError::ToolOutcomeUnknown {
-                        run_id: run_id.clone(),
-                        call_id: call.id,
-                    });
-                }
-                // Only Pending calls behind the native suspension barrier can
-                // enter the execution chain, retaining their prepared identity.
-                let pending = PendingCall {
-                    message_id: None,
-                    turn_id: None,
-                    args_completed: true,
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    raw: String::new(),
-                    arguments: Some(call.arguments.clone()),
-                };
-                self.execute_tool(
-                    execution.as_ref(),
-                    &session,
-                    run_id,
-                    &plan,
-                    pending,
-                    Some(call),
-                    None,
-                    &work_cancellation,
-                    lost.as_ref(),
+            let pending_calls = self.store.list_unfinished_tool_calls(run_id).await?;
+            let pending_calls = if approved.is_none() && run.checkpoint.is_some() {
+                tool_batch::restore_paused_calls(&run, pending_calls)?
+            } else {
+                pending_calls
+            };
+            let permissions = if let Some(batch) = approved {
+                batch.calls
+            } else {
+                self_
+                    .authorize_tools(
+                        execution.as_ref(),
+                        &session,
+                        run_id,
+                        &plan,
+                        &pending_calls,
+                        &run.usage,
+                        resume_turns_used,
+                        resumed_turn.clone(),
+                        lost.as_ref(),
+                    )
+                    .await?
+            };
+            if permissions.len() != pending_calls.len() {
+                return Err(crabber_session::ApprovalError::SemanticConflict.into());
+            }
+            self_
+                .execute_prepared_tools(
+                    tool_batch::Batch {
+                        execution: execution.as_ref(),
+                        session: &session,
+                        run: run_id,
+                        plan: &plan,
+                        turn: resumed_turn.clone(),
+                        cancellation: &work_cancellation,
+                        lease_lost: lost.as_ref(),
+                    },
+                    pending_calls,
+                    permissions,
                 )
                 .await?;
+            if was_approval {
+                if let Some(turn) = &approval_turn {
+                    self_
+                        .publish_event(
+                            execution.as_ref(),
+                            &plan,
+                            self_.turn_event(
+                                &run.session_id,
+                                run_id,
+                                turn,
+                                EventKind::TurnCompleted,
+                            ),
+                        )
+                        .await?;
+                }
+                let usage = self_
+                    .run_loop(
+                        execution.as_ref(),
+                        run_id,
+                        &session,
+                        &original,
+                        &plan,
+                        &bound,
+                        &work_cancellation,
+                        false,
+                        approval_usage.unwrap_or_else(|| run.usage.clone()),
+                        resume_turns_used,
+                        lost.as_ref(),
+                        &work_turn,
+                    )
+                    .await?;
+                plan.release();
+                return Ok(RunResult {
+                    session_id: run.session_id.clone(),
+                    run_id: run_id.clone(),
+                    status: RunStatus::Completed,
+                    usage,
+                });
             }
-            if run.status == RunStatus::Paused
-                && let Some(checkpoint) = &run.checkpoint
+            if let Some(checkpoint) = &run.checkpoint
                 && let Some(request) = saved
             {
                 let usage: Usage = checkpoint
@@ -1431,14 +1547,29 @@ impl Orchestrator {
                         Err(error) => return Err(error),
                     }
                 }
-                self.emit_durable(
-                    execution.as_ref(),
-                    &run.session_id,
-                    run_id,
-                    &plan,
-                    EventKind::TurnCompleted,
-                )
-                .await?;
+                if let Some(turn) = checkpoint.get("source_turn_id").and_then(Value::as_str) {
+                    self_
+                        .publish_event(
+                            execution.as_ref(),
+                            &plan,
+                            self_.turn_event(
+                                &run.session_id,
+                                run_id,
+                                &TurnId(turn.to_owned()),
+                                EventKind::TurnCompleted,
+                            ),
+                        )
+                        .await?;
+                } else {
+                    self.emit_durable(
+                        execution.as_ref(),
+                        &run.session_id,
+                        run_id,
+                        &plan,
+                        EventKind::TurnCompleted,
+                    )
+                    .await?;
+                }
                 let outcome = self_
                     .run_loop(
                         execution.as_ref(),
@@ -1450,6 +1581,7 @@ impl Orchestrator {
                         &work_cancellation,
                         false,
                         usage,
+                        resume_turns_used,
                         lost.as_ref(),
                         &work_turn,
                     )
@@ -2101,7 +2233,10 @@ impl Orchestrator {
         &self,
         request: &Request,
     ) -> Result<(RunPlan, crabber_session::BoundAdmitRequest, Value), RuntimeError> {
-        if !self.store.supports_owned_attempts() {
+        if !self.store.supports_owned_attempts()
+            || !self.store.supports_owned_tool_phases()
+            || !self.store.supports_pre_effect_approvals()
+        {
             return Err(StoreError::HostUnsupported.into());
         }
         if request.max_output_tokens == Some(0) {
@@ -2378,6 +2513,7 @@ impl Orchestrator {
                         &cancellation,
                         true,
                         Usage::default(),
+                        0,
                         lost.as_ref(),
                         &current_turn,
                     )
@@ -2439,6 +2575,7 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         initial: bool,
         mut usage: Usage,
+        mut turns_used: usize,
         lease_lost: &AtomicBool,
         current_turn: &std::sync::Mutex<Option<TurnId>>,
     ) -> Result<Usage, RuntimeError> {
@@ -2457,7 +2594,8 @@ impl Orchestrator {
             self.emit_durable(execution, session_id, run_id, plan, EventKind::RunStarted)
                 .await?;
         }
-        for _ in 0..self.max_turns {
+        while turns_used < self.max_turns {
+            turns_used += 1;
             if cancellation.is_cancelled() {
                 return Err(RuntimeError::Interrupted);
             }
@@ -2532,6 +2670,19 @@ impl Orchestrator {
                         .await?,
                 );
             }
+            let permissions = self
+                .authorize_tools(
+                    execution,
+                    session,
+                    run_id,
+                    plan,
+                    &staged,
+                    &usage,
+                    turns_used,
+                    Some(turn_id.clone()),
+                    lease_lost,
+                )
+                .await?;
             if staged.iter().any(|call| {
                 plan.tools
                     .iter()
@@ -2543,60 +2694,27 @@ impl Orchestrator {
             }) {
                 let event = self.conclude_owned_attempt(execution, run_id,
                     crabber_session::RunBoundary::Suspended {
-                        checkpoint: json!({"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
+                        checkpoint: json!({"version":4,"turns_used":turns_used,"source_turn_id":turn_id,"pending_calls": staged.iter().map(|call| call.id.to_string()).collect::<Vec<_>>(),
                             "request": CheckpointRequest::new(request), "usage": usage}),
                         usage: usage.clone(),
                     }, Some(turn_id.clone()), run_started_at).await?;
                 self.observer.emit(&event);
                 return Err(RuntimeError::Paused);
             }
-            match self.execution_mode {
-                ExecutionMode::Sequential => {
-                    for record in staged {
-                        let mut call = PendingCall::from_record(&record);
-                        call.turn_id = Some(turn_id.clone());
-                        self.execute_tool(
-                            execution,
-                            session,
-                            run_id,
-                            plan,
-                            call,
-                            Some(record),
-                            None,
-                            cancellation,
-                            lease_lost,
-                        )
-                        .await?;
-                    }
-                }
-                ExecutionMode::Parallel { max } => {
-                    let (sender, receiver) = watch::channel(0usize);
-                    futures::stream::iter(staged.into_iter().enumerate().map(|(index, record)| {
-                        let receiver = receiver.clone();
-                        let sender = sender.clone();
-                        let turn_id = turn_id.clone();
-                        async move {
-                            let mut call = PendingCall::from_record(&record);
-                            call.turn_id = Some(turn_id);
-                            self.execute_tool(
-                                execution,
-                                session,
-                                run_id,
-                                plan,
-                                call,
-                                Some(record),
-                                Some((index, receiver, sender)),
-                                cancellation,
-                                lease_lost,
-                            )
-                            .await
-                        }
-                    }))
-                    .buffer_unordered(max)
-                    .try_collect::<Vec<_>>()
-                    .await?;
-                }
-            }
+            self.execute_prepared_tools(
+                tool_batch::Batch {
+                    execution,
+                    session,
+                    run: run_id,
+                    plan,
+                    turn: Some(turn_id.clone()),
+                    cancellation,
+                    lease_lost,
+                },
+                staged,
+                permissions,
+            )
+            .await?;
             let mut claimed = self.claim_input(execution, InboxKind::Steer).await?;
             if !had_tools && claimed == 0 {
                 claimed += self.claim_input(execution, InboxKind::FollowUp).await?;
@@ -3740,461 +3858,6 @@ impl Orchestrator {
             .await;
         Ok(record)
     }
-
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    async fn execute_tool(
-        &self,
-        execution: &dyn ExecutionStore,
-        session: &RunSession,
-        run_id: &RunId,
-        plan: &RunPlan,
-        call: PendingCall,
-        existing: Option<ToolCallRecord>,
-        settlement: Option<(usize, watch::Receiver<usize>, watch::Sender<usize>)>,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-    ) -> Result<(), RuntimeError> {
-        let session_id = &session.id;
-        let definition = plan
-            .tools
-            .iter()
-            .find(|tool| tool.info.name == call.name)
-            .cloned();
-        let record = existing.expect("tool calls are staged before execution");
-        let recorded = read_recorded_call(record.arguments, &call.name, definition.is_some());
-        ensure_lease(lease_lost)?;
-        let tool_name = call.name.clone();
-        let mut measurement = Measurement::new(
-            self.observer.as_ref(),
-            self.monotonic_clock.as_ref(),
-            session_id,
-            run_id,
-            OperationKind::Tool {
-                name: tool_name.clone(),
-            },
-            cancellation,
-            lease_lost,
-        );
-        let tool_started_at = self.monotonic_clock.now();
-        let mut running = self.event(session_id, run_id, EventKind::ToolCallRunning);
-        running.turn_id = call.turn_id.clone();
-        running.payload = json!({"call_id": call.id, "name": tool_name, "status": "running"});
-        running.correlation = Some(call.id.to_string());
-        execution
-            .claim_tool_call(&call.id, running.clone())
-            .await
-            .inspect_err(|_| {
-                measurement.observation.reason = TerminalReason::RuntimeError;
-            })?;
-        self.observer.emit(&running);
-        let running_projection = serde_json::to_value(&running).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(running_projection.clone())
-            .await;
-        plan.dispatcher
-            .notify::<crabber_extension::ToolStarted>(running_projection)
-            .await;
-        execution
-            .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await
-            .inspect_err(|_| {
-                measurement.observation.reason = TerminalReason::RuntimeError;
-            })?;
-        ensure_lease(lease_lost)?;
-        let child_cancellation = cancellation.child_token();
-        let resources = self
-            .execution_tasks
-            .tool_resources(run_id.clone(), call.id.clone());
-        let _resource_guard = resources.guard();
-        let mut mark_error = false;
-        let mut pipeline_failed = false;
-        let (class, input, resolved, outcome): (_, _, _, Result<crabber_core::ToolOutput, String>) =
-            match recorded {
-                RecordedCall::Execute(arguments) => {
-                    let tool =
-                        definition.expect("the record reader executes only calls that resolve");
-                    let input = ToolInput::Normalized(arguments.clone());
-                    let pipeline_context = ToolResultContext::new(
-                        call.name.clone(),
-                        true,
-                        input.clone(),
-                        record.id.clone(),
-                        session_id.clone(),
-                        run_id.clone(),
-                        ToolOutcomeClass::Succeeded,
-                    )
-                    .with_cancellation(child_cancellation.clone())
-                    .with_cleanup(self.pipeline_cleanup.clone());
-                    let task_resources = resources.resources();
-                    let run = tokio::select! {
-                        biased;
-                        () = cancellation.cancelled() => {
-                            measurement.observation.reason = TerminalReason::Cancelled;
-                            return Err(RuntimeError::Interrupted);
-                        },
-                        result = self.permit_and_execute(
-                        execution,
-                        session,
-                        run_id,
-                        &call.id,
-                        plan,
-                        &tool,
-                        arguments,
-                        cancellation,
-                        lease_lost,
-                        &pipeline_context,
-                        &task_resources,
-                        ) => result.inspect_err(|error| {
-                            measurement.observation.reason = match error {
-                                RuntimeError::LeaseLost => TerminalReason::LeaseLost,
-                                RuntimeError::Interrupted => TerminalReason::Cancelled,
-                                RuntimeError::Paused => TerminalReason::Paused,
-                                _ => TerminalReason::RuntimeError,
-                            };
-                        })?,
-                    };
-                    match run {
-                        ToolRun::Output(value) => {
-                            mark_error = value.mark_error;
-                            (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
-                        }
-                        ToolRun::PipelineFailed => {
-                            pipeline_failed = true;
-                            (
-                                ToolOutcomeClass::Succeeded,
-                                input,
-                                true,
-                                Ok(runtime_error_output(&result_transform_failed_message(
-                                    TOOL_PIPELINE_HANDLER_ID,
-                                ))),
-                            )
-                        }
-                        ToolRun::PermissionDenied => (
-                            ToolOutcomeClass::PermissionDenied,
-                            input,
-                            true,
-                            Err("permission denied".into()),
-                        ),
-                        ToolRun::ExecutionFailed(error) => {
-                            (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
-                        }
-                    }
-                }
-                RecordedCall::Settled {
-                    class,
-                    input,
-                    resolved,
-                    seed,
-                } => (class, input, resolved, Err(seed)),
-            };
-        ensure_lease(lease_lost)?;
-        // Built from the stored record only, so a resumed call derives the same context.
-        let result_context = ToolResultContext::new(
-            call.name.clone(),
-            resolved,
-            input,
-            record.id.clone(),
-            session_id.clone(),
-            run_id.clone(),
-            class,
-        )
-        .with_cancellation(child_cancellation);
-        debug_assert_eq!(result_context.class().is_error(), outcome.is_err());
-        #[cfg(test)]
-        if let Some(observer) = &self.context_observer {
-            observer(&result_context);
-        }
-        let seed = TransformOutput {
-            result: match outcome {
-                Ok(value) => value,
-                Err(error) => runtime_error_output(&error),
-            },
-            mark_error,
-        };
-        let outcome = if pipeline_failed {
-            ToolResultOutcome::Failed {
-                handler: TOOL_PIPELINE_HANDLER_ID.into(),
-            }
-        } else {
-            plan.dispatcher
-                .transform_tool_result(result_context, seed)
-                .await
-        };
-        let interrupted = matches!(outcome, ToolResultOutcome::Interrupted { .. });
-        let (status, output, is_error) = match outcome {
-            ToolResultOutcome::Completed { result, is_error } => (
-                if is_error {
-                    ToolResultStatus::Failed
-                } else {
-                    ToolResultStatus::Completed
-                },
-                result,
-                is_error,
-            ),
-            ToolResultOutcome::Failed { handler } => (
-                ToolResultStatus::Failed,
-                runtime_error_output(&result_transform_failed_message(&handler)),
-                true,
-            ),
-            ToolResultOutcome::Interrupted {
-                redacted: Some(value),
-            } => (ToolResultStatus::Interrupted, value, true),
-            // The run error arm settles unfinished calls with the fixed runtime text.
-            ToolResultOutcome::Interrupted { redacted: None } => {
-                ensure_lease(lease_lost)?;
-                measurement.observation.reason = TerminalReason::Cancelled;
-                return Err(RuntimeError::Interrupted);
-            }
-        };
-        measurement.observation.reason = if interrupted {
-            TerminalReason::Cancelled
-        } else if is_error {
-            TerminalReason::ToolError
-        } else {
-            TerminalReason::Success
-        };
-        drop(measurement);
-        let cleanup = resources.drain(attempt::RESOURCE_JOIN_BOUND).await;
-        if !cleanup.sealed || cleanup.pending != 0 || !cleanup.failures.is_empty() {
-            return Err(RuntimeError::AttemptCleanupIncomplete {
-                run_id: run_id.clone(),
-            });
-        }
-        let content = output.to_content_blocks();
-        let result = ToolResult {
-            status,
-            content: content.clone(),
-        };
-        let message_id = MessageId::new();
-        let message = Message {
-            id: message_id.clone(),
-            session_id: session_id.clone(),
-            run_id: Some(run_id.clone()),
-            role: Role::Tool,
-            parent_id: None,
-            parts: vec![Part {
-                id: PartId::new(),
-                message_id,
-                ordinal: 0,
-                kind: PartKind::FunctionToolResult,
-                content: ContentBlock::ToolResult {
-                    call_id: call.id.clone(),
-                    content,
-                    is_error,
-                },
-            }],
-            created_at: self.clock.now(),
-        };
-        let mut settled = self.event(session_id, run_id, EventKind::ToolCallSettled);
-        settled.turn_id = call.turn_id.clone();
-        settled.payload = json!(crate::event_payload::Settlement {
-            result: event_payload::CallSettled {
-                call_id: call.id.clone(),
-                message_id: message.id.clone(),
-                content: std::borrow::Cow::Borrowed(&result.content),
-                is_error,
-            },
-            diagnostics: json!({"name": tool_name, "status": status,
-                "tool": tool_name, "tool_id": call.id.to_string(),
-                "duration_ms": self.monotonic_clock.now().saturating_sub(tool_started_at).as_millis()}),
-        });
-        settled.correlation = Some(call.id.to_string());
-        // Interrupted calls settle out of order: their error drops sibling futures,
-        // then bulk cleanup settles only calls that remain unfinished.
-        if !interrupted && let Some((index, receiver, _)) = &settlement {
-            let mut receiver = receiver.clone();
-            while *receiver.borrow_and_update() != *index {
-                receiver
-                    .changed()
-                    .await
-                    .map_err(|_| RuntimeError::TaskStopped)?;
-            }
-        }
-        ensure_lease(lease_lost)?;
-        execution
-            .settle_tool_call(&call.id, result, message, settled.clone())
-            .await?;
-        self.observer.emit(&settled);
-        if interrupted {
-            Self::notify_interrupted_settlement(plan, &settled, true);
-            return Err(RuntimeError::Interrupted);
-        }
-        let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(settled_projection.clone())
-            .await;
-        plan.dispatcher
-            .notify::<crabber_extension::ToolSettled>(settled_projection)
-            .await;
-        if let Some((index, _, sender)) = settlement {
-            let _ = sender.send(index + 1);
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    async fn permit_and_execute(
-        &self,
-        execution: &dyn ExecutionStore,
-        session: &RunSession,
-        run_id: &RunId,
-        call_id: &ToolCallId,
-        plan: &RunPlan,
-        tool: &ToolDefinition,
-        arguments: Value,
-        cancellation: &CancellationToken,
-        lease_lost: &AtomicBool,
-        pipeline_context: &ToolResultContext,
-        resources: &crabber_extension::ToolResources,
-    ) -> Result<ToolRun, RuntimeError> {
-        let (session_id, workspace) = (&session.id, session.workspace.clone());
-        let guard_decisions: Vec<_> = plan
-            .guards
-            .iter()
-            .map(|guard| {
-                guard.check_with_context(GuardContext {
-                    tool: &tool.info,
-                    arguments: &arguments,
-                    call_id,
-                    session_id,
-                    run_id,
-                })
-            })
-            .collect();
-        let guard_denied = guard_decisions.contains(&GuardDecision::Deny);
-        let restricted = plan
-            .restrictions
-            .iter()
-            .any(|set| !set.iter().any(|name| name == &tool.info.name));
-        let allowed = if guard_denied || restricted {
-            false
-        } else {
-            let decision = if guard_decisions.contains(&GuardDecision::Ask) {
-                PermissionDecision::Ask
-            } else if guard_decisions.contains(&GuardDecision::Allow) {
-                PermissionDecision::Allow
-            } else {
-                self.policy.decide(&tool.info, &arguments)
-            };
-            match decision {
-                PermissionDecision::Allow => true,
-                PermissionDecision::Deny => false,
-                PermissionDecision::Ask => {
-                    self.emit_durable(
-                        execution,
-                        session_id,
-                        run_id,
-                        plan,
-                        EventKind::PermissionRequested,
-                    )
-                    .await?;
-                    let approved = self.approver.approve(&tool.info, &arguments).await;
-                    self.emit_durable(
-                        execution,
-                        session_id,
-                        run_id,
-                        plan,
-                        EventKind::PermissionDecided,
-                    )
-                    .await?;
-                    approved
-                }
-            }
-        };
-        if !allowed {
-            return Ok(ToolRun::PermissionDenied);
-        }
-        ensure_lease(lease_lost)?;
-        execution
-            .renew_lease(self.clock.now() + time::Duration::seconds(30))
-            .await
-            .map_err(|_| RuntimeError::LeaseLost)?;
-        ensure_lease(lease_lost)?;
-        let observer = Arc::clone(&self.observer);
-        let session_for_progress = session_id.clone();
-        let run_for_progress = run_id.clone();
-        let clock = Arc::clone(&self.clock);
-        let progress = Arc::new(move |content: ContentBlock| {
-            let event = EventRecord {
-                cursor: None,
-                session_id: session_for_progress.clone(),
-                run_id: run_for_progress.clone(),
-                turn_id: None,
-                kind: EventKind::Custom {
-                    name: "tool_progress".into(),
-                },
-                payload: json!({"content":content}),
-                correlation: None,
-                live_only: true,
-                created_at: clock.now(),
-            };
-            observer.emit(&event);
-        });
-        let context = ToolContext::new(
-            session_id.clone(),
-            run_id.clone(),
-            call_id.clone(),
-            cancellation.clone(),
-            self.host_services.with_overrides(&plan.host_services),
-            workspace,
-            progress,
-        );
-        let context = context.with_resources(resources.clone());
-        let executor = Arc::clone(&tool.executor);
-        let authorized_arguments = arguments.clone();
-        let declared_error = Arc::new(AtomicBool::new(false));
-        let terminal_error = declared_error.clone();
-        let terminal: Callback = Arc::new(move |input| {
-            let executor = Arc::clone(&executor);
-            let context = context.clone();
-            let authorized_arguments = authorized_arguments.clone();
-            let terminal_error = terminal_error.clone();
-            Box::pin(async move {
-                if input != authorized_arguments {
-                    return Err(crabber_extension::ExtensionError::Tool(
-                        "around handler changed immutable tool input".into(),
-                    ));
-                }
-                let output = executor
-                    .execute_with_context(context, authorized_arguments)
-                    .await?;
-                if output.is_error() {
-                    terminal_error.store(true, Ordering::SeqCst);
-                }
-                Ok(crabber_extension::tool_output_envelope(output))
-            })
-        });
-        let output = match plan
-            .dispatcher
-            .around::<ToolExecute>(arguments, terminal)
-            .await
-        {
-            Ok(output) => output,
-            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
-        };
-        let output = match crabber_extension::parse_tool_output_envelope(output) {
-            Ok(output) if declared_error.load(Ordering::SeqCst) => output.with_error(),
-            Ok(output) => output,
-            Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
-        };
-        let output_is_error = output.is_error();
-        let pipeline_context = ToolResultContext::for_completion(pipeline_context.clone(), &output);
-        ensure_lease(lease_lost)?;
-        let transformed = std::panic::AssertUnwindSafe(async {
-            self.tool_pipeline
-                .transform_result(&pipeline_context, &tool.info, output)
-                .await
-        })
-        .catch_unwind()
-        .await;
-        Ok(match transformed {
-            Ok(Ok(mut value)) => {
-                value.mark_error |= output_is_error;
-                ToolRun::Output(value)
-            }
-            Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
-        })
-    }
 }
 
 fn runtime_error_output(error: &str) -> crabber_core::ToolOutput {
@@ -4279,6 +3942,7 @@ pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
 enum ToolRun {
     Output(TransformOutput),
     PipelineFailed,
+    ProtectionInterrupted,
     PermissionDenied,
     ExecutionFailed(String),
 }

@@ -24,6 +24,18 @@ pub(super) fn abandon_transaction(
     if request.authority == AbandonAuthority::ExpiredLease && run.lease_until > now {
         return Err(AbandonError::LiveLease);
     }
+    if state
+        .attempts
+        .values()
+        .any(|record| record.snapshot.run_id == run.id)
+        || state
+            .phases
+            .values()
+            .any(|record| record.snapshot.run_id == run.id)
+        || state.approval_barriers.contains_key(&run.session_id)
+    {
+        return Err(AbandonError::NativeReconciliationRequired);
+    }
     // Revoke first in the transaction candidate. Publication of any
     // change waits until all settlements and evidence have succeeded.
     run.claim_token = uuid::Uuid::new_v4().to_string();

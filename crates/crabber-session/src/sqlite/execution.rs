@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn start_tool_phase(
+        &self,
+        start: crate::PhaseStart,
+        authority: Option<crate::PhaseAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.start_phase(&start, authority).await
+    }
+
     async fn suspend_for_approval(
         &self,
         batch: crate::ApprovalSuspension,
@@ -42,7 +50,7 @@ impl ExecutionStore for SqliteExecution {
         settlement: crate::PhaseSettlement,
         authority: Option<crate::PhaseAuthority>,
     ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
-        self.settle_phase(settlement, authority).await
+        self.settle_phase(&settlement, authority).await
     }
 
     async fn mutate_phase(
@@ -328,6 +336,17 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
+            let native: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+            )
+            .bind(&run.id.0)
+            .bind(&run.session_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if native {
+                return Err(StoreError::Conflict);
+            }
             insert_event(&mut tx, &run, &event).await?;
             let now = self.store.clock.now();
             run.status = RunStatus::Paused;
@@ -350,6 +369,17 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
+            let native: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+            )
+            .bind(&run.id.0)
+            .bind(&run.session_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            if native {
+                return Err(StoreError::Conflict);
+            }
             if !status_value.is_terminal() {
                 return Err(StoreError::Validation(
                     "run settlement must be terminal".into(),

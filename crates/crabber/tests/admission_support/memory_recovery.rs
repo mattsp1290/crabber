@@ -32,6 +32,53 @@ impl Store for FaultStore {
     fn supports_owned_attempts(&self) -> bool {
         self.inner.supports_owned_attempts()
     }
+    fn supports_owned_tool_phases(&self) -> bool {
+        self.inner.supports_owned_tool_phases()
+    }
+    fn supports_pre_effect_approvals(&self) -> bool {
+        self.inner.supports_pre_effect_approvals()
+    }
+    async fn tool_phase(
+        &self,
+        run: &crabber::core::RunId,
+        id: &crabber::core::PhaseId,
+    ) -> Result<crabber::session::VersionedPhase, crabber::session::PhaseError> {
+        self.inner.tool_phase(run, id).await
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::PhaseReceipt>, crabber::session::PhaseError> {
+        self.inner.lookup_phase_mutation(session, id).await
+    }
+    async fn approval_snapshot(
+        &self,
+        session: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+    ) -> Result<Option<crabber::session::ApprovalSnapshot>, crabber::session::ApprovalError> {
+        self.inner.approval_snapshot(session, run).await
+    }
+    async fn lookup_approval(
+        &self,
+        session: &crabber::core::SessionId,
+        id: &crabber::core::ControlId,
+    ) -> Result<Option<crabber::session::ApprovalReceipt>, crabber::session::ApprovalError> {
+        self.inner.lookup_approval(session, id).await
+    }
+    async fn answer_approval(
+        &self,
+        answer: crabber::session::ApprovalAnswer,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.inner.answer_approval(answer).await
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crabber::session::ApprovalContinuationClaim,
+    ) -> Result<crabber::session::ApprovalClaimOutcome, crabber::session::ApprovalError> {
+        self.inner.claim_approval_continuation(claim).await
+    }
+
     async fn latest_execution_attempt(
         &self,
         run: &RunId,
@@ -105,7 +152,7 @@ impl Store for FaultStore {
     async fn load_admission_execution(
         &self,
         session: &SessionId,
-        key: &crabber_core::AdmissionKey,
+        key: &crabber::core::AdmissionKey,
     ) -> Result<
         Option<crabber_session::AdmissionExecutionRecord>,
         crabber_session::AdmissionExecutionError,
@@ -198,6 +245,35 @@ impl Store for FaultStore {
 
 #[async_trait]
 impl ExecutionStore for FaultExecution {
+    async fn mutate_phase(
+        &self,
+        request: crabber::session::PhaseMutation,
+        authority: Option<crabber::session::PhaseWriteAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.mutate_phase(request, authority).await
+    }
+    async fn start_tool_phase(
+        &self,
+        start: crabber::session::PhaseStart,
+        authority: Option<crabber::session::PhaseAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.start_tool_phase(start, authority).await
+    }
+    async fn settle_tool_phase(
+        &self,
+        settlement: crabber::session::PhaseSettlement,
+        authority: Option<crabber::session::PhaseAuthority>,
+    ) -> Result<crabber::session::PhaseMutationOutcome, crabber::session::PhaseError> {
+        self.inner.settle_tool_phase(settlement, authority).await
+    }
+    async fn suspend_for_approval(
+        &self,
+        batch: crabber::session::ApprovalSuspension,
+        authority: crabber::session::AttemptAuthority,
+    ) -> Result<crabber::session::ApprovalReceipt, crabber::session::ApprovalError> {
+        self.inner.suspend_for_approval(batch, authority).await
+    }
+
     async fn mutate_attempt(
         &self,
         request: crabber_session::AttemptMutation,

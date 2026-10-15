@@ -103,7 +103,7 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize, provider_error: b
 }
 
 #[tokio::test]
-async fn resumed_interruption_requires_acknowledged_terminal_commit() {
+async fn resumed_executor_interruption_does_not_attempt_terminal_settlement() {
     for fault in [1, 2] {
         resumed_missing_terminal_ack(fault, true).await;
     }
@@ -114,6 +114,7 @@ async fn resumed_success_does_not_retry_an_unknown_terminal_write() {
         resumed_missing_terminal_ack(fault, false).await;
     }
 }
+#[allow(clippy::too_many_lines)]
 async fn resumed_missing_terminal_ack(fault: usize, interrupted: bool) {
     let inner = Arc::new(MemoryStore::new());
     let gate = Arc::new(SettlementGate::default());
@@ -165,6 +166,35 @@ async fn resumed_missing_terminal_ack(fault: usize, interrupted: bool) {
         .await
         .unwrap()
         .unwrap_err();
+    if interrupted {
+        let RuntimeError::PhaseOutcomeUnknown { phase, .. } = error else {
+            panic!("active resumed executor requires phase reconciliation")
+        };
+        assert_eq!(gate.settlements.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            inner.get_run(&run).await.unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        assert_eq!(
+            inner.tool_phase(&run, &phase.id).await.unwrap().phase.state,
+            crabber_session::PhaseState::Uncertain
+        );
+        assert!(
+            !inner
+                .list_events(&session, None, 1000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    event.kind,
+                    EventKind::ToolCallSettled | EventKind::RunSettled
+                ))
+        );
+        while let Some(event) = events.recv().await.unwrap() {
+            assert_ne!(event.kind, EventKind::RunSettled);
+        }
+        return;
+    }
     assert!(matches!(error, RuntimeError::AttemptBoundaryUnknown { run_id, .. } if run_id == run));
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
     assert_eq!(

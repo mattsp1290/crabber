@@ -58,11 +58,13 @@ pub struct ExecutionTaskDrain {
 pub struct ToolResourceDrain {
     pub run_id: RunId,
     pub call_id: ToolCallId,
+    pub phase: Option<crabber_session::PhaseTarget>,
     pub resources: crabber_extension::ResourceDrain,
 }
 struct OwnedToolResources {
     run_id: RunId,
     call_id: ToolCallId,
+    phase: Option<crabber_session::PhaseTarget>,
     owner: crabber_extension::ToolResourceOwner,
 }
 #[derive(Default, Clone)]
@@ -114,6 +116,7 @@ impl ExecutionTasks {
         &self,
         run_id: RunId,
         call_id: ToolCallId,
+        phase: Option<crabber_session::PhaseTarget>,
     ) -> crabber_extension::ToolResourceOwner {
         let owner = crabber_extension::ToolResourceOwner::new();
         self.owners
@@ -123,6 +126,7 @@ impl ExecutionTasks {
             .push(Arc::new(OwnedToolResources {
                 run_id,
                 call_id,
+                phase,
                 owner: owner.clone(),
             }));
         owner
@@ -235,6 +239,7 @@ impl ExecutionTasks {
             .map(|scope| ToolResourceDrain {
                 run_id: scope.run_id.clone(),
                 call_id: scope.call_id.clone(),
+                phase: scope.phase.clone(),
                 resources: scope.owner.snapshot(),
             })
             .collect::<Vec<_>>();

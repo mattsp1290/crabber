@@ -55,11 +55,12 @@ the callbacks recorded and from durable state.
 `tests/interruption.rs`:
 
 - `run_interrupt_with_active_child_settles_interrupted_fixed_text`: the reducer
-  starts a child process and hands it to its mount's cleanup tracker. After the
-  child reports ready the test calls `RunHandle::interrupt`. The call settles
-  `Interrupted` with the fixed text within `INTERRUPT_SETTLEMENT_BOUND`; the
-  permit stays held until the child is reaped; `Agent::close_extensions` joins
-  the cleanup; the PID is gone (Linux) and the pipe is closed.
+  starts a child process tracked by both its native phase and mount. After the
+  child reports ready the test calls `RunHandle::interrupt`. While reaping is
+  held, the call has no result and its phase is not quiescent. The test releases
+  reaping before awaiting `Interrupted` with the fixed text. The permit returns
+  only after the child is reaped and its pipe closes. Mount shutdown also waits
+  for this cleanup; a cleanup timeout retains uncertainty and the real join.
 - `run_interrupt_after_accepted_fallback_persists_only_final_redaction`: a value
   accepted before cancellation persists only as the final redactor's output,
   still with status `Interrupted`.
@@ -83,12 +84,12 @@ effect once the start completes). A killed run (`SIGKILL`) can leave a
 database nor Docker, they fail.
 
 The interruption proofs time `interrupt()` to the run handle resolving, which
-happens after durable settlement, and print the measured time. They require
-it to stay within `INTERRUPT_SETTLEMENT_BOUND` (1 second), and within
-`FINAL_REDACTION_DEADLINE` (500 milliseconds) when a fallback was accepted.
-This shows a prompt bounded settlement; that the runtime enforces the
-redaction deadline against a slow redactor is proven by the tests in the
-repository, not here. Use a database on the same host or network; a slow link
+happens after actual cleanup and durable settlement, and print the measured
+time. The fixture releases its reaping gate within `INTERRUPT_SETTLEMENT_BOUND`
+(1 second). An accepted fallback must finish redaction within
+`FINAL_REDACTION_DEADLINE` (500 milliseconds); cleanup and storage remain
+separate boundaries. The repository tests also exercise slow redactors and
+incomplete cleanup. Use a database on the same host or network; a slow link
 to a remote database can exceed the bounds. The process-gone check uses
 `/proc` and runs on Linux only.
 

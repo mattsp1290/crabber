@@ -44,9 +44,11 @@ impl Orchestrator {
         if matches!(
             error,
             RuntimeError::TerminalOutcomeUnknown { .. }
+                | RuntimeError::ApprovalBoundaryUnknown { .. }
                 | RuntimeError::AttemptBoundaryUnknown { .. }
                 | RuntimeError::AttemptCleanupIncomplete { .. }
                 | RuntimeError::ToolOutcomeUnknown { .. }
+                | RuntimeError::PhaseOutcomeUnknown { .. }
         ) {
             return Err(error);
         }

@@ -133,8 +133,10 @@ semantic outcome, reconcile it as unknown using the original key and payload. Se
 
 `Agent::abandon(AbandonRequest { expected, expected_owner, authority })` calls the
 store directly, without resolving providers, mounting extension plans or invoking
-tools or lifecycle hooks. It handles persisted Pending, Running and Paused runs
-even when their executable configuration is unavailable. Existing live
+tools or lifecycle hooks. It handles eligible legacy Pending, Running and Paused
+runs even when their executable configuration is unavailable. Any native attempt
+or phase evidence, or an active session approval barrier, causes
+`AbandonError::NativeReconciliationRequired` without mutation. Existing live
 `RunHandle::interrupt` and resume/recover behavior remain available.
 
 Use `AbandonAuthority::ExpiredLease` for an observed expired owner. The store
@@ -149,7 +151,11 @@ authoritative process exit/wait or coordinator evidence, stop its renewal loop,
 and prevent a replacement worker from using that ownership. An expected fence,
 a timeout, a paused checkpoint or an owner string does not establish process
 death. Crabber checks the exact expected owner and token atomically; it cannot
-verify external process death. This authority may revoke an unexpired lease.
+verify external process death. This authority may revoke an unexpired lease for
+eligible legacy work. Neither process death nor lease expiry establishes an
+uncertain external result or proves native resource cleanup. Native work requires
+explicit reconciliation; legacy abandonment cannot replace that outcome or
+release unresolved cleanup.
 
 MemoryStore rotates the claim token before settlement inside a rollback-safe
 transaction. PostgreSQL provides the same contract in one transaction, taking
@@ -208,8 +214,9 @@ under the run lock, rotates the token and leaves Unstarted intact. One-shot
 execution effects. Unknown claim/begin acknowledgements never authorize work.
 All effect-bearing ExecutionStore writes deny Unstarted, while lease maintenance
 remains allowed. Generic `claim_expired_run` returns `AdmissionRecoveryRequired`;
-explicit abandonment can terminally settle it. Started and missing evidence retain
-conservative recovery semantics. A replay never creates or upgrades evidence.
+explicit abandonment can terminally settle it only when there is no native
+attempt/phase evidence or active session approval barrier. Started and missing
+evidence retain conservative recovery semantics. A replay never creates or upgrades evidence.
 
 Custom adapters default to typed Unsupported until they implement the complete
 load/claim/begin contract. `KeyedAdmitRequest::execution = None` supports legacy

@@ -1,4 +1,7 @@
+#[path = "agent/approval.rs"]
+mod approval;
 use crate::ExecutionContext;
+pub use approval::Continuation;
 use async_trait::async_trait;
 use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
@@ -8,6 +11,7 @@ use crabber_extension::{
     Registry, Scope, StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
 };
 use crabber_providers::{Resolver, Selection};
+pub use crabber_runtime::ContinueApproval;
 use crabber_runtime::{
     CompactionPolicy, ExecutionMode, Observer, Orchestrator, PermissionPolicy, Request, RunResult,
     RuntimeError,
@@ -815,6 +819,8 @@ impl Agent {
         self.runtime.lookup_admission(session, key).await
     }
 
+    /// Legacy-only settlement; native execution and durable approval barriers
+    /// require explicit reconciliation controls and are refused without mutation.
     /// Durably interrupts abandoned work without mounting extensions or executing
     /// providers, tools or hooks. The host must verify process/coordinator death
     /// before asserting `HostStoppedOwner`; a fence alone is not that evidence.

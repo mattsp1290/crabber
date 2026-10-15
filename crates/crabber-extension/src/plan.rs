@@ -430,7 +430,7 @@ mod tests {
         ];
         assert_eq!(
             compute_fingerprint(&components).to_string(),
-            "93bf2ff9832167d300758536cab78d4a46acf926fbf0dc03717525ae43229fd4"
+            "25de13c68d075012bf7f369a1785dcae211970e03a447b5ebfec519fc7642354"
         );
         let provider = StaticPlanProvider::new(
             Vec::new(),
@@ -442,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             provider.plan.fingerprint.to_string(),
-            "e08bfe40d5a0f5d4864df53908f3f297b9d8d16ad85790aad075ab30c86c5546"
+            "e3d029235f1bdd56bf506e88e449e1e82780c8678693c984abb521c3f8f82df6"
         );
     }
 

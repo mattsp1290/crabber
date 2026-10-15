@@ -11,6 +11,8 @@ pub(crate) mod process;
 mod recovery;
 #[path = "phase_contract/settlement.rs"]
 mod settlement;
+#[path = "phase_contract/start.rs"]
+mod start;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 #[path = "phase_contract/storage.rs"]
 pub(crate) mod storage;
@@ -35,6 +37,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let store = factory(clock.clone());
     lifecycle(&store).await;
     settlement::run(&store).await;
+    start::run(&store).await;
     for choice in [
         UncertainPhaseChoice::Refuse,
         UncertainPhaseChoice::Success { output: output() },

@@ -19,6 +19,10 @@ use time::OffsetDateTime;
 #[derive(Clone)]
 pub struct PhaseSettlement {
     pub completion: PhaseMutation,
+    /// Status of the genuine protected terminal output. `Interrupted` preserves
+    /// cancellation during result protection; it never fabricates an output
+    /// for an executor whose external outcome is unknown.
+    pub result_status: ToolResultStatus,
     pub message_id: MessageId,
     pub part_id: PartId,
     pub turn_id: Option<TurnId>,
@@ -55,6 +59,9 @@ impl PhaseSettlement {
         let PhaseCommand::Complete { output, .. } = &self.completion.command else {
             return Err(PhaseError::InvalidRequest);
         };
+        if output.is_error() != (self.result_status != ToolResultStatus::Completed) {
+            return Err(PhaseError::InvalidRequest);
+        }
         Ok(output)
     }
     /// Domain-separated semantics for the complete compound operation. The old
@@ -70,7 +77,15 @@ impl PhaseSettlement {
         let digest = self.completion.fingerprint(session, run)?;
         InputFingerprint::new(format!(
             "{:x}",
-            Sha256::digest(format!("crabber.phase-settlement.v1:{}", digest.as_str()).as_bytes())
+            Sha256::digest(
+                format!(
+                    "crabber.phase-settlement.v2:{}:{}",
+                    digest.as_str(),
+                    serde_json::to_string(&self.result_status)
+                        .map_err(|_| PhaseError::InvalidRequest)?
+                )
+                .as_bytes()
+            )
         ))
         .map_err(|_| PhaseError::InvalidRequest)
     }
@@ -85,11 +100,7 @@ impl PhaseSettlement {
     ) -> Result<(), PhaseError> {
         let output = self.output()?;
         let expected = ToolResult {
-            status: if output.is_error() {
-                ToolResultStatus::Failed
-            } else {
-                ToolResultStatus::Completed
-            },
+            status: self.result_status,
             content: output.to_content_blocks(),
         };
         if receipt.operation != crate::PhaseOperation::Complete
@@ -106,12 +117,7 @@ impl PhaseSettlement {
             || receipt.phase.quiescence != crate::PhaseQuiescence::Complete
             || call.run_id != receipt.phase.run_id
             || call.id != receipt.phase.target.call_id
-            || call.status
-                != if output.is_error() {
-                    ToolCallStatus::Failed
-                } else {
-                    ToolCallStatus::Completed
-                }
+            || call.status != self.call_status()
             || call.result.as_ref() != Some(&expected)
         {
             return Err(PhaseError::UnknownStoreOutcome);
@@ -133,11 +139,8 @@ impl PhaseSettlement {
             return Err(PhaseError::NotFound);
         }
         let content = output.to_content_blocks();
-        let (status, call_status) = if output.is_error() {
-            (ToolResultStatus::Failed, ToolCallStatus::Failed)
-        } else {
-            (ToolResultStatus::Completed, ToolCallStatus::Completed)
-        };
+        let status = self.result_status;
+        let call_status = self.call_status();
         let result = ToolResult {
             status,
             content: content.clone(),
@@ -181,5 +184,12 @@ impl PhaseSettlement {
             event,
             call_status,
         })
+    }
+    fn call_status(&self) -> ToolCallStatus {
+        match self.result_status {
+            ToolResultStatus::Completed => ToolCallStatus::Completed,
+            ToolResultStatus::Failed => ToolCallStatus::Failed,
+            ToolResultStatus::Interrupted => ToolCallStatus::Interrupted,
+        }
     }
 }
