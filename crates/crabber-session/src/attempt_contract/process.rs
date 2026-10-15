@@ -1,6 +1,8 @@
 //! Test-only fresh-process attempt reconciliation, never a production fault API.
 #[path = "process/conclusion.rs"]
 mod conclusion;
+#[path = "process/resume.rs"]
+mod resume;
 use super::{applied, reserve};
 use crate::{
     AttemptCommand, AttemptError as Error, AttemptMutation, AttemptMutationOutcome as Outcome,
@@ -16,15 +18,22 @@ pub(crate) enum Mode {
     Begin,
     Complete,
     Suspend,
+    Resume,
 }
 impl Mode {
-    pub(crate) const ALL: [Self; 4] = [Self::Reserve, Self::Begin, Self::Complete, Self::Suspend];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Reserve,
+        Self::Begin,
+        Self::Complete,
+        Self::Suspend,
+        Self::Resume,
+    ];
     fn conclusion(self) -> bool {
         matches!(self, Self::Complete | Self::Suspend)
     }
     pub(crate) fn state(self) -> &'static str {
         match self {
-            Self::Reserve => "Unstarted",
+            Self::Reserve | Self::Resume => "Unstarted",
             Self::Begin => "Started",
             Self::Complete => "Completed",
             Self::Suspend => "Suspended",
@@ -39,6 +48,9 @@ pub(crate) struct Fixture {
     pub mode: Mode,
 }
 pub(crate) async fn pending(store: &impl Store, mode: Mode) -> Fixture {
+    if matches!(mode, Mode::Resume) {
+        return resume::pending(store).await;
+    }
     let admitted =
         crate::public_state_contract::admit(store, time::OffsetDateTime::now_utc()).await;
     let mut request = reserve(store.session_revision(&admitted.session.id).await.unwrap());
@@ -75,7 +87,7 @@ async fn prepare_authority(
     execution: &dyn crate::ExecutionStore,
     fixture: &Fixture,
 ) -> Option<crate::AttemptAuthority> {
-    if matches!(fixture.mode, Mode::Reserve) {
+    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
         return None;
     }
     let (reserved, authority) = applied(
@@ -204,7 +216,7 @@ pub(crate) async fn verify_loss(store: &impl Store, fixture: Fixture) {
             target: receipt.attempt.target.clone(),
         },
     };
-    if matches!(fixture.mode, Mode::Reserve) {
+    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
         let (claimed, authority) =
             applied(replacement.mutate_attempt(reclaim, None).await.unwrap());
         let begin = AttemptMutation {
@@ -308,9 +320,27 @@ pub(crate) async fn uncommitted(store: &impl Store, fixture: &Fixture) {
         .await
         .unwrap()
         .len();
-    if matches!(fixture.mode, Mode::Reserve) {
+    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
         assert_eq!(snapshot.unwrap_err(), Error::NotFound);
-        assert_eq!(count, 0);
+        assert_eq!(
+            count,
+            if matches!(fixture.mode, Mode::Resume) {
+                4
+            } else {
+                0
+            }
+        );
+        if matches!(fixture.mode, Mode::Resume) {
+            assert_eq!(
+                store
+                    .get_run(&fixture.fence.run_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                crabber_core::RunStatus::Paused
+            );
+        }
     } else if fixture.mode.conclusion() {
         assert_eq!(snapshot.unwrap().attempt.state, AttemptState::Started);
         assert_eq!(count, 2);
@@ -347,7 +377,7 @@ pub(crate) async fn retry_crash(
         );
         return;
     }
-    if matches!(fixture.mode, Mode::Reserve) {
+    if matches!(fixture.mode, Mode::Reserve | Mode::Resume) {
         let execution = store.execution(fixture.fence.clone()).await.unwrap();
         applied(
             execution
@@ -361,7 +391,11 @@ pub(crate) async fn retry_crash(
                 .await
                 .unwrap()
                 .len(),
-            1
+            if matches!(fixture.mode, Mode::Resume) {
+                5
+            } else {
+                1
+            }
         );
     } else {
         clock.set(

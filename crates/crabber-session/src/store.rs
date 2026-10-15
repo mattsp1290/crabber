@@ -274,6 +274,15 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
         Err(crate::AttemptError::Unsupported)
     }
+    /// Read the latest attempt and coherent public revision, without authority.
+    /// None means no reservation was visible; it does not disprove an in-flight
+    /// mutation. A missing run is `NotFound`. Custom stores fail closed.
+    async fn latest_execution_attempt(
+        &self,
+        _run: &RunId,
+    ) -> Result<Option<crate::VersionedAttempt>, crate::AttemptError> {
+        Err(crate::AttemptError::Unsupported)
+    }
     /// Metadata-only reconciliation of the original operation key.
     /// Absence does not prove an in-flight operation cannot later commit.
     async fn lookup_attempt_mutation(

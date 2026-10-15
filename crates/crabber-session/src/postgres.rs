@@ -690,7 +690,15 @@ impl Store for PostgresStore {
         run: &RunId,
         id: &crabber_core::AttemptId,
     ) -> Result<crate::VersionedAttempt, crate::AttemptError> {
-        self.read_attempt(run, id).await
+        self.read_attempt(run, Some(id))
+            .await?
+            .ok_or(crate::AttemptError::NotFound)
+    }
+    async fn latest_execution_attempt(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crate::VersionedAttempt>, crate::AttemptError> {
+        self.read_attempt(run, None).await
     }
     async fn lookup_attempt_mutation(
         &self,

@@ -21,23 +21,36 @@ impl MemoryStore {
     pub(super) fn read_attempt(
         &self,
         run_id: &RunId,
-        id: &AttemptId,
-    ) -> Result<VersionedAttempt, Error> {
+        id: Option<&AttemptId>,
+    ) -> Result<Option<VersionedAttempt>, Error> {
+        if let Some(id) = id {
+            attempt::validate_identifier(&id.0)?;
+        }
         let state = self.state.lock().unwrap();
         let run = state.runs.get(run_id).ok_or(Error::NotFound)?;
-        let record = state
-            .attempts
-            .get(id)
-            .filter(|r| r.snapshot.run_id == *run_id)
-            .ok_or(Error::NotFound)?;
+        let record = if let Some(id) = id {
+            state
+                .attempts
+                .get(id)
+                .filter(|record| record.snapshot.run_id == *run_id)
+        } else {
+            state
+                .attempts
+                .values()
+                .filter(|record| record.snapshot.run_id == *run_id)
+                .max_by_key(|record| record.snapshot.target.generation)
+        };
+        let Some(record) = record else {
+            return Ok(None);
+        };
         if run.id != *run_id || record.snapshot.session_id != run.session_id {
             return Err(Error::UnknownStoreOutcome);
         }
         record.validate()?;
-        Ok(VersionedAttempt {
+        Ok(Some(VersionedAttempt {
             revision: revision(&state, &run.session_id),
             attempt: record.snapshot.clone(),
-        })
+        }))
     }
     pub(super) fn attempt_receipt(
         &self,
@@ -128,9 +141,7 @@ impl MemoryExecution {
             let id = &request.command.target().id;
             let (record, grant) =
                 prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
-            if let Some(conclusion) = conclusion {
-                apply_boundary(state, &run, conclusion, now)?;
-            }
+            apply_run_transition(state, &run, &request, conclusion, now)?;
             let revision = revision(state, &run.session_id)
                 .next()
                 .map_err(|_| Error::RevisionExhausted)?;
@@ -216,6 +227,26 @@ fn replay(
         return Ok(Some(AttemptMutationOutcome::Replayed(receipt.clone())));
     }
     Ok(None)
+}
+
+fn apply_run_transition(
+    state: &mut State,
+    run: &crabber_core::Run,
+    request: &AttemptMutation,
+    conclusion: Option<&crate::AttemptConclusion>,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    if let Some(conclusion) = conclusion {
+        apply_boundary(state, run, conclusion, now)?;
+    } else if matches!(request.command, AttemptCommand::Reserve { .. })
+        && run.status == crabber_core::RunStatus::Paused
+    {
+        let mut activated = run.clone();
+        activated.status = crabber_core::RunStatus::Running;
+        activated.updated_at = now;
+        state.runs.insert(run.id.clone(), activated);
+    }
+    Ok(())
 }
 
 fn apply_boundary(

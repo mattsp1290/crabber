@@ -114,6 +114,7 @@ pub async fn run_fault_contract(
         }
     }
     super::conclusion::faults(store, clock, &inject).await;
+    super::resume::faults(store, clock, &inject).await;
 }
 async fn fixture(
     store: &impl Store,

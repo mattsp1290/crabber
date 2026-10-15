@@ -10,6 +10,8 @@ pub use faults::{FaultPoint, run_fault_contract};
 mod owned_call;
 #[path = "attempt_contract/recovery.rs"]
 mod recovery;
+#[path = "attempt_contract/resume.rs"]
+mod resume;
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptFinish, AttemptMutation,
     AttemptMutationOutcome as Outcome, AttemptReceipt, AttemptState, AttemptTarget, Store,
@@ -27,6 +29,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let store = factory(clock.clone());
     lifecycle(&store).await;
     conclusion::run(&store, &clock).await;
+    resume::run(&store, &clock).await;
     competing_begin(&store).await;
     cleanup::run(&store, &clock).await;
     recovery::run(&store, &clock).await;

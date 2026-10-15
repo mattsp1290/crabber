@@ -48,7 +48,7 @@ impl AttemptRecord {
         latest: Option<&AttemptSnapshot>,
     ) -> Result<Self, AttemptError> {
         if !matches!(mutation.command, AttemptCommand::Reserve { .. })
-            || run.status != RunStatus::Running
+            || !matches!(run.status, RunStatus::Running | RunStatus::Paused)
         {
             return Err(AttemptError::InvalidTransition);
         }
@@ -70,6 +70,9 @@ impl AttemptRecord {
                 .next()
                 .map_err(|_| AttemptError::GenerationExhausted)?
         } else {
+            if run.status == RunStatus::Paused {
+                return Err(AttemptError::InvalidTransition);
+            }
             AttemptGeneration::INITIAL
         };
         if mutation.command.target().generation != expected {

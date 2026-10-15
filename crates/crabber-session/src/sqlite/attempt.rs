@@ -16,24 +16,36 @@ impl SqliteStore {
     pub(super) async fn read_attempt(
         &self,
         run: &RunId,
-        id: &AttemptId,
-    ) -> Result<VersionedAttempt, Error> {
-        attempt::validate_identifier(&id.0)?;
+        id: Option<&AttemptId>,
+    ) -> Result<Option<VersionedAttempt>, Error> {
+        if let Some(id) = id {
+            attempt::validate_identifier(&id.0)?;
+        }
         let mut tx = self
             .readers
             .begin()
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
-        let result = records::load(&mut tx, run, Some(id), false)
-            .await
-            .and_then(|value| {
-                let (record, revision) = value.ok_or(Error::NotFound)?;
-                Ok(VersionedAttempt {
+        let result = async {
+            if let Some((record, revision)) = records::load(&mut tx, run, id, false).await? {
+                return Ok(Some(VersionedAttempt {
                     revision,
                     attempt: record.snapshot,
-                })
-            });
+                }));
+            }
+            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE id=$1)")
+                .bind(&run.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
+            if !exists {
+                return Err(Error::NotFound);
+            }
+            Ok(None)
+        }
+        .await;
         finish(tx, result).await
     }
     pub(super) async fn attempt_receipt(
@@ -200,17 +212,7 @@ impl SqliteExecution {
         } else {
             None
         };
-        if let Some(conclusion) = conclusion {
-            let source = conclusion.materialize(run)?;
-            super::records::insert_event(tx, run, &source)
-                .await
-                .map_err(sql::unknown)?;
-            let mut updated = run.clone();
-            conclusion.apply_run(&mut updated, now)?;
-            super::records::save_run(tx, &updated)
-                .await
-                .map_err(sql::unknown)?;
-        }
+        apply_run_transition(tx, run, request, conclusion, now).await?;
         let revision = records::revision(tx, &run.session_id)
             .await?
             .next()
@@ -275,6 +277,36 @@ async fn check_boundary(
         if unfinished {
             return Err(Error::CleanupBlocked);
         }
+    }
+    Ok(())
+}
+
+async fn apply_run_transition(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &AttemptMutation,
+    conclusion: Option<&crate::AttemptConclusion>,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    if let Some(conclusion) = conclusion {
+        let source = conclusion.materialize(run)?;
+        super::records::insert_event(tx, run, &source)
+            .await
+            .map_err(sql::unknown)?;
+        let mut updated = run.clone();
+        conclusion.apply_run(&mut updated, now)?;
+        super::records::save_run(tx, &updated)
+            .await
+            .map_err(sql::unknown)?;
+    } else if matches!(request.command, AttemptCommand::Reserve { .. })
+        && run.status == crabber_core::RunStatus::Paused
+    {
+        let mut activated = run.clone();
+        activated.status = crabber_core::RunStatus::Running;
+        activated.updated_at = now;
+        super::records::save_run(tx, &activated)
+            .await
+            .map_err(sql::unknown)?;
     }
     Ok(())
 }

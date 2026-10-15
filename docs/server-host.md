@@ -234,6 +234,10 @@ and therefore cannot validate a separately captured history snapshot.
 
 Experimental attempt primitives are implemented by Memory, SQLite and PostgreSQL.
 `Store::execution_attempt` returns coherent metadata and the current public revision.
+`latest_execution_attempt(run)` discovers the highest generation without requiring
+its ID or returning authority. An existing run with no reservation returns `None`;
+absence does not prove an in-flight operation cannot commit. A missing run returns
+`AttemptError::NotFound`. Custom stores default to `Unsupported`.
 `ExecutionStore::mutate_attempt` reserves, begins, finishes, records cleanup or
 reclaims an expired unstarted attempt. Only a fresh applied reserve/reclaim returns
 ephemeral worker authority. Beginning is one-shot; receipt replay grants no new
@@ -244,7 +248,11 @@ response through `Store::lookup_attempt_mutation` and compare its fingerprint.
 Metadata lookup works without restoring a provider, plan or worker handle; a new
 execution handle still requires current ownership. Started or unknown attempts
 are never automatically reclaimed. Only a suspended attempt with completed
-cleanup can advance to another generation, and paused runs cannot begin work.
+cleanup can advance to another generation. After claiming the paused run's fresh
+fence, a new reservation atomically changes it to Running and creates an Unstarted
+attempt. Only its fresh authority and one-shot Begin permit execution. A replay
+returns metadata, and an old generation's authority cannot begin the new attempt.
+A legacy pause without native suspended-attempt evidence cannot activate this path.
 
 Record complete cleanup only after the owner has proved its resources stopped.
 The stores additionally block it for running calls or unquiesced phase records.
