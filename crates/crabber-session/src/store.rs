@@ -117,6 +117,22 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Experimental native phase metadata; contains no worker authority or output.
+    async fn tool_phase(
+        &self,
+        _run: &RunId,
+        _id: &crabber_core::PhaseId,
+    ) -> Result<crate::VersionedPhase, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
+    /// Reconcile the original phase operation without granting dispatch authority.
+    async fn lookup_phase_mutation(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PhaseReceipt>, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
     /// Experimental coherent attempt metadata; never returns worker authority.
     async fn execution_attempt(
         &self,
@@ -277,6 +293,16 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Experimental atomic phase transition. Only a fresh Applied Begin permits
+    /// dispatch. Outcome persistence does not imply logical call settlement or
+    /// prove worker quiescence. Cleanup requires actual owned-task completion.
+    async fn mutate_phase(
+        &self,
+        _request: crate::PhaseMutation,
+        _authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        Err(crate::PhaseError::Unsupported)
+    }
     /// Experimental atomic attempt transition with event, revision and receipt.
     /// Only a fresh Applied Begin permits attempt work. Tool dispatch additionally
     /// requires independent phase authority. Replay never grants dispatch.

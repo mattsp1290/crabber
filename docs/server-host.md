@@ -122,10 +122,34 @@ cleanup can advance to another generation, and paused runs cannot begin work.
 Record complete cleanup only after the owner has proved its resources stopped.
 The stores additionally block it for running calls or unquiesced phase records.
 These primitives record that proof's result; metadata, a lease or a returned task
-alone does not establish quiescence. Runtime task ownership, phase transitions
-and continuation barriers remain under implementation. Custom stores default to
+alone does not establish quiescence. Runtime task ownership and continuation
+barriers remain under implementation. Custom stores default to
 `Unsupported` and can run `attempt_contract::run_contract` and its commit-fault
 conformance suite.
+
+Experimental native phase transitions currently work in Memory only; SQLite,
+PostgreSQL and custom adapters return `Unsupported`. `mutate_phase` commits a
+phase record, source event, revision and receipt together. A fresh claim returns
+opaque authority; only a fresh applied begin permits dispatch. The authority is
+never serialized into a receipt or returned on replay. These APIs are not yet
+wired to the runtime's tool pipeline or logical result/history settlement.
+
+A lost claimed or started phase becomes uncertain, including a retry-safe call.
+The host can resolve its exact target as success with supplied typed output,
+failure, or refusal. The receipt and event retain the resolver identity and
+host-asserted authority claim. The library cannot verify a human's authority.
+Identical retries return the original receipt; changed choices, output or claims
+conflict. Refusal leaves uncertainty intact. Final output remains separate from
+metadata and reconciliation never acknowledges worker cleanup. Only record
+quiescence after actual task joins or explicit ownership transfer. An uncertain
+phase blocks attempt cleanup even when its worker is quiescent. Compound
+suspension/checkpoint/interaction/barrier persistence remains under implementation;
+an ordinary phase claim cannot resume a suspended phase.
+
+Retain the original `PhaseMutation` and reconcile unknown acknowledgements with
+`lookup_phase_mutation`. Metadata reconciliation does not restore factories or
+grant dispatch authority. `phase_contract::run_contract` and its commit-fault
+suite qualify these native transitions; they do not prove runtime task joining.
 
 If the initial execution cannot acknowledge its interruption/failure terminal
 write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID

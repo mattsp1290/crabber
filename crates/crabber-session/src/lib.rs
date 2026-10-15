@@ -11,6 +11,9 @@ pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRe
 mod abandonment;
 mod admission_execution;
 mod attempt;
+mod phase;
+pub mod phase_contract;
+pub use phase::*;
 pub mod attempt_contract;
 pub use admission_execution::*;
 pub use attempt::{
@@ -56,6 +59,11 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_phase_contract() {
+        crate::phase_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
+
     #[tokio::test]
     async fn memory_attempt_contract() {
         crate::attempt_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;

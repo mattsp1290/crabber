@@ -39,7 +39,9 @@ impl MemoryStore {
                 verify(&state, receipt)?;
                 Some(receipt.clone())
             }
-            Some(OperationReceipt::Attempt(_)) => return Err(Error::SemanticConflict),
+            Some(OperationReceipt::Attempt(_) | OperationReceipt::Phase(_)) => {
+                return Err(Error::SemanticConflict);
+            }
             None => None,
         };
         Ok(receipt)

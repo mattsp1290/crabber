@@ -316,6 +316,7 @@ pub struct EventCursor(pub u64);
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     ExecutionAttemptChanged,
+    ToolPhaseChanged,
     PublicStateSnapshot,
     RunAdmitted,
     RunStarted,

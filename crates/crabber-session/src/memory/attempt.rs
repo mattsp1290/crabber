@@ -54,7 +54,9 @@ impl MemoryStore {
                 verify(&state, receipt)?;
                 Ok(Some(receipt.clone()))
             }
-            Some(OperationReceipt::PublicState(_)) => Err(Error::SemanticConflict),
+            Some(OperationReceipt::PublicState(_) | OperationReceipt::Phase(_)) => {
+                Err(Error::SemanticConflict)
+            }
             None => Ok(None),
         }
     }
@@ -190,7 +192,16 @@ fn prepare_record(
                 .ok_or(Error::NotFound)?;
             // Legacy Running calls are owned work too. The phase store adds
             // its independently tracked quiescence predicate when integrated.
-            let quiet = !state
+            let quiet = !state.phases.values().any(|p| {
+                p.snapshot.run_id == run.id
+                    && (p.snapshot.quiescence != crate::PhaseQuiescence::Complete
+                        || matches!(
+                            p.snapshot.state,
+                            crate::PhaseState::Claimed
+                                | crate::PhaseState::Started
+                                | crate::PhaseState::Uncertain
+                        ))
+            }) && !state
                 .calls
                 .values()
                 .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running);

@@ -3,11 +3,13 @@ pub use crabber::session::{
     AdmissionExecutionError, AdmissionExecutionRecord, AdmissionExecutionState, AdmitOutcome,
     AttemptAuthority, AttemptCleanup, AttemptCleanupResult, AttemptCommand, AttemptError,
     AttemptFinish, AttemptMutation, AttemptMutationOutcome, AttemptReceipt, AttemptSnapshot,
-    AttemptState, AttemptTarget, ClaimUnstartedAdmissionRequest, ClaimedAdmission,
-    PublicStateError, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
-    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
-    SnapshotRequest, SnapshotUsage, StoreError, VersionedAttempt, ensure_storable,
-    ensure_storable_text,
+    AttemptState, AttemptTarget, ClaimUnstartedAdmissionRequest, ClaimedAdmission, PhaseAuthority,
+    PhaseCommand, PhaseError, PhaseMutation, PhaseMutationOutcome, PhaseOperation, PhaseQuiescence,
+    PhaseQuiescenceResult, PhaseReceipt, PhaseResolverClaim, PhaseSnapshot, PhaseState,
+    PhaseTarget, PhaseWriteAuthority, PublicStateError, PublicStateMutation, PublicStateReceipt,
+    PublicStateSnapshot, SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome,
+    SnapshotPage, SnapshotRequest, SnapshotUsage, StoreError, UncertainPhaseChoice,
+    VersionedAttempt, VersionedPhase, ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 mod abandonment;
@@ -22,6 +24,12 @@ mod attempt_contract;
 #[path = "../../crabber-session/src/memory.rs"]
 #[allow(dead_code)]
 mod memory;
+#[path = "../../crabber-session/src/phase/records.rs"]
+#[allow(dead_code)]
+mod phase;
+#[path = "../../crabber-session/src/phase_contract.rs"]
+#[allow(dead_code)]
+mod phase_contract;
 #[path = "../../crabber-session/src/public_state/records.rs"]
 #[allow(dead_code)]
 mod public_state;

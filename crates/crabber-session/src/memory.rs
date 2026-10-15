@@ -4,6 +4,8 @@ mod abandon;
 mod admission_execution;
 #[path = "memory/attempt.rs"]
 mod attempt;
+#[path = "memory/phase.rs"]
+mod phase;
 #[path = "memory/public_state.rs"]
 mod public_state;
 
@@ -37,6 +39,8 @@ pub struct MemoryStore {
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    phase_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
@@ -60,6 +64,7 @@ struct State {
     public_contents: BTreeMap<SessionId, crabber_core::PublicStateContents>,
     operation_receipts: BTreeMap<(SessionId, crabber_core::ControlId), OperationReceipt>,
     attempts: BTreeMap<crabber_core::AttemptId, crate::attempt::AttemptRecord>,
+    phases: BTreeMap<crabber_core::PhaseId, crate::phase::PhaseRecord>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
@@ -69,6 +74,7 @@ struct State {
 enum OperationReceipt {
     PublicState(crate::PublicStateReceipt),
     Attempt(crate::AttemptReceipt),
+    Phase(crate::PhaseReceipt),
 }
 
 #[derive(Clone)]
@@ -108,6 +114,8 @@ impl MemoryStore {
             public_state_fault: Arc::default(),
             #[cfg(test)]
             attempt_fault: Arc::default(),
+            #[cfg(test)]
+            phase_fault: Arc::default(),
         }
     }
 
@@ -203,6 +211,7 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
         event.kind,
         crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
+            | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(
             "public state events require atomic state mutation".into(),
@@ -434,6 +443,20 @@ fn admit_transaction(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn tool_phase(
+        &self,
+        run: &RunId,
+        id: &crabber_core::PhaseId,
+    ) -> Result<crate::VersionedPhase, crate::PhaseError> {
+        self.read_phase(run, id)
+    }
+    async fn lookup_phase_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PhaseReceipt>, crate::PhaseError> {
+        self.phase_receipt(session, id)
+    }
     async fn execution_attempt(
         &self,
         run: &RunId,
@@ -771,6 +794,13 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn mutate_phase(
+        &self,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        self.change_phase(request, authority.as_ref())
+    }
     async fn mutate_attempt(
         &self,
         request: crate::AttemptMutation,
@@ -877,6 +907,13 @@ impl ExecutionStore for MemoryExecution {
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.store.fenced(&self.fence, |state, run| {
+            if state
+                .phases
+                .values()
+                .any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id)
+            {
+                return Err(StoreError::Conflict);
+            }
             let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
             if call.run_id != run.id || call.status != ToolCallStatus::Pending {
                 return Err(StoreError::Conflict);
@@ -903,6 +940,9 @@ impl ExecutionStore for MemoryExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.store.fenced(&self.fence, |state, run| {
+            if state.phases.values().any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id) {
+                return Err(StoreError::Conflict);
+            }
             let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
             if call.run_id != run.id || call.status != ToolCallStatus::Running { return Err(StoreError::Conflict); }
             let status = match result.status {
