@@ -1119,7 +1119,7 @@ mod tests {
         config.expected_sha256 = [0; 32];
         assert!(matches!(loader.load(config).await, Err(WasmError::Hash)));
         let mut config = fixture("echo-tool");
-        config.allowed_root = PathBuf::from("/tmp");
+        config.allowed_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         assert!(matches!(loader.load(config).await, Err(WasmError::Path(_))));
         let mut config = fixture("echo-tool");
         config.limits.max_module_bytes = 1;
