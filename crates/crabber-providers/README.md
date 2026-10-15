@@ -146,3 +146,28 @@ Tool-free live acceptance command (load `OPENCODE_GO_API_KEY` into the environme
 ```sh
 cargo test -p crabber --features opencode-go --test opencode_go_live -- --ignored
 ```
+
+## Experimental durable binding primitives
+
+`ProviderBindingDescriptor` in `crabber-core` records a provider/model route,
+backend identity, behavior version, nonsecret configuration fingerprint, and
+known token limits. Construction and deserialization validate the same bounds.
+Native hosts own truthful version declarations; the library cannot inspect
+opaque callbacks or guarantee that remote model aliases stay immutable.
+
+`Resolver::bind` and `ProviderAdapter::bind` return a `BoundProvider` holding one
+implementation and descriptor. `restore_binding` rejects changed descriptors
+before acquisition. Credential refresh within that implementation does not
+change binding identity. Undeclared bindings return typed `Unavailable` rather
+than assuming provider/model strings identify equivalent behavior.
+
+Use `VersionedResolver` to declare an immutable allowlist of routes over a host
+resolver, or `VersionedAdapter` for an extension-provided adapter. Each declaration
+must cover endpoint/gateway routing, protocol, opaque hooks and other behavior
+settings without including credentials, credential values or headers. These
+wrappers cannot verify falsely unchanged native configuration. `FakeProvider`
+declares its built-in deterministic fixture contract.
+
+These primitives are unstable. Runtime admission/checkpoint persistence and
+restoration are still being implemented; the existing execution path does not
+yet provide the complete durable binding guarantee.

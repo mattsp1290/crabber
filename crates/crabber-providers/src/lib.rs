@@ -8,6 +8,10 @@
 //! guidance. Public header, status, certificate, identity, and TLS
 //! types come from `reqwest` 0.12.
 
+mod binding;
+pub use binding::{BoundProvider, ProviderBindingError, VersionedAdapter, VersionedResolver};
+use crabber_core::ProviderBindingDescriptor;
+
 use async_trait::async_trait;
 use crabber_core::{Message, RunId, SessionId, ToolCallId, ToolInfo, TurnId, Usage};
 use futures::{Stream, stream};
@@ -152,11 +156,87 @@ pub trait ProviderAdapter: Send + Sync {
     fn info(&self) -> ProviderInfo;
     async fn models(&self) -> Result<Vec<ModelDescriptor>, ProviderError>;
     async fn build(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError>;
+    /// Return stable, nonsecret behavior/config identity without credential or
+    /// network I/O. Undeclared native bindings fail closed.
+    /// # Errors
+    /// Returns a typed unavailable/configuration failure.
+    fn binding_descriptor(
+        &self,
+        _selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Err(ProviderBindingError::Unavailable)
+    }
+    /// Acquire and hold the implementation selected by this exact descriptor.
+    /// # Errors
+    /// Returns binding, selection or provider acquisition failures.
+    async fn bind(&self, selection: &Selection) -> Result<BoundProvider, ProviderBindingError> {
+        let descriptor = self.binding_descriptor(selection)?;
+        binding::validate_selection(selection, &descriptor)?;
+        BoundProvider::new(selection, descriptor, self.build(selection).await?)
+    }
+    /// Restore only the original backend/configuration; never substitute a route.
+    /// # Errors
+    /// A changed descriptor fails before acquiring the implementation.
+    async fn restore_binding(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind(&selection).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
 }
 
 #[async_trait]
 pub trait Resolver: Send + Sync {
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError>;
+    /// Return stable, nonsecret behavior/config identity without credential or
+    /// network I/O. Undeclared native bindings fail closed.
+    /// # Errors
+    /// Returns a typed unavailable/configuration failure.
+    fn binding_descriptor(
+        &self,
+        _selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Err(ProviderBindingError::Unavailable)
+    }
+    /// Acquire and hold the implementation selected by this exact descriptor.
+    /// # Errors
+    /// Returns binding, selection or provider acquisition failures.
+    async fn bind(&self, selection: &Selection) -> Result<BoundProvider, ProviderBindingError> {
+        let descriptor = self.binding_descriptor(selection)?;
+        binding::validate_selection(selection, &descriptor)?;
+        BoundProvider::new(selection, descriptor, self.resolve(selection).await?)
+    }
+    /// Restore only the original backend/configuration; never substitute a route.
+    /// # Errors
+    /// A changed descriptor fails before acquiring the implementation.
+    async fn restore_binding(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind(&selection).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -172,6 +252,29 @@ impl FakeProvider {
             scripts: Arc::new(Mutex::new(scripts.into())),
             requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    fn descriptor(
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        if selection.provider_id != "fake" {
+            return Err(ProviderBindingError::Unavailable);
+        }
+        ProviderBindingDescriptor::new(
+            &selection.provider_id,
+            &selection.model_id,
+            "crabber.fake",
+            "1",
+            crabber_core::InputFingerprint::new(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            )
+            .expect("constant digest is valid"),
+            crabber_core::ProviderBindingLimits {
+                context_tokens: Some(8192),
+                output_tokens: None,
+            },
+        )
+        .map_err(|_| ProviderBindingError::InvalidDescriptor)
     }
 
     #[must_use]
@@ -206,6 +309,13 @@ impl Streamer for FakeProvider {
 
 #[async_trait]
 impl Resolver for FakeProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Self::descriptor(selection)
+    }
+
     async fn resolve(&self, selection: &Selection) -> Result<Arc<dyn Streamer>, ProviderError> {
         if selection.provider_id != "fake" {
             return Err(ProviderError {
@@ -220,6 +330,13 @@ impl Resolver for FakeProvider {
 
 #[async_trait]
 impl ProviderAdapter for FakeProvider {
+    fn binding_descriptor(
+        &self,
+        selection: &Selection,
+    ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
+        Self::descriptor(selection)
+    }
+
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "fake".into(),

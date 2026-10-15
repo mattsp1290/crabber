@@ -3,6 +3,9 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod provider_binding;
+pub use provider_binding::{ProviderBindingDescriptor, ProviderBindingLimits};
+
 mod session_context;
 mod trace_context;
 pub use session_context::SessionContext;
