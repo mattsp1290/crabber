@@ -2544,7 +2544,12 @@ impl Orchestrator {
                             return Err(RuntimeError::Store(StoreError::PendingInput));
                         }
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(reason) => {
+                        return Err(RuntimeError::TerminalOutcomeUnknown {
+                            run_id: run_id.clone(),
+                            reason,
+                        });
+                    }
                 }
             }
         }

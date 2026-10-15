@@ -3,25 +3,34 @@ use super::*;
 #[tokio::test]
 async fn interruption_requires_acknowledged_terminal_commit() {
     for fault in [1, 2] {
-        missing_terminal_ack(true, fault).await;
+        missing_terminal_ack(true, fault, false).await;
     }
 }
 #[tokio::test]
 async fn failed_execution_exposes_unknown_terminal_persistence() {
     for fault in [1, 2] {
-        missing_terminal_ack(false, fault).await;
+        missing_terminal_ack(false, fault, true).await;
     }
 }
-async fn missing_terminal_ack(interrupted: bool, fault: usize) {
+#[tokio::test]
+async fn successful_execution_does_not_retry_an_unknown_terminal_write() {
+    for fault in [1, 2] {
+        missing_terminal_ack(false, fault, false).await;
+    }
+}
+async fn missing_terminal_ack(interrupted: bool, fault: usize, provider_error: bool) {
     let inner = Arc::new(MemoryStore::new());
     let gate = Arc::new(SettlementGate::default());
     gate.terminal_fault.store(fault, Ordering::SeqCst);
     let capture = Arc::new(OperationalCapture::default());
     let clock = Arc::new(OperationalClock::default());
     let mut stream = operational_stream(clock);
-    stream.startup_error = !interrupted;
+    stream.startup_error = provider_error;
     stream.block_end = interrupted;
     stream.script = vec![(1, StreamDelta::TextDelta("partial".into()))];
+    if !interrupted && !provider_error {
+        stream.script.push((2, StreamDelta::Completed));
+    }
     let runtime = Orchestrator::builder()
         .behavior_fingerprint(crabber_core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(Arc::new(DelayedTerminalStore {
@@ -61,8 +70,10 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize) {
     assert_eq!(gate.settlements.load(Ordering::SeqCst), 1);
     let expected = if interrupted {
         RunStatus::Interrupted
-    } else {
+    } else if provider_error {
         RunStatus::Failed
+    } else {
+        RunStatus::Completed
     };
     assert_eq!(
         inner.get_run(&run_id).await.unwrap().unwrap().status,
@@ -97,29 +108,39 @@ async fn missing_terminal_ack(interrupted: bool, fault: usize) {
 #[tokio::test]
 async fn resumed_interruption_requires_acknowledged_terminal_commit() {
     for fault in [1, 2] {
-        resumed_missing_terminal_ack(fault).await;
+        resumed_missing_terminal_ack(fault, true).await;
     }
 }
-async fn resumed_missing_terminal_ack(fault: usize) {
+#[tokio::test]
+async fn resumed_success_does_not_retry_an_unknown_terminal_write() {
+    for fault in [1, 2] {
+        resumed_missing_terminal_ack(fault, false).await;
+    }
+}
+async fn resumed_missing_terminal_ack(fault: usize, interrupted: bool) {
     let inner = Arc::new(MemoryStore::new());
     let gate = Arc::new(SettlementGate::default());
     gate.terminal_fault.store(fault, Ordering::SeqCst);
     let capture = Arc::new(OperationalCapture::default());
     let (entered, ready) = oneshot::channel();
+    let release = Arc::new(Notify::new());
     let runtime = Orchestrator::builder()
         .behavior_version("resumed-terminal-test.v1")
         .store(Arc::new(DelayedTerminalStore {
             inner: inner.clone(),
             gate: gate.clone(),
         }))
-        .resolver(Arc::new(FakeProvider::scripted(vec![call_script(
-            ToolCallId::new(),
-            r#"{"text":"pending"}"#,
-        )])))
+        .resolver(Arc::new(FakeProvider::scripted(vec![
+            call_script(ToolCallId::new(), r#"{"text":"pending"}"#),
+            vec![
+                StreamDelta::TextDelta("done".into()),
+                StreamDelta::Completed,
+            ],
+        ])))
         .plan_provider(Arc::new(StaticPlanProvider::new(
             vec![tool(Arc::new(CancellableTool {
                 entered: Mutex::new(Some(entered)),
-                release: Arc::new(Notify::new()),
+                release: release.clone(),
                 completed: Arc::new(AtomicUsize::new(0)),
             }))],
             vec![],
@@ -138,7 +159,11 @@ async fn resumed_missing_terminal_ack(fault: usize) {
         .await
         .unwrap()
         .unwrap();
-    resumed.control().interrupt();
+    if interrupted {
+        resumed.control().interrupt();
+    } else {
+        release.notify_one();
+    }
     let error = tokio::time::timeout(std::time::Duration::from_secs(2), resumed.done())
         .await
         .unwrap()
@@ -151,8 +176,10 @@ async fn resumed_missing_terminal_ack(fault: usize) {
             // The claim rotates ownership; a rejected terminal write retains
             // the previously committed logical status.
             RunStatus::Paused
-        } else {
+        } else if interrupted {
             RunStatus::Interrupted
+        } else {
+            RunStatus::Completed
         }
     );
     let durable = inner.list_events(&session, None, 1000).await.unwrap();
