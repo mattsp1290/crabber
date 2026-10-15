@@ -293,3 +293,40 @@ async fn shared_metadata_is_frozen_once_and_panics_rollback_before_error() {
     assert_eq!(failed_shutdown.load(Ordering::SeqCst), 1);
     provider.close_all(Duration::from_secs(1)).await.unwrap();
 }
+
+struct InvalidFactoryMetadata(u8);
+#[async_trait]
+impl ExtensionFactory for InvalidFactoryMetadata {
+    fn identity(&self) -> ComponentIdentity {
+        assert_ne!(self.0, 0, "fixture identity panic");
+        ComponentIdentity {
+            id: "invalid".into(),
+            version: if self.0 == 3 { "invalid\nversion" } else { "1" }.into(),
+        }
+    }
+    fn config_hash(&self) -> String {
+        assert_ne!(self.0, 1, "fixture config panic");
+        "config".into()
+    }
+    fn scope(&self) -> FactoryScope {
+        assert_ne!(self.0, 2, "fixture scope panic");
+        FactoryScope::Session
+    }
+    async fn create(&self, _: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
+        panic!("invalid metadata must fail before instantiation")
+    }
+}
+#[test]
+fn invalid_or_panicking_factory_metadata_fails_before_any_instance_creation() {
+    for stage in 0..4 {
+        assert!(
+            ContextualPlanProvider::new(
+                Registry::new(),
+                vec![],
+                vec![Arc::new(InvalidFactoryMetadata(stage))],
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
+    }
+}

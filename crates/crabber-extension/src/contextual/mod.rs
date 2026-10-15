@@ -148,19 +148,25 @@ impl ContextualPlanProvider {
         let mut names = BTreeSet::new();
         let mut registrations = Vec::new();
         for factory in factories {
-            let identity = factory.identity();
+            let (identity, config_hash, scope) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (factory.identity(), factory.config_hash(), factory.scope())
+                }))
+                .map_err(|_| ExtensionError::ContextInitializationFailed {
+                    component: "factory-metadata".into(),
+                })?;
             if identity.id.is_empty()
                 || identity.id.len() > 128
                 || identity.id.chars().any(char::is_control)
                 || identity.version.is_empty()
                 || identity.version.len() > 128
+                || identity.version.chars().any(char::is_control)
                 || !names.insert(identity.id.clone())
             {
                 return Err(ExtensionError::Plan(
                     "invalid or duplicate factory identity".into(),
                 ));
             }
-            let config_hash = factory.config_hash();
             if config_hash.len() > 16384 {
                 return Err(ExtensionError::Plan(
                     "factory config identity too large".into(),
@@ -169,7 +175,7 @@ impl ContextualPlanProvider {
             registrations.push(FactoryRegistration {
                 identity,
                 config_hash,
-                scope: factory.scope(),
+                scope,
                 factory,
             });
         }

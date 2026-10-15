@@ -174,6 +174,7 @@ impl ContextualPlanProvider {
                     || identity.id.chars().any(char::is_control)
                     || identity.version.is_empty()
                     || identity.version.len() > 128
+                    || identity.version.chars().any(char::is_control)
                     || config_hash.len() > 16384
                 {
                     return None;
@@ -271,10 +272,23 @@ fn freeze(
     registration: &FactoryRegistration,
     extension: Arc<dyn Extension>,
 ) -> Result<FrozenExtension, ExtensionError> {
+    let id = extension.id();
+    let version = extension.version();
+    if id.is_empty()
+        || id.len() > 128
+        || id.chars().any(char::is_control)
+        || version.is_empty()
+        || version.len() > 128
+        || version.chars().any(char::is_control)
+    {
+        return Err(ExtensionError::ContextInitializationFailed {
+            component: registration.identity.id.clone(),
+        });
+    }
     let mut config = serde_json::json!({
         "contract":"crabber.contextual-factory.v1", "factory":registration.identity,
         "factory_config":config_value(&registration.config_hash),
-        "instance":{"id":extension.id(), "version":extension.version(), "config":config_value(&extension.config_hash())},
+        "instance":{"id":id, "version":version, "config":config_value(&extension.config_hash())},
     });
     config.sort_all_objects();
     let config_hash = serde_json::to_string(&config).expect("factory metadata serializes");
