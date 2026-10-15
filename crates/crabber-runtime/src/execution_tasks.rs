@@ -25,12 +25,30 @@ pub struct JoinedExecutionTask {
     pub termination: TaskTermination,
 }
 
+/// Local identity of a preparation task, never a run ID or execution authority.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PreparationTaskId(String);
+impl PreparationTaskId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinedPreparationTask {
+    pub task_id: PreparationTaskId,
+    pub termination: TaskTermination,
+}
+
 /// A snapshot drain, not an ingress barrier or proof of durable settlement.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExecutionTaskDrain {
     pub joined: Vec<JoinedExecutionTask>,
     /// Tasks still retained after the deadline, including newly started tasks.
     pub pending: Vec<RunId>,
+    /// Preparation can own an admission whose response has not arrived yet.
+    pub joined_preparations: Vec<JoinedPreparationTask>,
+    pub pending_preparations: Vec<PreparationTaskId>,
 }
 
 #[derive(Default, Clone)]
@@ -40,7 +58,7 @@ pub(crate) struct ExecutionTasks {
 
 pub(crate) struct ExecutionTask {
     local_id: RunId,
-    run_id: RunId,
+    run_id: Option<RunId>,
     join: tokio::sync::Mutex<JoinState>,
 }
 enum JoinState {
@@ -78,6 +96,19 @@ impl ExecutionTasks {
         run_id: RunId,
         work: impl Future<Output = ()> + Send + 'static,
     ) -> Arc<ExecutionTask> {
+        self.spawn_scoped(Some(run_id), work)
+    }
+    pub(crate) fn spawn_preparation(
+        &self,
+        work: impl Future<Output = ()> + Send + 'static,
+    ) -> Arc<ExecutionTask> {
+        self.spawn_scoped(None, work)
+    }
+    fn spawn_scoped(
+        &self,
+        run_id: Option<RunId>,
+        work: impl Future<Output = ()> + Send + 'static,
+    ) -> Arc<ExecutionTask> {
         let mut tasks = self.tasks.lock().unwrap();
         let task = Arc::new(ExecutionTask {
             // Local bookkeeping only; never persisted or used as authority.
@@ -99,13 +130,20 @@ impl ExecutionTasks {
         }
         termination
     }
-    pub(crate) fn pending(&self) -> Vec<RunId> {
-        self.tasks
-            .lock()
-            .unwrap()
-            .values()
-            .map(|task| task.run_id.clone())
-            .collect()
+    fn pending(&self) -> (Vec<RunId>, Vec<PreparationTaskId>) {
+        // The preparation -> admitted-worker handoff must be observed under
+        // one lock: separate reads could miss both owners during a deadline.
+        let tasks = self.tasks.lock().unwrap();
+        let mut runs = Vec::new();
+        let mut preparations = Vec::new();
+        for task in tasks.values() {
+            if let Some(run) = &task.run_id {
+                runs.push(run.clone());
+            } else {
+                preparations.push(PreparationTaskId(task.local_id.0.clone()));
+            }
+        }
+        (runs, preparations)
     }
     pub(crate) async fn drain(&self, bound: Duration) -> ExecutionTaskDrain {
         let tasks = self
@@ -118,21 +156,36 @@ impl ExecutionTasks {
         let mut joins = tasks
             .into_iter()
             .map(|task| async move {
-                JoinedExecutionTask {
-                    run_id: task.run_id.clone(),
-                    termination: self.join(&task).await,
-                }
+                let termination = self.join(&task).await;
+                (
+                    task.run_id.clone(),
+                    PreparationTaskId(task.local_id.0.clone()),
+                    termination,
+                )
             })
             .collect::<FuturesUnordered<_>>();
         let mut report = ExecutionTaskDrain::default();
         let _ = tokio::time::timeout(bound, async {
-            while let Some(joined) = joins.next().await {
-                report.joined.push(joined);
+            while let Some((run_id, task_id, termination)) = joins.next().await {
+                if let Some(run_id) = run_id {
+                    report.joined.push(JoinedExecutionTask {
+                        run_id,
+                        termination,
+                    });
+                } else {
+                    report.joined_preparations.push(JoinedPreparationTask {
+                        task_id,
+                        termination,
+                    });
+                }
             }
         })
         .await;
         report.joined.sort_by(|a, b| a.run_id.cmp(&b.run_id));
-        report.pending = self.pending();
+        (report.pending, report.pending_preparations) = self.pending();
+        report
+            .joined_preparations
+            .sort_by(|a, b| a.task_id.cmp(&b.task_id));
         report
     }
 }

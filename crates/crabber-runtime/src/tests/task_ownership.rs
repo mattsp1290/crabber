@@ -177,3 +177,6 @@ async fn panicked_worker_join_does_not_invent_durable_terminal_outcome() {
         RunStatus::Running
     );
 }
+
+#[path = "task_ownership/preparation.rs"]
+pub(super) mod preparation;

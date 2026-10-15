@@ -1955,6 +1955,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 
 #[derive(Default)]
 struct SettlementGate {
+    admission: Option<Arc<task_ownership::preparation::AdmissionResponseGate>>,
     append: Option<Arc<OperationalAppendGate>>,
     settlements: AtomicUsize,
     tool_settlements: AtomicUsize,
@@ -1991,13 +1992,23 @@ impl Store for DelayedTerminalStore {
         &self,
         request: crabber_session::BoundAdmitRequest,
     ) -> Result<AdmitOutcome, StoreError> {
-        self.inner.admit_bound_run(request).await
+        let admitted = self.inner.admit_bound_run(request).await?;
+        if let Some(gate) = &self.gate.admission {
+            gate.hold(&admitted.session.id, &admitted.run.id).await;
+        }
+        Ok(admitted)
     }
     async fn admit_bound_keyed_run(
         &self,
         request: crabber_session::BoundKeyedAdmitRequest,
     ) -> Result<crabber_session::KeyedAdmitOutcome, StoreError> {
-        self.inner.admit_bound_keyed_run(request).await
+        let outcome = self.inner.admit_bound_keyed_run(request).await?;
+        if let (Some(gate), crabber_session::KeyedAdmitOutcome::Started { admitted, .. }) =
+            (&self.gate.admission, &outcome)
+        {
+            gate.hold(&admitted.session.id, &admitted.run.id).await;
+        }
+        Ok(outcome)
     }
     async fn execution_binding(
         &self,
@@ -2030,7 +2041,11 @@ impl Store for DelayedTerminalStore {
         &self,
         request: crabber_session::ClaimUnstartedAdmissionRequest,
     ) -> Result<crabber_session::ClaimedAdmission, crabber_session::AdmissionExecutionError> {
-        self.inner.claim_unstarted_admission(request).await
+        let claimed = self.inner.claim_unstarted_admission(request).await?;
+        if let Some(gate) = &self.gate.admission {
+            gate.hold(&claimed.run.session_id, &claimed.run.id).await;
+        }
+        Ok(claimed)
     }
     async fn lookup_admission(
         &self,

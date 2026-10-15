@@ -529,7 +529,7 @@ impl Agent {
     /// Dropping a run handle detaches its result subscription; it does not
     /// cancel the worker. Stop ingress before draining. This does not cancel
     /// work or certify extension resource cleanup or
-    /// durable settlement; inspect `pending` and durable state separately.
+    /// durable settlement; inspect `pending`, `pending_preparations`, and durable state.
     pub async fn drain_execution_tasks(
         &self,
         bound: Duration,

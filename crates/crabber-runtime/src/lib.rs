@@ -2,7 +2,10 @@
 
 mod event_payload;
 mod execution_tasks;
-pub use execution_tasks::{ExecutionTaskDrain, JoinedExecutionTask, TaskTermination};
+pub use execution_tasks::{
+    ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, PreparationTaskId,
+    TaskTermination,
+};
 mod observation;
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 

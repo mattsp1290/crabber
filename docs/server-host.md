@@ -41,21 +41,27 @@ Readiness and new prompts return `RuntimeError::HostClosed` once closing starts.
 Matching committed keyed requests can still return their original metadata receipt.
 It closes extension resources and leases; it does not join active executions.
 
-Initial admissions, retained-Unstarted recovery workers and polled `resume`
-calls now retain their actual task join handles. Dropping a run handle or resume
-waiter detaches that waiter and leaves the worker running. `RunHandle::done`
+Runtime initial preparation/admission, retained-Unstarted recovery preparation/
+claim, execution workers and polled `resume` calls retain their actual task join
+handles. Once a runtime entry is polled, dropping its waiter detaches the result
+subscription and leaves its work owned, including a late committed admission. `RunHandle::done`
 awaits the worker's join as well as its result. `drain_execution_tasks(bound)` on
 Agent or Orchestrator joins a snapshot of retained workers and reports remaining
 owners after the deadline; timed-out joins remain available to a later drain.
 Call drain periodically if dropping handles, and stop host ingress before a final
-drain. Multiple pending entries for one run represent
+drain. Inspect both `pending` (admitted run IDs) and `pending_preparations`
+(local `PreparationTaskId`s). A preparation can create a worker after the drain's
+initial snapshot; drain again while either list has entries. The pending owner
+snapshot observes both categories under one lock. `joined_preparations` reports
+actual preparation task joins separately from execution joins. These local IDs
+are neither run identities nor durable authority. Multiple pending entries for one run represent
 distinct retained local tasks. Dropping the configured host does not request
 cancellation; retain it and drain to establish joins. Runtime shutdown may still
 stop tasks.
 
 These joins do not prove durable terminal outcome, callback/child-process cleanup
-or notification-task completion. Preparation before an initial admission is not
-yet retained if its caller drops. A common owned execution facade, durable
+or notification-task completion. Facade readiness/context checks before entering
+the runtime are outside this ownership scope. A common owned execution facade, durable
 cancellation and full orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 

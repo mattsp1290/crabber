@@ -18,9 +18,10 @@ pub use crabber_extension::{
 };
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
-    ExecutionTaskDrain, JoinedExecutionTask, ModelPurpose, MonotonicClock, Observer, OperationKind,
-    OperationalObservation, PermissionDecision, RecoverReport, RunResult, RuntimeError, SkippedRun,
-    StaticPolicy, SystemMonotonicClock, TaskTermination, TerminalReason,
+    ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose, MonotonicClock,
+    Observer, OperationKind, OperationalObservation, PermissionDecision, PreparationTaskId,
+    RecoverReport, RunResult, RuntimeError, SkippedRun, StaticPolicy, SystemMonotonicClock,
+    TaskTermination, TerminalReason,
 };
 
 #[cfg(feature = "codex")]

@@ -15,7 +15,7 @@ async fn cancelled_drain_retains_join_handle_and_concurrent_joiners_reconcile() 
     let (left, right) = tokio::join!(tasks.join(&task), tasks.join(&task));
     assert_eq!(left, TaskTermination::Returned);
     assert_eq!(right, left);
-    assert_eq!(tasks.pending(), [] as [RunId; 0]);
+    assert_eq!(tasks.pending().0, [] as [RunId; 0]);
     assert_eq!(tasks.join(&task).await, left);
 }
 
@@ -32,7 +32,7 @@ async fn dropped_waiter_does_not_cancel_work_or_relabel_return_as_join() {
     });
     receiver.await.unwrap();
     // A result/notification can arrive while the actual task still owns work.
-    assert_eq!(tasks.pending(), vec![run]);
+    assert_eq!(tasks.pending().0, vec![run]);
     drop(task);
     assert_eq!(tasks.drain(Duration::from_millis(1)).await.pending.len(), 1);
     release.notify_one();
@@ -48,7 +48,7 @@ async fn retains_distinct_tasks_for_the_same_run_and_sanitizes_panics() {
     let run = RunId::new();
     tasks.spawn(run.clone(), async { panic!("private callback panic") });
     tasks.spawn(run, async {});
-    assert_eq!(tasks.pending().len(), 2);
+    assert_eq!(tasks.pending().0.len(), 2);
     let report = tasks.drain(Duration::from_secs(1)).await;
     assert_eq!(report.pending, [] as [RunId; 0]);
     assert_eq!(report.joined.len(), 2);
@@ -78,5 +78,5 @@ async fn panic_payload_drop_cannot_destroy_retained_join_evidence() {
     let task = tasks.spawn(RunId::new(), async { std::panic::panic_any(Payload) });
     assert_eq!(tasks.join(&task).await, TaskTermination::Panicked);
     assert_eq!(tasks.join(&task).await, TaskTermination::Panicked);
-    assert_eq!(tasks.pending(), [] as [RunId; 0]);
+    assert_eq!(tasks.pending().0, [] as [RunId; 0]);
 }

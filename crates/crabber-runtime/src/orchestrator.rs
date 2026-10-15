@@ -918,10 +918,27 @@ impl Orchestrator {
     /// Joins retained initial, keyed-recovery and resume workers within a shared
     /// deadline. A dropped run handle leaves its worker retained here.
     /// This does not stop ingress, cancel work, or prove durable settlement or
-    /// extension resource cleanup. Concurrent starts can appear in `pending`;
+    /// extension resource cleanup. Inspect `pending` and `pending_preparations`;
     /// the host must stop its ingress before draining.
     pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
         self.execution_tasks.drain(bound).await
+    }
+
+    async fn own_preparation<T: Send + 'static>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+    ) -> Result<T, RuntimeError> {
+        let (sender, receiver) = oneshot::channel();
+        // This task owns the entire prepare/admit/claim future before its first
+        // storage await. Dropping the caller detaches only this result waiter.
+        let task = self.execution_tasks.spawn_preparation(async move {
+            let _ = sender.send(work.await);
+        });
+        let outcome = receiver.await;
+        if self.execution_tasks.join(&task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        outcome.map_err(|_| RuntimeError::TaskStopped)?
     }
 
     /// Rebuilds the latest assistant batch when a resumed process died after
@@ -1595,8 +1612,19 @@ impl Orchestrator {
 
     /// Starts a run with validated transport metadata, excluded from its semantic fingerprint.
     /// # Errors
+    /// Once polled, preparation/admission remain owned if this waiter is dropped.
     /// Returns the same admission errors as `start`.
     pub async fn start_with_context(
+        &self,
+        request: Request,
+        context: Option<TraceContext>,
+    ) -> Result<RunHandle, RuntimeError> {
+        let runtime = self.clone();
+        self.own_preparation(async move { runtime.start_admission(request, context).await })
+            .await
+    }
+
+    async fn start_admission(
         &self,
         request: Request,
         context: Option<TraceContext>,
@@ -1633,8 +1661,24 @@ impl Orchestrator {
     /// Keyed admission with optional host identity. Replay never attaches replacement
     /// context or executes the retained receipt; identity is not semantic input.
     /// # Errors
+    /// Once polled, preparation/admission remain owned if this waiter is dropped.
     /// Returns the same admission errors as `start_keyed`.
     pub async fn start_keyed_with_context(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let runtime = self.clone();
+        self.own_preparation(async move {
+            runtime
+                .start_keyed_admission(request, options, context)
+                .await
+        })
+        .await
+    }
+
+    async fn start_keyed_admission(
         &self,
         request: Request,
         options: AdmissionOptions,
@@ -1696,8 +1740,24 @@ impl Orchestrator {
 
     /// Recovers with fresh transport metadata, excluded from retained authority.
     /// # Errors
+    /// Once polled, preparation/claim remain owned if this waiter is dropped.
     /// Returns the same failures as `recover_admission`.
     pub async fn recover_admission_with_context(
+        &self,
+        request: Request,
+        options: AdmissionOptions,
+        context: Option<TraceContext>,
+    ) -> Result<Admission, RuntimeError> {
+        let runtime = self.clone();
+        self.own_preparation(async move {
+            runtime
+                .recover_retained_admission(request, options, context)
+                .await
+        })
+        .await
+    }
+
+    async fn recover_retained_admission(
         &self,
         request: Request,
         options: AdmissionOptions,
@@ -1789,7 +1849,7 @@ impl Orchestrator {
         })
     }
 
-    async fn prepare_keyed_admission(
+    pub(crate) async fn prepare_keyed_admission(
         &self,
         request: &Request,
         options: AdmissionOptions,
