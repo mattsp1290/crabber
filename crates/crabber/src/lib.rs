@@ -38,8 +38,9 @@ pub use crabber_session as session;
 pub use crabber_wasm as wasm;
 
 pub use crabber_session::{
-    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
-    SnapshotRequest, SnapshotUsage,
+    ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
+    SessionDefaults, SessionListCursor, SessionListPage, SessionSummary, SnapshotContinuation,
+    SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
 };
 
 #[cfg(feature = "datadog")]

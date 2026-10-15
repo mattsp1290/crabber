@@ -1,10 +1,18 @@
 pub use crabber::session::{
+    ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
+    SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,
     ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationRecovery,
     ApprovalContinuationState, ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome,
     ApprovalReceipt, ApprovalReply, ApprovalResolverClaim, ApprovalSnapshot, ApprovalSuspension,
     CallApproval, ContinuationTarget, GrantedApproval, GrantedDecision, MAX_APPROVAL_CALLS,
     PreparedApproval,
 };
+#[path = "../../crabber-session/src/management/records.rs"]
+#[allow(dead_code)]
+mod management;
+#[path = "../../crabber-session/src/management_contract.rs"]
+#[allow(dead_code)]
+mod management_contract;
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionCapsule, AdmissionExecutionError, AdmissionExecutionRecord,

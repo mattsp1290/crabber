@@ -70,7 +70,8 @@ impl MemoryStore {
                 Ok(Some(receipt.clone()))
             }
             Some(
-                OperationReceipt::PublicState(_)
+                OperationReceipt::Management(_)
+                | OperationReceipt::PublicState(_)
                 | OperationReceipt::Phase(_)
                 | OperationReceipt::Approval(_),
             ) => Err(Error::SemanticConflict),

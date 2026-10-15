@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 8;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 9;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 4;
+pub const SQLITE_SCHEMA_VERSION: i64 = 5;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -45,6 +45,12 @@ pub mod admission_contract;
 #[cfg(test)]
 mod admission_execution_contract;
 pub mod execution_binding_contract;
+mod management;
+pub mod management_contract;
+pub use management::{
+    ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
+    SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,
+};
 mod memory;
 #[cfg(feature = "postgres")]
 mod postgres;

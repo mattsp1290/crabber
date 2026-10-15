@@ -22,6 +22,13 @@ pub(super) fn admit_transaction(
     }
     let session = admission_session(state, request, now, allow_create)?;
     let session_id = session.id.clone();
+    if state
+        .management
+        .get(&session_id)
+        .is_some_and(|metadata| metadata.archived)
+    {
+        return Err(StoreError::Conflict);
+    }
     if state.approval_barriers.contains_key(&session_id) {
         return Err(StoreError::Busy);
     }

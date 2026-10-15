@@ -4,6 +4,8 @@ mod approval;
 mod factories;
 #[path = "server_host/interaction_hooks.rs"]
 mod interaction_hooks;
+#[path = "server_host/management.rs"]
+mod management;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,

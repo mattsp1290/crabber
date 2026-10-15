@@ -4,7 +4,7 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v8.
+//! connect remains read-only and requires explicit migration to schema v9.
 mod abandon;
 mod admission_execution;
 mod approval;
@@ -12,6 +12,7 @@ mod attempt;
 mod execution_binding;
 #[cfg(test)]
 mod lock_order_tests;
+mod management;
 mod phase;
 mod public_state;
 use crate::{
@@ -41,6 +42,8 @@ pub struct PostgresStore {
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
@@ -390,6 +393,8 @@ impl PostgresStore {
             #[cfg(test)]
             public_state_fault: Arc::default(),
             #[cfg(test)]
+            management_fault: Arc::default(),
+            #[cfg(test)]
             attempt_fault: Arc::default(),
             #[cfg(test)]
             phase_fault: Arc::default(),
@@ -442,6 +447,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0008_continuations.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0009_session_management.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -547,6 +556,9 @@ impl PostgresStore {
             if expected.get() != current {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
+        }
+        if management::admission_archived(tx, &session_id).await? {
+            return Err(StoreError::Conflict);
         }
         let barrier: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
@@ -697,6 +709,32 @@ impl Store for PostgresStore {
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         self.recover_approval(&request).await
     }
+    async fn manage_session(
+        &self,
+        request: crate::ManageSession,
+    ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
+        self.manage(request).await
+    }
+    async fn lookup_session_management(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
+        self.management_receipt(session, id).await
+    }
+    async fn session_summary(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, crate::ManagementError> {
+        self.read_summary(session).await
+    }
+    async fn list_sessions(
+        &self,
+        request: crate::ListSessions,
+    ) -> Result<crate::SessionListPage, crate::ManagementError> {
+        self.summaries(request).await
+    }
+
     async fn claim_approval_continuation(
         &self,
         claim: crate::ApprovalContinuationClaim,

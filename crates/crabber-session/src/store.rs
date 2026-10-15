@@ -224,6 +224,33 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Pure host metadata control; never initializes runtime/provider/tool code.
+    async fn manage_session(
+        &self,
+        _request: crate::ManageSession,
+    ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
+        Err(crate::ManagementError::Unsupported)
+    }
+    async fn lookup_session_management(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
+        Err(crate::ManagementError::Unsupported)
+    }
+    async fn session_summary(
+        &self,
+        _session: &SessionId,
+    ) -> Result<crate::SessionSummary, crate::ManagementError> {
+        Err(crate::ManagementError::Unsupported)
+    }
+    async fn list_sessions(
+        &self,
+        _request: crate::ListSessions,
+    ) -> Result<crate::SessionListPage, crate::ManagementError> {
+        Err(crate::ManagementError::Unsupported)
+    }
+
     /// Bounded, coherent current approval metadata; never a dispatch capability.
     async fn approval_snapshot(
         &self,

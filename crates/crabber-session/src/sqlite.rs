@@ -7,6 +7,7 @@ mod approval;
 mod attempt;
 mod execution;
 mod execution_binding;
+mod management;
 mod phase;
 mod public_state;
 mod records;
@@ -35,6 +36,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0003_typed_admission.sql"),
     "\nINSERT INTO schema_version(version) VALUES(3);\n",
     include_str!("../migrations/sqlite/0004_continuations.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(4);\n",
+    include_str!("../migrations/sqlite/0005_session_management.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
@@ -51,6 +54,8 @@ pub struct SqliteStore {
     abandon_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
@@ -148,6 +153,8 @@ async fn connect_with(
         abandon_fault: Arc::default(),
         #[cfg(test)]
         public_state_fault: Arc::default(),
+        #[cfg(test)]
+        management_fault: Arc::default(),
         #[cfg(test)]
         attempt_fault: Arc::default(),
         #[cfg(test)]

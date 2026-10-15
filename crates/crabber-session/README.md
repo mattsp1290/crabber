@@ -312,3 +312,35 @@ resources nor resumes or retires the run. `PhaseResolution::fingerprint`,
 `materialize` and `verify_replay` support custom transactional adapters, whose
 default Store method remains explicitly Unsupported. Receipt verification also
 requires its persisted audit event. No schema migration is introduced.
+Session management is a pure Store/Agent control path: `manage_session` creates an
+empty session under a host-generated stable SessionId and ControlId, or renames,
+changes selected defaults, or reversibly archives one using SessionRevision CAS.
+Create binds workspace/directory permanently. Exact retries replay the original
+summary before current revision/visibility checks; changed semantics conflict.
+Reconcile unknown outcomes with the original operation key and complete request.
+An absent lookup while a request may be in flight is not proof of rejection.
+
+`session_summary` and workspace-filtered `list_sessions` expose bounded display
+metadata and revisions, without runtime fences, leases, checkpoints or outputs.
+Lists use session ID keysets, with limits 1–100 and cursors bound to workspace
+and archive visibility. Pages reflect current committed rows, rather than a
+frozen multi-page snapshot; use the separate snapshot contract for history.
+Sessions created by ordinary admission lazily read as unarchived with empty
+selected defaults, without migration rewrites.
+
+Archive changes visibility and rejects fresh ordinary admissions under the same
+session transaction. It permits exact admission retries and existing approval,
+continuation and reconciliation controls; it does not cancel work. Selected
+provider/model identifiers are persisted host preferences. The current runtime
+still uses the explicit immutable admission selection; hosts must resolve these
+preferences into that selection themselves. Automatic selection of stored
+preferences, deletion/tombstones, safe forks and an aggregate coherent public
+management snapshot remain outstanding parts of WP5.
+
+PostgreSQL schema 9 adds session metadata and session-only audit records, sharing
+ControlId uniqueness with all other controls. Management audit never fabricates
+a RunId. PostgreSQL migration is additive/idempotent and connect remains read
+only. SQLite schema 5 creates this representation only on fresh files and refuses
+older files; its schema assembly replaces the still-empty legacy receipt table
+so management receipts may reference their separate session audit. Existing run
+control receipts retain their mandatory run-event relationship.

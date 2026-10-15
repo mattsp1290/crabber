@@ -24,6 +24,32 @@ impl Store for SqliteStore {
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         self.recover_approval(&request).await
     }
+    async fn manage_session(
+        &self,
+        request: crate::ManageSession,
+    ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
+        self.manage(request).await
+    }
+    async fn lookup_session_management(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
+        self.management_receipt(session, id).await
+    }
+    async fn session_summary(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, crate::ManagementError> {
+        self.read_summary(session).await
+    }
+    async fn list_sessions(
+        &self,
+        request: crate::ListSessions,
+    ) -> Result<crate::SessionListPage, crate::ManagementError> {
+        self.summaries(request).await
+    }
+
     async fn claim_approval_continuation(
         &self,
         claim: crate::ApprovalContinuationClaim,

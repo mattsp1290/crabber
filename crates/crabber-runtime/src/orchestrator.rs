@@ -9,6 +9,7 @@ pub use approval_recovery::RecoverApproval;
 mod continuation;
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
+mod management;
 pub use continuation::{Continuation, ContinueApproval};
 #[path = "orchestrator/attempt.rs"]
 mod attempt;

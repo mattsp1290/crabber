@@ -90,6 +90,9 @@ impl SqliteStore {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
         }
+        if super::management::admission_archived(tx, &session_id).await? {
+            return Err(StoreError::Conflict);
+        }
         let barrier: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
         )

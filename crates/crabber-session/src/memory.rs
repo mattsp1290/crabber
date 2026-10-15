@@ -11,6 +11,8 @@ mod admission_execution;
 mod attempt;
 #[path = "memory/execution_binding.rs"]
 mod execution_binding;
+#[path = "memory/management.rs"]
+mod management;
 #[path = "memory/phase.rs"]
 mod phase;
 #[path = "memory/public_state.rs"]
@@ -44,6 +46,8 @@ pub struct MemoryStore {
     #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    management_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -66,6 +70,8 @@ struct State {
     execution_bindings: BTreeMap<RunId, String>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
+    management: BTreeMap<SessionId, crate::management::Metadata>,
+    management_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::management::Audit>,
     runs: BTreeMap<RunId, Run>,
     run_order: Vec<RunId>,
     messages: Vec<Message>,
@@ -85,6 +91,7 @@ struct State {
 
 #[derive(Clone)]
 enum OperationReceipt {
+    Management(crate::ManagementReceipt),
     Approval(crate::ApprovalReceipt),
     PublicState(crate::PublicStateReceipt),
     Attempt(crate::AttemptReceipt),
@@ -126,6 +133,8 @@ impl MemoryStore {
             snapshot_key: uuid::Uuid::new_v4().to_string(),
             #[cfg(test)]
             public_state_fault: Arc::default(),
+            #[cfg(test)]
+            management_fault: Arc::default(),
             #[cfg(test)]
             attempt_fault: Arc::default(),
             #[cfg(test)]
@@ -368,6 +377,32 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn manage_session(
+        &self,
+        request: crate::ManageSession,
+    ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
+        self.manage(request)
+    }
+    async fn lookup_session_management(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ManagementReceipt>, crate::ManagementError> {
+        self.management_receipt(session, id)
+    }
+    async fn session_summary(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, crate::ManagementError> {
+        self.read_summary(session)
+    }
+    async fn list_sessions(
+        &self,
+        request: crate::ListSessions,
+    ) -> Result<crate::SessionListPage, crate::ManagementError> {
+        self.summaries(&request)
+    }
+
     async fn approval_snapshot(
         &self,
         session: &SessionId,

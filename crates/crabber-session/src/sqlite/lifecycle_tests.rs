@@ -746,11 +746,31 @@ async fn prior_version_is_refused(version: i64) {
     )
     .await
     .unwrap();
-    if version == 2 {
+    if version >= 2 {
         sqlx::Executor::execute(
             &mut connection,
             sqlx::raw_sql(include_str!(
                 "../../migrations/sqlite/0002_host_foundation.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 3 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0003_typed_admission.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 4 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0004_continuations.sql"
             )),
         )
         .await
@@ -790,4 +810,10 @@ async fn current_version_requires_complete_numbered_schema_history() {
     assert_refused(&database.path, "unsupported SQLite schema version").await;
     assert_eq!(image(&mut connection).await, before);
     connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn management_rejects_prior_v3_and_v4_files_without_any_changes() {
+    prior_version_is_refused(3).await;
+    prior_version_is_refused(4).await;
 }
