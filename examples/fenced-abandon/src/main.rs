@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let agent = Agent::builder()
         .store(store.clone())
         .provider(Arc::new(Unavailable(counters.clone())))
-        .tool(Arc::new(crabber::ToolDefinition {
+        .shared_tool(Arc::new(crabber::ToolDefinition {
             info: ToolInfo {
                 name: "unavailable-unsafe-tool".into(),
                 description: "never execute".into(),
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             },
             executor: Arc::new(NeverTool(tool.clone())),
         }))
-        .extension(Arc::new(Unmountable(mount.clone())), Scope::Global)
+        .shared_extension(Arc::new(Unmountable(mount.clone())), Scope::Global)
         .config(AgentConfig::new(Selection {
             provider_id: "unavailable".into(),
             model_id: "unavailable".into(),

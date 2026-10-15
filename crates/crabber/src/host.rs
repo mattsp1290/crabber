@@ -1,6 +1,31 @@
 use crate::{Admission, Agent, RunHandle, RuntimeError};
+use async_trait::async_trait;
+use crabber_core::InputFingerprint;
 use crabber_core::{AdmissionOptions, SessionContext, TraceContext};
+use crabber_extension::{ComponentIdentity, Extension, ExtensionError, HostServices, Registrar};
 use crabber_providers::Selection;
+
+pub(crate) struct SharedServices {
+    pub identity: ComponentIdentity,
+    pub config_hash: InputFingerprint,
+    pub services: HostServices,
+}
+#[async_trait]
+impl Extension for SharedServices {
+    fn id(&self) -> &str {
+        &self.identity.id
+    }
+    fn version(&self) -> &str {
+        &self.identity.version
+    }
+    fn config_hash(&self) -> String {
+        self.config_hash.as_str().into()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        registrar.host_services(self.services.clone());
+        Ok(())
+    }
+}
 
 /// Unstable until the durable-host consumer contract is qualified.
 ///
@@ -86,5 +111,36 @@ impl Agent {
     ) -> Result<Admission, RuntimeError> {
         self.recover_request(self.context_request(execution, text.into()), options, trace)
             .await
+    }
+}
+
+impl Agent {
+    /// Close factory-owned session resources under a caller deadline. This does
+    /// not cancel or join active executions. Unstable until host qualification.
+    /// # Errors
+    /// Returns owned-resource identity errors or typed retained/incomplete cleanup.
+    pub async fn close_session_resources(
+        &self,
+        context: &SessionContext,
+        bound: std::time::Duration,
+    ) -> Result<(), RuntimeError> {
+        if let Some(provider) = &self.contextual {
+            provider.close_session(context, bound).await?;
+        }
+        Ok(())
+    }
+    /// Close factory-owned workspace and session resources, never workspace files.
+    /// This does not cancel active executions. Unstable until host qualification.
+    /// # Errors
+    /// Returns owned-resource identity errors or typed retained/incomplete cleanup.
+    pub async fn close_workspace_resources(
+        &self,
+        context: &SessionContext,
+        bound: std::time::Duration,
+    ) -> Result<(), RuntimeError> {
+        if let Some(provider) = &self.contextual {
+            provider.close_workspace(context, bound).await?;
+        }
+        Ok(())
     }
 }

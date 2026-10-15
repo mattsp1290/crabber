@@ -1,7 +1,7 @@
 use crate::RESULT_TRANSFORM_CONTRACT_VERSION;
 use crate::dispatch::Dispatcher;
 use crate::registry::ToolGuard;
-use crate::{MountedPromptContributor, ToolContext};
+use crate::{HostServices, MountedPromptContributor, ToolContext};
 use async_trait::async_trait;
 use crabber_core::{SessionContext, SessionId, ToolInfo};
 use crabber_providers::ProviderAdapter;
@@ -87,6 +87,18 @@ pub enum ExtensionError {
     MountCloseTimeout { extension: String },
     #[error("extension registry is closed")]
     RegistryClosed,
+    #[error("context owner is closed")]
+    ContextOwnerClosed,
+    #[error("context identity changed")]
+    ContextIdentityMismatch,
+    #[error("workspace context is unavailable")]
+    WorkspaceUnavailable,
+    #[error("context initialization failed: {component}")]
+    ContextInitializationFailed { component: String },
+    #[error("context initialization is incomplete")]
+    ContextInitializationIncomplete,
+    #[error("context cleanup is incomplete")]
+    ContextCleanupIncomplete,
 }
 
 #[async_trait]
@@ -117,6 +129,7 @@ pub struct RunPlan {
     pub dispatcher: Dispatcher,
     pub components: Vec<ComponentIdentity>,
     pub providers: Vec<Arc<dyn ProviderAdapter>>,
+    pub host_services: HostServices,
     _lease: Option<Arc<PlanLease>>,
 }
 
@@ -139,6 +152,7 @@ impl RunPlan {
         dispatcher: Dispatcher,
         providers: Vec<Arc<dyn ProviderAdapter>>,
         components: Vec<ComponentIdentity>,
+        host_services: HostServices,
         release: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -151,6 +165,7 @@ impl RunPlan {
             dispatcher,
             providers,
             components,
+            host_services,
             _lease: Some(Arc::new(PlanLease(Box::new(release)))),
         }
     }
@@ -217,6 +232,7 @@ impl StaticPlanProvider {
                 dispatcher: Dispatcher::new(Vec::new()),
                 components: identities,
                 providers: Vec::new(),
+                host_services: HostServices::default(),
                 _lease: None,
             },
         }

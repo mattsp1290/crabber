@@ -198,7 +198,7 @@ pub fn agent_builder(
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "fixture".into(),
                 description: "source-only reduction fixture".into(),
@@ -208,7 +208,7 @@ pub fn agent_builder(
             },
             executor: Arc::new(FixtureTool),
         }))
-        .extension(
+        .shared_extension(
             Arc::new(Reducer {
                 probes,
                 accept_before_reduction,

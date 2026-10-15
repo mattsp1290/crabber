@@ -102,3 +102,95 @@ async fn relevant_handler_order_and_workspace_session_binding_remain_distinct() 
     }
     assert_ne!(fingerprints[0], fingerprints[1]);
 }
+
+struct Configured(&'static str);
+#[async_trait]
+impl Extension for Configured {
+    fn id(&self) -> &'static str {
+        "same-component"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        self.0.into()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        Fixture("unused").install(registrar).await
+    }
+}
+
+#[tokio::test]
+async fn same_component_handler_order_includes_configuration_identity() {
+    let mut fingerprints = vec![];
+    for configs in [["first", "second"], ["second", "first"]] {
+        let registry = Registry::new();
+        for config in configs {
+            registry
+                .mount(Arc::new(Configured(config)), Scope::Global)
+                .await
+                .unwrap();
+        }
+        let plan = registry.try_acquire(&"session".into()).unwrap();
+        fingerprints.push(plan.fingerprint().clone());
+        drop(plan);
+        registry.close_all().await.unwrap();
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
+}
+
+struct Services(&'static str);
+#[async_trait]
+impl crabber_extension::WorkspaceFs for Services {
+    async fn read(&self, _: &str) -> Result<Vec<u8>, String> {
+        Ok(self.0.as_bytes().to_vec())
+    }
+}
+#[async_trait]
+impl Extension for Services {
+    fn id(&self) -> &'static str {
+        "services"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        self.0.into()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        registrar.host_services(crabber_extension::HostServices {
+            workspace_fs: Some(Arc::new(Self(self.0))),
+            ..Default::default()
+        });
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn service_override_order_is_part_of_recovery_identity() {
+    let mut fingerprints = vec![];
+    for configs in [["first", "second"], ["second", "first"]] {
+        let registry = Registry::new();
+        for config in configs {
+            registry
+                .mount(Arc::new(Services(config)), Scope::Global)
+                .await
+                .unwrap();
+        }
+        let plan = registry.try_acquire(&"session".into()).unwrap();
+        assert_eq!(
+            plan.host_services
+                .workspace_fs
+                .as_ref()
+                .unwrap()
+                .read("path")
+                .await
+                .unwrap(),
+            configs[1].as_bytes()
+        );
+        fingerprints.push(plan.fingerprint().clone());
+        drop(plan);
+        registry.close_all().await.unwrap();
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
+}

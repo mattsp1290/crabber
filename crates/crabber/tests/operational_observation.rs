@@ -79,7 +79,7 @@ async fn composed_callbacks_keep_attempt_context_and_broadcast_native_tool_turn(
         .observer(first.clone())
         .observer(second.clone())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "echo".into(),
                 description: "echo".into(),

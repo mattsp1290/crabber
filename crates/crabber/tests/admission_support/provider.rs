@@ -84,7 +84,7 @@ pub(super) fn agent(
         .policy(Arc::new(crabber::StaticPolicy::new(
             crabber::PermissionDecision::Allow,
         )))
-        .tool(Arc::new(crabber::ToolDefinition {
+        .shared_tool(Arc::new(crabber::ToolDefinition {
             info: crabber::core::ToolInfo {
                 name: "effect".into(),
                 description: "controlled test effect".into(),

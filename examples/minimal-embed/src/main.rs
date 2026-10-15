@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .store(Arc::clone(&store))
         .provider(resolver)
         .config(AgentConfig::new(selection))
-        .extension(
+        .shared_extension(
             Arc::new(NativeExtension {
                 name: if wasm_enabled { "native-echo" } else { "echo" },
                 delay: interrupt_after_first_delta,
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("--extension must be native".into());
     }
     if let Some(path) = wasm {
-        builder = builder.wasm_extension(wasm_module(&path)?);
+        builder = builder.shared_wasm_extension(wasm_module(&path)?);
     }
     let agent = builder.build()?;
     if let Some(run_id) = resume_id {

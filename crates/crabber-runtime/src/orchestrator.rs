@@ -195,6 +195,8 @@ pub enum RuntimeError {
     Provider(#[from] ProviderError),
     #[error("extension: {0}")]
     Extension(String),
+    #[error(transparent)]
+    ExtensionPlan(#[from] crabber_extension::ExtensionError),
     #[error("turn limit reached")]
     TurnLimit,
     #[error("run task stopped")]
@@ -1003,7 +1005,7 @@ impl Orchestrator {
             .plan_provider
             .acquire_plan_in(&session.context)
             .await
-            .map_err(|error| RuntimeError::Extension(error.to_string()))?;
+            .map_err(RuntimeError::ExtensionPlan)?;
         if plan.fingerprint().to_string() != run.plan_fingerprint {
             plan.release();
             return Err(RuntimeError::PlanChanged);
@@ -1734,7 +1736,7 @@ impl Orchestrator {
             .plan_provider
             .acquire_plan_in(&context)
             .await
-            .map_err(|error| RuntimeError::Extension(error.to_string()))?;
+            .map_err(RuntimeError::ExtensionPlan)?;
         // Hash structured, independently observed semantics, never a caller's claim.
         let mut config = json!([
             "crabber.runtime.admission.v1",
@@ -3712,7 +3714,7 @@ impl Orchestrator {
             run_id.clone(),
             call_id.clone(),
             cancellation.clone(),
-            self.host_services.clone(),
+            self.host_services.with_overrides(&plan.host_services),
             workspace,
             progress,
             Some(Arc::new(HostApproval {

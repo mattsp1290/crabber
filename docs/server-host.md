@@ -40,7 +40,33 @@ binary before upgrading; it must not execute under an incompatible plan.
 Readiness and new prompts return `RuntimeError::HostClosed` once closing starts.
 It closes extension resources and leases; it does not join active executions.
 
-Scoped factory instantiation, immutable provider-binding restoration, the common
+Register shareable state explicitly with `shared_tool`, `shared_extension`,
+`shared_wasm_extension`, or `shared_host_services`. These replace the old builder
+names without compatibility aliases. A scope filters visibility of the same
+instance. Its state must tolerate concurrent use across admitted contexts.
+
+`extension_factory` creates a fresh extension, tool and service graph per
+`FactoryScope::Workspace` or `FactoryScope::Session` owner. The factory receives
+immutable workspace identity and an owned cleanup tracker; only session factories
+receive a session ID. Factories must create independent mutable state. Native code
+that returns shared state violates that contract; the library cannot inspect Arc
+aliasing. Creation/install configure resources and must not execute tool or
+provider business effects. Identity/configuration metadata must describe behavior
+without including credentials. Instance metadata is frozen before publication.
+
+Initialization is coalesced per owner and retained when a waiter drops or reaches
+`initialization_timeout`. No incomplete waiter receives a plan. Failed partial
+setup rolls back registrations and shuts down installed instances before retry.
+Registrar host services override supplied capabilities; absent capabilities inherit
+the shared services. Service behavior belongs in component configuration identity.
+
+`close_session_resources` closes only that session's factory resources;
+`close_workspace_resources` also closes its session resources. They never delete
+files or cancel active executions. Closure rejects new plans for that owner.
+Cleanup that exceeds its bound returns a typed incomplete/timeout error and stays
+owned; a later close can establish completion. Other owners remain available.
+
+Immutable provider-binding restoration, the common
 owned initial/resumed execution lifecycle, typed admission, authoritative controls
 and session management remain part of this implementation. Their completion is
 required before claiming the durable server-host contract delivered.

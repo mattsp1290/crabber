@@ -30,7 +30,7 @@ async fn counter_state_survives_runs_and_is_bounded() {
             provider_id: "fake".into(),
             model_id: "scripted".into(),
         }))
-        .wasm_extension(ModuleConfig {
+        .shared_wasm_extension(ModuleConfig {
             name: "counter-sink".into(),
             path,
             allowed_root: root,

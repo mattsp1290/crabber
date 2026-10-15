@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .wasm_extension(ModuleConfig {
+        .shared_wasm_extension(ModuleConfig {
             name: "echo-tool".into(),
             path,
             allowed_root: root,

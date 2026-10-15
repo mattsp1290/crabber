@@ -125,7 +125,7 @@ pub fn agent(capture: Arc<Capture>) -> Agent {
         .observer(capture)
         .execution_mode(ExecutionMode::Parallel { max: 2 })
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "echo".into(),
                 description: "safe demo".into(),

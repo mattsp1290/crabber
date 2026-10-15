@@ -1,0 +1,199 @@
+mod contextual_support;
+use async_trait::async_trait;
+use contextual_support::*;
+use crabber_extension::*;
+use serde_json::json;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
+struct HeldFactory {
+    created: Arc<AtomicUsize>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+#[async_trait]
+impl ExtensionFactory for HeldFactory {
+    fn identity(&self) -> ComponentIdentity {
+        ComponentIdentity {
+            id: "held".into(),
+            version: "1".into(),
+        }
+    }
+    fn config_hash(&self) -> String {
+        "held-v1".into()
+    }
+    fn scope(&self) -> FactoryScope {
+        FactoryScope::Session
+    }
+    async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
+        self.created.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        tokio::select! {
+            () = self.release.notified() => {},
+            () = context.cleanup().closing() => return Err(ExtensionError::ContextOwnerClosed),
+        }
+        Ok(Arc::new(CounterExtension {
+            name: "held_counter",
+            label: "held".into(),
+            counter: Arc::new(AtomicUsize::new(0)),
+            observed: Arc::new(Observed::default()),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn dropping_or_timing_out_a_waiter_retains_one_initializer_and_no_execution_authority() {
+    for cancel in [true, false] {
+        let created = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let provider = ContextualPlanProvider::new(
+            Registry::new(),
+            vec![],
+            vec![Arc::new(HeldFactory {
+                created: created.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+            })],
+            if cancel {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(20)
+            },
+        )
+        .unwrap();
+        let context = context("session", "workspace");
+        let waiter = tokio::spawn({
+            let provider = provider.clone();
+            let context = context.clone();
+            async move { provider.acquire_plan_in(&context).await }
+        });
+        entered.notified().await;
+        if cancel {
+            waiter.abort();
+            let Err(error) = waiter.await else {
+                panic!("waiter must be cancelled")
+            };
+            assert!(error.is_cancelled());
+        } else {
+            assert!(matches!(
+                waiter.await.unwrap(),
+                Err(ExtensionError::ContextInitializationIncomplete)
+            ));
+        }
+        release.notify_one();
+        let plan = provider.acquire_plan_in(&context).await.unwrap();
+        assert_eq!(created.load(Ordering::SeqCst), 1);
+        assert_eq!(count(&plan, "held_counter").await, 1);
+        drop(plan);
+        provider.close_all(Duration::from_secs(1)).await.unwrap();
+    }
+}
+
+struct FailOnce {
+    failed: Arc<AtomicBool>,
+    rolled_back: Arc<AtomicUsize>,
+    shutdown: Arc<AtomicUsize>,
+}
+#[async_trait]
+impl Extension for FailOnce {
+    fn id(&self) -> &'static str {
+        "fails-once"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        "v1".into()
+    }
+    async fn install(&self, registrar: &mut Registrar) -> Result<(), ExtensionError> {
+        let counter = self.rolled_back.clone();
+        registrar.defer(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        if !self.failed.swap(true, Ordering::SeqCst) {
+            return Err(ExtensionError::Tool("PRIVATE_SETUP_SENTINEL".into()));
+        }
+        Ok(())
+    }
+    async fn shutdown(&self) {
+        self.shutdown.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn partial_shared_readiness_rolls_back_and_failed_component_is_shut_down() {
+    let observed = Arc::new(Observed::default());
+    let rollback = Arc::new(AtomicUsize::new(0));
+    let shutdown = Arc::new(AtomicUsize::new(0));
+    let provider = ContextualPlanProvider::new(
+        Registry::new(),
+        vec![
+            (
+                Arc::new(CounterExtension {
+                    name: "first",
+                    label: "first".into(),
+                    counter: Arc::new(AtomicUsize::new(0)),
+                    observed: observed.clone(),
+                }),
+                Scope::Global,
+            ),
+            (
+                Arc::new(FailOnce {
+                    failed: Arc::new(AtomicBool::new(false)),
+                    rolled_back: rollback.clone(),
+                    shutdown: shutdown.clone(),
+                }),
+                Scope::Global,
+            ),
+        ],
+        vec![],
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let error = provider.ready().await.unwrap_err();
+    assert!(!error.to_string().contains("PRIVATE_SETUP_SENTINEL"));
+    assert_eq!(rollback.load(Ordering::SeqCst), 1);
+    assert_eq!(shutdown.load(Ordering::SeqCst), 1);
+    assert_eq!(*observed.shutdown.lock().unwrap(), ["first"]);
+    provider.ready().await.unwrap();
+    let plan = provider
+        .acquire_plan_in(&context("session", "workspace"))
+        .await
+        .unwrap();
+    assert_eq!(count(&plan, "first").await, json!(1));
+    drop(plan);
+    provider.close_all(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(rollback.load(Ordering::SeqCst), 2);
+    assert_eq!(shutdown.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn closing_during_creation_signals_the_owned_factory_before_joining() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let provider = provider(vec![Arc::new(HeldFactory {
+        created: Arc::new(AtomicUsize::new(0)),
+        entered: entered.clone(),
+        release: Arc::new(tokio::sync::Notify::new()),
+    })]);
+    let waiter = tokio::spawn({
+        let provider = provider.clone();
+        async move {
+            provider
+                .acquire_plan_in(&context("session", "workspace"))
+                .await
+        }
+    });
+    entered.notified().await;
+    provider.close_all(Duration::from_secs(1)).await.unwrap();
+    assert!(waiter.await.unwrap().is_err());
+    assert!(matches!(
+        provider.ready().await,
+        Err(ExtensionError::RegistryClosed)
+    ));
+}

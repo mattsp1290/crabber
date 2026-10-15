@@ -137,11 +137,11 @@ async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc
         .provider(Arc::new(provider(call("native-resume", &json!({})))))
         .config(config())
         .policy(Arc::new(PausePolicy))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let paused = first
@@ -169,11 +169,11 @@ async fn fresh_agent_resumes_paused_run(store: Arc<dyn Store>, resume_store: Arc
         ]])))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let result = second.resume(&paused.run_id).await.unwrap();
@@ -303,11 +303,11 @@ async fn fresh_agent_recovers_expired_running_run(
             StreamDelta::Completed,
         ]])))
         .config(config())
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let seed = first
@@ -331,11 +331,11 @@ async fn fresh_agent_recovers_expired_running_run(
         .provider(Arc::new(FakeProvider::scripted(Vec::new())))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
         )
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let recovered = second.recover().await.unwrap().recovered;
@@ -372,7 +372,7 @@ async fn echo_executes_through_runtime() {
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .wasm_extension(fixture("echo-tool"))
+        .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
     let result = agent
@@ -395,8 +395,8 @@ async fn policy_denies_dangerous_tool() {
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("dangerous", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("dangerous", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     agent
@@ -417,8 +417,8 @@ async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
         .provider(Arc::new(provider(call("safe", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(native_tool("safe", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("safe", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     allow_agent
@@ -435,8 +435,8 @@ async fn guest_allow_overrides_host_deny_and_ask_requires_approval() {
         .provider(Arc::new(provider(call("ask_me", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("ask_me", &calls))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_tool(native_tool("ask_me", &calls))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     ask_agent
@@ -459,11 +459,11 @@ async fn policy_guest_receives_permission_and_run_context() {
         .provider(Arc::new(provider(call("contextual", &json!({})))))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info,
             executor: Arc::new(CountTool(Arc::clone(&calls))),
         }))
-        .wasm_extension(fixture("deny-policy"))
+        .shared_wasm_extension(fixture("deny-policy"))
         .build()
         .unwrap();
     agent
@@ -491,8 +491,8 @@ async fn policy_guest_state_persists_across_runs() {
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Deny)))
-        .tool(native_tool("stateful", &calls))
-        .wasm_extension(fixture("all-in-one"))
+        .shared_tool(native_tool("stateful", &calls))
+        .shared_wasm_extension(fixture("all-in-one"))
         .build()
         .unwrap();
     let first = agent
@@ -533,7 +533,7 @@ async fn prompt_section_renders_for_each_run_with_its_run_id() {
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
-        .wasm_extension(fixture("all-in-one"))
+        .shared_wasm_extension(fixture("all-in-one"))
         .build()
         .unwrap();
     let first = agent.prompt(None, "first").await.unwrap();
@@ -571,7 +571,7 @@ async fn banner_reaches_model_request() {
         .memory()
         .provider(Arc::new(fake.clone()))
         .config(config())
-        .wasm_extension(fixture("banner-context"))
+        .shared_wasm_extension(fixture("banner-context"))
         .build()
         .unwrap();
     agent
@@ -600,8 +600,8 @@ async fn middleware_rewrites_tool_output() {
         .provider(Arc::new(fake))
         .config(config())
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(native_tool("native", &calls))
-        .wasm_extension(fixture("redact-middleware"))
+        .shared_tool(native_tool("native", &calls))
+        .shared_wasm_extension(fixture("redact-middleware"))
         .build()
         .unwrap();
     let result = agent

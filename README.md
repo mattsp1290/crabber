@@ -57,7 +57,7 @@ let agent = Agent::builder()
     .provider(provider)
     .config(config) // persists the exact workspace ID/directory used for routing
     .workspace_reader_resolver(resolver)
-    .extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
+    .shared_extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
     .build()?;
 ```
 

@@ -108,7 +108,7 @@ fn agent(store: Arc<dyn Store>, counters: Arc<AtomicUsize>) -> Agent {
     Agent::builder()
         .store(store)
         .provider(Arc::new(Unavailable(counters.clone())))
-        .tool(Arc::new(crabber::ToolDefinition {
+        .shared_tool(Arc::new(crabber::ToolDefinition {
             info: ToolInfo {
                 name: "registered-effect".into(),
                 description: "never run".into(),
@@ -118,7 +118,7 @@ fn agent(store: Arc<dyn Store>, counters: Arc<AtomicUsize>) -> Agent {
             },
             executor: Arc::new(NeverTool(counters.clone())),
         }))
-        .extension(Arc::new(Unmountable(counters)), Scope::Global)
+        .shared_extension(Arc::new(Unmountable(counters)), Scope::Global)
         .config(AgentConfig::new(Selection {
             provider_id: "missing".into(),
             model_id: "missing".into(),

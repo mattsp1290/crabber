@@ -77,7 +77,7 @@ fn agent(
             model_id: "scripted".into(),
         }));
     builder = if let Some(config) = registry_config {
-        builder.extension(
+        builder.shared_extension(
             Arc::new(SchemaExtension {
                 tool,
                 config: config.into(),
@@ -85,7 +85,7 @@ fn agent(
             Scope::Global,
         )
     } else {
-        builder.tool(tool)
+        builder.shared_tool(tool)
     };
     Ok(builder.build()?)
 }

@@ -265,7 +265,7 @@ pub fn host_with_policy(
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(config)
         .policy(policy)
-        .extension(
+        .shared_extension(
             Arc::new(ProbeExtension(Arc::clone(observations))),
             Scope::Global,
         )

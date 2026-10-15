@@ -1,6 +1,8 @@
 //! Frozen extension plan and tool execution boundary.
 
+mod contextual;
 mod dispatch;
+pub use contextual::{ContextualPlanProvider, ExtensionFactory, FactoryContext, FactoryScope};
 mod model_middleware;
 pub use model_middleware::*;
 mod plan;

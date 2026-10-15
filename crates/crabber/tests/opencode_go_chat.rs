@@ -133,7 +133,7 @@ async fn facade_cap_persists_on_tool_call_turn() {
         },
         executor: Arc::new(Echo),
     });
-    let agent = builder(&url).tool(tool).build().unwrap();
+    let agent = builder(&url).shared_tool(tool).build().unwrap();
     let result = timeout(LIMIT, async {
         agent
             .prompt(None, "hi")

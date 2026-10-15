@@ -4,8 +4,8 @@ use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
 };
 use crabber_extension::{
-    Extension, ExtensionError, MountHandle, PromptSection, Registrar, Registry, Scope,
-    StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
+    ContextualPlanProvider, Extension, ExtensionError, ExtensionFactory, PromptSection, Registrar,
+    Registry, Scope, StaticPlanProvider, ToolDefinition, WorkspaceReaderResolver,
 };
 use crabber_providers::{Resolver, Selection};
 use crabber_runtime::{
@@ -24,7 +24,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{OnceCell, broadcast};
+use tokio::sync::broadcast;
 
 /// Host-owned settings frozen into each prompt request.
 #[derive(Debug, Clone)]
@@ -82,6 +82,8 @@ pub struct AgentBuilder {
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogConfig>,
     extensions: Vec<(Arc<dyn Extension>, Scope)>,
+    factories: Vec<Arc<dyn ExtensionFactory>>,
+    initialization_timeout: Duration,
     extension_close_timeout: Duration,
     execution_mode: ExecutionMode,
     compaction: CompactionPolicy,
@@ -101,11 +103,12 @@ impl AgentBuilder {
         self.observers.push(observer);
         self
     }
-    /// Mounts a SHA-256 verified Component Model extension.
+    /// Mount a SHA-256 verified Component Model extension shared by all contexts.
+    /// Its mutable state must support concurrent use across sessions/workspaces.
     #[cfg(feature = "wasm")]
     #[must_use]
-    pub fn wasm_extension(self, config: crabber_wasm::ModuleConfig) -> Self {
-        self.extension(
+    pub fn shared_wasm_extension(self, config: crabber_wasm::ModuleConfig) -> Self {
+        self.shared_extension(
             Arc::new(crabber_wasm::WasmExtension::new(config)),
             Scope::Global,
         )
@@ -189,7 +192,9 @@ impl AgentBuilder {
     }
 
     #[must_use]
-    pub fn tool(mut self, tool: Arc<ToolDefinition>) -> Self {
+    /// Register a tool whose captured state is safe to share across all contexts.
+    /// Use a contextual factory when tool state belongs to one workspace/session.
+    pub fn shared_tool(mut self, tool: Arc<ToolDefinition>) -> Self {
         self.tools.push(tool);
         self
     }
@@ -219,8 +224,45 @@ impl AgentBuilder {
     }
 
     #[must_use]
-    pub fn extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
+    /// Register one shared instance. Scope filters visibility; it does not isolate
+    /// mutable state. The instance must support concurrent use in every context
+    /// admitted by that scope. Use a factory for independently owned state.
+    pub fn shared_extension(mut self, extension: Arc<dyn Extension>, scope: Scope) -> Self {
         self.extensions.push((extension, scope));
+        self
+    }
+
+    /// Instantiate a fresh native extension/tool/service graph per declared owner.
+    #[must_use]
+    pub fn extension_factory(mut self, factory: Arc<dyn ExtensionFactory>) -> Self {
+        self.factories.push(factory);
+        self
+    }
+
+    /// Register explicitly shareable host capabilities with stable nonsecret
+    /// behavior/configuration identity. Scoped factories can override capabilities.
+    #[must_use]
+    pub fn shared_host_services(
+        self,
+        identity: crabber_extension::ComponentIdentity,
+        config_hash: crabber_core::InputFingerprint,
+        services: crabber_extension::HostServices,
+    ) -> Self {
+        self.shared_extension(
+            Arc::new(crate::host::SharedServices {
+                identity,
+                config_hash,
+                services,
+            }),
+            Scope::Global,
+        )
+    }
+
+    /// Bound the waiter for owned initialization. Timeout retains initialization;
+    /// it grants no execution plan and a later readiness/retry can reconcile it.
+    #[must_use]
+    pub fn initialization_timeout(mut self, bound: Duration) -> Self {
+        self.initialization_timeout = bound;
         self
     }
 
@@ -254,7 +296,7 @@ impl AgentBuilder {
             datadog: datadog.clone(),
         });
         let extensions = self.extensions;
-        let has_extensions = !extensions.is_empty();
+        let has_extensions = !extensions.is_empty() || !self.factories.is_empty();
         let registry = has_extensions.then(|| {
             let observer = Arc::clone(&observer);
             Registry::new()
@@ -276,9 +318,22 @@ impl AgentBuilder {
                 ),
             );
         }
+        let contextual = registry
+            .as_ref()
+            .map(|registry| {
+                ContextualPlanProvider::new(
+                    registry.clone(),
+                    mounts,
+                    self.factories,
+                    self.initialization_timeout,
+                )
+            })
+            .transpose()
+            .map_err(RuntimeError::ExtensionPlan)?
+            .map(Arc::new);
         let plan_provider: Arc<dyn crabber_extension::RunPlanProvider> =
-            if let Some(registry) = &registry {
-                Arc::new(registry.clone())
+            if let Some(provider) = &contextual {
+                provider.clone()
             } else {
                 Arc::new(StaticPlanProvider::new(self.tools, self.prompts))
             };
@@ -304,9 +359,10 @@ impl AgentBuilder {
             events,
             #[cfg(feature = "datadog")]
             datadog,
+            #[cfg(test)]
             registry,
-            extensions: mounts,
-            mounted: OnceCell::new(),
+            contextual,
+            extension_close_timeout: self.extension_close_timeout,
             closed: AtomicBool::new(false),
         })
     }
@@ -416,9 +472,10 @@ pub struct Agent {
     events: broadcast::Sender<Arc<EventRecord>>,
     #[cfg(feature = "datadog")]
     datadog: Option<crabber_obs::DatadogObserver>,
+    #[cfg(test)]
     registry: Option<Registry>,
-    extensions: Vec<(Arc<dyn Extension>, Scope)>,
-    mounted: OnceCell<Vec<MountHandle>>,
+    pub(crate) contextual: Option<Arc<ContextualPlanProvider>>,
+    extension_close_timeout: Duration,
     closed: AtomicBool,
 }
 
@@ -427,27 +484,14 @@ impl Agent {
         if self.closed.load(Ordering::SeqCst) {
             return Err(RuntimeError::HostClosed);
         }
-        if let Some(registry) = &self.registry {
-            self.mounted
-                .get_or_try_init(|| async {
-                    let mut handles = Vec::new();
-                    for (extension, scope) in &self.extensions {
-                        match registry.mount(Arc::clone(extension), scope.clone()).await {
-                            Ok(handle) => handles.push(handle),
-                            Err(error) => {
-                                for handle in handles.iter().rev() {
-                                    let _ = handle.close().await;
-                                }
-                                return Err(RuntimeError::Extension(error.to_string()));
-                            }
-                        }
-                    }
-                    Ok(handles)
-                })
-                .await?;
-        }
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(RuntimeError::HostClosed);
+        if let Some(provider) = &self.contextual {
+            provider.ready().await.map_err(|error| {
+                if error == ExtensionError::RegistryClosed {
+                    RuntimeError::HostClosed
+                } else {
+                    RuntimeError::ExtensionPlan(error)
+                }
+            })?;
         }
         Ok(())
     }
@@ -461,10 +505,12 @@ impl Agent {
     /// # Errors
     /// Returns the first mount close error after attempting every mount.
     pub async fn close_extensions(&self) -> Result<(), ExtensionError> {
-        self.closed.store(true, Ordering::SeqCst);
-        if let Some(registry) = &self.registry {
-            registry.close_all().await
+        if let Some(provider) = &self.contextual {
+            provider
+                .close_all(self.extension_close_timeout.saturating_mul(2))
+                .await
         } else {
+            self.closed.store(true, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -514,6 +560,8 @@ impl Agent {
             #[cfg(feature = "datadog")]
             datadog: None,
             extensions: Vec::new(),
+            factories: Vec::new(),
+            initialization_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             extension_close_timeout: crabber_extension::DEFAULT_MOUNT_CLOSE_TIMEOUT,
             execution_mode: ExecutionMode::Sequential,
             compaction: CompactionPolicy::default(),
@@ -656,7 +704,12 @@ impl Agent {
     }
 
     async fn prepare_request(&self, request: &Request) -> Result<(), RuntimeError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst)
+            || self
+                .contextual
+                .as_ref()
+                .is_some_and(|provider| provider.is_closed())
+        {
             return Err(RuntimeError::HostClosed);
         }
         if let Some(session_id) = &request.session_id {
@@ -1062,7 +1115,7 @@ mod tests {
                 model_id: "scripted".into(),
             }))
             .workspace_reader_resolver(Arc::new(BuilderResolver(called.clone())))
-            .extension(Arc::new(BuilderExtension), Scope::Global)
+            .shared_extension(Arc::new(BuilderExtension), Scope::Global)
             .build()
             .unwrap();
         agent
@@ -1155,7 +1208,7 @@ mod tests {
             .observer(first.clone())
             .observer(second.clone())
             .extension_close_timeout(bound)
-            .extension(
+            .shared_extension(
                 Arc::new(CloseProbe {
                     ready: ready.clone(),
                     release: release.clone(),

@@ -178,7 +178,7 @@ fn agent(
         .observer(capture)
         .observer(second)
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "echo".into(),
                 description: "native fixture".into(),
@@ -1117,7 +1117,7 @@ async fn cardinality() {
             .observer(capture.clone())
             .observer(Arc::new(export.clone()))
             .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-            .tool(Arc::new(ToolDefinition {
+            .shared_tool(Arc::new(ToolDefinition {
                 info: ToolInfo {
                     name: name.clone(),
                     description: "native cardinality fixture".into(),

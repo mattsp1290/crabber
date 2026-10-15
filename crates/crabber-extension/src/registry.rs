@@ -6,7 +6,7 @@ use crate::dispatch::{
 };
 use crate::prompt_contribution::PromptContributorIdentity;
 use crate::{
-    CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError,
+    CleanupTracker, ComponentIdentity, DEFAULT_MOUNT_CLOSE_TIMEOUT, ExtensionError, HostServices,
     MAX_PROMPT_CONTRIBUTOR_NAME_BYTES, MiddlewareDescriptor, MountedPromptContributor,
     PROMPT_CONTRIBUTION_CONTRACT_VERSION, PromptContributor, PromptSection,
     ResultTransformCallback, RunPlan, RunPlanProvider, SYSTEM_PROMPT_MIDDLEWARE_CONTRACT_VERSION,
@@ -90,6 +90,7 @@ pub trait Extension: Send + Sync {
 
 type Cleanup = Box<dyn FnOnce() + Send>;
 pub struct Registrar {
+    services: HostServices,
     tools: Vec<Arc<ToolDefinition>>,
     prompts: Vec<Arc<PromptSection>>,
     guards: Vec<Arc<dyn ToolGuard>>,
@@ -102,6 +103,7 @@ pub struct Registrar {
 impl Registrar {
     fn new() -> Self {
         Self {
+            services: HostServices::default(),
             tools: vec![],
             prompts: vec![],
             guards: vec![],
@@ -111,6 +113,11 @@ impl Registrar {
             providers: vec![],
             cleanups: vec![],
         }
+    }
+    /// Register capabilities owned by this extension's scope. Opaque service
+    /// behavior/configuration is versioned by the extension's declared metadata.
+    pub fn host_services(&mut self, services: HostServices) {
+        self.services = std::mem::take(&mut self.services).overlay(services);
     }
     pub fn tool(&mut self, tool: Arc<ToolDefinition>) {
         self.tools.push(tool);
@@ -272,8 +279,13 @@ impl Registrar {
     }
     fn rollback(&mut self) {
         while let Some(cleanup) = self.cleanups.pop() {
-            cleanup();
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(cleanup));
         }
+    }
+}
+impl Drop for Registrar {
+    fn drop(&mut self) {
+        self.rollback();
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,7 +421,7 @@ impl CleanupOwner {
         self.closing.cancel();
     }
     /// Closes the tracker and waits, unbounded, until it is empty.
-    async fn wait_drained(&self) {
+    pub(crate) async fn wait_drained(&self) {
         self.tasks.close();
         self.tasks.wait().await;
     }
@@ -480,6 +492,9 @@ pub struct Registry {
     close_start_hook: Arc<Mutex<Option<AcquireHook>>>,
 }
 impl Registry {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.lock().unwrap().closed
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -507,7 +522,15 @@ impl Registry {
             return Err(ExtensionError::RegistryClosed);
         }
         let mut registrar = Registrar::new();
-        if let Err(error) = extension.install(&mut registrar).await {
+        let installation = AssertUnwindSafe(extension.install(&mut registrar))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(ExtensionError::Plan(
+                    "extension initialization panicked".into(),
+                ))
+            });
+        if let Err(error) = installation {
             registrar.rollback();
             return Err(error);
         }
@@ -606,6 +629,25 @@ impl Registry {
         if let Some(hook) = self.close_start_hook.lock().unwrap().clone() {
             hook();
         }
+        let mounts = self.begin_close_all()?;
+        let driver = tokio::spawn(async move {
+            let mut first = Ok(());
+            for mount in mounts.into_iter().rev() {
+                let result = mount.close().await;
+                if first.is_ok() {
+                    first = result;
+                }
+            }
+            first
+        });
+        match driver.await {
+            Ok(result) => result,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(_) => Ok(()),
+        }
+    }
+
+    pub(crate) fn begin_close_all(&self) -> Result<Vec<MountHandle>, ExtensionError> {
         let mounts = {
             let mut inner = self.inner.lock().unwrap();
             if inner.mounts.iter().any(|m| dispatch::is_active_mount(m.id)) {
@@ -624,22 +666,10 @@ impl Registry {
         for mount in &mounts {
             mount.cleanup.close();
         }
-        let driver = tokio::spawn(async move {
-            let mut first = Ok(());
-            for mount in mounts.into_iter().rev() {
-                let result = MountHandle { mount }.close().await;
-                if first.is_ok() {
-                    first = result;
-                }
-            }
-            first
-        });
-        match driver.await {
-            Ok(result) => result,
-            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-            // The runtime is shutting down: nothing is left to wait for.
-            Err(_) => Ok(()),
-        }
+        Ok(mounts
+            .into_iter()
+            .map(|mount| MountHandle { mount })
+            .collect())
     }
     /// `Err(ExtensionError::RegistryClosed)` once `close_all` has started.
     pub fn try_acquire(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
@@ -696,6 +726,7 @@ impl Registry {
         let mut handlers = vec![];
         let mut providers = vec![];
         let mut components = vec![];
+        let mut services = HostServices::default();
         for (index, mount) in mounts.iter().enumerate() {
             // Only mounts actually in this plan affect order identity. A new
             // instance in another workspace/session cannot change recovery hashes.
@@ -716,6 +747,7 @@ impl Registry {
             restrictions.extend(r.restrictions.iter().cloned());
             handlers.extend(r.handlers.iter().cloned());
             providers.extend(r.providers.iter().cloned());
+            services = services.with_overrides(&r.services);
             append_mount_components(mount, &r, plan_sequence, &mut components);
         }
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
@@ -731,6 +763,7 @@ impl Registry {
             Dispatcher::new(handlers),
             providers,
             components,
+            services,
             move || {
                 for mount in &mounts {
                     if mount.leases.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -747,13 +780,13 @@ fn append_mount_components(
     plan_sequence: u64,
     components: &mut Vec<ComponentIdentity>,
 ) {
+    let extension_id = mount.extension.id();
+    let extension_version = mount.extension.version();
+    let extension_config = canonical_hash(&mount.extension.config_hash());
     components.push(ComponentIdentity {
-        id: format!("extension:{}", mount.extension.id()),
-        version: format!(
-            "{}:{}",
-            mount.extension.version(),
-            canonical_hash(&mount.extension.config_hash())
-        ),
+        id: format!("extension:{extension_id}"),
+        version: serde_json::to_string(&(extension_version, &extension_config))
+            .expect("extension identity serializes"),
     });
     for t in &r.tools {
         components.push(ComponentIdentity {
@@ -776,11 +809,16 @@ fn append_mount_components(
     for h in &r.handlers {
         components.push(ComponentIdentity {
             id: format!(
-                "handler:{}:{}:{}:{}",
-                mount.extension.id(),
-                mount.scope.rank(),
-                h.point,
-                h.id
+                "handler:{}",
+                serde_json::to_string(&(
+                    extension_id,
+                    extension_version,
+                    &extension_config,
+                    mount.scope.rank(),
+                    h.point,
+                    &h.id
+                ))
+                .expect("handler identity serializes")
             ),
             version: handler_version(h, plan_sequence),
         });
@@ -791,9 +829,30 @@ fn append_mount_components(
             version: provider.info().name,
         });
     }
+    let service_presence = [
+        r.services.user_prompter.is_some(),
+        r.services.subprocess.is_some(),
+        r.services.workspace_fs.is_some(),
+    ];
+    if service_presence.into_iter().any(|present| present) {
+        components.push(ComponentIdentity {
+            id: format!("services:{extension_id}"),
+            version: serde_json::to_string(&(
+                extension_version,
+                &extension_config,
+                mount.scope.rank(),
+                plan_sequence,
+                service_presence,
+            ))
+            .expect("service capabilities serialize"),
+        });
+    }
     for restriction in &r.restrictions {
         components.push(ComponentIdentity {
-            id: format!("restriction:{}", restriction.join(",")),
+            id: format!(
+                "restriction:{}",
+                serde_json::to_string(restriction).expect("restrictions serialize")
+            ),
             version: String::new(),
         });
     }
@@ -950,6 +1009,13 @@ pub struct MountHandle {
     mount: Arc<Mount>,
 }
 impl MountHandle {
+    pub(crate) fn check_close_allowed(&self) -> Result<(), ExtensionError> {
+        if dispatch::is_active_mount(self.mount.id) {
+            Err(ExtensionError::SelfClose)
+        } else {
+            Ok(())
+        }
+    }
     pub fn deactivate(&self) {
         *self.mount.active.lock().unwrap() = false;
     }

@@ -1247,8 +1247,10 @@ runtime. Interrupt runs first when the host needs them to stop; close does not
 interrupt them. Registry close is terminal before any mount is deactivated;
 all clones reject subsequent mounting and plan acquisition, even after a
 timeout. Direct `Registry::acquire` panics after close; `try_acquire` returns
-`RegistryClosed`. An agent without extensions has no registry and keeps
-working after its no-op close. Closing one `MountHandle` is not terminal and
+`RegistryClosed`. Agent close rejects new ingress with `RuntimeError::HostClosed`,
+including agents without extensions. See [server-host contracts](server-host.md)
+for owned factory initialization and scoped resource cleanup. Closing one
+`MountHandle` is not terminal and
 new plans omit it: do not remove a protective redactor while admitting runs.
 
 Each mount's leases and cleanup tracker share one default 5s drain bound,

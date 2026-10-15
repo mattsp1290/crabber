@@ -28,6 +28,20 @@ pub struct HostServices {
     pub subprocess: Option<Arc<dyn Subprocess>>,
     pub workspace_fs: Option<Arc<dyn WorkspaceFs>>,
 }
+impl HostServices {
+    /// Overlay explicitly registered capabilities on shared host defaults.
+    #[must_use]
+    pub fn with_overrides(&self, overrides: &Self) -> Self {
+        self.clone().overlay(overrides.clone())
+    }
+    pub(crate) fn overlay(self, overrides: Self) -> Self {
+        Self {
+            user_prompter: overrides.user_prompter.or(self.user_prompter),
+            subprocess: overrides.subprocess.or(self.subprocess),
+            workspace_fs: overrides.workspace_fs.or(self.workspace_fs),
+        }
+    }
+}
 /// Persisted workspace identity of the session a run belongs to.
 ///
 /// The values are routing data read from the stored session record, never

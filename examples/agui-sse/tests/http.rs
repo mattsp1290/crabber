@@ -502,7 +502,7 @@ async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
             store.clone(),
             Arc::new(FakeProvider::scripted(journey(false))),
         )
-        .extension(gate.clone(), crabber::extension::Scope::Global)
+        .shared_extension(gate.clone(), crabber::extension::Scope::Global)
         .build()
     })))
     .await?;
@@ -711,7 +711,7 @@ async fn held_admission_times_out_or_shuts_down_without_losing_late_handle() -> 
                 admission_store.clone(),
                 Arc::new(FakeProvider::scripted(vec![text("late")])),
             )
-            .extension(gate.clone(), crabber::extension::Scope::Global)
+            .shared_extension(gate.clone(), crabber::extension::Scope::Global)
             .build()
         }));
         host.deadline = if shutdown {

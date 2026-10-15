@@ -150,7 +150,7 @@ pub fn agent(store: Arc<dyn Store>, capture: &Arc<Capture>, mode: &str) -> Agent
         }))
         .observer(capture.clone())
         .policy(policy)
-        .tool(Arc::new(ToolDefinition {
+        .shared_tool(Arc::new(ToolDefinition {
             info: ToolInfo {
                 name: "effect".into(),
                 description: "controlled effect".into(),

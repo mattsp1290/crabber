@@ -1,3 +1,5 @@
+#[path = "server_host/factories.rs"]
+mod factories;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,
@@ -131,7 +133,7 @@ async fn one_configured_agent_admits_two_explicit_workspaces_without_mutating_de
         .provider(provider.clone())
         .config(AgentConfig::new(selection("configured")))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(SharedExtension {
                 installs: installs.clone(),
                 observed: observed.clone(),
@@ -251,7 +253,7 @@ async fn explicit_keyed_context_replays_after_defaults_change_and_rejects_drift_
         .store(store.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(selection("configured")))
-        .extension(
+        .shared_extension(
             Arc::new(SharedExtension {
                 installs: installs.clone(),
                 observed: Arc::new(Mutex::new(vec![])),

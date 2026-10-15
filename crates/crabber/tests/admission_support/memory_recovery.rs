@@ -655,7 +655,7 @@ async fn failed_begin_blocks_business_hooks_but_allows_pre_admission_setup() {
             .store(fault(store.clone(), kind))
             .provider(provider.clone())
             .config(config())
-            .extension(
+            .shared_extension(
                 Arc::new(HookCounter {
                     installs: installs.clone(),
                     effects: effects.clone(),

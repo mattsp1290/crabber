@@ -82,7 +82,7 @@ async fn facade_cap_sets_every_turn_request() {
         .memory()
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
-        .tool(tool())
+        .shared_tool(tool())
         .build()
         .unwrap();
     agent
@@ -142,7 +142,7 @@ async fn around_hook_overrides_or_preserves_facade_cap() {
             .memory()
             .provider(provider.clone())
             .config(config().max_output_tokens(4096))
-            .extension(Arc::new(CapHook(override_cap)), Scope::Global)
+            .shared_extension(Arc::new(CapHook(override_cap)), Scope::Global)
             .build()
             .unwrap();
         agent
@@ -181,7 +181,7 @@ async fn cap_survives_pause_checkpoint_resume() {
         .store(store.clone())
         .provider(provider.clone())
         .config(config().max_output_tokens(4096))
-        .tool(tool())
+        .shared_tool(tool())
         .policy(Arc::new(Pause))
         .build()
         .unwrap();
@@ -203,7 +203,7 @@ async fn cap_survives_pause_checkpoint_resume() {
         .store(store)
         .provider(provider.clone())
         .config(config().max_output_tokens(64))
-        .tool(tool())
+        .shared_tool(tool())
         .build()
         .unwrap();
     assert_eq!(

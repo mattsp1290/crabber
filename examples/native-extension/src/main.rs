@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             model_id: "scripted".into(),
         }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
-        .extension(
+        .shared_extension(
             Arc::new(NativeExtension {
                 observed: Arc::clone(&observed),
             }),

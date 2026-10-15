@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .provider(Arc::new(provider.clone()))
         .config(config)
         .workspace_reader_resolver(resolver)
-        .extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
+        .shared_extension(Arc::new(AgentsMdExtension::default()), Scope::Global)
         .build()?;
 
     agent

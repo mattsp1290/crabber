@@ -99,9 +99,9 @@ pub fn builder(
         .config(AgentConfig::new(Selection { provider_id: "fake".into(), model_id: "scripted".into() }))
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .execution_mode(crabber::runtime::ExecutionMode::Parallel { max: 2 })
-        .tool(Arc::new(ToolDefinition { info: ToolInfo { name:"echo".into(), description:"Echo public input".into(),
+        .shared_tool(Arc::new(ToolDefinition { info: ToolInfo { name:"echo".into(), description:"Echo public input".into(),
             parameters:json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}), retry_safe:true, required_permissions:vec![] }, executor:Arc::new(Echo) }))
-        .extension(Arc::new(Redact), Scope::Global)
+        .shared_extension(Arc::new(Redact), Scope::Global)
 }
 
 #[must_use]

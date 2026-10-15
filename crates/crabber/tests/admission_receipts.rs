@@ -152,7 +152,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
                 }));
             }
             10 => {
-                builder = builder.tool(Arc::new(crabber::ToolDefinition {
+                builder = builder.shared_tool(Arc::new(crabber::ToolDefinition {
                     info: crabber::core::ToolInfo {
                         name: "new-tool".into(),
                         description: "new".into(),
@@ -164,7 +164,7 @@ async fn stale_claim_cannot_hide_changed_inspectable_semantics() {
                 }));
             }
             11 => {
-                builder = builder.extension(
+                builder = builder.shared_extension(
                     Arc::new(VersionedExtension),
                     crabber::extension::Scope::Global,
                 );
