@@ -248,7 +248,10 @@ pub async fn request(server: &Server, thread: &str) -> CheckResult<Vec<Event>> {
     if response.status() != reqwest::StatusCode::OK {
         return Err("run HTTP status".into());
     }
-    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(
+        response.headers()["content-type"],
+        crabber_agui::ag_ui_encoder::CONTENT_TYPE
+    );
     let bytes = response.bytes().await?;
     assert!(!bytes.windows(6).any(|b| b == b"[DONE]"));
     assert!(!bytes.windows(4).any(|b| b == b"id: "));

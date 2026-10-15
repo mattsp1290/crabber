@@ -93,7 +93,10 @@ fn wire_identity_optional_fields_and_framing() {
     assert_eq!(frame.split(|b| *b == b'\n').count(), 3);
     assert!(frame.starts_with(b"data: ") && frame.ends_with(b"\n\n"));
     let decoded: Event = serde_json::from_slice(&frame[6..frame.len() - 2]).unwrap();
-    assert_eq!(decoded, events[1]);
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap(),
+        crabber_agui::ag_ui_core::processing::normalize_producer_event(&events[1]).unwrap()
+    );
     assert_eq!(encode_sse(&events[1], 1), Err(ProjectionError::Limit));
     assert_eq!(types(&end(&mut p, "completed")), ["TEXT_MESSAGE_END"]);
     commit(&mut p);
@@ -489,7 +492,7 @@ fn argument_call_message_event_and_batch_limits_have_exact_edges() {
     start(&mut p);
     message(&mut p);
     let event = text(&mut p, "edge").pop().unwrap();
-    let size = serde_json::to_vec(&event).unwrap().len();
+    let size = crabber_agui::frame_budget(&event, 4096).unwrap();
     assert!(encode_sse(&event, size).is_ok());
     assert_eq!(encode_sse(&event, size - 1), Err(ProjectionError::Limit));
 }
