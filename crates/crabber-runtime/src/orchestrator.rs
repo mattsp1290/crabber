@@ -252,6 +252,8 @@ pub enum RuntimeError {
     AttemptCleanupIncomplete { run_id: RunId },
     #[error("tool execution outcome requires reconciliation")]
     ToolOutcomeUnknown { run_id: RunId, call_id: ToolCallId },
+    #[error("run requires its durable continuation claim")]
+    DurableContinuationRequired { run_id: RunId },
     #[error("run paused")]
     Paused,
     #[error("run plan changed since checkpoint")]
@@ -1226,6 +1228,15 @@ impl Orchestrator {
             || (run.status != RunStatus::Paused && run.lease_until > self.clock.now())
         {
             return Err(StoreError::Conflict.into());
+        }
+        if run
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.get("approval").is_some())
+        {
+            return Err(RuntimeError::DurableContinuationRequired {
+                run_id: run.id.clone(),
+            });
         }
         let binding = self.stored_binding(&session.id, run_id).await?;
         if let Some(saved) = &saved {

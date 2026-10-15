@@ -690,7 +690,9 @@ impl Projector {
             // Until implemented, fail closed instead of dropping a public update.
             EventKind::PublicStateSnapshot
             | EventKind::ExecutionAttemptChanged
-            | EventKind::ToolPhaseChanged => {
+            | EventKind::ToolPhaseChanged
+            | EventKind::InteractionChanged
+            | EventKind::ContinuationChanged => {
                 return Err(ProjectionError::Malformed);
             }
         }

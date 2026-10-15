@@ -224,6 +224,38 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Bounded, coherent current approval metadata; never a dispatch capability.
+    async fn approval_snapshot(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+    ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
+    /// Reconcile an original control key without restoring a plan or owner.
+    async fn lookup_approval(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ApprovalReceipt>, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
+    /// Host-authorized response. Identity/policy assertion is recorded, not authenticated.
+    async fn answer_approval(
+        &self,
+        _answer: crate::ApprovalAnswer,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
+    /// Atomically consume the complete accepted set and reserve its next attempt.
+    /// Only a fresh result grants native ownership; replay returns metadata.
+    async fn claim_approval_continuation(
+        &self,
+        _claim: crate::ApprovalContinuationClaim,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
+
     /// Pure capability check for native attempt reservation, one-shot Begin and
     /// atomic logical run conclusion. Custom adapters must opt in only when all
     /// of those operations (including `ReserveBound`'s atomic pristine-admission
@@ -443,6 +475,17 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Freeze the whole prepared batch and its pending approvals, then conclude
+    /// this attempt as suspended in the SAME transaction. Caller first joins
+    /// its resources; no effectful phase in this batch may have started.
+    async fn suspend_for_approval(
+        &self,
+        _batch: crate::ApprovalSuspension,
+        _authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
+
     /// Atomically conclude an owned attempt and its terminal/suspended logical
     /// run, with complete cleanup, events and receipt. The owner must first join
     /// all attempt resources. `PendingInput` leaves every part unchanged.

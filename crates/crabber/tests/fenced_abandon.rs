@@ -1,3 +1,9 @@
+pub use crabber::session::{
+    ApprovalAnswer, ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState,
+    ApprovalError, ApprovalGrant, ApprovalInteraction, ApprovalOutcome, ApprovalReceipt,
+    ApprovalReply, ApprovalResolverClaim, ApprovalSnapshot, ApprovalSuspension, CallApproval,
+    ContinuationTarget, GrantedApproval, GrantedDecision, MAX_APPROVAL_CALLS, PreparedApproval,
+};
 // Compile private Memory fixtures into this test target; no product fault API.
 pub use crabber::session::{
     AdmissionExecutionCapsule, AdmissionExecutionError, AdmissionExecutionRecord,
@@ -19,6 +25,19 @@ pub use crabber::session::{
 mod abandonment;
 #[path = "../../crabber-session/src/abandonment_contract.rs"]
 mod abandonment_contract;
+#[path = "../../crabber-session/src/approval/audit.rs"]
+#[allow(dead_code)]
+mod approval_audit;
+#[path = "../../crabber-session/src/approval/records.rs"]
+#[allow(dead_code)]
+mod approval_records;
+mod approval {
+    pub(crate) use crate::approval_audit::{event, verify_receipt};
+    pub(crate) use crate::approval_records::*;
+}
+#[path = "../../crabber-session/src/approval_contract.rs"]
+#[allow(dead_code)]
+mod approval_contract;
 #[path = "../../crabber-session/src/attempt/records.rs"]
 #[allow(dead_code)]
 mod attempt;

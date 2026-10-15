@@ -69,9 +69,11 @@ impl MemoryStore {
                 verify(&state, receipt)?;
                 Ok(Some(receipt.clone()))
             }
-            Some(OperationReceipt::PublicState(_) | OperationReceipt::Phase(_)) => {
-                Err(Error::SemanticConflict)
-            }
+            Some(
+                OperationReceipt::PublicState(_)
+                | OperationReceipt::Phase(_)
+                | OperationReceipt::Approval(_),
+            ) => Err(Error::SemanticConflict),
             None => Ok(None),
         }
     }
@@ -86,7 +88,7 @@ fn revision(state: &State, session: &SessionId) -> SessionRevision {
 impl MemoryExecution {
     pub(super) fn change_attempt(
         &self,
-        request: AttemptMutation,
+        request: &AttemptMutation,
         authority: Option<&AttemptAuthority>,
     ) -> Result<AttemptMutationOutcome, Error> {
         self.change_attempt_inner(request, authority, None)
@@ -97,102 +99,18 @@ impl MemoryExecution {
         authority: Option<&AttemptAuthority>,
     ) -> Result<AttemptMutationOutcome, Error> {
         conclusion.validate()?;
-        self.change_attempt_inner(conclusion.finish.clone(), authority, Some(conclusion))
+        self.change_attempt_inner(&conclusion.finish, authority, Some(conclusion))
     }
     fn change_attempt_inner(
         &self,
-        request: AttemptMutation,
+        request: &AttemptMutation,
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<AttemptMutationOutcome, Error> {
-        attempt::validate_request(&request)?;
-        let result = self.store.transact(|state| {
-            let run = state
-                .runs
-                .get(&self.fence.run_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if run.id != self.fence.run_id {
-                return Err(Error::UnknownStoreOutcome);
-            }
-            let digest = if let Some(conclusion) = conclusion {
-                conclusion.fingerprint(&run.session_id, &run.id)?
-            } else {
-                request.fingerprint(&run.session_id, &run.id)?
-            };
-            let key = (run.session_id.clone(), request.id.clone());
-            if let Some(replayed) = replay(state, &run, &request, &digest, conclusion)? {
-                return Ok(replayed);
-            }
-            let now = self.store.clock.now();
-            attempt::verify_run(&run, &self.fence, now)?;
-            if state
-                .admission_executions
-                .get(&run.id)
-                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-            {
-                return Err(Error::StaleOwner);
-            }
-            let current = revision(state, &run.session_id);
-            if current != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            if let Some(conclusion) = conclusion {
-                check_boundary(state, &run, conclusion)?;
-            }
-            if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
-                pristine::check(state, &run)?;
-            }
-            let id = &request.command.target().id;
-            let (record, grant) =
-                prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
-            apply_run_transition(state, &run, &request, conclusion, now)?;
-            let revision = revision(state, &run.session_id)
-                .next()
-                .map_err(|_| Error::RevisionExhausted)?;
-            let authority = if grant {
-                Some(record.authority()?)
-            } else {
-                None
-            };
-            let mut event = if let Some(conclusion) = conclusion {
-                crate::attempt_conclusion::event(
-                    &run,
-                    conclusion.validate()?,
-                    &record.snapshot,
-                    &request.id,
-                    digest.clone(),
-                    now,
-                )?
-            } else {
-                attempt::event(&run, &request, &record.snapshot, now)?
-            };
-            let cursor = EventCursor(state.events.len() as u64 + 1);
-            event.cursor = Some(cursor);
-            let receipt = AttemptReceipt {
-                operation_id: request.id,
-                semantic_digest: digest,
-                revision,
-                event_cursor: cursor,
-                attempt: record.snapshot.clone(),
-            };
-            state.attempts.insert(id.clone(), record);
-            bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
-            state.events.push(event);
-            state
-                .operation_receipts
-                .insert(key, OperationReceipt::Attempt(receipt.clone()));
-            #[cfg(test)]
-            if self
-                .store
-                .attempt_fault
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                return Err(Error::UnknownStoreOutcome);
-            }
-            Ok(AttemptMutationOutcome::Applied { receipt, authority })
-        });
+        attempt::validate_request(request)?;
+        let result = self
+            .store
+            .transact(|state| self.apply_attempt(state, request.clone(), authority, conclusion));
         #[cfg(test)]
         if self
             .store
@@ -204,6 +122,106 @@ impl MemoryExecution {
             return Err(Error::UnknownStoreOutcome);
         }
         result
+    }
+    pub(super) fn apply_attempt(
+        &self,
+        state: &mut State,
+        request: AttemptMutation,
+        authority: Option<&AttemptAuthority>,
+        conclusion: Option<&crate::AttemptConclusion>,
+    ) -> Result<AttemptMutationOutcome, Error> {
+        attempt::validate_request(&request)?;
+
+        let run = state
+            .runs
+            .get(&self.fence.run_id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        if run.id != self.fence.run_id {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        let digest = if let Some(conclusion) = conclusion {
+            conclusion.fingerprint(&run.session_id, &run.id)?
+        } else {
+            request.fingerprint(&run.session_id, &run.id)?
+        };
+        let key = (run.session_id.clone(), request.id.clone());
+        if let Some(replayed) = replay(state, &run, &request, &digest, conclusion)? {
+            return Ok(replayed);
+        }
+        let now = self.store.clock.now();
+        attempt::verify_run(&run, &self.fence, now)?;
+        if state
+            .admission_executions
+            .get(&run.id)
+            .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+        {
+            return Err(Error::StaleOwner);
+        }
+        super::approval::guard_attempt(state, &run, &request)?;
+        let current = revision(state, &run.session_id);
+        if current != request.expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        if let Some(conclusion) = conclusion {
+            check_boundary(state, &run, conclusion)?;
+        }
+        if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
+            pristine::check(state, &run)?;
+        }
+        let id = &request.command.target().id;
+        let (record, grant) =
+            prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
+        apply_run_transition(state, &run, &request, conclusion, now)?;
+        if conclusion.is_some_and(|c| matches!(c.boundary, crate::RunBoundary::Terminal { .. })) {
+            super::approval::release_terminal(state, &run, &request)?;
+        }
+
+        let revision = revision(state, &run.session_id)
+            .next()
+            .map_err(|_| Error::RevisionExhausted)?;
+        let authority = if grant {
+            Some(record.authority()?)
+        } else {
+            None
+        };
+        let mut event = if let Some(conclusion) = conclusion {
+            crate::attempt_conclusion::event(
+                &run,
+                conclusion.validate()?,
+                &record.snapshot,
+                &request.id,
+                digest.clone(),
+                now,
+            )?
+        } else {
+            attempt::event(&run, &request, &record.snapshot, now)?
+        };
+        let cursor = EventCursor(state.events.len() as u64 + 1);
+        event.cursor = Some(cursor);
+        let receipt = AttemptReceipt {
+            operation_id: request.id,
+            semantic_digest: digest,
+            revision,
+            event_cursor: cursor,
+            attempt: record.snapshot.clone(),
+        };
+        state.attempts.insert(id.clone(), record);
+        bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
+        state.events.push(event);
+        state
+            .operation_receipts
+            .insert(key, OperationReceipt::Attempt(receipt.clone()));
+        #[cfg(test)]
+        if self
+            .store
+            .attempt_fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok(AttemptMutationOutcome::Applied { receipt, authority })
     }
 }
 

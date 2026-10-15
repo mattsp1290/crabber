@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 mod transition;
 use crabber_core::{EventKind, EventRecord, Run};
 use time::OffsetDateTime;
-pub(crate) use transition::PhaseRecord;
+pub(crate) use transition::{PhaseRecord, call_binding};
 
 /// Public audit information excludes output bodies and native authority tokens.
 /// The semantic digest binds the original command, including supplied output.

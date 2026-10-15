@@ -1,5 +1,7 @@
 #[path = "memory/admission.rs"]
 mod admission;
+#[path = "memory/approval.rs"]
+mod approval;
 use admission::{admit_keyed_transaction, admit_transaction};
 #[path = "memory/abandon.rs"]
 mod abandon;
@@ -46,6 +48,8 @@ pub struct MemoryStore {
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    approval_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
@@ -55,6 +59,8 @@ struct State {
     abandon_fail_after_tools: bool,
     #[cfg(test)]
     abandon_fault_boundary: u8,
+    approvals: BTreeMap<crabber_core::ContinuationId, crate::approval::ApprovalRecord>,
+    approval_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     admission_executions: BTreeMap<RunId, crate::AdmissionExecutionRecord>,
     execution_bindings: BTreeMap<RunId, String>,
@@ -79,6 +85,7 @@ struct State {
 
 #[derive(Clone)]
 enum OperationReceipt {
+    Approval(crate::ApprovalReceipt),
     PublicState(crate::PublicStateReceipt),
     Attempt(crate::AttemptReceipt),
     Phase(crate::PhaseReceipt),
@@ -123,6 +130,8 @@ impl MemoryStore {
             attempt_fault: Arc::default(),
             #[cfg(test)]
             phase_fault: Arc::default(),
+            #[cfg(test)]
+            approval_fault: Arc::default(),
             #[cfg(test)]
             binding_fault: Arc::default(),
         }
@@ -228,6 +237,8 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
         event.kind,
         crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
+            | crabber_core::EventKind::InteractionChanged
+            | crabber_core::EventKind::ContinuationChanged
             | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(
@@ -357,6 +368,33 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn approval_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
+        self.read_approval(session, run)
+    }
+    async fn lookup_approval(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ApprovalReceipt>, crate::ApprovalError> {
+        self.read_approval_receipt(session, id)
+    }
+    async fn answer_approval(
+        &self,
+        answer: crate::ApprovalAnswer,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.answer_approval_inner(&answer)
+    }
+    async fn claim_approval_continuation(
+        &self,
+        claim: crate::ApprovalContinuationClaim,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        self.claim_approval(&claim)
+    }
+
     fn supports_owned_attempts(&self) -> bool {
         true
     }
@@ -678,6 +716,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn suspend_for_approval(
+        &self,
+        batch: crate::ApprovalSuspension,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
+        self.suspend_approval(batch, &authority)
+    }
+
     async fn conclude_attempt(
         &self,
         conclusion: crate::AttemptConclusion,
@@ -706,7 +752,7 @@ impl ExecutionStore for MemoryExecution {
         request: crate::AttemptMutation,
         authority: Option<crate::AttemptAuthority>,
     ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
-        self.change_attempt(request, authority.as_ref())
+        self.change_attempt(&request, authority.as_ref())
     }
 
     async fn mutate_public_state(

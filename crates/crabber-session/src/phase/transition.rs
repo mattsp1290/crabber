@@ -294,7 +294,7 @@ fn verify_parent(
     Ok(())
 }
 
-fn call_binding(call: &ToolCallRecord) -> Result<InputFingerprint, PhaseError> {
+pub(crate) fn call_binding(call: &ToolCallRecord) -> Result<InputFingerprint, PhaseError> {
     let mut value = serde_json::to_value((
         "crabber.phase-call.v1",
         &call.run_id,

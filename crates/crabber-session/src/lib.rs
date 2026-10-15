@@ -19,6 +19,9 @@ pub use execution_binding::{
     BoundAdmitRequest, BoundKeyedAdmitRequest, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT,
     PROVIDER_BINDING_COMPONENT, RetainedExecutionBinding,
 };
+mod approval;
+pub mod approval_contract;
+pub use approval::*;
 mod attempt;
 mod attempt_conclusion;
 pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
@@ -73,6 +76,10 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_approval_contract() {
+        crate::approval_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
     #[tokio::test]
     async fn memory_execution_binding_fault_contract() {
         let store = crate::MemoryStore::new();

@@ -100,6 +100,7 @@ id!(InvocationId);
 id!(QueueId);
 id!(ControlId);
 id!(InteractionId);
+id!(ContinuationId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -329,6 +330,8 @@ pub struct EventCursor(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    InteractionChanged,
+    ContinuationChanged,
     ExecutionAttemptChanged,
     ToolPhaseChanged,
     PublicStateSnapshot,

@@ -217,6 +217,8 @@ async fn insert_event(
         event.kind,
         crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
+            | crabber_core::EventKind::InteractionChanged
+            | crabber_core::EventKind::ContinuationChanged
             | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(
