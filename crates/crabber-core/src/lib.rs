@@ -3,6 +3,11 @@
 /// Name of the core crate, retained for the workspace scaffold's smoke test.
 pub const CRATE_NAME: &str = "crabber-core";
 
+mod execution_identity;
+pub use execution_identity::{
+    AttemptGeneration, ContinuationGeneration, PhaseGeneration, SessionRevision,
+};
+
 mod provider_binding;
 pub use provider_binding::{ProviderBindingDescriptor, ProviderBindingLimits};
 
@@ -64,6 +69,13 @@ id!(PartId);
 id!(ToolCallId);
 id!(EpochId);
 id!(TurnId);
+// Correlation only: these IDs never substitute for private store fences.
+id!(AttemptId);
+id!(PhaseId);
+id!(InvocationId);
+id!(QueueId);
+id!(ControlId);
+id!(InteractionId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
