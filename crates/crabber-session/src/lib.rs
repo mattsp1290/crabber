@@ -28,6 +28,7 @@ pub use snapshot::{
     SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
     SnapshotRequest, SnapshotUsage,
 };
+pub mod revision_contract;
 pub mod storetest;
 
 pub use memory::MemoryStore;
@@ -43,6 +44,11 @@ pub use store::{
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn memory_revision_contract() {
+        crate::revision_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+    }
+
     #[tokio::test]
     async fn memory_admission_contract() {
         crate::admission_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock))

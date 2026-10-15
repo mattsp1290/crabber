@@ -311,3 +311,9 @@ async fn failed_commit_rolls_back_before_returning() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn sqlite_revision_contract() {
+    let (store, _path, _directory) = temp_store().await;
+    crate::revision_contract::run_contract(|clock| store.with_clock(clock)).await;
+}

@@ -115,6 +115,17 @@ pub enum InboxKind {
 /// [`crate::storetest::run_storable_record_contract`].
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Read the opaque revision of public session state/history. Values may have
+    /// gaps; never infer an operation count. Lease/token refresh is private and
+    /// does not advance it. Unstable until durable-host qualification.
+    /// This scalar alone does not validate a separately captured history snapshot.
+    /// Custom adapters must implement/forward the full mutation contract.
+    async fn session_revision(
+        &self,
+        _session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError>;
     /// Atomically admit a stable first/existing session ID and retain its receipt.
     /// Validate message/session identity before replay; resolve key conflict/replay

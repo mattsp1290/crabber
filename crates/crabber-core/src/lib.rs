@@ -399,6 +399,8 @@ pub enum CoreError {
     AdmissionRecoveryRequired,
     #[error("bounded snapshots are unsupported by this store")]
     SnapshotUnsupported,
+    #[error("durable host operations are unsupported by this store")]
+    HostUnsupported,
     #[error("session identity does not match")]
     SessionIdentityMismatch,
     #[error("session is busy")]

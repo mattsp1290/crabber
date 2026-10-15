@@ -78,6 +78,14 @@ separation, context, null-versus-absent state, captured revision and continuatio
 generation. Construction does not grant role, result or filesystem authority.
 The envelope is not yet wired into Agent admission or durable execution capsules.
 
+`Store::session_revision` reads the current opaque public revision. Public history,
+call, epoch, event and accepted same-run input mutations advance it atomically;
+lease refresh, private extension state, failed writes and receipt replay do not.
+Values can have gaps and are separate from event cursors and history-snapshot
+invalidation counters. Custom stores can run `revision_contract::run_contract`.
+This scalar alone does not validate a separately captured history snapshot;
+coherent public snapshots and conditional admission are still being implemented.
+
 Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
 preserved custom registrations and defaults, exact retry and root drift,

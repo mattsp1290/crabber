@@ -18,6 +18,21 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        let value: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+            .bind(&session.0)
+            .fetch_optional(&self.readers)
+            .await
+            .map_err(db)?
+            .ok_or(StoreError::NotFound)?;
+        crabber_core::SessionRevision::new(
+            u64::try_from(value)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?,
+        )
+    }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         let mut tx = self.begin_write().await?;
         let result = async {
@@ -367,6 +382,7 @@ impl Store for SqliteStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
+            super::records::bump_public_revision(&mut tx, session).await?;
             Ok(())
         }
         .await;

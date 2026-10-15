@@ -99,6 +99,20 @@ pub(super) async fn load_run(
         .ok_or(StoreError::NotFound)?;
     decode_row(&row, "data")
 }
+pub(super) async fn bump_public_revision(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    let changed = sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1 AND public_revision<9223372036854775807")
+        .bind(&session.0).execute(&mut **tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(StoreError::Validation(
+            "public session revision exhausted".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
@@ -138,6 +152,7 @@ pub(super) async fn insert_message(
     for part in &message.parts {
         insert_part(tx, part).await?;
     }
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 pub(super) async fn insert_part(
@@ -177,6 +192,7 @@ pub(super) async fn insert_event(
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 pub(super) async fn messages(

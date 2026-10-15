@@ -136,6 +136,20 @@ async fn load_run(
         .ok_or(StoreError::NotFound)?;
     decode(row.get("data"))
 }
+async fn bump_public_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    let changed = sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1 AND public_revision<9223372036854775807")
+        .bind(&session.0).execute(&mut **tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(StoreError::Validation(
+            "public session revision exhausted".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn insert_message(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
@@ -168,6 +182,7 @@ async fn insert_message(
     for part in &message.parts {
         insert_part(tx, part).await?;
     }
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 async fn insert_part(tx: &mut Transaction<'_, Postgres>, part: &Part) -> Result<(), StoreError> {
@@ -209,6 +224,7 @@ async fn insert_event(
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+    bump_public_revision(tx, &run.session_id).await?;
     Ok(())
 }
 async fn messages(
@@ -602,6 +618,21 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        let value: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+            .bind(&session.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?
+            .ok_or(StoreError::NotFound)?;
+        crabber_core::SessionRevision::new(
+            u64::try_from(value)
+                .map_err(|_| StoreError::Validation("invalid public session revision".into()))?,
+        )
+    }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         let session = request
             .session_id
@@ -898,6 +929,7 @@ impl Store for PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        bump_public_revision(&mut tx, session).await?;
         tx.commit().await.map_err(db)
     }
 }
@@ -958,6 +990,7 @@ impl ExecutionStore for PostgresExecution {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        bump_public_revision(&mut tx, &run.session_id).await?;
         tx.commit().await.map_err(db)
     }
     async fn append_event(&self, event: EventRecord) -> Result<(), StoreError> {
@@ -1078,6 +1111,7 @@ impl ExecutionStore for PostgresExecution {
             .map_err(db)?;
         run.epoch_id = epoch.id;
         save_run(&mut tx, &run).await?;
+        bump_public_revision(&mut tx, &run.session_id).await?;
         tx.commit().await.map_err(db)
     }
     async fn finish_epoch(&self, id: &EpochId, summary: Message) -> Result<(), StoreError> {
@@ -1232,6 +1266,9 @@ impl PostgresExecution {
                 .map_err(db)?;
             claimed.push(message);
         }
+        if !into_history && !claimed.is_empty() {
+            bump_public_revision(&mut tx, &run.session_id).await?;
+        }
         tx.commit().await.map_err(db)?;
         Ok(claimed)
     }
@@ -1289,6 +1326,15 @@ mod tests {
             lease: Duration::from_secs(30),
         }
     }
+    #[tokio::test]
+    async fn postgres_revision_contract() {
+        let Some(url) = test_url() else { return };
+        let _guard = TEST_LOCK.lock().await;
+        PostgresStore::migrate(&url).await.unwrap();
+        let store = PostgresStore::connect(&url).await.unwrap();
+        crate::revision_contract::run_contract(|clock| store.with_clock(clock)).await;
+    }
+
     #[tokio::test]
     async fn postgres_contract() {
         let Some(url) = test_url() else { return };

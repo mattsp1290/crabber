@@ -48,6 +48,7 @@ struct State {
     calls: BTreeMap<ToolCallId, ToolCallRecord>,
     call_order: Vec<ToolCallId>,
     snapshot_revisions: BTreeMap<SessionId, u64>,
+    public_revisions: BTreeMap<SessionId, crabber_core::SessionRevision>,
     epochs: BTreeMap<EpochId, ContextEpoch>,
     inbox: Vec<InboxRow>,
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
@@ -142,6 +143,18 @@ impl MemoryStore {
     }
 }
 
+fn bump_public_revision(state: &mut State, session: &SessionId) -> Result<(), StoreError> {
+    let current = state
+        .public_revisions
+        .get(session)
+        .copied()
+        .unwrap_or(crabber_core::SessionRevision::INITIAL);
+    state
+        .public_revisions
+        .insert(session.clone(), current.next()?);
+    Ok(())
+}
+
 fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), StoreError> {
     if message.session_id != run.session_id || message.run_id.as_ref() != Some(&run.id) {
         return Err(StoreError::Validation(
@@ -159,6 +172,7 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
         }
     }
     crate::ensure_storable(&message)?;
+    bump_public_revision(state, &run.session_id)?;
     state.messages.push(message);
     Ok(())
 }
@@ -176,6 +190,7 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
     }
     event.cursor = Some(EventCursor(state.events.len() as u64 + 1));
     crate::ensure_storable(&event)?;
+    bump_public_revision(state, &run.session_id)?;
     state.events.push(event);
     Ok(())
 }
@@ -389,6 +404,20 @@ fn admit_transaction(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn session_revision(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_core::SessionRevision, StoreError> {
+        let state = self.state.lock().expect("memory store poisoned");
+        if !state.sessions.contains_key(session) {
+            return Err(StoreError::NotFound);
+        }
+        Ok(state
+            .public_revisions
+            .get(session)
+            .copied()
+            .unwrap_or(crabber_core::SessionRevision::INITIAL))
+    }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.transact(|state| admit_transaction(state, &request, self.clock.now(), false))
     }
@@ -675,6 +704,7 @@ impl Store for MemoryStore {
                 message,
                 consumed_by_run: None,
             });
+            bump_public_revision(state, session)?;
             Ok(())
         })
     }
@@ -730,6 +760,7 @@ impl ExecutionStore for MemoryExecution {
                 .snapshot_revisions
                 .entry(run.session_id.clone())
                 .or_default() += 1;
+            bump_public_revision(state, &run.session_id)?;
             Ok(())
         })
     }
@@ -828,6 +859,7 @@ impl ExecutionStore for MemoryExecution {
                 .epoch_id = epoch.id.clone();
             crate::ensure_storable(&epoch)?;
             state.epochs.insert(epoch.id.clone(), epoch);
+            bump_public_revision(state, &run.session_id)?;
             Ok(())
         })
     }
@@ -958,6 +990,9 @@ impl ExecutionStore for MemoryExecution {
                     row.consumed_by_run = Some(run.id.clone());
                     claimed.push(row.message.clone());
                 }
+            }
+            if !claimed.is_empty() {
+                bump_public_revision(state, &run.session_id)?;
             }
             Ok(claimed)
         })

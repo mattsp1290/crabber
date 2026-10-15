@@ -90,6 +90,7 @@ impl ExecutionStore for SqliteExecution {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+            super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             Ok(())
         }
         .await;
@@ -227,6 +228,7 @@ impl ExecutionStore for SqliteExecution {
                 .map_err(db)?;
             run.epoch_id = epoch.id;
             save_run(&mut tx, &run).await?;
+            super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             Ok(())
         }
         .await;
@@ -430,6 +432,9 @@ impl SqliteExecution {
                     .await
                     .map_err(db)?;
                 claimed.push(message);
+            }
+            if !into_history && !claimed.is_empty() {
+                super::records::bump_public_revision(&mut tx, &run.session_id).await?;
             }
             Ok(claimed)
         }
