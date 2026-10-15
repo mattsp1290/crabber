@@ -969,8 +969,9 @@ impl Orchestrator {
     /// Joins retained initial, keyed-recovery and resume workers within a shared
     /// deadline. A dropped run handle leaves its worker retained here.
     /// This does not stop ingress, cancel work, or prove durable settlement or
-    /// extension resource cleanup. Inspect `pending` and `pending_preparations`;
-    /// the host must stop its ingress before draining.
+    /// external resource cleanup. Inspect `pending`, `pending_preparations` and
+    /// `resources` (sealed state, pending joins and failures). Active tool scopes
+    /// remain open; the host must stop its ingress before a final drain.
     pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
         self.execution_tasks.drain(bound).await
     }
@@ -3732,6 +3733,10 @@ impl Orchestrator {
             })?;
         ensure_lease(lease_lost)?;
         let child_cancellation = cancellation.child_token();
+        let resources = self
+            .execution_tasks
+            .tool_resources(run_id.clone(), call.id.clone());
+        let _resource_guard = resources.guard();
         let mut mark_error = false;
         let mut pipeline_failed = false;
         let (class, input, resolved, outcome): (_, _, _, Result<crabber_core::ToolOutput, String>) =
@@ -3751,6 +3756,7 @@ impl Orchestrator {
                     )
                     .with_cancellation(child_cancellation.clone())
                     .with_cleanup(self.pipeline_cleanup.clone());
+                    let task_resources = resources.resources();
                     let run = tokio::select! {
                         biased;
                         () = cancellation.cancelled() => {
@@ -3768,6 +3774,7 @@ impl Orchestrator {
                         cancellation,
                         lease_lost,
                         &pipeline_context,
+                        &task_resources,
                         ) => result.inspect_err(|error| {
                             measurement.observation.reason = match error {
                                 RuntimeError::LeaseLost => TerminalReason::LeaseLost,
@@ -3963,6 +3970,7 @@ impl Orchestrator {
         cancellation: &CancellationToken,
         lease_lost: &AtomicBool,
         pipeline_context: &ToolResultContext,
+        resources: &crabber_extension::ToolResources,
     ) -> Result<ToolRun, RuntimeError> {
         let (session_id, workspace) = (&session.id, session.workspace.clone());
         let guard_decisions: Vec<_> = plan
@@ -4061,6 +4069,7 @@ impl Orchestrator {
                 arguments: arguments.clone(),
             })),
         );
+        let context = context.with_resources(resources.clone());
         let executor = Arc::clone(&tool.executor);
         let authorized_arguments = arguments.clone();
         let declared_error = Arc::new(AtomicBool::new(false));

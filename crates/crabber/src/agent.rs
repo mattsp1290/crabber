@@ -520,8 +520,8 @@ impl Agent {
     /// Await retained initial, keyed-recovery and resume worker joins within a deadline.
     /// Dropping a run handle detaches its result subscription; it does not
     /// cancel the worker. Stop ingress before draining. This does not cancel
-    /// work or certify extension resource cleanup or
-    /// durable settlement; inspect `pending`, `pending_preparations`, and durable state.
+    /// work or certify external resource cleanup or durable settlement. Inspect
+    /// `pending`, `pending_preparations`, tool-task `resources`, and durable state.
     pub async fn drain_execution_tasks(
         &self,
         bound: Duration,

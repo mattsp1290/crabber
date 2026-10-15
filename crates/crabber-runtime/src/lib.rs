@@ -6,7 +6,7 @@ pub use execution_events::RunEvents;
 mod execution_tasks;
 pub use execution_tasks::{
     ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, PreparationTaskId,
-    TaskTermination,
+    TaskTermination, ToolResourceDrain,
 };
 mod observation;
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};

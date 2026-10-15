@@ -93,6 +93,7 @@ pub struct ToolContext {
     workspace: WorkspaceContext,
     progress: ProgressSink,
     approval: Option<Arc<dyn ApprovalFacade>>,
+    resources: crate::ToolResources,
 }
 impl ToolContext {
     #[must_use]
@@ -116,7 +117,18 @@ impl ToolContext {
             workspace,
             progress,
             approval,
+            resources: crate::ToolResources::default(),
         }
+    }
+    /// Attach a host-owned task scope; standalone contexts reject registration.
+    #[must_use]
+    pub fn with_resources(mut self, resources: crate::ToolResources) -> Self {
+        self.resources = resources;
+        self
+    }
+    #[must_use]
+    pub fn resources(&self) -> &crate::ToolResources {
+        &self.resources
     }
     /// Authoritative workspace identity of this call's session. Read-only.
     #[must_use]

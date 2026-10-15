@@ -325,3 +325,6 @@ async fn empty_workspace_context_stays_unavailable_and_close_without_extensions_
     ));
     assert_eq!(provider.requests().len(), 2);
 }
+
+#[path = "server_host/tool_resources.rs"]
+mod tool_resources;

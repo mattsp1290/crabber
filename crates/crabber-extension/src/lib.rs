@@ -12,9 +12,14 @@ mod result_transform;
 pub use prompt_contribution::*;
 mod state;
 mod tool;
+mod tool_resources;
 pub use tool::{
     ApprovalFacade, HostServices, ProgressSink, Subprocess, ToolContext, UserPrompter,
     WorkspaceContext, WorkspaceFs,
+};
+pub use tool_resources::{
+    MAX_TOOL_RESOURCE_TASKS, ResourceDrain, ResourceFailure, ResourceRegistrationError,
+    TOOL_RESOURCE_CONTRACT_VERSION, ToolResourceGuard, ToolResourceOwner, ToolResources,
 };
 
 pub use result_transform::{

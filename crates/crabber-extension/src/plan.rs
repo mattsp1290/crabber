@@ -74,6 +74,14 @@ pub fn compute_fingerprint(components: &[ComponentIdentity]) -> PlanFingerprint 
         id: RESULT_TRANSFORM_CONTRACT_COMPONENT_ID.into(),
         version: RESULT_TRANSFORM_CONTRACT_VERSION.to_string(),
     });
+    canonical.push(ComponentIdentity {
+        id: "contract:crabber/tool/resources".into(),
+        version: format!(
+            "{}:{}",
+            crate::TOOL_RESOURCE_CONTRACT_VERSION,
+            crate::MAX_TOOL_RESOURCE_TASKS
+        ),
+    });
     canonical.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
     let bytes = serde_json::to_vec(&canonical).expect("component identities serialize");
     PlanFingerprint(Sha256::digest(bytes).into())
@@ -398,10 +406,9 @@ mod tests {
         );
     }
 
-    /// Re-pinned for D9 (epic crabber-miia): the fingerprint covers component
-    /// identities plus the result-transform contract component at version 3,
-    /// so both hashes differ from the pre-contract values (1e222d9f..., 3defff03...,
-    /// pinned at 5e3046a). Workspace values are not inputs.
+    /// Pins component identities plus result-transform version 3 and the
+    /// native tool resource contract (version 1, capacity 64). Workspace routing
+    /// values remain excluded; old execution plans fail closed on restoration.
     #[test]
     fn fingerprint_of_fixed_components_is_pinned() {
         let components = [
@@ -416,7 +423,7 @@ mod tests {
         ];
         assert_eq!(
             compute_fingerprint(&components).to_string(),
-            "c34d593211f3acf1029840a23bb7bb34e1652ae3fe4b4b0a996004801a776ab1"
+            "161885cf6d0af0eff06a2a8328bf72a84f4b31149c156be629865ea0f3168594"
         );
         let provider = StaticPlanProvider::new(
             Vec::new(),
@@ -428,7 +435,7 @@ mod tests {
         );
         assert_eq!(
             provider.plan.fingerprint.to_string(),
-            "fb30525cbcdaccf3f321fde632533a3ccd995ff91bbae316029707372f08ae6d"
+            "a63503dbc0ad3aea4b24d8e54ee827b21dae40fec1d88c48d2281ce1148a6f84"
         );
     }
 

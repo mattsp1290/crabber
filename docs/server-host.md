@@ -78,6 +78,26 @@ are outside this ownership scope. Native attempt/phase integration, durable
 cancellation and full orderly close remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
+Native tools can register task-owned resources with `ToolContext::resources()`.
+A call accepts at most 64 tasks. Registration is sealed when its tool-call future
+returns, is cancelled or panics; retained context clones then receive a typed
+registration error. The cooperative closing future does not abort work. Include
+all resource cleanup in the registered future and return `ResourceFailure` if
+cleanup cannot be established. A standalone context without an owner rejects
+registration instead of detaching work.
+
+The runtime retains the actual task joins independently of the worker result.
+`drain_execution_tasks` also reports `resources`, keyed by run and call: inspect
+`sealed`, `pending` and `failures`. An active scope stays open during a snapshot
+drain; a sealed scope resumes its retained joins under the remaining deadline.
+A timeout preserves ownership, and failures remain visible across repeated drains.
+Worker completion and a committed logical outcome do not imply those resources
+were cleaned up. These are local task observations; durable phase quiescence,
+external-effect reconciliation and explicit session-owned job transfer are still
+part of the pending native phase integration. They must not be inferred from
+this report. Execution fingerprints include resource contract version 1 and its
+capacity; old plans fail closed and require their matching binary to finish.
+
 Register shareable state explicitly with `shared_tool`, `shared_extension`,
 `shared_wasm_extension`, or `shared_host_services`. These replace the old builder
 names without compatibility aliases. A scope filters visibility of the same

@@ -80,3 +80,34 @@ async fn panic_payload_drop_cannot_destroy_retained_join_evidence() {
     assert_eq!(tasks.join(&task).await, TaskTermination::Panicked);
     assert_eq!(tasks.pending().0, [] as [RunId; 0]);
 }
+
+#[tokio::test]
+async fn resource_drain_cannot_hide_a_worker_started_during_its_wait() {
+    let tasks = ExecutionTasks::default();
+    let scope = tasks.tool_resources(RunId::new(), ToolCallId::new());
+    let release = Arc::new(Notify::new());
+    let wait = release.clone();
+    scope
+        .resources()
+        .spawn(async move {
+            wait.notified().await;
+            Ok(())
+        })
+        .unwrap();
+    scope.close();
+    let mut drain = Box::pin(tasks.drain(Duration::from_millis(10)));
+    assert!(futures::poll!(drain.as_mut()).is_pending());
+    let new_run = RunId::new();
+    let worker = tasks.spawn(new_run.clone(), async {
+        std::future::pending::<()>().await;
+    });
+    let report = drain.await;
+    assert!(report.pending.contains(&new_run));
+    release.notify_one();
+    // Explicitly stop this test-only worker; production drains never abort work.
+    if let JoinState::Running(handle) = &*worker.join.lock().await {
+        handle.abort();
+    }
+    assert_eq!(tasks.join(&worker).await, TaskTermination::Cancelled);
+    tasks.drain(Duration::from_secs(1)).await;
+}
