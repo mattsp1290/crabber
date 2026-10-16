@@ -41,9 +41,24 @@ async fn expired_unstarted_refuses_actual_begin_projection_restore() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("UPDATE sessions SET public_revision=$2 WHERE id=$1")
+    sqlx::query("SAVEPOINT retain_revision")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // The native-era Session guard independently refuses a public revision
+    // rewind. Keep that guard intact; restore only mutations it permits.
+    let rewind = sqlx::query("UPDATE sessions SET public_revision=$2 WHERE id=$1")
         .bind(&admitted.session.id.0)
         .bind(i64::try_from(reserved.revision.get()).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+    assert!(
+        rewind
+            .to_string()
+            .contains("crabber_session_identity_immutable")
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT retain_revision")
         .execute(&mut *tx)
         .await
         .unwrap();
