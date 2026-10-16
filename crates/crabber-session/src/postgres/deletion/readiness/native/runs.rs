@@ -1,18 +1,21 @@
 //! Narrow current fence and the independent immutable issuance chain.
 //! Missing legacy issuance never becomes positive ownership coverage.
+mod sources;
 mod terminal;
 use crate::native_parent::{RunIssuance, RunState};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{RunId, RunStatus, SessionId};
 use sqlx::{Postgres, Row, Transaction};
+/// True authenticates the original keyed admission and its terminal domain.
+/// Noninitial claim/dispatch resource coverage is separate and remains unknown.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
     status: RunStatus,
     proof: &mut Proof,
-) -> Result<()> {
+) -> Result<bool> {
     super::super::super::super::read_proof::charge(
         tx,
         sqlx::query_scalar(TOKEN_COST).bind(&session.0).bind(&run.0),
@@ -32,22 +35,27 @@ pub(super) async fn verify(
         &token.ok_or_else(|| unknown("current Run token"))?,
     )
     .map_err(unknown)?;
-    if let Some(latest) = journal(tx, session, run, proof).await?
+    let (initial, latest) = journal(tx, session, run, proof).await?;
+    if let Some(latest) = latest
         && latest != expected
     {
         return Err(unknown("current Run issuance"));
     }
-    terminal::verify(tx, session, run, status, proof).await?;
-    Ok(())
+    let admitted = sources::verify(tx, session, run, initial.as_ref(), proof).await?;
+    let terminal = terminal::verify(tx, session, run, status, proof).await?;
+    let abandoned =
+        super::super::super::super::abandon_history::verify(tx, session, run, proof).await?;
+    Ok(admitted && (terminal || abandoned))
 }
 async fn journal(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
     proof: &mut Proof,
-) -> Result<Option<RunState>> {
+) -> Result<(Option<RunIssuance>, Option<RunState>)> {
     let mut after = 0_i64;
     let mut latest = None;
+    let mut initial = None;
     loop {
         let rows = sqlx::query(JOURNAL)
             .bind(&session.0)
@@ -58,7 +66,7 @@ async fn journal(
             .await
             .map_err(unknown)?;
         if rows.is_empty() {
-            return Ok(latest);
+            return Ok((initial, latest));
         }
         for row in &rows {
             proof.charge(
@@ -85,7 +93,10 @@ async fn journal(
                 return Err(unknown("Run issuance scope"));
             }
             after = sequence;
-            latest = Some(source.state);
+            latest = Some(source.state.clone());
+            if sequence == 1 {
+                initial = Some(source);
+            }
         }
     }
 }

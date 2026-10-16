@@ -33,6 +33,8 @@ mod purge;
 mod purge_tests;
 #[path = "deletion/readiness.rs"]
 mod readiness;
+#[path = "deletion/run_history.rs"]
+mod run_history;
 #[cfg(test)]
 #[path = "deletion/snapshot_tests.rs"]
 mod snapshot_tests;

@@ -47,7 +47,7 @@ async fn check(
     if cross_scope {
         return Err(unknown("relational scope"));
     }
-    native::runtime(tx, session, &mut proof).await?;
+    let unproven_run_sources = native::runtime(tx, session, &mut proof).await?;
     super::super::fork::verify_imported_history(tx, session, &mut proof).await?;
     let unknown_native = native::attempts(tx, session, &mut proof).await?;
     let unknown_calls = native::phases(tx, session, &mut proof).await?;
@@ -57,7 +57,9 @@ async fn check(
     domains::pending_input(tx, session).await?;
     domains::controls(tx, session, &mut proof).await?;
     let unknown_owner = domains::owners(tx, session, &mut proof).await?;
-    if unknown_native || unknown_calls || unknown_owner {
+    // Authenticated native history still requires a fixed known whole-Run
+    // Runtime resource policy. The retained-Run gate remains conservative.
+    if unproven_run_sources || unknown_native || unknown_calls || unknown_owner {
         return Err(Failure::Blocked(DeletionBlocker::OwnershipUnknown));
     }
     Ok(VerifiedScope::from_coverage(coverage))

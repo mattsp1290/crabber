@@ -24,12 +24,13 @@ pub(super) async fn runtime(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     proof: &mut Proof,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut unproven = false;
     let mut after = String::new();
     loop {
         let ids = run_ids(tx, session, &after, proof).await?;
         if ids.is_empty() {
-            return Ok(());
+            return Ok(unproven);
         }
         for id in ids {
             let facts = super::super::super::run_facts::read(tx, session, &id, proof).await?;
@@ -39,9 +40,7 @@ pub(super) async fn runtime(
             ) {
                 return Err(blocked(DeletionBlocker::Runtime));
             }
-            runs::verify(tx, session, &id, facts.status, proof).await?;
-            // A verified terminal domain is still not per-Run resource coverage.
-            super::super::super::abandon_history::verify(tx, session, &id, proof).await?;
+            unproven |= !runs::verify(tx, session, &id, facts.status, proof).await?;
             after = id.0;
         }
     }

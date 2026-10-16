@@ -1,5 +1,4 @@
 //! Shared durable evidence and settlement artifacts for store implementations.
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "abandonment/history.rs"]
 pub(crate) mod history;
 use crate::StoreError;

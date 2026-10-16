@@ -69,6 +69,7 @@ fn verify(
         super::super::native_parent::verify_run(state, run).map_err(unknown)?;
     }
     super::owned::verify(state, session, proof)?;
+    let unproven_run_sources = super::run_history::verify(state, session, proof)?;
     if native_attempts(state, session, proof)? {
         return Ok(Some(Blocker::Attempt));
     }
@@ -115,7 +116,7 @@ fn verify(
     // A creation/fork marker does not cover later bare native admissions or
     // generic Joined owner history. Sealed native preparation associations and
     // typed positive resource/dispatch join proofs are still required.
-    Ok(if has_runs || owners.unclassified {
+    Ok(if has_runs || unproven_run_sources || owners.unclassified {
         Some(Blocker::OwnershipUnknown)
     } else {
         None
