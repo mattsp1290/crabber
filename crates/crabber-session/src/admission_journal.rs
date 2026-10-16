@@ -11,6 +11,7 @@ pub(crate) enum Kind {
     Init,
     Begin,
 }
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
@@ -110,6 +111,7 @@ impl Begin {
     }
 }
 impl Source {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn kind(&self) -> Kind {
         match self {
             Self::Init(_) => Kind::Init,
@@ -128,6 +130,7 @@ impl Source {
         }
         serde_json::to_string(self).map_err(|_| invalid())
     }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn decode(text: &str) -> Result<Self, StoreError> {
         if text.len() > MAX_BYTES {
             return Err(invalid());
