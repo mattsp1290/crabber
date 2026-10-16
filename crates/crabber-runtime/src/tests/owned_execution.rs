@@ -176,6 +176,14 @@ async fn panicked_worker_join_does_not_invent_durable_terminal_outcome() {
             termination: crate::TaskTermination::Panicked
         }]
     );
+    assert!(
+        report.background_tasks.iter().any(|scope| scope.kind
+            == crate::WorkerResourceKind::ExtensionCallbackInvocations
+            && scope.resources.sealed
+            && scope.resources.pending == 0
+            && scope.resources.failures.is_empty()),
+        "panicked main left callback cleanup unsealed: {report:?}"
+    );
     assert!(matches!(
         handle.done().await,
         Err(RuntimeError::TaskStopped)

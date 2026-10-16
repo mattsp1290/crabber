@@ -71,22 +71,28 @@ impl Orchestrator {
             .ok_or(RuntimeError::PreparationRecoveryRequired)?;
         let resources = worker.tool_resources(record.id.clone(), Some(owner.target.clone()));
         let guard = resources.guard();
+        let callbacks = crabber_extension::CallbackInvocationOwner::attach(resources.resources())
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
         let settled = AtomicBool::new(false);
         let mut call = PendingCall::from_record(&record);
         call.turn_id.clone_from(&scope.turn);
-        let result = std::panic::AssertUnwindSafe(self.execute_tool_body(Work {
-            scope: scope.clone(),
-            call,
-            record,
-            authorization,
-            settlement,
-            owner: &owner,
-            running,
-            resources: &resources,
-            settled: &settled,
-        }))
+        let result = std::panic::AssertUnwindSafe(crabber_extension::with_callback_invocations(
+            callbacks.capability(),
+            self.execute_tool_body(Work {
+                scope: scope.clone(),
+                call,
+                record,
+                authorization,
+                settlement,
+                owner: &owner,
+                running,
+                resources: &resources,
+                settled: &settled,
+            }),
+        ))
         .catch_unwind()
         .await;
+        drop(callbacks);
         drop(guard);
         let result = match result {
             Ok(result) => result,
@@ -535,18 +541,27 @@ impl Orchestrator {
             )
             .await?;
         acknowledged.store(true, Ordering::SeqCst);
-        self.observer.emit(&settled);
-        if interrupted {
-            self.notify_interrupted_settlement(plan, &settled, !fixed_interruption)?;
-            return Err(RuntimeError::Interrupted);
+        // This phase is already sealed and joined. All post-settlement
+        // callbacks, including the observer, belong to the still-live worker.
+        let notifications = async {
+            self.observer.emit(&settled);
+            if interrupted {
+                self.notify_interrupted_settlement(plan, &settled, !fixed_interruption)?;
+                return Err(RuntimeError::Interrupted);
+            }
+            let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
+            plan.dispatcher
+                .notify::<EventPublished>(settled_projection.clone())
+                .await;
+            plan.dispatcher
+                .notify::<crabber_extension::ToolSettled>(settled_projection)
+                .await;
+            Ok(())
+        };
+        if let Some(capability) = &self.worker_callbacks {
+            crabber_extension::with_callback_invocations(capability.clone(), notifications).await
+        } else {
+            notifications.await
         }
-        let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);
-        plan.dispatcher
-            .notify::<EventPublished>(settled_projection.clone())
-            .await;
-        plan.dispatcher
-            .notify::<crabber_extension::ToolSettled>(settled_projection)
-            .await;
-        Ok(())
     }
 }

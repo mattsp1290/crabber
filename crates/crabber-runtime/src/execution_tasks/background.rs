@@ -8,6 +8,10 @@ use std::{future::Future, sync::Arc, time::Duration};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerResourceKind {
     LeaseHeartbeat,
+    /// Original extension callback joins retained independently of waiter results.
+    ExtensionCallbackInvocations,
+    /// Model middleware joined before a native attempt can conclude.
+    ModelCallbackInvocations,
     InterruptedSettlementNotification,
 }
 
@@ -67,6 +71,24 @@ impl WorkerResources {
         let result = owner.resources().spawn(task);
         owner.close();
         result
+    }
+    /// Reap only actual observed successful model-callback joins. Active and
+    /// failed scopes remain retained; worker identity only selects local owners.
+    pub(crate) fn reap_model_callbacks(&self) {
+        self.tasks
+            .owners
+            .lock()
+            .unwrap()
+            .background_tasks
+            .retain(|scope| {
+                if !Arc::ptr_eq(&scope.worker.0, &self.id.0)
+                    || scope.kind != WorkerResourceKind::ModelCallbackInvocations
+                {
+                    return true;
+                }
+                let report = scope.owner.snapshot();
+                !report.sealed || report.pending != 0 || !report.failures.is_empty()
+            });
     }
     fn background_scopes(&self) -> Vec<Arc<OwnedBackgroundResources>> {
         self.tasks

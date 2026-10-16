@@ -29,6 +29,8 @@ use tokio::sync::{Barrier, Notify, oneshot};
 
 mod approval_order;
 mod approval_recovery;
+#[path = "tests/callback_ownership.rs"]
+mod callback_ownership;
 #[path = "tests/continuations.rs"]
 mod continuations;
 #[path = "tests/frontend_replay.rs"]
@@ -4022,7 +4024,13 @@ async fn pipeline_cleanup_is_joined_before_native_phase_settlement() {
         .await;
     assert_eq!(report.resources.len(), 1);
     assert_eq!(report.resources[0].resources.pending, 0);
-    assert_eq!(report.resources[0].resources.joined, 1);
+    // The actual phase callback observer and pipeline cleanup are both joined.
+    assert_eq!(report.resources[0].resources.joined, 2);
+    assert!(report.resources[0].resources.sealed);
+    assert_eq!(
+        report.resources[0].resources.failures,
+        [] as [crabber_extension::ResourceFailure; 0]
+    );
     let phase = report.resources[0].phase.as_ref().unwrap();
     let stored = store.tool_phase(&run, &phase.id).await.unwrap().phase;
     assert_eq!(stored.state, crabber_session::PhaseState::Completed);

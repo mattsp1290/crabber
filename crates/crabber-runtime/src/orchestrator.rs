@@ -1,5 +1,6 @@
 mod driver;
 mod heartbeat;
+mod model_callbacks;
 mod notifications;
 use heartbeat::HeartbeatGuard;
 mod host_callbacks;
@@ -531,6 +532,7 @@ pub struct Orchestrator {
     host_callbacks: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     worker_resources: Option<crate::execution_tasks::WorkerResources>,
+    worker_callbacks: Option<crabber_extension::CallbackInvocationCapability>,
     session_invocations: crate::session_invocations::SessionInvocations,
     session_services: crate::session_services::SessionServices,
     preparation_scope: Option<preparation::scope::PlanScope>,
@@ -833,6 +835,7 @@ impl OrchestratorBuilder {
             host_callbacks,
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             worker_resources: None,
+            worker_callbacks: None,
             session_invocations: crate::session_invocations::SessionInvocations::default(),
             session_services: crate::session_services::SessionServices::default(),
             preparation_scope: None,
@@ -1045,10 +1048,17 @@ impl RunHandle {
 
 impl Orchestrator {
     async fn join_worker_resources(&self, run: &RunId, bound: Duration) -> bool {
-        match &self.worker_resources {
+        let joined = match &self.worker_resources {
             Some(resources) if resources.run_matches(run) => resources.join(bound).await,
             _ => false,
-        }
+        };
+        // Refuse known failed OR still-unobserved kernel callbacks. This is a
+        // negative gate over actual joins, not a whole-Run ownership proof.
+        joined
+            && self
+                .worker_callbacks
+                .as_ref()
+                .is_none_or(|callbacks| callbacks.check_observed_joins().is_ok())
     }
     #[cfg(test)]
     pub(crate) fn execution_tasks_for_test(&self) -> &crate::execution_tasks::ExecutionTasks {
@@ -2639,7 +2649,25 @@ impl Orchestrator {
         let native_cancel = cancellation.clone();
         let worker = move || async move {
             let guard = event_observer.guard();
-            let result = Box::pin(work(runtime, cancellation_for_work)).await;
+            let callbacks = runtime
+                .worker_resources
+                .as_ref()
+                .expect("worker resources installed before dispatch")
+                .background_resources(crate::WorkerResourceKind::ExtensionCallbackInvocations);
+            let callback_guard = callbacks.guard();
+            let result =
+                match crabber_extension::CallbackInvocationOwner::attach(callbacks.resources()) {
+                    Ok(owner) => {
+                        let capability = owner.capability();
+                        runtime.worker_callbacks = Some(capability.clone());
+                        crabber_extension::with_callback_invocations(capability, async move {
+                            Box::pin(work(runtime, cancellation_for_work)).await
+                        })
+                        .await
+                    }
+                    Err(_) => Err(RuntimeError::PreparationRecoveryRequired),
+                };
+            drop(callback_guard);
             drop(guard);
             complete.publish(result);
             drop(event_observer);
@@ -3816,10 +3844,13 @@ impl Orchestrator {
                 })
             })
         };
-        let dispatched = tokio::select! {
-            () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
-            dispatched = plan.dispatcher.around::<ExtensionModelStream>(json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),terminal) => dispatched,
-        };
+        let dispatched = self.dispatch_model_callbacks(
+            plan,
+            run_id,
+            cancellation,
+            json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),
+            terminal,
+        ).await?;
         let provider_error = error_slot.lock().unwrap().take();
         if let Some(error) = provider_error {
             return Err(error.into());

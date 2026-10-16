@@ -62,6 +62,25 @@ pub struct CallbackInvocationCapability {
     parent: ToolResources,
 }
 impl CallbackInvocationCapability {
+    /// Check actual join observations of the currently recorded callbacks.
+    /// Success is neither a seal nor evidence of complete resource membership:
+    /// this open capability may still admit later callbacks. No task is polled,
+    /// aborted or joined by this diagnostic.
+    /// # Errors
+    /// A recorded original callback has not joined successfully, or its observed
+    /// failure remains sticky. Pending/unobserved callbacks are refused too.
+    pub fn check_observed_joins(&self) -> Result<(), ResourceFailure> {
+        let entries = self.state.tasks.lock().unwrap();
+        if entries
+            .tasks
+            .iter()
+            .all(|task| *task.result.lock().unwrap() == Some(true))
+        {
+            Ok(())
+        } else {
+            Err(ResourceFailure::CleanupFailed)
+        }
+    }
     pub(super) async fn reap(&self) {
         self.state.reap().await;
     }
