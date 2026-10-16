@@ -431,6 +431,12 @@ hashes fails this check. A missing keyed journal never establishes an unkeyed
 source, and a missing required binding remains unknown. Original input evidence
 is separate from main joins, terminal outcome and whole-run resource policy.
 
+Fresh initial-driver registration and activation require protected current Run
+membership on all three native backends. These checks consume the same caller
+proof allowance as the original admission and owner cohorts. Legacy inventory
+lookup cannot substitute for this fresh-execution guard, and authentic original
+metadata replay remains independent of later current history.
+
 Fresh native Runs retain a protected first-source marker, immutable issuance
 hashes and a monotonic source head. A bounded history fold checks every slot
 against that head before fresh execution. Erasing a later issuance and its

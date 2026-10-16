@@ -28,6 +28,21 @@ async fn original_driver_source_preserves_shared_budget_failure() {
             None,
         )
         .unwrap();
+        let now = store.clock.now();
+        let mut fresh_budget = Proof::bounded(32 * 1024 * 1024);
+        fresh(&state, &request, now, &mut fresh_budget, None).unwrap();
+        let fresh_used = fresh_budget.used();
+        fresh(&state, &request, now, &mut Proof::bounded(fresh_used), None).unwrap();
+        assert!(matches!(
+            fresh(
+                &state,
+                &request,
+                now,
+                &mut Proof::bounded(fresh_used - 1),
+                None
+            ),
+            Err(Error::UnknownStoreOutcome)
+        ));
         let mut budget = Proof::bounded(32 * 1024 * 1024);
         original_read(&state, &link, &mut budget).unwrap();
         let used = budget.used();

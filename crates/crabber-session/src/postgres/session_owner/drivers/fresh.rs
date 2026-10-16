@@ -55,9 +55,10 @@ pub(super) async fn fresh(
         return Err(Error::StaleOwner);
     }
     let latest =
-        super::super::super::admission_journal::issuance_with_proof(tx, session, id, None, budget)
+        super::super::super::native_parent::source_protocol::current(tx, session, id, budget)
             .await
-            .map_err(unknown)?;
+            .map_err(unknown)?
+            .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(&run).map_err(unknown)?;
     if latest.sequence != 1 || latest.version != 2 || latest.ownership_handoff.is_none() {
         return Err(Error::Unsupported);

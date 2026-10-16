@@ -87,16 +87,14 @@ pub(super) fn fresh(
     if run.lease_until <= now {
         return Err(Error::StaleOwner);
     }
-    let latest = state
-        .native_run_issuances
-        .range(
-            (run.session_id.clone(), run.id.clone(), 0)
-                ..=(run.session_id.clone(), run.id.clone(), u64::MAX),
-        )
-        .next_back()
-        .map(|(_, issuer)| issuer)
-        .ok_or(Error::UnknownStoreOutcome)?;
-    measure(proof, latest)?;
+    let latest = super::super::native_parent::source_protocol::current(
+        state,
+        &run.session_id,
+        &run.id,
+        proof,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?
+    .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(run).map_err(|_| Error::UnknownStoreOutcome)?;
     if latest.sequence != 1 {
         return Err(Error::Unsupported);
