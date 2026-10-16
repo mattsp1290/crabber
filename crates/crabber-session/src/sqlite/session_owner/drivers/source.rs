@@ -5,7 +5,7 @@ use crate::session_owner::preparation::admission::{SourceAudits, Witness};
 use crate::{
     admission_journal::{Init, Source},
     native_parent::RunIssuance,
-    public_session::v2::proof::Proof,
+    public_session::v2::proof::{Proof, ReadError},
 };
 use crabber_core::{RunId, Session, SessionId};
 use sqlx::{Row, Sqlite, Transaction};
@@ -51,7 +51,17 @@ pub(super) async fn original(
     run: &RunId,
     budget: &mut Proof,
 ) -> Result<Original, Error> {
-    proof::charge(tx, SESSION_COST, &session.0, &run.0, budget).await?;
+    original_read(tx, session, run, budget)
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) async fn original_read(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    budget: &mut Proof,
+) -> Result<Original, ReadError<Error>> {
+    proof::read_charge(tx, SESSION_COST, &session.0, &run.0, budget).await?;
     let raw: Option<String> = sqlx::query_scalar(SESSION)
         .bind(&session.0)
         .bind(&run.0)
@@ -62,9 +72,9 @@ pub(super) async fn original(
     let current: Session =
         serde_json::from_str(&raw.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?;
     if current.id != *session {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
-    proof::charge(tx, WITNESS_COST, &session.0, &run.0, budget).await?;
+    proof::read_charge(tx, WITNESS_COST, &session.0, &run.0, budget).await?;
     let row = sqlx::query(WITNESS)
         .bind(&session.0)
         .bind(&run.0)
@@ -87,7 +97,7 @@ pub(super) async fn original(
             .as_deref()
             != Some(&witness.join_id()?.0)
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let initial = super::super::super::admission_journal::issuance_with_proof(
         tx,
@@ -97,11 +107,11 @@ pub(super) async fn original(
         budget,
     )
     .await
-    .map_err(unknown)?;
+    .map_err(|error| error.map_domain(unknown))?;
     let mut audits = Vec::with_capacity(5);
     for id in witness.audit_ids()? {
         audits.push(
-            proof::audit(tx, session, &id, budget)
+            proof::read_audit(tx, session, &id, budget)
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?,
         );
@@ -131,13 +141,13 @@ async fn init(
     run: &RunId,
     initial: &RunIssuance,
     budget: &mut Proof,
-) -> Result<Init, Error> {
-    budget.charge(4).map_err(unknown)?;
+) -> Result<Init, ReadError<Error>> {
+    budget.charge(4).map_err(ReadError::Budget)?;
     let protocol: Option<i32> = sqlx::query_scalar("SELECT CAST(source_protocol AS INTEGER) FROM admission_executions WHERE session_id=$1 AND run_id=$2").bind(&session.0).bind(&run.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
     if protocol != Some(1) {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
-    proof::charge(tx, INIT_COST, &session.0, &run.0, budget).await?;
+    proof::read_charge(tx, INIT_COST, &session.0, &run.0, budget).await?;
     let raw: Option<String> = sqlx::query_scalar(INIT)
         .bind(&session.0)
         .bind(&run.0)
@@ -148,9 +158,9 @@ async fn init(
     let Source::Init(init) =
         Source::decode(&raw.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?
     else {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     };
-    proof::charge(
+    proof::read_charge(
         tx,
         RECEIPT_COST,
         &session.0,

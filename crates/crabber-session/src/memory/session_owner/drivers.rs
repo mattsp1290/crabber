@@ -8,7 +8,7 @@ mod unkeyed;
 use super::super::State;
 use super::{Error, MemoryStore, before, bump_public_revision, fault, revision};
 use crate::native_parent::RunIssuance;
-use crate::public_session::v2::proof::Proof;
+use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::session_owner::driver::{DriverLink, ExecutionDriverOutcome, RegisterExecutionDriver};
 use crate::session_owner::preparation::admission::{SourceAudits, Witness};
 
@@ -170,12 +170,8 @@ fn verify_unkeyed_eligibility(
     Ok(())
 }
 fn original(state: &State, source: &DriverLink, proof: &mut Proof) -> Result<(), Error> {
-    let (session, initial, witness, sources) = sources(state, source.run_id(), proof)?;
-    if source.is_unkeyed() {
-        return source.verify_original_unkeyed(session, initial, witness, &sources);
-    }
-    let init = initial_journal(state, source.run_id(), initial, proof)?;
-    source.verify_original(session, initial, witness, &sources, init)
+    original_read(state, source, proof)
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
 fn initial_journal<'a>(
     state: &'a State,
@@ -183,27 +179,52 @@ fn initial_journal<'a>(
     initial: &RunIssuance,
     proof: &mut Proof,
 ) -> Result<&'a crate::admission_journal::Init, Error> {
+    initial_journal_read(state, run, initial, proof)
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+fn original_read(
+    state: &State,
+    source: &DriverLink,
+    proof: &mut Proof,
+) -> Result<(), ReadError<Error>> {
+    let (session, initial, witness, sources) = sources_read(state, source.run_id(), proof)?;
+    if source.is_unkeyed() {
+        return source
+            .verify_original_unkeyed(session, initial, witness, &sources)
+            .map_err(Into::into);
+    }
+    let init = initial_journal_read(state, source.run_id(), initial, proof)?;
+    source
+        .verify_original(session, initial, witness, &sources, init)
+        .map_err(Into::into)
+}
+fn initial_journal_read<'a>(
+    state: &'a State,
+    run: &crabber_core::RunId,
+    initial: &RunIssuance,
+    proof: &mut Proof,
+) -> Result<&'a crate::admission_journal::Init, ReadError<Error>> {
     let protocol = state.admission_execution_protocols.contains(run);
-    measure(proof, &(run, protocol))?;
+    measure_read(proof, &(run, protocol))?;
     if !protocol {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let source = state
         .admission_execution_sources
         .get(&(run.clone(), crate::admission_journal::Kind::Init))
         .ok_or(Error::UnknownStoreOutcome)?;
-    measure(proof, source)?;
+    measure_read(proof, source)?;
     if crate::snapshot::encoded_bytes(source, crate::admission_journal::MAX_BYTES).is_none() {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let crate::admission_journal::Source::Init(init) = source else {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     };
     let receipt = state
         .receipts
         .get(&(initial.state.session_id.clone(), init.driver_key().clone()))
         .ok_or(Error::UnknownStoreOutcome)?;
-    measure(proof, receipt)?;
+    measure_read(proof, receipt)?;
     init.verify_driver_origin(receipt, initial)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     Ok(init)
@@ -276,14 +297,25 @@ fn sources<'a>(
     run: &crabber_core::RunId,
     proof: &mut Proof,
 ) -> Result<Sources<'a>, Error> {
+    sources_read(state, run, proof)
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+fn measure_read(proof: &mut Proof, value: &impl serde::Serialize) -> Result<(), ReadError<Error>> {
+    proof.measure(value).map_err(ReadError::Budget)
+}
+fn sources_read<'a>(
+    state: &'a State,
+    run: &crabber_core::RunId,
+    proof: &mut Proof,
+) -> Result<Sources<'a>, ReadError<Error>> {
     let witness = state
         .preparation_admissions
         .get(run)
         .ok_or(Error::Unsupported)?;
-    measure(proof, witness)?;
+    measure_read(proof, witness)?;
     witness.validate()?;
     if witness.run_id() != run {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let session = state
         .sessions
@@ -293,16 +325,16 @@ fn sources<'a>(
         .native_run_issuances
         .get(&(session.id.clone(), run.clone(), 1))
         .ok_or(Error::UnknownStoreOutcome)?;
-    measure(proof, session)?;
-    measure(proof, initial)?;
+    measure_read(proof, session)?;
+    measure_read(proof, initial)?;
     let join = witness.join_id()?;
     let indexed = state
         .preparation_admission_joins
         .get(&(session.id.clone(), join.clone()))
         .ok_or(Error::UnknownStoreOutcome)?;
-    measure(proof, &(&session.id, &join, indexed))?;
+    measure_read(proof, &(&session.id, &join, indexed))?;
     if indexed != run {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let ids = witness.audit_ids()?;
     let get = |id| {
@@ -325,7 +357,7 @@ fn sources<'a>(
         sources.child_reserve,
         sources.child_begin,
     ] {
-        measure(proof, audit)?;
+        measure_read(proof, audit)?;
     }
     Ok((session, initial, witness, sources))
 }

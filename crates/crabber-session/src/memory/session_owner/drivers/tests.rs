@@ -262,3 +262,5 @@ async fn journal_erasure_between_registration_and_activation_never_dispatches() 
 
 #[path = "hardening.rs"]
 mod hardening;
+
+mod source_budget;

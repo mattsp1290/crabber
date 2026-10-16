@@ -1,6 +1,6 @@
 //! Selected actual proof leaves are charged before transfer/validation.
 use super::super::{Audit, Error, Record, public, reads, unknown};
-use crate::public_session::v2::proof::Proof;
+use crate::public_session::v2::proof::{Proof, ReadError};
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
 use sqlx::{Sqlite, Transaction};
 pub(super) async fn charge(
@@ -10,6 +10,17 @@ pub(super) async fn charge(
     id: &str,
     proof: &mut Proof,
 ) -> Result<(), Error> {
+    read_charge(tx, sql, session, id, proof)
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) async fn read_charge(
+    tx: &mut Transaction<'_, Sqlite>,
+    sql: &str,
+    session: &str,
+    id: &str,
+    proof: &mut Proof,
+) -> Result<(), ReadError<Error>> {
     let bytes: Option<i64> = sqlx::query_scalar(sql)
         .bind(session)
         .bind(id)
@@ -19,7 +30,7 @@ pub(super) async fn charge(
     if let Some(bytes) = bytes {
         proof
             .charge(usize::try_from(bytes).map_err(unknown)?)
-            .map_err(unknown)?;
+            .map_err(ReadError::Budget)?;
     }
     Ok(())
 }
@@ -31,6 +42,15 @@ pub(super) async fn audit(
 ) -> Result<Option<Audit>, Error> {
     charge(tx, AUDIT, &session.0, &id.0, proof).await?;
     reads::audit(tx, session, id).await
+}
+pub(super) async fn read_audit(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+    proof: &mut Proof,
+) -> Result<Option<Audit>, ReadError<Error>> {
+    read_charge(tx, AUDIT, &session.0, &id.0, proof).await?;
+    Ok(reads::audit(tx, session, id).await?)
 }
 pub(super) async fn current(
     tx: &mut Transaction<'_, Sqlite>,
