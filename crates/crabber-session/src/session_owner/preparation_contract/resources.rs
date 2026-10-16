@@ -391,11 +391,57 @@ async fn cleanup_is_not_handoff(store: &impl Store) {
 
 /// A genuine admitted first Run whose activated acquisition owner remains live.
 pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
+    let (root, bound) = declaration::setup(store).await;
+    let PreparationCompletion::Keyed(KeyedAdmitOutcome::Started { admitted, .. }) =
+        initial_driver_completion(store, root, PreparedOperation::AdmitKeyed(Box::new(bound)))
+            .await
+    else {
+        panic!("fresh admission");
+    };
+    *admitted
+}
+/// Genuine unkeyed native admission with original declaration and activated child.
+pub(crate) async fn initial_unkeyed_driver(store: &impl Store) -> crate::AdmitOutcome {
+    let session = SessionId::new();
+    let revision = create(store, &fixture(&session, SessionRevision::INITIAL)).await;
+    let mut bound = fixture(&session, revision);
+    let contract = InputFingerprint::new("d".repeat(64)).unwrap();
+    declaration::bind(&mut bound, &contract);
+    let mut request = reservation(&bound);
+    request.owner.binding.component_id = OWNED_PREPARATION_COMPONENT.into();
+    request.resource_contract = Some(contract);
+    request.intent = crate::session_owner::preparation::admission_intent(
+        &bound.binding.request,
+        bound.binding.input_envelope.as_ref().unwrap(),
+        None,
+    )
+    .unwrap();
+    let request = request
+        .bind_key(crate::session_owner::preparation::PreparationKey::Unkeyed(
+            ControlId::new(),
+        ))
+        .unwrap();
+    let root = begin(store, &request).await;
+    let operation = PreparedOperation::Admit(Box::new(crate::BoundAdmitRequest {
+        request: bound.keyed.request,
+        binding: bound.binding,
+    }));
+    let PreparationCompletion::Admitted(admitted) =
+        initial_driver_completion(store, root, operation).await
+    else {
+        panic!("fresh unkeyed admission");
+    };
+    admitted
+}
+async fn initial_driver_completion(
+    store: &impl Store,
+    root: PreparationGrant,
+    operation: PreparedOperation,
+) -> PreparationCompletion {
     use crate::session_owner::owned_scope::{
         OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedScopeSource,
         OwnedTaskRegistration,
     };
-    let (root, bound) = declaration::setup(store).await;
     let PreparationResourceOutcome::Applied { receipt, grant } =
         store.retain_preparation_resources(root).await.unwrap()
     else {
@@ -403,7 +449,7 @@ pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
     };
     let mut task = OwnedTaskRegistration::register(
         OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began).unwrap(),
-        || async move { Ok::<_, ()>(((), PreparedOperation::AdmitKeyed(Box::new(bound)))) },
+        || async move { Ok::<_, ()>(((), operation)) },
     )
     .unwrap();
     let OwnedScopeActivationOutcome::Applied { permit, .. } = store
@@ -422,10 +468,5 @@ pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
         .await
         .unwrap()
         .unwrap();
-    let PreparationCompletion::Keyed(KeyedAdmitOutcome::Started { admitted, .. }) =
-        store.complete_preparation(joined).await.unwrap()
-    else {
-        panic!("fresh admission")
-    };
-    *admitted
+    store.complete_preparation(joined).await.unwrap()
 }

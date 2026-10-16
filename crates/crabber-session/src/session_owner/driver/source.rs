@@ -11,121 +11,18 @@ pub(crate) struct DriverLink {
     session_id: SessionId,
     run_id: RunId,
     issuer_digest: InputFingerprint,
-    init_digest: InputFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    init_digest: Option<InputFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unkeyed_input: Option<InputFingerprint>,
     admission_handoff: InputFingerprint,
     config_hash: InputFingerprint,
     plan_fingerprint: InputFingerprint,
     request_digest: InputFingerprint,
 }
+#[path = "source/origin.rs"]
+mod origin;
 impl DriverLink {
-    pub(crate) fn initial(
-        request: &RegisterExecutionDriver,
-        session: &Session,
-        run: &Run,
-        issuance: &RunIssuance,
-        witness: &crate::session_owner::preparation::admission::Witness,
-        sources: &crate::session_owner::preparation::admission::SourceAudits<'_>,
-        init: &crate::admission_journal::Init,
-    ) -> Result<Self, Error> {
-        let request_digest = request.fingerprint()?;
-        bounded(session, 16384)?;
-        bounded(run, 32768)?;
-        bounded(issuance, 2048)?;
-        bounded(witness, 8192)?;
-        bounded(init, crate::admission_journal::MAX_BYTES)?;
-        for source in [
-            sources.reserve,
-            sources.begin,
-            sources.join,
-            sources.child_reserve,
-            sources.child_begin,
-        ] {
-            bounded(source, 32768)?;
-        }
-        issuance
-            .verify(run)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-        witness.verify_sources(session, issuance, sources)?;
-        let declared = sources
-            .reserve
-            .record
-            .preparation
-            .as_ref()
-            .and_then(|origin| origin.resource_contract.as_ref());
-        if declared.is_none()
-            || sources.reserve.record.snapshot.binding.component_id
-                != crate::session_owner::preparation::OWNED_PREPARATION_COMPONENT
-        {
-            return Err(Error::Unsupported);
-        }
-        if issuance.sequence != 1
-            || issuance.version != 2
-            || run.status != crabber_core::RunStatus::Running
-            || run.id != request.fence.run_id
-            || run.claim_token != request.fence.claim_token
-            || run.session_id != *request.context.session_id()
-            || session.id != run.session_id
-            || session.workspace_id != request.context.workspace_id()
-            || session.directory != request.context.directory()
-            || run.checkpoint.is_some()
-            || run.error.is_some()
-        {
-            return Err(Error::StaleOwner);
-        }
-        let source = Self {
-            version: 1,
-            session_id: session.id.clone(),
-            run_id: run.id.clone(),
-            init_digest: init.digest().map_err(|_| Error::UnknownStoreOutcome)?,
-            issuer_digest: crate::native_parent::issuance_digest(issuance)
-                .map_err(|_| Error::UnknownStoreOutcome)?,
-            admission_handoff: issuance
-                .ownership_handoff
-                .clone()
-                .ok_or(Error::Unsupported)?,
-            config_hash: InputFingerprint::new(run.config_hash.clone())
-                .map_err(|_| Error::UnknownStoreOutcome)?,
-            plan_fingerprint: InputFingerprint::new(run.plan_fingerprint.clone())
-                .map_err(|_| Error::UnknownStoreOutcome)?,
-            request_digest,
-        };
-        source.validate()?;
-        Ok(source)
-    }
-    pub(crate) fn validate(&self) -> Result<(), Error> {
-        crate::session_owner::identifier(&self.session_id.0, 512, false)?;
-        crate::session_owner::identifier(&self.run_id.0, 128, false)?;
-        if self.version != 1 {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        bounded(self, 2048)
-    }
-
-    pub(crate) fn verify_original(
-        &self,
-        session: &Session,
-        issuer: &RunIssuance,
-        witness: &crate::session_owner::preparation::admission::Witness,
-        sources: &crate::session_owner::preparation::admission::SourceAudits<'_>,
-        init: &crate::admission_journal::Init,
-    ) -> Result<(), Error> {
-        self.validate()?;
-        bounded(init, crate::admission_journal::MAX_BYTES)?;
-        witness.verify_sources(session, issuer, sources)?;
-        if init.digest().map_err(|_| Error::UnknownStoreOutcome)? != self.init_digest
-            || issuer.sequence != 1
-            || issuer.version != 2
-            || issuer.state.session_id != self.session_id
-            || issuer.state.run_id != self.run_id
-            || issuer.ownership_handoff.as_ref() != Some(&self.admission_handoff)
-            || crate::native_parent::issuance_digest(issuer)
-                .map_err(|_| Error::UnknownStoreOutcome)?
-                != self.issuer_digest
-        {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        Ok(())
-    }
     pub(crate) fn reservation(
         &self,
         request: &RegisterExecutionDriver,

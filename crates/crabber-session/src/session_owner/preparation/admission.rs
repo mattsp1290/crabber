@@ -93,6 +93,28 @@ impl Witness {
     pub(crate) fn run_id(&self) -> &RunId {
         &self.initial.run_id
     }
+    pub(crate) fn is_unkeyed(&self) -> bool {
+        matches!(self.key, PreparationKey::Unkeyed(_))
+    }
+    pub(crate) fn unkeyed_binding_digest(&self) -> Result<&InputFingerprint, Error> {
+        self.validate()?;
+        if !self.is_unkeyed() || self.format_version != 2 {
+            return Err(Error::Unsupported);
+        }
+        self.unkeyed_input
+            .as_ref()
+            .ok_or(Error::UnknownStoreOutcome)
+    }
+    pub(crate) fn verify_unkeyed_binding(
+        &self,
+        binding: &crate::ExecutionBindingCapsule,
+    ) -> Result<&InputFingerprint, Error> {
+        let original = self.unkeyed_binding_digest()?;
+        if super::binding_digest::unkeyed_binding(binding)? != *original {
+            return Err(Error::SemanticConflict);
+        }
+        Ok(original)
+    }
     pub(crate) fn admitted_revision(&self) -> SessionRevision {
         self.admitted_revision
     }

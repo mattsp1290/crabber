@@ -2,6 +2,9 @@
 #[cfg(test)]
 #[path = "drivers/tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "drivers/unkeyed.rs"]
+mod unkeyed;
 use super::super::State;
 use super::{Error, MemoryStore, before, bump_public_revision, fault, revision};
 use crate::native_parent::RunIssuance;
@@ -33,7 +36,7 @@ impl MemoryStore {
             return Ok(ExecutionDriverOutcome::Replayed(receipt));
         }
         // Borrowed bounded validation precedes even Memory's transaction clone.
-        let source = fresh(&guard, request, self.clock.now(), &mut proof)?;
+        let source = fresh(&guard, request, self.clock.now(), &mut proof, None)?;
         let mut next = guard.clone();
         let current = revision(&next, request.context.session_id());
         let outcome = next.session_owners.register_driver(
@@ -64,6 +67,7 @@ pub(super) fn fresh(
     request: &RegisterExecutionDriver,
     now: time::OffsetDateTime,
     proof: &mut Proof,
+    activation_revision: Option<crate::session_owner::audit::RevisionState>,
 ) -> Result<DriverLink, Error> {
     request.fingerprint()?;
     state
@@ -100,7 +104,6 @@ pub(super) fn fresh(
             .ok_or(Error::Unsupported)?;
     super::super::attempt::pristine_for_driver(state, run, &binding)
         .map_err(|_| Error::InvalidTransition)?;
-    journal(state, run, &binding, proof)?;
     let (session, initial, witness, sources) = sources(state, &run.id, proof)?;
     witness.verify_sources(session, initial, &sources)?;
     let declared = sources
@@ -119,11 +122,58 @@ pub(super) fn fresh(
     state
         .session_owners
         .driver_preparation(sources.child_begin, proof)?;
+    if witness.is_unkeyed() {
+        verify_unkeyed_eligibility(state, run, witness, activation_revision, proof)?;
+        return DriverLink::initial_unkeyed(
+            request,
+            session,
+            run,
+            initial,
+            witness,
+            &sources,
+            &binding.capsule,
+        );
+    }
+    journal(state, run, &binding, proof)?;
     let init = initial_journal(state, &run.id, initial, proof)?;
     DriverLink::initial(request, session, run, initial, witness, &sources, init)
 }
+fn verify_unkeyed_eligibility(
+    state: &State,
+    run: &crabber_core::Run,
+    witness: &Witness,
+    activation_revision: Option<crate::session_owner::audit::RevisionState>,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let expected = activation_revision.unwrap_or(
+        crate::session_owner::audit::RevisionState::Present(witness.admitted_revision()),
+    );
+    if revision(state, &run.session_id) != expected {
+        return Err(Error::RevisionConflict);
+    }
+    let incompatible = state.admission_executions.contains_key(&run.id)
+        || state.admission_execution_protocols.contains(&run.id)
+        || [
+            crate::admission_journal::Kind::Init,
+            crate::admission_journal::Kind::Begin,
+        ]
+        .iter()
+        .any(|kind| {
+            state
+                .admission_execution_sources
+                .contains_key(&(run.id.clone(), *kind))
+        });
+    measure(proof, &(&run.id, incompatible))?;
+    if incompatible {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(())
+}
 fn original(state: &State, source: &DriverLink, proof: &mut Proof) -> Result<(), Error> {
     let (session, initial, witness, sources) = sources(state, source.run_id(), proof)?;
+    if source.is_unkeyed() {
+        return source.verify_original_unkeyed(session, initial, witness, &sources);
+    }
     let init = initial_journal(state, source.run_id(), initial, proof)?;
     source.verify_original(session, initial, witness, &sources, init)
 }

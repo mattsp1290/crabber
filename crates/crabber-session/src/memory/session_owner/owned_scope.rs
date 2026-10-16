@@ -98,11 +98,18 @@ impl MemoryStore {
         if record.cancellation.is_some() {
             return Err(Error::CancellationPending);
         }
+        let activation_revision = guard
+            .session_owners
+            .source_audit(request.session_id(), &request.source.begin)
+            .and_then(|audit| audit.publication)
+            .map(|publication| publication.after)
+            .ok_or(Error::UnknownStoreOutcome)?;
         let fresh = super::drivers::fresh(
             &guard,
             grant.original_request(),
             self.clock.now(),
             &mut proof,
+            Some(activation_revision),
         )?;
         if &fresh != source {
             return Err(Error::StaleOwner);

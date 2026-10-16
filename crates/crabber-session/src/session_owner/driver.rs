@@ -1,6 +1,6 @@
 //! Actual outer worker ownership, separate from terminal Run publications.
-//! This source initially covers only a genuine first prepared keyed admission
-//! with its protected execution journal. It
+//! Native sources cover a genuine first prepared keyed admission with its
+//! protected execution journal, or an explicitly anchored unkeyed admission. It
 //! describes main-task/resource joins, never complete provider/service coverage.
 mod source;
 use super::{SessionOwnerError as Error, identifier};
