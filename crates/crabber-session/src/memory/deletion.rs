@@ -22,6 +22,8 @@ mod owned;
 #[cfg(test)]
 #[path = "deletion/owned_tests.rs"]
 mod owned_tests;
+#[path = "deletion/owners.rs"]
+mod owners;
 #[path = "deletion/purge.rs"]
 mod purge;
 #[cfg(test)]

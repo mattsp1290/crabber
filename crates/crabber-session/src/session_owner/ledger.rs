@@ -230,13 +230,17 @@ impl Ledger {
         // preserves the row count. Historical private bodies are not decoded.
         for ((scope, _), audit) in &self.audits {
             if scope == session
-                && audit.receipt.operation == SessionOwnerOperation::Reserve
                 && !self.records.keys().any(|(record_scope, id)| {
                     record_scope == session && *id == audit.receipt.owner.target.id
                 })
             {
                 return Err(Error::UnknownStoreOutcome);
             }
+        }
+        if self.contexts.contains_key(session)
+            && !self.records.keys().any(|(scope, _)| scope == session)
+        {
+            return Err(Error::UnknownStoreOutcome);
         }
         for (scope, id) in self.records.keys().filter(|(scope, _)| scope == session) {
             if !self.audits.iter().any(|((audit_scope, _), audit)| {

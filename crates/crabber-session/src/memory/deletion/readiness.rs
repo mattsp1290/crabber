@@ -111,23 +111,19 @@ fn verify(
             return Ok(Some(Blocker::PendingControl));
         }
     }
-    let owners = state
-        .session_owners
-        .public_registered(session, 1024, &mut safe, proof)?;
-    if !owners.is_empty() {
+    let owners = super::owners::read(state, session, &mut safe, proof)?;
+    if !owners.live.is_empty() {
         return Ok(Some(Blocker::SessionOwner));
     }
     super::imported::verify(state, session, proof)?;
     // A creation/fork marker does not cover later bare native admissions or
     // generic Joined owner history. Sealed native preparation associations and
     // typed positive resource/dispatch join proofs are still required.
-    Ok(
-        if has_runs || state.session_owners.contains_scope(session) {
-            Some(Blocker::OwnershipUnknown)
-        } else {
-            None
-        },
-    )
+    Ok(if has_runs || owners.unclassified {
+        Some(Blocker::OwnershipUnknown)
+    } else {
+        None
+    })
 }
 fn native_attempts(state: &State, session: &SessionId, proof: &mut Proof) -> Result<bool, Failure> {
     super::native::membership(

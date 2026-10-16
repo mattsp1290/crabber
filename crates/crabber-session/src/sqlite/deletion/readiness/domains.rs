@@ -114,15 +114,14 @@ pub(super) async fn owners(
     if orphan {
         return Err(unknown("owner source membership"));
     }
-    let live = super::super::super::session_owner::public::registered(
+    let owners = super::super::super::session_owner::public::deletion_registered(
         tx,
         session,
-        u16::MAX,
         &mut safe(),
         proof,
     )
     .await?;
-    if !live.is_empty() {
+    if !owners.live.is_empty() {
         return Err(blocked(DeletionBlocker::SessionOwner));
     }
     let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_invocations WHERE session_id=$1 AND (state NOT IN ('Completed','Failed','Interrupted') OR cleanup_state<>'Complete'))")
@@ -137,16 +136,7 @@ pub(super) async fn owners(
             .fetch_one(&mut **tx)
             .await
             .map_err(unknown)?;
-    // Generic Joined records do not certify the owned dispatch protocol.
-    // A future classifier must authenticate a typed original resource source.
-    let unclassified: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_owner_current WHERE session_id=$1)",
-    )
-    .bind(&session.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(unknown)?;
-    Ok(legacy || unclassified)
+    Ok(legacy || owners.unclassified)
 }
 const OWNER_SCOPE:&str="SELECT EXISTS(
  SELECT 1 FROM session_owner_audits a WHERE a.session_id=$1 AND NOT EXISTS(SELECT 1 FROM session_owner_current c WHERE c.session_id=a.session_id AND c.owner_id=a.owner_id)

@@ -330,6 +330,7 @@ redacted_debug!(
     SessionOwnerOutcome
 );
 
+pub(crate) mod coverage;
 pub mod owned_scope;
 pub(crate) mod validation;
 use validation::{digest, identifier, lease, resolver};

@@ -89,6 +89,9 @@ mod preparation_contract;
 #[path = "../../crabber-session/src/session_owner/audit.rs"]
 #[allow(dead_code)]
 mod session_owner_audit;
+#[path = "../../crabber-session/src/session_owner/coverage.rs"]
+#[allow(dead_code)]
+mod session_owner_coverage;
 #[path = "../../crabber-session/src/session_owner/ledger.rs"]
 #[allow(dead_code)]
 mod session_owner_ledger;
@@ -116,6 +119,7 @@ mod session_owner {
     pub(crate) use crate::session_owner_audit as audit;
     pub(crate) use crate::session_owner_cancellation as cancellation;
     pub(crate) use crate::session_owner_cancellation_contract as cancellation_contract;
+    pub(crate) use crate::session_owner_coverage as coverage;
     pub(crate) use crate::session_owner_ledger::Ledger;
     pub(crate) use crate::session_owner_record as record;
     pub(crate) use crate::session_owner_validation as validation;

@@ -7,6 +7,15 @@ use crate::public_session::{
 use crate::session_owner::SessionOwnerState;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
 use sqlx::{Row, Sqlite, Transaction};
+#[path = "public/deletion.rs"]
+mod deletion;
+#[cfg(test)]
+#[path = "public/deletion_tests.rs"]
+mod deletion_tests;
+enum Purpose {
+    Public,
+    Deletion,
+}
 
 /// Every current identity must have an immutable Reserve and conversely. Then
 /// authenticate independently latest evidence before applying the Joined filter.
@@ -18,8 +27,34 @@ pub(in crate::sqlite) async fn registered(
     safe: &mut Budget,
     proof: &mut Proof,
 ) -> Result<Vec<PublicRegisteredOwner>, Failure> {
+    scan(tx, session, limit, safe, proof, Purpose::Public)
+        .await
+        .map(|owners| owners.live)
+}
+
+pub(in crate::sqlite) async fn deletion_registered(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    safe: &mut Budget,
+    proof: &mut Proof,
+) -> Result<crate::session_owner::coverage::CheckedOwners, Failure> {
+    if !proof.active() {
+        return Err(unknown("detached coverage requires bounded proof"));
+    }
+    scan(tx, session, u16::MAX, safe, proof, Purpose::Deletion).await
+}
+
+async fn scan(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    limit: u16,
+    safe: &mut Budget,
+    proof: &mut Proof,
+    purpose: Purpose,
+) -> Result<crate::session_owner::coverage::CheckedOwners, Failure> {
     reads::scope(tx, session).await.map_err(unknown)?;
     let mut result = Vec::new();
+    let mut unclassified = false;
     let mut after = String::new();
     loop {
         let rows = sqlx::query(IDS)
@@ -52,7 +87,11 @@ pub(in crate::sqlite) async fn registered(
             let record = reads::current(tx, session, &crabber_core::SessionOwnerId(id.clone()))
                 .await
                 .map_err(unknown)?;
-            if record.snapshot.state != SessionOwnerState::Joined {
+            if record.snapshot.state == SessionOwnerState::Joined {
+                if matches!(purpose, Purpose::Deletion) {
+                    unclassified |= !deletion::classified(tx, &record, proof).await?;
+                }
+            } else {
                 if result.len() >= usize::from(limit) {
                     return Err(Failure::Limited(PublicSessionLimitV2::RegisteredOwners));
                 }
@@ -61,7 +100,10 @@ pub(in crate::sqlite) async fn registered(
             after = id;
         }
     }
-    Ok(result)
+    Ok(crate::session_owner::coverage::CheckedOwners {
+        live: result,
+        unclassified,
+    })
 }
 /// Current/origin/context carriers, plus exact optional cancellation sources,
 /// and repeated routing fields fetched by `reads::current`.

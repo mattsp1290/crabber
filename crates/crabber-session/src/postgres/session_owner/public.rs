@@ -7,6 +7,15 @@ use crate::public_session::{
 use crate::session_owner::SessionOwnerState;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
 use sqlx::{Postgres, Row, Transaction};
+#[path = "public/deletion.rs"]
+mod deletion;
+#[cfg(test)]
+#[path = "public/deletion_tests.rs"]
+mod deletion_tests;
+enum Purpose {
+    Public,
+    Deletion,
+}
 
 /// Every current identity must have an immutable Reserve and conversely. Then
 /// authenticate independently latest evidence before applying the Joined filter.
@@ -18,8 +27,34 @@ pub(in crate::postgres) async fn registered(
     safe: &mut Budget,
     proof: &mut Proof,
 ) -> Result<Vec<PublicRegisteredOwner>, Failure> {
+    scan(tx, session, limit, safe, proof, Purpose::Public)
+        .await
+        .map(|owners| owners.live)
+}
+
+pub(in crate::postgres) async fn deletion_registered(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    safe: &mut Budget,
+    proof: &mut Proof,
+) -> Result<crate::session_owner::coverage::CheckedOwners, Failure> {
+    if !proof.active() {
+        return Err(unknown("detached coverage requires bounded proof"));
+    }
+    scan(tx, session, u16::MAX, safe, proof, Purpose::Deletion).await
+}
+
+async fn scan(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    limit: u16,
+    safe: &mut Budget,
+    proof: &mut Proof,
+    purpose: Purpose,
+) -> Result<crate::session_owner::coverage::CheckedOwners, Failure> {
     reads::scope(tx, session).await.map_err(unknown)?;
     let mut result = Vec::new();
+    let mut unclassified = false;
     let mut after = String::new();
     loop {
         let rows = sqlx::query(IDS)
@@ -52,7 +87,11 @@ pub(in crate::postgres) async fn registered(
             let record = reads::current(tx, session, &crabber_core::SessionOwnerId(id.clone()))
                 .await
                 .map_err(unknown)?;
-            if record.snapshot.state != SessionOwnerState::Joined {
+            if record.snapshot.state == SessionOwnerState::Joined {
+                if matches!(purpose, Purpose::Deletion) {
+                    unclassified |= !deletion::classified(tx, &record, proof).await?;
+                }
+            } else {
                 if result.len() >= usize::from(limit) {
                     return Err(Failure::Limited(PublicSessionLimitV2::RegisteredOwners));
                 }
@@ -61,7 +100,10 @@ pub(in crate::postgres) async fn registered(
             after = id;
         }
     }
-    Ok(result)
+    Ok(crate::session_owner::coverage::CheckedOwners {
+        live: result,
+        unclassified,
+    })
 }
 /// Current/origin/context carriers, plus exact optional cancellation sources,
 /// and repeated routing fields fetched by `reads::current`.
@@ -116,7 +158,7 @@ async fn preflight(
     }
     Ok(())
 }
-const IDS: &str = r"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id>$2 ORDER BY owner_id LIMIT 32";
+const IDS: &str = r#"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id COLLATE "C">$2 COLLATE "C" ORDER BY owner_id COLLATE "C" LIMIT 32"#;
 const CURRENT_COST: &str = "SELECT CAST(octet_length(data_json) AS BIGINT) FROM session_owner_current WHERE session_id=$1 AND owner_id=$2";
 const COST: &str = r"SELECT CAST(octet_length(c.data_json) AS BIGINT) AS current_bytes,CAST(octet_length(l.data_json)+octet_length(l.owner_id)+octet_length(l.operation_id)+octet_length(l.operation)+octet_length(l.state) AS BIGINT) AS latest_bytes,
  CAST(octet_length(o.data_json)+octet_length(o.owner_id)+octet_length(o.operation_id)+octet_length(o.operation)+octet_length(o.state) AS BIGINT) AS origin_bytes,
