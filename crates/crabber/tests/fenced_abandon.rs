@@ -1,3 +1,39 @@
+#[path = "../../crabber-session/src/public_session/rounds.rs"]
+#[allow(dead_code)]
+pub(crate) mod public_session_rounds;
+mod tests {
+    pub(super) fn request(
+        session_id: crabber::core::SessionId,
+    ) -> crabber::session::PublicSessionRequest {
+        crabber::session::PublicSessionRequest {
+            session_id,
+            continuation: None,
+            limits: crabber::session::PublicSessionLimits {
+                header_bytes: 65536,
+                proof_bytes: 2 * 1024 * 1024,
+                interactions: 64,
+                history: crabber::session::SnapshotLimits {
+                    messages: 64,
+                    tool_calls: 64,
+                    parts: 1024,
+                    text_bytes: 1024 * 1024,
+                    encoded_bytes: 2 * 1024 * 1024,
+                },
+            },
+        }
+    }
+    pub(super) async fn page(
+        store: &impl crabber::session::Store,
+        request: crabber::session::PublicSessionRequest,
+    ) -> crabber::session::PublicSessionPage {
+        let crabber::session::PublicSessionOutcome::Page(page) =
+            store.public_session_snapshot(request).await.unwrap()
+        else {
+            panic!("public page")
+        };
+        *page
+    }
+}
 #[path = "../../crabber-session/src/public_session/allocation.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_allocation;
@@ -7,6 +43,7 @@ pub(crate) mod public_session_budget;
 mod public_session {
     pub(crate) use crate::public_session_allocation as allocation;
     pub(crate) use crate::public_session_budget as budget;
+    pub(crate) use crate::public_session_rounds as rounds;
 }
 pub use crabber::session::{
     PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
@@ -114,6 +151,9 @@ mod abandonment_contract;
 #[path = "../../crabber-session/src/approval/audit.rs"]
 #[allow(dead_code)]
 mod approval_audit;
+#[path = "../../crabber-session/src/approval/current.rs"]
+#[allow(dead_code)]
+pub(crate) mod approval_current;
 #[path = "../../crabber-session/src/approval/origin.rs"]
 #[allow(dead_code)]
 mod approval_origin;
@@ -125,6 +165,7 @@ mod approval_records;
 mod approval_recovery_provenance;
 mod approval {
     pub(crate) use crate::approval_audit::{event, verify_receipt};
+    pub(crate) use crate::approval_current as current;
     pub(crate) use crate::approval_records::*;
     pub(crate) use crate::approval_recovery_provenance::{
         activate_recovery, verify_recovery_answer,

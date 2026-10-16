@@ -1,6 +1,9 @@
 //! Store-adapter qualification for durable pre-effect approvals and single claims.
 #[path = "approval_contract/changed_batch.rs"]
 mod changed_batch;
+#[cfg(test)]
+#[path = "approval_contract/current.rs"]
+pub(crate) mod current;
 #[path = "approval_contract/faults.rs"]
 mod faults;
 #[path = "approval_contract/finish.rs"]

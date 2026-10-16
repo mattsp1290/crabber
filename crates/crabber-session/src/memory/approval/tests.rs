@@ -82,3 +82,62 @@ async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn immutable_current_approval_sources_reject_coherent_private_changes() {
+    use crate::approval_contract::current::{self, Case};
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    for case in current::CASES {
+        let saved = current::run(&store, &clock, case, |target| {
+            let mut state = store.state.lock().unwrap();
+            let saved = state.clone();
+            let record = state.approvals.get_mut(&target.id).unwrap();
+            current::corrupt(record, target.case);
+            let session = record.session_id.clone();
+            let run = record.run_id.clone();
+            if matches!(
+                target.case,
+                Case::ReleasedNoBarrier | Case::FakeTerminalCleanup
+            ) {
+                state.approval_barriers.remove(&session);
+            }
+            if target.case == Case::FakeTerminalCleanup {
+                state.runs.get_mut(&run).unwrap().status = crabber_core::RunStatus::Interrupted;
+            }
+            if target.case == Case::ChangedClaimReceipt {
+                let Some(super::OperationReceipt::Approval(receipt)) = state
+                    .operation_receipts
+                    .get_mut(&(session, target.claim_id.unwrap()))
+                else {
+                    panic!("claim receipt")
+                };
+                receipt.semantic_digest =
+                    crabber_core::InputFingerprint::new("c".repeat(64)).unwrap();
+            }
+            std::future::ready(saved)
+        })
+        .await;
+        *store.state.lock().unwrap() = saved;
+    }
+}
+
+#[tokio::test]
+async fn current_approval_accepts_authentic_successor_and_parent_retirement() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::public_session::rounds::checked(&store, &clock, |prior, run| {
+        let state = store.state.lock().unwrap();
+        let record = state.approvals.get(&prior.id).unwrap();
+        assert_eq!(record.state, crate::ApprovalContinuationState::Released);
+        assert_eq!(run.status, crabber_core::RunStatus::Paused);
+        super::verify_record(&state, &run, record).unwrap();
+        std::future::ready(())
+    })
+    .await;
+    crate::approval_contract::current::retired(&store, &clock).await;
+}

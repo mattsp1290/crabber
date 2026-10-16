@@ -7,6 +7,13 @@ use crate::{
 use crabber_core::{AttemptId, ContinuationId, ControlId, InteractionId, ManualClock, PhaseId};
 
 pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
+    checked(store, clock, |_, _| std::future::ready(())).await;
+}
+pub(crate) async fn checked<F, Fut>(store: &impl Store, clock: &ManualClock, check: F)
+where
+    F: FnOnce(crate::ContinuationTarget, crabber_core::Run) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let mut f = crate::approval_contract::fixture::staged(store, clock).await;
     f.execution
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
@@ -84,6 +91,7 @@ pub(super) async fn run(store: &impl Store, clock: &ManualClock) {
         current.header.barrier.unwrap().continuation,
         next.continuation
     );
+    check(prior, store.get_run(&f.run.id).await.unwrap().unwrap()).await;
     f.batch = next;
     store
         .terminate_approval(crate::approval_contract::termination::request(store, &f, false).await)

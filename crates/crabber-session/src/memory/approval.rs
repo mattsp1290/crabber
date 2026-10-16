@@ -3,6 +3,8 @@
 mod answer;
 #[path = "approval/claim.rs"]
 mod claim;
+#[path = "approval/current.rs"]
+mod current;
 #[path = "approval/origin.rs"]
 mod origin;
 #[path = "approval/recover.rs"]
@@ -14,7 +16,15 @@ mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{ApprovalError as Error, ApprovalOutcome, ApprovalReceipt};
 use crabber_core::{ControlId, InputFingerprint, Run, SessionId};
-pub(super) use origin::verify as verify_record;
+pub(super) use current::{has_source, preflight as preflight_current, session as verify_session};
+pub(super) fn verify_record(
+    state: &State,
+    run: &Run,
+    record: &crate::approval::ApprovalRecord,
+) -> Result<(), Error> {
+    origin::verify(state, run, record)?;
+    current::verify(state, run, record, false)
+}
 use time::OffsetDateTime;
 
 fn receipt(
@@ -108,6 +118,7 @@ pub(super) fn guard_attempt(
     run: &Run,
     request: &crate::AttemptMutation,
 ) -> Result<(), crate::AttemptError> {
+    verify_session(state, &run.session_id).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     let Some(id) = state.approval_barriers.get(&run.session_id) else {
         return Ok(());
     };
@@ -136,7 +147,9 @@ pub(super) fn release_terminal(
         .approvals
         .get(&id)
         .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
-    verify_record(state, run, record).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    origin::verify(state, run, record)
+        .and_then(|()| current::verify(state, run, record, true))
+        .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     let record = state
         .approvals
         .get_mut(&id)
@@ -158,6 +171,7 @@ impl MemoryStore {
         run: &crabber_core::RunId,
     ) -> Result<Option<crate::ApprovalSnapshot>, Error> {
         let state = self.state.lock().unwrap();
+        verify_session(&state, session)?;
         if state.runs.get(run).is_none_or(|r| r.session_id != *session) {
             return Err(Error::NotFound);
         }
@@ -166,6 +180,9 @@ impl MemoryStore {
             .values()
             .filter(|record| record.session_id == *session && record.run_id == *run)
             .max_by_key(|record| record.batch.continuation.generation);
+        if record.is_none() && has_source(&state, state.runs.get(run).ok_or(Error::NotFound)?) {
+            return Err(Error::UnknownStoreOutcome);
+        }
         record
             .map(|record| {
                 verify_record(&state, state.runs.get(run).ok_or(Error::NotFound)?, record)?;
@@ -200,6 +217,7 @@ pub(super) fn retirement_context(
     state: &State,
     run: &Run,
 ) -> Result<crate::attempt_control::RetirementContext, crate::AttemptError> {
+    verify_session(state, &run.session_id).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     let Some(id) = state.approval_barriers.get(&run.session_id) else {
         return Ok(crate::attempt_control::RetirementContext::default());
     };
@@ -238,3 +256,25 @@ mod tests;
 #[cfg(test)]
 #[path = "approval/termination_tests.rs"]
 mod termination_tests;
+
+pub(super) fn guard_claiming(
+    state: &State,
+    run: &Run,
+    request: &crate::AttemptMutation,
+) -> Result<(), crate::AttemptError> {
+    let id = state
+        .approval_barriers
+        .get(&run.session_id)
+        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
+    let record = state
+        .approvals
+        .get(id)
+        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
+    verify_record(state, run, record).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
+    if record.state != crate::ApprovalContinuationState::Waiting
+        || !matches!(&request.command,crate::AttemptCommand::Reserve {target} if *target==record.batch.next_attempt)
+    {
+        return Err(crate::AttemptError::Busy);
+    }
+    Ok(())
+}

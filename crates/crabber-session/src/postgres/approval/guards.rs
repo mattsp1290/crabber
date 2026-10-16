@@ -23,7 +23,7 @@ pub(in super::super) async fn release_terminal(
     run: &Run,
     request: &AttemptMutation,
 ) -> Result<(), Error> {
-    let Some(mut record) = active(tx, run).await? else {
+    let Some(mut record) = active_mode(tx, run, true).await? else {
         return Ok(());
     };
     if record.state != ApprovalContinuationState::Claimed
@@ -48,6 +48,16 @@ async fn active(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
 ) -> Result<Option<crate::approval::ApprovalRecord>, Error> {
+    super::current::session(tx, &run.session_id)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    active_mode(tx, run, false).await
+}
+async fn active_mode(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    releasing: bool,
+) -> Result<Option<crate::approval::ApprovalRecord>, Error> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
     )
@@ -59,10 +69,15 @@ async fn active(
     if !exists {
         return Ok(None);
     }
-    let (record, _) = super::load(tx, &run.session_id, &run.id)
+    let (record, _) = super::load_inner(tx, &run.session_id, &run.id, !releasing)
         .await
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::Busy)?;
+    if releasing {
+        super::current::verify(tx, run, &record, true)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
     super::write::active(tx, &record)
         .await
         .map_err(|error| match error {
@@ -101,4 +116,21 @@ pub(in super::super) async fn retirement_context(
                 .collect(),
         ),
     })
+}
+
+pub(in super::super) async fn guard_claiming(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    request: &AttemptMutation,
+) -> Result<(), Error> {
+    let (record, _) = super::load(tx, &run.session_id, &run.id)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?
+        .ok_or(Error::UnknownStoreOutcome)?;
+    if record.state != crate::ApprovalContinuationState::Waiting
+        || !matches!(&request.command,crate::AttemptCommand::Reserve {target} if *target==record.batch.next_attempt)
+    {
+        return Err(Error::Busy);
+    }
+    Ok(())
 }

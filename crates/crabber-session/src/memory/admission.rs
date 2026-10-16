@@ -132,7 +132,7 @@ fn admission_guards(
     {
         return Err(StoreError::Busy);
     }
-    if super::has_pending_continuation(state, session_id) {
+    if super::has_pending_continuation(state, session_id)? {
         return Err(StoreError::Busy);
     }
 

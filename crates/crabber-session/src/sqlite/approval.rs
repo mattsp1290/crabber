@@ -1,6 +1,7 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
 mod answer;
 mod claim;
+mod current;
 mod guards;
 mod origin;
 mod public_header;
@@ -15,7 +16,8 @@ use crate::{
     approval::{self, sql},
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
-pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
+pub(super) use current::session as verify_session;
+pub(super) use guards::{guard_attempt, guard_claiming, release_terminal, retirement_context};
 use sqlx::{Row, Sqlite, Transaction};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN length(CAST(json_extract(s.data, '$.workspace_id') AS BLOB))<=512 THEN json_extract(s.data, '$.workspace_id') END AS workspace,CASE WHEN length(CAST(c.id AS BLOB))<=128 THEN c.id END AS id,c.generation,CASE WHEN length(CAST(c.state AS BLOB))<=32 THEN c.state END AS state,c.format_version AS format_version,
@@ -101,6 +103,14 @@ async fn load(
     session: &SessionId,
     run: &RunId,
 ) -> Result<Option<(approval::ApprovalRecord, crabber_core::SessionRevision)>, Error> {
+    load_inner(tx, session, run, true).await
+}
+async fn load_inner(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    validate_current: bool,
+) -> Result<Option<(approval::ApprovalRecord, crabber_core::SessionRevision)>, Error> {
     let row = sqlx::query(SNAPSHOT)
         .bind(&session.0)
         .bind(&run.0)
@@ -113,7 +123,11 @@ async fn load(
         .map_err(approval::attempt_error)?;
     let Some(id) = row.get::<Option<String>, _>("id") else {
         return if row.get::<Option<i64>, _>("generation").is_none() {
-            Ok(None)
+            if current::has_source(tx, session, Some(run)).await? {
+                Err(Error::UnknownStoreOutcome)
+            } else {
+                Ok(None)
+            }
         } else {
             Err(Error::UnknownStoreOutcome)
         };
@@ -139,7 +153,10 @@ async fn load(
         return Err(Error::UnknownStoreOutcome);
     }
     verify_questions(tx, &record).await?;
-    origin::verify(tx, &record).await?;
+    let saved_run = origin::verify(tx, &record).await?;
+    if validate_current {
+        current::verify(tx, &saved_run, &record, false).await?;
+    }
     Ok(Some((record, revision)))
 }
 async fn receipt(
@@ -224,3 +241,6 @@ mod compound_tests;
 
 #[cfg(test)]
 mod process_tests;
+
+#[cfg(test)]
+mod current_tests;

@@ -221,8 +221,10 @@ impl MemoryStore {
     }
 }
 
-fn has_pending_continuation(state: &State, session: &SessionId) -> bool {
-    state.approval_barriers.contains_key(session)
+fn has_pending_continuation(state: &State, session: &SessionId) -> Result<bool, StoreError> {
+    approval::verify_session(state, session)
+        .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
+    Ok(state.approval_barriers.contains_key(session))
 }
 fn bump_public_revision(state: &mut State, session: &SessionId) -> Result<(), StoreError> {
     let current = state

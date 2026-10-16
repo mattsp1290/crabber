@@ -1,6 +1,7 @@
 //! Durable approval of a complete prepared batch, before any call starts.
 mod audit;
 mod boundary;
+pub(crate) mod current;
 mod origin;
 mod records;
 mod recovery;

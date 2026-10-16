@@ -69,6 +69,12 @@ async fn preflight(
 ) -> Result<Option<crate::approval::ApprovalRecord>, Failure> {
     let row = sqlx::query("SELECT CAST(octet_length(data_json) AS BIGINT) AS bytes,CASE WHEN octet_length(data_json)<=$3 AND octet_length(data_json)<=4194304 THEN data_json END AS data FROM continuations WHERE session_id=$1 AND run_id=$2 ORDER BY generation DESC LIMIT 1").bind(&request.session_id.0).bind(&run.0).bind(i64::try_from(proof.remaining()).map_err(unknown)?).fetch_optional(&mut **tx).await.map_err(unknown)?;
     let Some(row) = row else {
+        if super::current::has_source(tx, &request.session_id, Some(run))
+            .await
+            .map_err(unknown)?
+        {
+            return Err(unknown("missing published approval"));
+        }
         return Ok(None);
     };
     let bytes =
@@ -88,53 +94,8 @@ async fn preflight(
     if record.questions.len() > usize::from(request.max_interactions) {
         return Err(Failure::Limited(crate::PublicSessionLimit::Interactions));
     }
-    // The normal loader reads the record again; account for both carrier reads.
-    proof.charge(
-        bytes
-            .checked_add(1024)
-            .ok_or_else(|| unknown("proof bytes"))?,
-    )?;
-    crate::attempt::validate_identifier(&record.batch.id.0).map_err(unknown)?;
-    let (outer_cursor, outer_event) =
-        receipt_cost(tx, &request.session_id, &record.batch.id, proof).await?;
-    let _ = outer_cursor;
-    proof.charge(
-        outer_event
-            .checked_add(128)
-            .ok_or_else(|| unknown("proof metadata"))?,
-    )?; // Original outer event is reread by origin::verify.
-    let native_id = crate::approval::derived_id("suspend-attempt", &record.batch.id);
-    let (native_cursor, native_event) =
-        receipt_cost(tx, &request.session_id, &native_id, proof).await?;
-    proof.charge(
-        native_event
-            .checked_add(128)
-            .ok_or_else(|| unknown("proof metadata"))?,
-    )?;
-    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM events WHERE session_id=$1 AND seq<$2 ORDER BY seq DESC LIMIT 1").bind(&request.session_id.0).bind(native_cursor).fetch_optional(&mut **tx).await.map_err(unknown)?;
-    proof.charge(
-        usize::try_from(bytes.ok_or_else(|| unknown("source"))?)
-            .map_err(unknown)?
-            .checked_add(128)
-            .ok_or_else(|| unknown("proof metadata"))?,
-    )?;
-    let bytes: i64 = sqlx::query_scalar(
-        "SELECT CAST(octet_length(data::text) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2",
-    )
-    .bind(&request.session_id.0)
-    .bind(&run.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(unknown)?;
-    proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
-    let bytes: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(octet_length(id)+octet_length(call_id)),0) AS BIGINT) FROM (SELECT id,call_id FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded").bind(&record.batch.continuation.id.0).bind(&run.0).fetch_one(&mut **tx).await.map_err(unknown)?;
-    proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
-    for question in &record.questions {
-        if let Some(answer) = &question.answer {
-            crate::attempt::validate_identifier(&answer.id.0).map_err(unknown)?;
-            receipt_cost(tx, &request.session_id, &answer.id, proof).await?;
-        }
-    }
+    origin_cost(tx, &record, proof).await?;
+    super::current::preflight(tx, &record, proof).await?;
     let (checked, _) = super::load(tx, &request.session_id, run)
         .await
         .map_err(unknown)?
@@ -176,4 +137,62 @@ async fn receipt_cost(
             .ok_or_else(|| unknown("event cursor"))?,
         event,
     ))
+}
+
+pub(super) async fn origin_cost(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &crate::approval::ApprovalRecord,
+    proof: &mut Budget,
+) -> Result<(), Failure> {
+    let bytes: i64=sqlx::query_scalar("SELECT CAST(octet_length(data_json) AS BIGINT) FROM continuations WHERE session_id=$1 AND id=$2").bind(&record.session_id.0).bind(&record.batch.continuation.id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    let bytes = usize::try_from(bytes).map_err(unknown)?;
+    // The normal loader reads the record again; account for both carrier reads.
+    proof.charge(
+        bytes
+            .checked_add(1024)
+            .ok_or_else(|| unknown("proof bytes"))?,
+    )?;
+    crate::attempt::validate_identifier(&record.batch.id.0).map_err(unknown)?;
+    let (outer_cursor, outer_event) =
+        receipt_cost(tx, &record.session_id, &record.batch.id, proof).await?;
+    let _ = outer_cursor;
+    proof.charge(
+        outer_event
+            .checked_add(128)
+            .ok_or_else(|| unknown("proof metadata"))?,
+    )?; // Original outer event is reread by origin::verify.
+    let native_id = crate::approval::derived_id("suspend-attempt", &record.batch.id);
+    let (native_cursor, native_event) =
+        receipt_cost(tx, &record.session_id, &native_id, proof).await?;
+    proof.charge(
+        native_event
+            .checked_add(128)
+            .ok_or_else(|| unknown("proof metadata"))?,
+    )?;
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM events WHERE session_id=$1 AND seq<$2 ORDER BY seq DESC LIMIT 1").bind(&record.session_id.0).bind(native_cursor).fetch_optional(&mut **tx).await.map_err(unknown)?;
+    proof.charge(
+        usize::try_from(bytes.ok_or_else(|| unknown("source"))?)
+            .map_err(unknown)?
+            .checked_add(128)
+            .ok_or_else(|| unknown("proof metadata"))?,
+    )?;
+    let bytes: i64 = sqlx::query_scalar(
+        "SELECT CAST(octet_length(data::text) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2",
+    )
+    .bind(&record.session_id.0)
+    .bind(&record.run_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(unknown)?;
+    proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
+    let bytes: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(octet_length(id)+octet_length(call_id)),0) AS BIGINT) FROM (SELECT id,call_id FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded").bind(&record.batch.continuation.id.0).bind(&record.run_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
+    for question in &record.questions {
+        if let Some(answer) = &question.answer {
+            crate::attempt::validate_identifier(&answer.id.0).map_err(unknown)?;
+            receipt_cost(tx, &record.session_id, &answer.id, proof).await?;
+        }
+    }
+
+    Ok(())
 }

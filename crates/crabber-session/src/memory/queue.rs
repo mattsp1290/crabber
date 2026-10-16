@@ -382,7 +382,7 @@ fn guards(state: &State, request: &QueueMutation) -> Result<(), StoreError> {
     if matches!(
         request.action,
         QueueAction::Claim { .. } | QueueAction::Prepare { .. }
-    ) && (super::has_pending_continuation(state, &request.session_id)
+    ) && (super::has_pending_continuation(state, &request.session_id)?
         || state
             .runs
             .values()

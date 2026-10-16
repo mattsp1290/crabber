@@ -32,11 +32,6 @@ impl PostgresStore {
                 return Err(Error::RevisionConflict);
             }
             let (mut record, calls) = ready(&mut tx, &run, claim).await?;
-            record.state = ApprovalContinuationState::Claimed;
-            for question in &mut record.questions {
-                question.view.consumed = true;
-            }
-            write::save(&mut tx, &record).await?;
             let now = self.clock.now();
             let mut activated = run.clone();
             activated.owner.clone_from(&claim.owner);
@@ -62,11 +57,11 @@ impl PostgresStore {
                 id: approval::derived_id("claim-attempt", &claim.id),
                 expected_revision: claim.expected_revision,
                 command: AttemptCommand::Reserve {
-                    target: record.batch.next_attempt,
+                    target: record.batch.next_attempt.clone(),
                 },
             };
             let applied = execution
-                .apply_attempt(&mut tx, &activated, &reserve, None, None)
+                .apply_claim_attempt(&mut tx, &activated, &reserve)
                 .await
                 .map_err(approval::attempt_error)?;
             let AttemptMutationOutcome::Applied {
@@ -76,6 +71,11 @@ impl PostgresStore {
             else {
                 return Err(Error::SemanticConflict);
             };
+            record.state = ApprovalContinuationState::Claimed;
+            for question in &mut record.questions {
+                question.view.consumed = true;
+            }
+            write::save(&mut tx, &record).await?;
             let receipt = write::publish(
                 &mut tx,
                 &run,

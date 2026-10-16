@@ -35,13 +35,6 @@ impl super::super::MemoryStore {
                 return Err(Error::RevisionConflict);
             }
             let (mut record, calls) = ready(state, &run, claim)?;
-            record.state = ApprovalContinuationState::Claimed;
-            for question in &mut record.questions {
-                question.view.consumed = true;
-            }
-            state
-                .approvals
-                .insert(claim.continuation.id.clone(), record.clone());
             let now = self.clock.now();
             let mut activated = run.clone();
             activated.owner.clone_from(&claim.owner);
@@ -65,11 +58,11 @@ impl super::super::MemoryStore {
                 id: approval::derived_id("claim-attempt", &claim.id),
                 expected_revision: claim.expected_revision,
                 command: AttemptCommand::Reserve {
-                    target: record.batch.next_attempt,
+                    target: record.batch.next_attempt.clone(),
                 },
             };
             let applied = execution
-                .apply_attempt(state, reserve, None, None)
+                .apply_claim_attempt(state, reserve)
                 .map_err(approval::attempt_error)?;
             let AttemptMutationOutcome::Applied {
                 receipt,
@@ -78,6 +71,13 @@ impl super::super::MemoryStore {
             else {
                 return Err(Error::SemanticConflict);
             };
+            record.state = ApprovalContinuationState::Claimed;
+            for question in &mut record.questions {
+                question.view.consumed = true;
+            }
+            state
+                .approvals
+                .insert(claim.continuation.id.clone(), record.clone());
             let receipt = publish(
                 state,
                 &run,

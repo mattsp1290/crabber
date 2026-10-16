@@ -144,4 +144,4 @@ mod races;
 pub(crate) mod allocation;
 
 #[cfg(test)]
-mod rounds;
+pub(crate) mod rounds;

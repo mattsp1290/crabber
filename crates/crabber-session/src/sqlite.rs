@@ -80,6 +80,9 @@ async fn has_pending_continuation(
     tx: &mut Transaction<'_, Sqlite>,
     session: &crabber_core::SessionId,
 ) -> Result<bool, StoreError> {
+    Box::pin(approval::verify_session(tx, session))
+        .await
+        .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)")
         .bind(&session.0)
         .fetch_one(&mut **tx)

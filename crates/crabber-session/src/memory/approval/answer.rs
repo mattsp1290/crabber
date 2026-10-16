@@ -33,6 +33,7 @@ impl super::super::MemoryStore {
             if revision(state, &run.session_id) != answer.expected_revision {
                 return Err(Error::RevisionConflict);
             }
+            super::verify_session(state, &run.session_id)?;
             let current = state
                 .approval_barriers
                 .get(&run.session_id)

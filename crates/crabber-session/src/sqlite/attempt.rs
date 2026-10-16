@@ -147,6 +147,30 @@ impl SqliteExecution {
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<Outcome, Error> {
+        self.apply_attempt_inner(tx, run, request, (authority, conclusion, false))
+            .await
+    }
+    pub(super) async fn apply_claim_attempt(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        run: &Run,
+        request: &AttemptMutation,
+    ) -> Result<Outcome, Error> {
+        self.apply_attempt_inner(tx, run, request, (None, None, true))
+            .await
+    }
+    async fn apply_attempt_inner(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        run: &Run,
+        request: &AttemptMutation,
+        context: (
+            Option<&AttemptAuthority>,
+            Option<&crate::AttemptConclusion>,
+            bool,
+        ),
+    ) -> Result<Outcome, Error> {
+        let (authority, conclusion, claiming) = context;
         let digest = if let Some(conclusion) = conclusion {
             conclusion.fingerprint(&run.session_id, &run.id)?
         } else {
@@ -170,7 +194,7 @@ impl SqliteExecution {
         {
             return Err(Error::StaleOwner);
         }
-        super::approval::guard_attempt(tx, run, request).await?;
+        guard_approval(tx, run, request, claiming).await?;
         let current = records::revision(tx, &run.session_id).await?;
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -250,6 +274,19 @@ pub(super) async fn renew(
     run: &Run,
 ) -> Result<(), crate::StoreError> {
     records::renew(tx, run).await
+}
+
+async fn guard_approval(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &AttemptMutation,
+    claiming: bool,
+) -> Result<(), Error> {
+    if claiming {
+        super::approval::guard_claiming(tx, run, request).await
+    } else {
+        super::approval::guard_attempt(tx, run, request).await
+    }
 }
 
 #[cfg(test)]

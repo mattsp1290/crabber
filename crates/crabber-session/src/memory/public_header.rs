@@ -122,7 +122,7 @@ fn approval(
             .max_by_key(|record| record.batch.continuation.generation)
     });
     let Some(record) = record else {
-        if barrier.is_some() {
+        if barrier.is_some() || run.is_some_and(|run| super::approval::has_source(state, run)) {
             return Err(unknown("barrier"));
         }
         return Ok((None, None));
@@ -133,6 +133,7 @@ fn approval(
     }
     proof.measure(record)?;
     preflight(state, record, proof)?;
+    super::approval::preflight_current(state, run, record, proof)?;
     super::approval::verify_record(state, run, record).map_err(unknown)?;
     budget::validate_approval_state(record, barrier.is_some(), run.status, attempt)?;
     for question in &record.questions {
@@ -166,7 +167,7 @@ fn approval_receipt<'a>(
 fn event(state: &State, cursor: EventCursor) -> Result<&EventRecord, Failure> {
     state.events.get(cursor).ok_or_else(|| unknown("event"))
 }
-fn preflight(
+pub(super) fn preflight(
     state: &State,
     record: &crate::approval::ApprovalRecord,
     proof: &mut Budget,

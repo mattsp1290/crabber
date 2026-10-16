@@ -131,6 +131,26 @@ impl MemoryExecution {
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<AttemptMutationOutcome, Error> {
+        self.apply_attempt_inner(state, request, (authority, conclusion, false))
+    }
+    pub(super) fn apply_claim_attempt(
+        &self,
+        state: &mut State,
+        request: AttemptMutation,
+    ) -> Result<AttemptMutationOutcome, Error> {
+        self.apply_attempt_inner(state, request, (None, None, true))
+    }
+    fn apply_attempt_inner(
+        &self,
+        state: &mut State,
+        request: AttemptMutation,
+        context: (
+            Option<&AttemptAuthority>,
+            Option<&crate::AttemptConclusion>,
+            bool,
+        ),
+    ) -> Result<AttemptMutationOutcome, Error> {
+        let (authority, conclusion, claiming) = context;
         attempt::validate_request(&request)?;
 
         let run = state
@@ -159,7 +179,7 @@ impl MemoryExecution {
         {
             return Err(Error::StaleOwner);
         }
-        super::approval::guard_attempt(state, &run, &request)?;
+        guard_approval(state, &run, &request, claiming)?;
         let current = revision(state, &run.session_id);
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -383,6 +403,19 @@ fn is_quiet(state: &State, run: &crabber_core::Run) -> bool {
         .calls
         .values()
         .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running)
+}
+
+fn guard_approval(
+    state: &State,
+    run: &crabber_core::Run,
+    request: &AttemptMutation,
+    claiming: bool,
+) -> Result<(), Error> {
+    if claiming {
+        super::approval::guard_claiming(state, run, request)
+    } else {
+        super::approval::guard_attempt(state, run, request)
+    }
 }
 
 #[cfg(test)]

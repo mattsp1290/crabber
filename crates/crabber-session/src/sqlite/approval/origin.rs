@@ -6,7 +6,7 @@ use sqlx::{Row, Sqlite, Transaction};
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
-) -> Result<(), Error> {
+) -> Result<Run, Error> {
     let suspension = super::receipt(tx, &record.session_id, &record.batch.id)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
@@ -24,7 +24,8 @@ pub(super) async fn verify(
     let audit = event(tx, record, suspension.event_cursor.0, false).await?;
     let native_audit = event(tx, record, native.event_cursor.0, false).await?;
     let source = event(tx, record, native.event_cursor.0, true).await?;
-    record.verify_origin(&run, &suspension, &audit, &native, &native_audit, &source)
+    record.verify_origin(&run, &suspension, &audit, &native, &native_audit, &source)?;
+    Ok(run)
 }
 async fn event(
     tx: &mut Transaction<'_, Sqlite>,
