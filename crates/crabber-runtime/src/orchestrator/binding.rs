@@ -1,4 +1,6 @@
 //! Captured configuration and exact provider restoration, with no route fallback.
+#[path = "binding/resources.rs"]
+mod resources;
 use super::{Orchestrator, Request, RuntimeError};
 use crabber_core::{InputFingerprint, ProviderBindingDescriptor, RunId, SessionId};
 use crabber_extension::{ComponentIdentity, RunPlan, compute_fingerprint};
@@ -30,6 +32,7 @@ impl Orchestrator {
         Ok(descriptor)
     }
     pub(super) fn bind_plan_provider(
+        &self,
         mut plan: RunPlan,
         descriptor: &ProviderBindingDescriptor,
         behavior: &InputFingerprint,
@@ -38,6 +41,7 @@ impl Orchestrator {
             c.id == PROVIDER_BINDING_COMPONENT
                 || c.id == HOST_BEHAVIOR_COMPONENT
                 || c.id == super::attempt::DRIVER_COMPONENT
+                || c.id == resources::COMPONENT
         }) {
             return Err(ProviderBindingError::InvalidDescriptor.into());
         }
@@ -54,6 +58,15 @@ impl Orchestrator {
             id: super::attempt::DRIVER_COMPONENT.into(),
             version: super::attempt::DRIVER_VERSION.into(),
         });
+        if let Some(contract) = self.provider_resource_fingerprint(&plan, descriptor)? {
+            if self.preparation_scope.is_none() {
+                return Err(ProviderBindingError::ResourcesUnsupported.into());
+            }
+            plan.components.push(ComponentIdentity {
+                id: resources::COMPONENT.into(),
+                version: contract.as_str().into(),
+            });
+        }
         plan.fingerprint = compute_fingerprint(&plan.components);
         Ok(plan)
     }
@@ -62,12 +75,23 @@ impl Orchestrator {
         plan: &RunPlan,
         descriptor: &ProviderBindingDescriptor,
     ) -> Result<BoundProvider, RuntimeError> {
+        let context = self.provider_resource_context(plan, descriptor)?;
         let restored = if let Some(provider) = plan
             .providers
             .iter()
             .find(|p| p.info().id == descriptor.provider_id())
         {
-            provider.restore_binding(descriptor).await?
+            if let Some(context) = &context {
+                context
+                    .acquire_binding(|| provider.restore_binding_owned(descriptor, context))
+                    .await?
+            } else {
+                provider.restore_binding(descriptor).await?
+            }
+        } else if let Some(context) = &context {
+            context
+                .acquire_binding(|| self.resolver.restore_binding_owned(descriptor, context))
+                .await?
         } else {
             self.resolver.restore_binding(descriptor).await?
         };

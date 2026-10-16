@@ -2071,14 +2071,17 @@ impl Orchestrator {
             .await?;
         let prepared_runtime = runtime.clone();
         let prepared_request = request.clone();
-        let (plan, completion) = runtime
+        let ((plan, bound), completion) = runtime
             .finish_durable_preparation(grant, move |scope| async move {
                 let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
                 let (plan, admission, _) = prepared_runtime
                     .prepare_admission_in_session(&prepared_request, session_id)
                     .await?;
+                let bound = prepared_runtime
+                    .prebind_owned_provider(&plan, &admission.binding.provider)
+                    .await?;
                 Ok((
-                    plan,
+                    (plan, bound),
                     crabber_session::session_owner::preparation::PreparedOperation::Admit(
                         Box::new(admission),
                     ),
@@ -2096,7 +2099,7 @@ impl Orchestrator {
             admitted.fence,
             &admitted.session,
             InitialEntry::Unkeyed,
-            None,
+            bound,
         ))
     }
 
@@ -2179,14 +2182,17 @@ impl Orchestrator {
         let prepared_runtime = self.clone();
         let prepared_request = request.clone();
         let prepared_options = options.clone();
-        let (plan, completion) = self
+        let ((plan, bound), completion) = self
             .finish_durable_preparation(grant, move |scope| async move {
                 let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
                 let (plan, keyed) = prepared_runtime
                     .prepare_keyed_admission(&prepared_request, prepared_options)
                     .await?;
+                let bound = prepared_runtime
+                    .prebind_owned_provider(&plan, &keyed.binding.provider)
+                    .await?;
                 Ok((
-                    plan,
+                    (plan, bound),
                     crabber_session::session_owner::preparation::PreparedOperation::AdmitKeyed(
                         Box::new(keyed),
                     ),
@@ -2221,7 +2227,7 @@ impl Orchestrator {
                     admitted.fence,
                     &admitted.session,
                     InitialEntry::Keyed,
-                    None,
+                    bound,
                 ),
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
@@ -2504,7 +2510,7 @@ impl Orchestrator {
         let plan = frontend::bind(plan, input.frontend_tools())?;
         let plan = Self::bind_selection_policy(plan, &request.selection_policy)?;
         let provider = self.describe_provider(&plan, &request.selection)?;
-        let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
+        let plan = self.bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
         // Hash structured, independently observed semantics, never a caller's claim.
         let config = json!([
             "crabber.runtime.admission.v1",

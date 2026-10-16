@@ -3,6 +3,8 @@
 mod cleanup_failure;
 #[path = "preparation_resources/faults.rs"]
 mod faults;
+#[path = "preparation_resources/provider_binding.rs"]
+mod provider_binding;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "preparation_resources/sql.rs"]
 mod sql;

@@ -440,15 +440,18 @@ impl Orchestrator {
         let runtime = self.clone();
         let prepared_request = captured.clone();
         let prepared_control = control.clone();
-        let (plan, completed) = self
+        let ((plan, bound), completed) = self
             .finish_durable_preparation(grant, move |scope| async move {
                 let runtime = runtime.with_preparation_scope(scope);
                 let (plan, restored) = runtime
                     .prepare_keyed_admission(&prepared_request, retained.input.admission)
                     .await?;
                 verify_restored(&original, &restored)?;
+                let bound = runtime
+                    .prebind_owned_provider(&plan, &restored.binding.provider)
+                    .await?;
                 Ok((
-                    plan,
+                    (plan, bound),
                     crabber_session::session_owner::preparation::PreparedOperation::Queue {
                         request: prepared_control.admit(),
                         binding: Some(Box::new(restored)),
@@ -483,7 +486,7 @@ impl Orchestrator {
                     admitted.fence,
                     &admitted.session,
                     InitialEntry::Keyed,
-                    None,
+                    bound,
                 ),
             }),
             QueueOutcome::Applied { .. } => Err(StoreError::AdmissionConflict.into()),

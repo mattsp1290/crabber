@@ -4,6 +4,7 @@ use crabber_providers::BoundProvider;
 
 pub(in crate::orchestrator) enum RetainedValue {
     Plan(Box<RunPlan>),
+    Admission(Box<(RunPlan, Option<BoundProvider>)>),
     Resume(Box<(RunPlan, BoundProvider)>),
     Empty,
 }
@@ -42,6 +43,18 @@ impl PreparationValue for () {
     fn recover(value: RetainedValue) -> Result<Self, RetainedValue> {
         match value {
             RetainedValue::Empty => Ok(()),
+            other => Err(other),
+        }
+    }
+}
+
+impl PreparationValue for (RunPlan, Option<BoundProvider>) {
+    fn retain(self) -> RetainedValue {
+        RetainedValue::Admission(Box::new(self))
+    }
+    fn recover(value: RetainedValue) -> Result<Self, RetainedValue> {
+        match value {
+            RetainedValue::Admission(value) => Ok(*value),
             other => Err(other),
         }
     }
