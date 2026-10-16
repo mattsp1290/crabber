@@ -187,3 +187,6 @@ async fn panicked_worker_join_does_not_invent_durable_terminal_outcome() {
 
 #[path = "task_ownership/preparation.rs"]
 pub(super) mod preparation;
+
+#[path = "task_ownership/session_invocations.rs"]
+mod session_invocations;

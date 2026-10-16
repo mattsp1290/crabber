@@ -494,6 +494,7 @@ pub struct Orchestrator {
     store: Arc<dyn Store>,
     behavior_fingerprint: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
+    session_invocations: crate::session_invocations::SessionInvocations,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
     tool_resumes: Arc<
         std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
@@ -783,6 +784,7 @@ impl OrchestratorBuilder {
         }
         Ok(Orchestrator {
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
+            session_invocations: crate::session_invocations::SessionInvocations::default(),
             owned_attempt: None,
             tool_resumes: Arc::default(),
             tool_suspensions: Arc::default(),
@@ -1069,6 +1071,17 @@ impl Orchestrator {
         bound: Duration,
     ) -> crate::ExecutionTaskDrain {
         self.execution_tasks.drain_session(session, bound).await
+    }
+
+    /// Observe or cooperatively cancel only this session's independent jobs.
+    /// A deadline retains every unfinished join; expiry never counts as Joined.
+    pub async fn drain_session_invocations(
+        &self,
+        session: &SessionId,
+        cancel: bool,
+        bound: Duration,
+    ) -> Vec<crate::SessionInvocationReport> {
+        self.session_invocations.drain(session, cancel, bound).await
     }
 
     fn own_preparation<T: Send + 'static>(

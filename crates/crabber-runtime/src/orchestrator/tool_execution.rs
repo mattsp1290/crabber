@@ -222,6 +222,7 @@ impl Orchestrator {
                             lease_lost,
                             &pipeline_context,
                             &task_resources,
+                            owner,
                         )
                         .await
                         .inspect_err(|error| {

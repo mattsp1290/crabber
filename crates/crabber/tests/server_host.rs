@@ -10,6 +10,8 @@ mod interaction_hooks;
 mod management;
 #[path = "server_host/runtime_input.rs"]
 mod runtime_input;
+#[path = "server_host/session_invocations.rs"]
+mod session_invocations;
 #[path = "server_host/tool_continuation.rs"]
 mod tool_continuation;
 use async_trait::async_trait;

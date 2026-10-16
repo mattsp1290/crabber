@@ -51,3 +51,6 @@ mod model_middleware_tests;
 mod bound_provider_tests;
 
 pub use crabber_session::AdmissionSelectionPolicy;
+
+mod session_invocations;
+pub use session_invocations::{SessionInvocationReport, SessionInvocationStatus};

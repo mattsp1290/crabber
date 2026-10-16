@@ -56,3 +56,9 @@ mod tool_output;
 pub use tool_output::{
     TOOL_OUTPUT_ENVELOPE_VERSION, parse_tool_output_envelope, tool_output_envelope,
 };
+
+mod session_invocations;
+pub use session_invocations::{
+    SessionInvocationAdmission, SessionInvocationContext, SessionInvocationError,
+    SessionInvocationRequest, SessionInvocationSpawner, SessionInvocationTask, SessionInvocations,
+};

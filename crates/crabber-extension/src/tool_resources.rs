@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Library task-ownership contract, included in execution plan fingerprints.
-pub const TOOL_RESOURCE_CONTRACT_VERSION: u32 = 2;
+pub const TOOL_RESOURCE_CONTRACT_VERSION: u32 = 3;
 /// Maximum registered tasks in one native tool scope, including retained joins.
 pub const MAX_TOOL_RESOURCE_TASKS: usize = 64;
 

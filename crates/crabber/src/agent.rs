@@ -557,6 +557,19 @@ impl Agent {
             .await
     }
 
+    /// Observe or cooperatively cancel independent jobs for exactly one session.
+    /// Pending or uncertain owners remain retained after the deadline.
+    pub async fn drain_session_invocations(
+        &self,
+        session: &SessionId,
+        cancel: bool,
+        bound: Duration,
+    ) -> Vec<crabber_runtime::SessionInvocationReport> {
+        self.runtime
+            .drain_session_invocations(session, cancel, bound)
+            .await
+    }
+
     /// Terminally closes the extension registry without interrupting live runs.
     /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
     /// retained plan leases keep the detached close task waiting until completion.

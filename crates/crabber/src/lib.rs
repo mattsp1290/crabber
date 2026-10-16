@@ -25,8 +25,8 @@ pub use crabber_runtime::{
     ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose, MonotonicClock,
     Observer, OperationKind, OperationalObservation, PermissionDecision, PreparationTaskId,
     RecoverReport, RecoverTool, RecoverySkipReason, RunControl, RunResult, RuntimeError,
-    SkippedRun, StaticPolicy, SystemMonotonicClock, TaskTermination, TerminalReason,
-    ToolResourceDrain,
+    SessionInvocationReport, SessionInvocationStatus, SkippedRun, StaticPolicy,
+    SystemMonotonicClock, TaskTermination, TerminalReason, ToolResourceDrain,
 };
 
 #[cfg(feature = "codex")]

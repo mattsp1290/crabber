@@ -1291,8 +1291,8 @@ fn request() -> Request {
     }
 }
 
-fn orchestrator(
-    store: Arc<MemoryStore>,
+fn orchestrator<S: Store + 'static>(
+    store: Arc<S>,
     fake: FakeProvider,
     executor: Arc<dyn crabber_extension::ToolExecutor>,
     observer: Arc<RecordingObserver>,
@@ -1988,6 +1988,7 @@ struct SettlementGate {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
+    session_owner_ack_lost: AtomicUsize,
 }
 
 struct DelayedTerminalStore {
@@ -2002,6 +2003,74 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    fn supports_session_owners(&self) -> bool {
+        true
+    }
+    async fn reserve_session_owner(
+        &self,
+        request: crabber_session::session_owner::ReserveSessionOwner,
+        parent: Option<crabber_session::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        let result = self.inner.reserve_session_owner(request, parent).await?;
+        if self
+            .gate
+            .session_owner_ack_lost
+            .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        let fault = match request.command {
+            crabber_session::session_owner::SessionOwnerCommand::Begin => 2,
+            crabber_session::session_owner::SessionOwnerCommand::Join { .. } => 3,
+            _ => 0,
+        };
+        let result = self.inner.mutate_session_owner(request, authority).await?;
+        if fault != 0
+            && self
+                .gate
+                .session_owner_ack_lost
+                .compare_exchange(fault, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
+    async fn lookup_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crabber_session::session_owner::SessionOwnerReceipt>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_session_owner(session, id).await
+    }
+    async fn get_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerSnapshot,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.get_session_owner(session, id).await
+    }
+
     fn supports_tool_continuations(&self) -> bool {
         true
     }

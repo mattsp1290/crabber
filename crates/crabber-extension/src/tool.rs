@@ -105,6 +105,7 @@ pub struct ToolContext {
     workspace: WorkspaceContext,
     progress: ProgressSink,
     resources: crate::ToolResources,
+    session_invocations: crate::SessionInvocations,
 }
 impl ToolContext {
     #[must_use]
@@ -126,6 +127,7 @@ impl ToolContext {
             workspace,
             progress,
             resources: crate::ToolResources::default(),
+            session_invocations: crate::SessionInvocations::default(),
         }
     }
     /// Attach a host-owned task scope; standalone contexts reject registration.
@@ -137,6 +139,16 @@ impl ToolContext {
     #[must_use]
     pub fn resources(&self) -> &crate::ToolResources {
         &self.resources
+    }
+    /// Attach a trusted host capability bound to this exact native phase.
+    #[must_use]
+    pub fn with_session_invocations(mut self, invocations: crate::SessionInvocations) -> Self {
+        self.session_invocations = invocations;
+        self
+    }
+    #[must_use]
+    pub fn session_invocations(&self) -> &crate::SessionInvocations {
+        &self.session_invocations
     }
     /// Authoritative workspace identity of this call's session. Read-only.
     #[must_use]

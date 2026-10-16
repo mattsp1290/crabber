@@ -23,6 +23,7 @@ impl Orchestrator {
         lease_lost: &AtomicBool,
         pipeline_context: &ToolResultContext,
         resources: &crabber_extension::ToolResources,
+        owner: &super::tool_phase::OwnedPhase,
     ) -> Result<ToolRun, RuntimeError> {
         let (session_id, workspace) = (&session.id, session.workspace.clone());
         if permission == crabber_session::GrantedDecision::Deny {
@@ -63,7 +64,25 @@ impl Orchestrator {
             workspace,
             progress,
         );
-        let context = context.with_resources(resources.clone());
+        let context = context
+            .with_resources(resources.clone())
+            .with_session_invocations(
+                self.session_invocations.bind(
+                    self.store.clone(),
+                    crate::session_invocations::Parent {
+                        session: session_id.clone(),
+                        run: run_id.clone(),
+                        workspace: session
+                            .workspace
+                            .workspace_id()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        directory: session.workspace.directory().unwrap_or_default().to_owned(),
+                        phase: owner.target.clone(),
+                        authority: owner.authority.clone(),
+                    },
+                ),
+            );
         let executor = Arc::clone(&tool.executor);
         let resumed = self
             .tool_resumes
