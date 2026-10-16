@@ -13,7 +13,6 @@ pub(crate) enum Kind {
 }
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl Kind {
-    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn name(self) -> &'static str {
         match self {
             Self::Init => "init",
@@ -112,7 +111,6 @@ impl Begin {
     }
 }
 impl Source {
-    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn kind(&self) -> Kind {
         match self {
             Self::Init(_) => Kind::Init,
