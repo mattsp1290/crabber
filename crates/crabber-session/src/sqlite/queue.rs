@@ -1,3 +1,4 @@
+pub(super) mod public;
 mod reads;
 use super::{SqliteStore, db};
 use crate::{

@@ -458,3 +458,75 @@ pub(super) fn preparation_context(
     }
     Ok(())
 }
+
+/// Aggregate queue membership comes from immutable audits before current labels.
+pub(super) fn public_pending(
+    state: &State,
+    session: &SessionId,
+    limit: u16,
+    safe: &mut crate::public_session::budget::Budget,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<QueueSummary>, crate::public_session::v2::proof::Failure> {
+    use crate::public_session::v2::proof::{Failure, unknown};
+    for ((scope, _), audit) in &state.queue_audits {
+        if scope == session
+            && !state
+                .queue
+                .contains_key(&(session.clone(), audit.receipt.summary.queue_id.clone()))
+        {
+            return Err(unknown("queue source without current"));
+        }
+    }
+    let mut result = Vec::new();
+    for ((scope, id), record) in &state.queue {
+        if scope != session {
+            continue;
+        }
+        proof.measure(&record.summary)?;
+        validate_summary(&record.summary, session, id, record.summary.sequence).map_err(unknown)?;
+        let (key, latest) = state
+            .queue_audits
+            .iter()
+            .filter(|((scope, _), audit)| scope == session && audit.receipt.summary.queue_id == *id)
+            .max_by_key(|(_, audit)| audit.receipt.revision)
+            .ok_or_else(|| unknown("queue latest"))?;
+        proof.measure(&latest.receipt)?;
+        let Some(OperationReceipt::Queue(saved)) = state.operation_receipts.get(key) else {
+            return Err(unknown("queue source receipt"));
+        };
+        proof.measure(saved)?;
+        if *saved != latest.receipt
+            || key.1 != saved.operation_id
+            || latest.request.id != saved.operation_id
+            || latest.request.session_id != *session
+            || saved.summary != record.summary
+        {
+            return Err(unknown("queue source routing"));
+        }
+        let actual = state
+            .receipts
+            .get(&(session.clone(), record.input.admission.key.clone()));
+        if let Some(actual) = actual {
+            proof.measure(actual)?;
+        }
+        verify_current(&record.summary, saved, actual).map_err(unknown)?;
+        if matches!(
+            record.summary.state,
+            QueueState::Queued | QueueState::Claimed
+        ) {
+            if result.len() >= usize::from(limit) {
+                return Err(Failure::Limited(crate::PublicSessionLimitV2::QueueEntries));
+            }
+            safe.measure(&record.summary)?;
+            result.push(record.summary.clone());
+        }
+    }
+    result.sort_by_key(|summary| summary.sequence);
+    if result
+        .windows(2)
+        .any(|rows| rows[0].sequence >= rows[1].sequence)
+    {
+        return Err(unknown("queue FIFO"));
+    }
+    Ok(result)
+}

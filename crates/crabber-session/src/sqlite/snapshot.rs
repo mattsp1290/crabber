@@ -1,6 +1,6 @@
 //! Metadata-first bounded reads in a consistent WAL snapshot.
 use super::{SqliteStore, StoreError, db};
-use crate::sql_snapshot::{Boundary, RecordKind, digest, invalid, parse, token};
+use crate::sql_snapshot::{Boundary, Profile, RecordKind, digest, invalid, parse_profile, token_profile};
 pub(super) use crate::sql_snapshot::{call_record, message_record};
 use crate::{SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage};
 use crabber_core::EventCursor;
@@ -15,11 +15,19 @@ impl SqliteStore {
         &self,
         request: SnapshotRequest,
     ) -> Result<SnapshotOutcome, StoreError> {
+        self.read_snapshot_profile(request, Profile::Raw).await
+    }
+    #[allow(clippy::too_many_lines)] // One bounded coherent history transaction.
+    pub(super) async fn read_snapshot_profile(
+        &self,
+        request: SnapshotRequest,
+        profile: Profile,
+    ) -> Result<SnapshotOutcome, StoreError> {
         // Reject oversized untrusted input before even opening a database transaction.
         if request
             .continuation
             .as_ref()
-            .is_some_and(|t| t.0.len() > 2048)
+            .is_some_and(|t| t.0.len() > profile.token_cap())
         {
             return Err(invalid());
         }
@@ -39,7 +47,7 @@ impl SqliteStore {
                     .map_err(db)?;
             let session = digest(&[&request.session_id.0]);
             let mut b = if let Some(t) = &request.continuation {
-                parse(t, &key, &session)?
+                parse_profile(t, &key, &session, profile)?
             } else {
                 let row = sqlx::query(
                     "SELECT coalesce((SELECT max(seq) FROM messages WHERE session_id=$1),0) AS \
@@ -108,7 +116,7 @@ impl SqliteStore {
                         .map_err(|_| invalid())?,
                 );
                 if let Some(limit) = usage.exceeded(request.limits) {
-                    let continuation = token(&b, &key)?;
+                    let continuation = token_profile(&b, &key, profile)?;
                     if page.usage.encoded_bytes == 0 {
                         return Ok(SnapshotOutcome::Limited {
                             high_water: b.high_water,

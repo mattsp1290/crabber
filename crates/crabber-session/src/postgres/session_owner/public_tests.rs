@@ -152,6 +152,19 @@ async fn aggregate_owner_private_transfer_is_preflighted() {
             .0,
         Err(Failure::Error(PublicSessionError::UnknownStoreOutcome))
     ));
+    sqlx::query(
+        "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+    )
+    .bind(&request.binding.session_id.0)
+    .bind(&request.binding.id.0)
+    .bind("malformed-private-body".repeat(100_000))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        read(&store, &request.binding.session_id, 1, 128).await.0,
+        Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
+    ));
 }
 
 #[tokio::test]
@@ -223,4 +236,53 @@ async fn aggregate_owner_keyset_history_and_invalid_sentinel() {
         read(&store, &session, 0, 2 * 1024 * 1024).await.0,
         Err(Failure::Error(PublicSessionError::UnknownStoreOutcome))
     ));
+}
+
+#[tokio::test]
+async fn aggregate_history_profile_cannot_cross_raw_boundaries() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let (session, expected) = crate::public_history::tests::seed(&store).await;
+    let mut limits = crate::public_session::tests::limits().history;
+    limits.messages = 1;
+    let request = crate::SnapshotRequest {
+        session_id: session,
+        limits,
+        continuation: None,
+    };
+    let crate::SnapshotOutcome::Page(first) = store
+        .read_snapshot_profile(
+            request.clone(),
+            crate::snapshot_profile::Profile::AggregateV2,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("page")
+    };
+    let mut next = request.clone();
+    next.continuation = first.continuation;
+    assert!(store.read_snapshot(next.clone()).await.is_err());
+    let crate::SnapshotOutcome::Page(second) = store
+        .read_snapshot_profile(next.clone(), crate::snapshot_profile::Profile::AggregateV2)
+        .await
+        .unwrap()
+    else {
+        panic!("page")
+    };
+    assert_eq!(second.messages[0].id, expected.id);
+    let crate::SnapshotOutcome::Page(raw) = store.read_snapshot(request).await.unwrap() else {
+        panic!("page")
+    };
+    next.continuation = raw.continuation;
+    assert!(
+        store
+            .read_snapshot_profile(next, crate::snapshot_profile::Profile::AggregateV2)
+            .await
+            .is_err()
+    );
 }

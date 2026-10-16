@@ -71,6 +71,17 @@ async fn preflight(
     id: &str,
     proof: &mut Proof,
 ) -> Result<(), Failure> {
+    let current: i64 = sqlx::query_scalar(CURRENT_COST)
+        .bind(&session.0)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unknown)?;
+    let current = usize::try_from(current).map_err(unknown)?;
+    proof.charge(current)?;
+    if current > 32768 {
+        return Err(unknown("owner current bound"));
+    }
     let row = sqlx::query(COST)
         .bind(&session.0)
         .bind(id)
@@ -78,7 +89,6 @@ async fn preflight(
         .await
         .map_err(unknown)?;
     for field in [
-        "current_bytes",
         "latest_bytes",
         "origin_bytes",
         "context_bytes",
@@ -93,6 +103,7 @@ async fn preflight(
     Ok(())
 }
 const IDS: &str = r"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id>$2 ORDER BY owner_id LIMIT 32";
+const CURRENT_COST: &str = "SELECT CAST(octet_length(data_json) AS BIGINT) FROM session_owner_current WHERE session_id=$1 AND owner_id=$2";
 const COST: &str = r"SELECT CAST(octet_length(c.data_json) AS BIGINT) AS current_bytes,CAST(octet_length(l.data_json)+octet_length(l.owner_id)+octet_length(l.operation_id)+octet_length(l.operation)+octet_length(l.state) AS BIGINT) AS latest_bytes,
  CAST(octet_length(o.data_json)+octet_length(o.owner_id)+octet_length(o.operation_id)+octet_length(o.operation)+octet_length(o.state) AS BIGINT) AS origin_bytes,
  CAST(octet_length(x.data_json) AS BIGINT) AS context_bytes,

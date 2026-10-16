@@ -92,6 +92,7 @@ mod postgres;
 mod public_history;
 mod public_run;
 mod public_session;
+mod snapshot_profile;
 pub use public_history::{PublicHistoryOutcome, PublicHistoryPage};
 pub use public_session::*;
 mod public_state;

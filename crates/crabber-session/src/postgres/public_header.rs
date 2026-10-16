@@ -38,6 +38,17 @@ async fn read(
     revision: SessionRevision,
     mut safe: Budget,
 ) -> Result<PublicControlHeader, Failure> {
+    let mut proof = Budget::new(request.max_proof_bytes, PublicSessionLimit::ProofBytes);
+    let header = base(tx, request, revision, &mut safe, &mut proof).await?;
+    budget::finish_header(header, safe, &proof)
+}
+pub(super) async fn base(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &PublicHeaderRequest,
+    revision: SessionRevision,
+    safe: &mut Budget,
+    proof: &mut Budget,
+) -> Result<PublicControlHeader, Failure> {
     let (session, metadata, saved_revision) = super::management::current(tx, &request.session_id)
         .await
         .map_err(unknown)?
@@ -72,32 +83,20 @@ async fn read(
         }
         None
     };
-    let attempt = attempt(tx, request, &mut safe).await?;
-    let contents = contents(tx, request, revision, &mut safe).await?;
-    let mut proof = Budget::new(request.max_proof_bytes, PublicSessionLimit::ProofBytes);
-    let (approval, barrier) = super::approval::public_header(
-        tx,
-        request,
-        status,
-        attempt.as_ref(),
-        &mut safe,
-        &mut proof,
-    )
-    .await?;
-    budget::finish_header(
-        PublicControlHeader {
-            version: 1,
-            revision,
-            session,
-            attempt,
-            approval,
-            barrier,
-            contents,
-            read_usage: PublicHeaderUsage::default(),
-        },
-        safe,
-        &proof,
-    )
+    let attempt = attempt(tx, request, safe).await?;
+    let contents = contents(tx, request, revision, safe).await?;
+    let (approval, barrier) =
+        super::approval::public_header(tx, request, status, attempt.as_ref(), safe, proof).await?;
+    Ok(PublicControlHeader {
+        version: 1,
+        revision,
+        session,
+        attempt,
+        approval,
+        barrier,
+        contents,
+        read_usage: PublicHeaderUsage::default(),
+    })
 }
 async fn attempt(
     tx: &mut Transaction<'_, Postgres>,

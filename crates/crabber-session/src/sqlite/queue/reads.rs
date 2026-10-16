@@ -10,7 +10,7 @@ use crate::{
 use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Row, Sqlite, Transaction};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN length(CAST(data_json AS BLOB))<=33554432 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
-const SUMMARY: &str = "SELECT CASE WHEN length(CAST(q.queue_id AS BLOB))<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN length(CAST(q.summary_json AS BLOB))<=16384 THEN q.summary_json END AS summary, CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN length(CAST(a.operation_id AS BLOB))<=128 THEN a.operation_id END AS latest_operation,CASE WHEN length(CAST(CAST(ar.data AS TEXT) AS BLOB))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+pub(super) const SUMMARY: &str = "SELECT CASE WHEN length(CAST(q.queue_id AS BLOB))<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN length(CAST(q.summary_json AS BLOB))<=16384 THEN q.summary_json END AS summary, CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN length(CAST(a.operation_id AS BLOB))<=128 THEN a.operation_id END AS latest_operation,CASE WHEN length(CAST(CAST(ar.data AS TEXT) AS BLOB))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
 pub(super) async fn record(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
@@ -73,7 +73,10 @@ pub(super) async fn record(
     verify_sources(&result, &enqueue, prepare.as_ref(), claim.as_ref())?;
     Ok(Some(result))
 }
-fn summary(row: &sqlx::sqlite::SqliteRow, session: &SessionId) -> Result<QueueSummary, StoreError> {
+pub(super) fn summary(
+    row: &sqlx::sqlite::SqliteRow,
+    session: &SessionId,
+) -> Result<QueueSummary, StoreError> {
     let value: QueueSummary = decode(
         &row.try_get::<Option<String>, _>("summary")
             .map_err(db)?

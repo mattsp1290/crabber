@@ -10,41 +10,27 @@ pub(crate) enum Failure {
 pub(crate) fn unknown(_: impl std::fmt::Debug) -> Failure {
     Failure::Error(PublicSessionError::UnknownStoreOutcome)
 }
-/// Legacy readers use Unbounded. Aggregate readers always share one Bounded context.
-pub(crate) enum Proof {
-    Unbounded,
-    Bounded { remaining: usize, used: usize },
-}
+/// One always-present shared proof context. Its Budget also serves the existing
+/// qualified approval and cross-domain readers without resetting the allowance.
+pub(crate) struct Proof(crate::public_session::budget::Budget);
 impl Proof {
     pub fn bounded(cap: usize) -> Self {
-        Self::Bounded {
-            remaining: cap,
-            used: 0,
-        }
+        Self(crate::public_session::budget::Budget::new(
+            cap,
+            crate::PublicSessionLimit::ProofBytes,
+        ))
     }
     pub fn charge(&mut self, bytes: usize) -> Result<(), Failure> {
-        if let Self::Bounded { remaining, used } = self {
-            if bytes > *remaining {
-                return Err(Failure::Limited(Limit::ProofBytes));
-            }
-            *remaining -= bytes;
-            *used += bytes;
-        }
-        Ok(())
+        self.0.charge(bytes).map_err(Into::into)
     }
     pub fn measure(&mut self, carrier: &impl Serialize) -> Result<(), Failure> {
-        if let Self::Bounded { remaining, .. } = self {
-            let bytes = crate::snapshot::encoded_bytes(carrier, *remaining)
-                .ok_or(Failure::Limited(Limit::ProofBytes))?;
-            self.charge(bytes)?;
-        }
-        Ok(())
+        self.0.measure(carrier).map_err(Into::into)
     }
     pub fn used(&self) -> usize {
-        match self {
-            Self::Unbounded => 0,
-            Self::Bounded { used, .. } => *used,
-        }
+        self.0.used
+    }
+    pub fn budget(&mut self) -> &mut crate::public_session::budget::Budget {
+        &mut self.0
     }
 }
 impl From<crate::public_session::budget::Failure> for Failure {

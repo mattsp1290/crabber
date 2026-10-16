@@ -331,3 +331,68 @@ mod tests {
         .await;
     }
 }
+
+pub(super) fn public_controls(
+    state: &State,
+    run: &Run,
+    limit: u16,
+    safe: &mut crate::public_session::budget::Budget,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<crate::RunControlSummary>, crate::public_session::v2::proof::Failure> {
+    use crate::public_session::v2::proof::{Failure, unknown};
+    let target = RunControlTarget::of(run);
+    proof.measure(&target)?;
+    for ((session, id), saved) in &state.operation_receipts {
+        let OperationReceipt::RunControl(saved) = saved else {
+            continue;
+        };
+        if *session != run.session_id {
+            continue;
+        }
+        proof.measure(saved)?;
+        let source = state
+            .events
+            .get(saved.event_cursor)
+            .ok_or_else(|| unknown("control origin"))?;
+        proof.measure(source)?;
+        if source.session_id != *session || source.correlation.as_deref() != Some(&id.0) {
+            return Err(unknown("control origin scope"));
+        }
+        if source.run_id != run.id {
+            if saved.target.run_id == run.id {
+                return Err(unknown("control run routing"));
+            }
+            continue;
+        }
+        // receipt() rereads both acceptance carriers during corroboration.
+        proof.measure(saved)?;
+        proof.measure(source)?;
+        let record = state
+            .run_controls
+            .get(&(session.clone(), id.clone()))
+            .ok_or_else(|| unknown("control current"))?;
+        proof.measure(&record.summary)?;
+        let latest = state
+            .run_control_audits
+            .range((session.clone(), id.clone(), 0)..=(session.clone(), id.clone(), u64::MAX))
+            .next_back()
+            .map(|(_, summary)| summary)
+            .ok_or_else(|| unknown("control latest"))?;
+        proof.measure(latest)?;
+        proof.measure(
+            state
+                .events
+                .get(latest.event_cursor)
+                .ok_or_else(|| unknown("control progress"))?,
+        )?;
+        safe.measure(&record.summary)?;
+    }
+    let controls = summaries(state, &target).map_err(unknown)?;
+    for summary in &controls {
+        crate::run_control::verify_terminal(summary, run.status).map_err(unknown)?;
+    }
+    if controls.len() > usize::from(limit) {
+        return Err(Failure::Limited(crate::PublicSessionLimitV2::RunControls));
+    }
+    Ok(controls)
+}

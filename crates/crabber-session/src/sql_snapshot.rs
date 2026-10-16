@@ -222,3 +222,115 @@ pub(crate) fn append_imported(
     drop(accounting);
     Ok(())
 }
+
+pub(crate) use crate::snapshot_profile::{Profile, profile_boundary, profile_json};
+pub(crate) fn token_profile(
+    boundary: &Boundary,
+    key: &str,
+    profile: Profile,
+) -> Result<SnapshotContinuation, StoreError> {
+    if profile == Profile::Raw {
+        return token(boundary, key);
+    }
+    let json = profile_json(boundary, profile)?;
+    Ok(SnapshotContinuation(format!(
+        "{}:{json}",
+        signature(key, &json)?
+    )))
+}
+pub(crate) fn parse_profile(
+    token: &SnapshotContinuation,
+    key: &str,
+    session: &str,
+    profile: Profile,
+) -> Result<Boundary, StoreError> {
+    if profile == Profile::Raw {
+        return parse(token, key, session);
+    }
+    if token.0.len() > profile.token_cap() {
+        return Err(invalid());
+    }
+    let (supplied, json) = token.0.split_once(':').ok_or_else(invalid)?;
+    let expected = signature(key, json)?;
+    if supplied.len() != expected.len()
+        || supplied
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0_u8, |n, (a, b)| n | (a ^ b))
+            != 0
+    {
+        return Err(invalid());
+    }
+    let b: Boundary = profile_boundary(json, profile)?;
+    if b.session != session
+        || b.revision < 0
+        || b.public_revision < 0
+        || b.message_after < 0
+        || b.call_after < 0
+        || b.message_after > b.messages
+        || b.call_after > b.calls
+    {
+        return Err(invalid());
+    }
+    Ok(b)
+}
+
+#[cfg(test)]
+mod aggregate_token_tests {
+    use super::*;
+    #[test]
+    fn aggregate_profile_is_authenticated_and_cross_version_closed() {
+        let boundary = Boundary {
+            session: digest(&["session"]),
+            revision: 1,
+            public_revision: 2,
+            messages: 3,
+            calls: 0,
+            message_after: 1,
+            call_after: 0,
+            high_water: EventCursor(4),
+        };
+        let raw = token(&boundary, "key").unwrap();
+        let aggregate = token_profile(&boundary, "key", Profile::AggregateV2).unwrap();
+        assert!(parse_profile(&raw, "key", &boundary.session, Profile::AggregateV2).is_err());
+        assert!(parse(&aggregate, "key", &boundary.session).is_err());
+        assert!(parse_profile(&aggregate, "key", &boundary.session, Profile::AggregateV2).is_ok());
+        assert!(
+            parse_profile(
+                &aggregate,
+                "other-key",
+                &boundary.session,
+                Profile::AggregateV2
+            )
+            .is_err()
+        );
+        let json = aggregate
+            .0
+            .split_once(':')
+            .unwrap()
+            .1
+            .replace("public-session.aggregate.v2", "public-session.aggregate.v3");
+        let wrong_profile =
+            SnapshotContinuation(format!("{}:{json}", signature("key", &json).unwrap()));
+        assert!(
+            parse_profile(
+                &wrong_profile,
+                "key",
+                &boundary.session,
+                Profile::AggregateV2
+            )
+            .is_err()
+        );
+        let oversized = SnapshotContinuation("private-marker".repeat(100_000));
+        let allocations = allocation_counter::measure(|| {
+            assert!(
+                parse_profile(&oversized, "key", &boundary.session, Profile::AggregateV2).is_err()
+            );
+        });
+        assert!(
+            allocations.bytes_total < 1024,
+            "{}",
+            allocations.bytes_total
+        );
+    }
+}

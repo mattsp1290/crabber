@@ -71,6 +71,17 @@ async fn preflight(
     id: &str,
     proof: &mut Proof,
 ) -> Result<(), Failure> {
+    let current: i64 = sqlx::query_scalar(CURRENT_COST)
+        .bind(&session.0)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unknown)?;
+    let current = usize::try_from(current).map_err(unknown)?;
+    proof.charge(current)?;
+    if current > 32768 {
+        return Err(unknown("owner current bound"));
+    }
     let row = sqlx::query(COST)
         .bind(&session.0)
         .bind(id)
@@ -78,7 +89,6 @@ async fn preflight(
         .await
         .map_err(unknown)?;
     for field in [
-        "current_bytes",
         "latest_bytes",
         "origin_bytes",
         "context_bytes",
@@ -93,6 +103,7 @@ async fn preflight(
     Ok(())
 }
 const IDS: &str = r"SELECT length(CAST(owner_id AS BLOB)) AS bytes,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id>$2 ORDER BY owner_id LIMIT 32";
+const CURRENT_COST: &str = "SELECT CAST(length(CAST(data_json AS BLOB)) AS BIGINT) FROM session_owner_current WHERE session_id=$1 AND owner_id=$2";
 const COST: &str = r"SELECT length(CAST(c.data_json AS BLOB)) AS current_bytes,length(CAST(l.data_json AS BLOB))+length(CAST(l.owner_id AS BLOB))+length(CAST(l.operation_id AS BLOB))+length(CAST(l.operation AS BLOB))+length(CAST(l.state AS BLOB)) AS latest_bytes,
  length(CAST(o.data_json AS BLOB))+length(CAST(o.owner_id AS BLOB))+length(CAST(o.operation_id AS BLOB))+length(CAST(o.operation AS BLOB))+length(CAST(o.state AS BLOB)) AS origin_bytes,
  length(CAST(x.data_json AS BLOB)) AS context_bytes,

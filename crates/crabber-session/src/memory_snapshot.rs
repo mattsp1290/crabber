@@ -1,4 +1,5 @@
 use super::{EventCursor, MemoryStore, State, StoreError};
+use crate::snapshot_profile::{Profile, profile_boundary, profile_json};
 use crate::{
     SnapshotContinuation, SnapshotLimit, SnapshotOutcome, SnapshotPage, SnapshotRequest,
     SnapshotUsage,
@@ -36,9 +37,12 @@ fn digest(parts: &[&str]) -> String {
 }
 
 impl MemoryStore {
-    fn snapshot_token(&self, boundary: &Boundary) -> Result<SnapshotContinuation, StoreError> {
-        let json = serde_json::to_string(boundary)
-            .map_err(|_| StoreError::Validation("invalid snapshot boundary".into()))?;
+    fn snapshot_token(
+        &self,
+        boundary: &Boundary,
+        profile: Profile,
+    ) -> Result<SnapshotContinuation, StoreError> {
+        let json = profile_json(boundary, profile)?;
         let signature = digest(&[&self.snapshot_key, &json]);
         Ok(SnapshotContinuation(format!("v2:{signature}:{json}")))
     }
@@ -47,6 +51,7 @@ impl MemoryStore {
         &self,
         state: &State,
         request: &SnapshotRequest,
+        profile: Profile,
     ) -> Result<Boundary, StoreError> {
         let session_hash = digest(&[&request.session_id.0]);
         let revision = state
@@ -55,7 +60,7 @@ impl MemoryStore {
             .copied()
             .unwrap_or(0);
         let boundary = if let Some(token) = &request.continuation {
-            if token.0.len() > 2048 {
+            if token.0.len() > profile.token_cap() {
                 return Err(StoreError::Validation(
                     "invalid snapshot continuation".into(),
                 ));
@@ -71,8 +76,7 @@ impl MemoryStore {
                     "invalid snapshot continuation".into(),
                 ));
             }
-            let boundary: Boundary = serde_json::from_str(json)
-                .map_err(|_| StoreError::Validation("invalid snapshot continuation".into()))?;
+            let boundary: Boundary = profile_boundary(json, profile)?;
             if boundary.session_hash != session_hash {
                 return Err(StoreError::Validation(
                     "snapshot belongs to another session".into(),
@@ -116,10 +120,18 @@ impl MemoryStore {
         state: &State,
         request: &SnapshotRequest,
     ) -> Result<SnapshotOutcome, StoreError> {
+        self.read_snapshot_profile(state, request, Profile::Raw)
+    }
+    pub(super) fn read_snapshot_profile(
+        &self,
+        state: &State,
+        request: &SnapshotRequest,
+        profile: Profile,
+    ) -> Result<SnapshotOutcome, StoreError> {
         if !state.sessions.contains_key(&request.session_id) {
             return Err(StoreError::NotFound);
         }
-        let mut boundary = self.snapshot_boundary(state, request)?;
+        let mut boundary = self.snapshot_boundary(state, request, profile)?;
         if boundary.revision
             != state
                 .snapshot_revisions
@@ -151,7 +163,7 @@ impl MemoryStore {
                     page.usage = usage;
                 }
                 Err(limit) => {
-                    let continuation = self.snapshot_token(&boundary)?;
+                    let continuation = self.snapshot_token(&boundary, profile)?;
                     if page.usage.encoded_bytes == 0 {
                         return Ok(SnapshotOutcome::Limited {
                             high_water: boundary.high_water,
@@ -429,6 +441,43 @@ mod snapshot_tests {
         assert_eq!(
             restarted.messages[0],
             state.messages.for_session(&session)[0]
+        );
+    }
+    #[test]
+    fn aggregate_history_profile_cannot_cross_raw_boundaries() {
+        let (store, session) = seeded();
+        let mut state = store.state.lock().unwrap();
+        state
+            .messages
+            .push(session.clone(), message(&session, "one", "one"));
+        state
+            .messages
+            .push(session.clone(), message(&session, "two", "two"));
+        let req = request(&session);
+        let SnapshotOutcome::Page(first) = store
+            .read_snapshot_profile(&state, &req, Profile::AggregateV2)
+            .unwrap()
+        else {
+            panic!("page")
+        };
+        let mut next = req.clone();
+        next.continuation = first.continuation.clone();
+        assert!(store.read_snapshot(&state, &next).is_err());
+        let SnapshotOutcome::Page(second) = store
+            .read_snapshot_profile(&state, &next, Profile::AggregateV2)
+            .unwrap()
+        else {
+            panic!("page")
+        };
+        assert_eq!(second.messages[0].id.0, "two");
+        let SnapshotOutcome::Page(raw) = store.read_snapshot(&state, &req).unwrap() else {
+            panic!("page")
+        };
+        next.continuation = raw.continuation;
+        assert!(
+            store
+                .read_snapshot_profile(&state, &next, Profile::AggregateV2)
+                .is_err()
         );
     }
 }

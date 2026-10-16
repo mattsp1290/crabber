@@ -9,7 +9,7 @@ use crate::{
 use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Postgres, Row, Transaction};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN octet_length(data_json)<=33554432 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
-const SUMMARY: &str = "SELECT CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+pub(super) const SUMMARY: &str = "SELECT CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
 pub(super) async fn record(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -72,7 +72,10 @@ pub(super) async fn record(
     crate::queue::verify_sources(&result, &enqueue, prepare.as_ref(), claim.as_ref())?;
     Ok(Some(result))
 }
-fn summary(row: &sqlx::postgres::PgRow, session: &SessionId) -> Result<QueueSummary, StoreError> {
+pub(super) fn summary(
+    row: &sqlx::postgres::PgRow,
+    session: &SessionId,
+) -> Result<QueueSummary, StoreError> {
     let value: QueueSummary = decode(
         &row.try_get::<Option<String>, _>("summary")
             .map_err(db)?

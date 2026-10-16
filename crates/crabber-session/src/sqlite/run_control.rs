@@ -1,4 +1,5 @@
 //! Native exact-target acceptance and fenced worker boundaries.
+pub(super) mod public;
 mod reads;
 pub(super) mod suspension;
 mod waiting;

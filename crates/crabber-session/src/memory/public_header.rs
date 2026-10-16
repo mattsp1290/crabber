@@ -33,6 +33,16 @@ fn read(
 ) -> Result<PublicControlHeader, Failure> {
     let mut safe = Budget::new(request.max_bytes, PublicSessionLimit::HeaderBytes);
     let mut proof = Budget::new(request.max_proof_bytes, PublicSessionLimit::ProofBytes);
+    let header = base(state, request, revision, &mut safe, &mut proof)?;
+    budget::finish_header(header, safe, &proof)
+}
+pub(super) fn base(
+    state: &State,
+    request: &PublicHeaderRequest,
+    revision: SessionRevision,
+    safe: &mut Budget,
+    proof: &mut Budget,
+) -> Result<PublicControlHeader, Failure> {
     let session = state
         .sessions
         .get(&request.session_id)
@@ -83,21 +93,17 @@ fn read(
         .get(&request.session_id)
         .unwrap_or(&baseline);
     safe.measure(contents)?;
-    let (approval, barrier) = approval(state, run, attempt, request, &mut safe, &mut proof)?;
-    budget::finish_header(
-        PublicControlHeader {
-            version: 1,
-            revision,
-            session: summary,
-            attempt: attempt.cloned(),
-            approval,
-            barrier,
-            contents: contents.clone(),
-            read_usage: PublicHeaderUsage::default(),
-        },
-        safe,
-        &proof,
-    )
+    let (approval, barrier) = approval(state, run, attempt, request, safe, proof)?;
+    Ok(PublicControlHeader {
+        version: 1,
+        revision,
+        session: summary,
+        attempt: attempt.cloned(),
+        approval,
+        barrier,
+        contents: contents.clone(),
+        read_usage: PublicHeaderUsage::default(),
+    })
 }
 fn approval(
     state: &State,
