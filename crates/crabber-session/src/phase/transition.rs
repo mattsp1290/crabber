@@ -1,3 +1,5 @@
+#[path = "continuation.rs"]
+mod continuation;
 use crate::{
     AttemptAuthority, PhaseAuthority, PhaseCommand, PhaseError, PhaseMutation, PhaseQuiescence,
     PhaseQuiescenceResult, PhaseSnapshot, PhaseState, PhaseTarget, UncertainPhaseChoice,

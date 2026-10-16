@@ -52,7 +52,7 @@ WHERE r.session_id=$1
 const SAVE: &str = "UPDATE execution_attempts SET owner=$3,claim_token=$4,run_claim_token=$5,lease_until=$6,state=$7,cleanup_state=$8,outcome_json=$9 WHERE run_id=$1 AND id=$2 AND generation=$10";
 const INSERT: &str = "INSERT INTO execution_attempts(run_id,id,owner,claim_token,run_claim_token,lease_until,state,cleanup_state,outcome_json,generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)";
 
-pub(super) async fn load(
+pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
     id: Option<&AttemptId>,
@@ -127,7 +127,7 @@ pub(super) async fn revision(
         .ok_or(Error::NotFound)?;
     sql::revision(value)
 }
-pub(super) async fn save(
+pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Sqlite>,
     record: &AttemptRecord,
     insert: bool,

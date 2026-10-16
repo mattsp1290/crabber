@@ -9,7 +9,8 @@ pub use interaction::{
 };
 mod continuation;
 pub use continuation::{
-    MAX_TOOL_CHECKPOINT_BYTES, ToolCheckpoint, ToolPhaseOutcome, ToolSuspension,
+    AcceptedToolResponse, MAX_TOOL_CHECKPOINT_BYTES, ResumableToolIdentity, ToolCheckpoint,
+    ToolPhaseOutcome, ToolSuspension,
 };
 
 mod public_state;
@@ -201,6 +202,8 @@ pub struct ToolInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
+    /// Waiting on a persisted explicit tool checkpoint and required response set.
+    Waiting,
     Pending,
     Running,
     Completed,

@@ -1,4 +1,5 @@
 //! Native phase writes share the session/run gate and operation-key namespace.
+pub(super) use records::{latest as latest_host_phase, save as save_host_record};
 mod calls;
 pub(super) use super::tool_result::apply as apply_host_result;
 pub(super) use calls::load as load_call;
@@ -357,3 +358,12 @@ mod process_tests;
 
 #[cfg(test)]
 mod resolution_tests;
+
+pub(super) async fn save_host_call(
+    tx: &mut Transaction<'_, Sqlite>,
+    call: &crabber_core::ToolCallRecord,
+) -> Result<(), Error> {
+    super::records::save_call(tx, &call.id, call)
+        .await
+        .map_err(sql::unknown)
+}

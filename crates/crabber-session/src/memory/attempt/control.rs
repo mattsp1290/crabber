@@ -41,6 +41,7 @@ impl MemoryStore {
                 return Err(Error::GenerationConflict);
             }
             super::super::approval::guard_attempt(state, &run, &control.mutation())?;
+            super::super::tool_continuation::guard_attempt(state, &run, &control.mutation())?;
             let now = self.clock.now();
             let turn = reconcile_children(state, &run, control, now)?;
             control.apply(&mut run, &mut record, current, now)?;

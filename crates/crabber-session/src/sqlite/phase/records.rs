@@ -82,7 +82,7 @@ pub(in super::super) async fn load(
         .map(|(data, _)| sql::decode_record(data))
         .transpose()
 }
-pub(super) async fn latest(
+pub(in super::super) async fn latest(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
     call: &ToolCallId,
@@ -152,7 +152,7 @@ pub(super) async fn exists(tx: &mut Transaction<'_, Sqlite>, id: &PhaseId) -> Re
         .map_err(db)
         .map_err(sql::unknown)
 }
-pub(super) async fn save(
+pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Sqlite>,
     record: &PhaseRecord,
     insert: bool,

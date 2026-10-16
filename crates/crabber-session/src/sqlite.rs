@@ -16,6 +16,7 @@ mod queue;
 mod records;
 mod snapshot;
 mod store_impl;
+mod tool_continuation;
 mod tool_result;
 mod transactions;
 use crate::StoreError;
@@ -44,6 +45,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0005_session_management.sql"),
     "\nINSERT INTO schema_version(version) VALUES(5);\n",
     include_str!("../migrations/sqlite/0006_future_queue.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(6);\n",
+    include_str!("../migrations/sqlite/0007_tool_continuations.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
@@ -73,6 +76,8 @@ pub struct SqliteStore {
     #[cfg(test)]
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -83,11 +88,17 @@ async fn has_pending_continuation(
     Box::pin(approval::verify_session(tx, session))
         .await
         .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)")
-        .bind(&session.0)
-        .fetch_one(&mut **tx)
+    let tool = Box::pin(tool_continuation::pending_in_session(tx, session))
         .await
-        .map_err(db)
+        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    let approval: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+    )
+    .bind(&session.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(approval || tool)
 }
 impl SqliteStore {
     /// Creates or verifies the dedicated schema and enables WAL journaling.
@@ -186,6 +197,8 @@ async fn connect_with(
         binding_fault: Arc::default(),
         #[cfg(test)]
         queue_fault: Arc::default(),
+        #[cfg(test)]
+        tool_continuation_fault: Arc::default(),
         #[cfg(test)]
         write_waiters: Arc::default(),
     })

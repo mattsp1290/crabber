@@ -68,3 +68,18 @@ pub(super) async fn resolve(
     }
     Ok(())
 }
+
+pub(in super::super) async fn save(
+    tx: &mut Transaction<'_, Postgres>,
+    call: &ToolCallRecord,
+) -> Result<(), Error> {
+    let accounting = snapshot::call_record(call).map_err(sql::unknown)?;
+    let result = sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_record=$4,snapshot_parts=$5,snapshot_text=$6,snapshot_bytes=$7 WHERE id=$1 AND run_id=$8")
+        .bind(&call.id.0).bind(call_status(call.status)).bind(json(call).map_err(sql::unknown)?)
+        .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
+        .bind(&call.run_id.0).execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+    if result.rows_affected() != 1 {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(())
+}

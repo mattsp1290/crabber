@@ -41,6 +41,7 @@ pub(super) fn status(status: RunStatus) -> &'static str {
 }
 pub(super) fn call_status(status: ToolCallStatus) -> &'static str {
     match status {
+        ToolCallStatus::Waiting => "waiting",
         ToolCallStatus::Pending => "pending",
         ToolCallStatus::Running => "running",
         ToolCallStatus::Completed => "completed",

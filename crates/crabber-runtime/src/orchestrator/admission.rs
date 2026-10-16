@@ -83,6 +83,15 @@ impl Orchestrator {
             .acquire_plan_in(context)
             .await
             .map_err(RuntimeError::ExtensionPlan)?;
+        if !self.store.supports_tool_continuations()
+            && plan
+                .tools
+                .iter()
+                .any(|tool| tool.executor.resumable().is_some())
+        {
+            plan.release();
+            return Err(super::StoreError::HostUnsupported.into());
+        }
         Self::bind_plan_registration(plan, declaration)
     }
     pub(crate) fn bind_plan_registration(

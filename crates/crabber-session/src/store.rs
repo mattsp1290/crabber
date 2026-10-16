@@ -406,6 +406,41 @@ pub trait Store: Send + Sync {
         false
     }
     /// Pure declaration for durable prepared-batch approvals and their controls.
+    fn supports_tool_continuations(&self) -> bool {
+        false
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+    ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ToolContinuationReceipt>, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    async fn answer_tool_interaction(
+        &self,
+        _answer: crate::ToolInteractionAnswer,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    async fn recover_tool_continuation(
+        &self,
+        _request: crate::ToolContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    async fn claim_tool_continuation(
+        &self,
+        _claim: crate::ToolContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
     fn supports_pre_effect_approvals(&self) -> bool {
         false
     }
@@ -663,6 +698,15 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    /// Commit explicit checkpoints only after the actual phase/attempt resource joins.
+    async fn suspend_tool_continuation(
+        &self,
+        _batch: crate::ToolContinuationSuspension,
+        _authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+
     /// Atomically acknowledge native phase Begin and its logical running source.
     /// Only a fresh Applied result permits dispatch under the original authority.
     async fn start_tool_phase(

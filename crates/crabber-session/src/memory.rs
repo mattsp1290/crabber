@@ -2,6 +2,8 @@
 mod admission;
 #[path = "memory/approval.rs"]
 mod approval;
+#[path = "memory/tool_continuation.rs"]
+mod tool_continuation;
 use admission::{admit_keyed_transaction, admit_transaction};
 #[path = "memory/events.rs"]
 mod events;
@@ -72,12 +74,17 @@ pub struct MemoryStore {
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
 struct State {
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
+    tool_continuations:
+        BTreeMap<crabber_core::ContinuationId, crate::tool_continuation::ToolContinuationRecord>,
+    tool_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
     #[cfg(test)]
     abandon_fail_after_tools: bool,
     #[cfg(test)]
@@ -111,6 +118,7 @@ struct State {
 #[derive(Clone)]
 enum OperationReceipt {
     Queue(crate::QueueReceipt),
+    ToolContinuation(crate::ToolContinuationReceipt),
     Management(crate::ManagementReceipt),
     Approval(crate::ApprovalReceipt),
     PublicState(crate::PublicStateReceipt),
@@ -165,6 +173,8 @@ impl MemoryStore {
             binding_fault: Arc::default(),
             #[cfg(test)]
             queue_fault: Arc::default(),
+            #[cfg(test)]
+            tool_continuation_fault: Arc::default(),
         }
     }
 
@@ -224,7 +234,9 @@ impl MemoryStore {
 fn has_pending_continuation(state: &State, session: &SessionId) -> Result<bool, StoreError> {
     approval::verify_session(state, session)
         .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
-    Ok(state.approval_barriers.contains_key(session))
+    let pending = tool_continuation::pending_in_session(state, session)
+        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    Ok(state.approval_barriers.contains_key(session) || pending)
 }
 fn bump_public_revision(state: &mut State, session: &SessionId) -> Result<(), StoreError> {
     let current = state
@@ -545,6 +557,41 @@ impl Store for MemoryStore {
     fn supports_owned_tool_phases(&self) -> bool {
         true
     }
+    fn supports_tool_continuations(&self) -> bool {
+        true
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        self.read_tools(session, run)
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ToolContinuationReceipt>, crate::ToolContinuationError> {
+        self.tool_receipt(session, id)
+    }
+    async fn answer_tool_interaction(
+        &self,
+        answer: crate::ToolInteractionAnswer,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.answer_tools(&answer)
+    }
+    async fn recover_tool_continuation(
+        &self,
+        request: crate::ToolContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_tools(&request)
+    }
+    async fn claim_tool_continuation(
+        &self,
+        claim: crate::ToolContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_tools(&claim)
+    }
     fn supports_pre_effect_approvals(&self) -> bool {
         true
     }
@@ -810,7 +857,7 @@ impl Store for MemoryStore {
                 &call.run_id == run
                     && matches!(
                         call.status,
-                        ToolCallStatus::Pending | ToolCallStatus::Running
+                        ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting
                     )
             })
             .cloned()
@@ -839,6 +886,12 @@ impl Store for MemoryStore {
                 .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
             {
                 return Err(StoreError::AdmissionRecoveryRequired);
+            }
+            let scoped = state.runs.get(id).ok_or(StoreError::NotFound)?;
+            if tool_continuation::pending_in_session(state, &scoped.session_id)
+                .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
+            {
+                return Err(StoreError::Busy);
             }
             let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
             if run.status.is_terminal() || run.lease_until > now {
@@ -901,6 +954,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn suspend_tool_continuation(
+        &self,
+        batch: crate::ToolContinuationSuspension,
+        authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.suspend_tools(&batch, &authority)
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -1168,6 +1229,7 @@ impl ExecutionStore for MemoryExecution {
                     .values()
                     .any(|record| record.snapshot.run_id == run.id)
                 || state.approval_barriers.contains_key(&run.session_id)
+                || state.tool_barriers.contains_key(&run.session_id)
             {
                 return Err(StoreError::Conflict);
             }
@@ -1200,6 +1262,7 @@ impl ExecutionStore for MemoryExecution {
                     .values()
                     .any(|record| record.snapshot.run_id == run.id)
                 || state.approval_barriers.contains_key(&run.session_id)
+                || state.tool_barriers.contains_key(&run.session_id)
             {
                 return Err(StoreError::Conflict);
             }

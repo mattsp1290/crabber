@@ -71,7 +71,7 @@ async fn settle(
         return Err(AbandonError::LiveLease);
     }
     let native: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
     )
     .bind(&run.id.0)
     .bind(&run.session_id.0)
@@ -86,7 +86,7 @@ async fn settle(
     run.updated_at = now;
     save_run(tx, &run).await?;
     let calls: Vec<ToolCallRecord> = sqlx::query(
-        "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id",
+        "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting') ORDER BY id",
     )
     .bind(&run.id.0)
     .fetch_all(&mut **tx)
@@ -173,7 +173,7 @@ async fn replay(
     if event != commit.outcome.terminal_event {
         return Err(StoreError::Validation("invalid abandonment terminal event".into()).into());
     }
-    let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running'))")
+    let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting'))")
         .bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db)?;
     if unfinished {
         return Err(StoreError::Validation("unfinished abandoned tools".into()).into());

@@ -9,23 +9,24 @@ pub use host::ExecutionContext;
 
 pub use agent::{
     Admission, Agent, AgentBuilder, AgentConfig, BuildError, Continuation, ContinueApproval,
-    RecoverApproval, RunEvents, RunHandle,
+    ContinueTool, RecoverApproval, RunEvents, RunHandle, ToolContinuation,
 };
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
     SessionContext, SessionId, TraceContext, TraceContextError, TraceLink,
 };
 pub use crabber_extension::{
-    ExtensionError, ExtensionFactory, FactoryContext, FactoryScope, JsonToolExecutor, Scope,
-    ToolDefinition, ToolExecutor, WorkspaceReadError, WorkspaceReadErrorKind, WorkspaceReader,
-    WorkspaceReaderResolver,
+    ExtensionError, ExtensionFactory, FactoryContext, FactoryScope, JsonToolExecutor,
+    ResumableTool, Scope, ToolDefinition, ToolExecutor, WorkspaceReadError, WorkspaceReadErrorKind,
+    WorkspaceReader, WorkspaceReaderResolver,
 };
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
     ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose, MonotonicClock,
     Observer, OperationKind, OperationalObservation, PermissionDecision, PreparationTaskId,
-    RecoverReport, RecoverySkipReason, RunControl, RunResult, RuntimeError, SkippedRun,
-    StaticPolicy, SystemMonotonicClock, TaskTermination, TerminalReason, ToolResourceDrain,
+    RecoverReport, RecoverTool, RecoverySkipReason, RunControl, RunResult, RuntimeError,
+    SkippedRun, StaticPolicy, SystemMonotonicClock, TaskTermination, TerminalReason,
+    ToolResourceDrain,
 };
 
 #[cfg(feature = "codex")]

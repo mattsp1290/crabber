@@ -44,7 +44,8 @@ impl MemoryStore {
                 | OperationReceipt::Management(_)
                 | OperationReceipt::Attempt(_)
                 | OperationReceipt::Phase(_)
-                | OperationReceipt::Approval(_),
+                | OperationReceipt::Approval(_)
+                | OperationReceipt::ToolContinuation(_),
             ) => {
                 return Err(Error::SemanticConflict);
             }

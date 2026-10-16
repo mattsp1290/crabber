@@ -65,6 +65,33 @@ impl Orchestrator {
         );
         let context = context.with_resources(resources.clone());
         let executor = Arc::clone(&tool.executor);
+        let resumed = self
+            .tool_resumes
+            .lock()
+            .expect("tool resumes poisoned")
+            .get(call_id)
+            .cloned();
+        let identity = frozen_identity(plan, &tool.info.name)?;
+        if executor.resumable_identity() != identity
+            || executor
+                .resumable()
+                .map(crabber_extension::ResumableTool::identity)
+                != identity
+        {
+            return Err(crabber_session::ToolContinuationError::SchemaMismatch.into());
+        }
+        if let Some(identity) = &identity {
+            identity.validate()?;
+        }
+        if resumed.as_ref().is_some_and(|saved| {
+            identity.as_ref() != Some(&saved.identity) || !saved.identity.accepts(&saved.checkpoint)
+        }) {
+            return Err(crabber_session::ToolContinuationError::SchemaMismatch.into());
+        }
+        let suspended = Arc::new(std::sync::Mutex::new(None));
+        let terminal_suspended = suspended.clone();
+        let marker = json!({"crabber_native_suspension":crabber_core::ControlId::new()});
+        let terminal_marker = marker.clone();
         let authorized_arguments = arguments.clone();
         let declared_error = Arc::new(AtomicBool::new(false));
         let terminal_error = declared_error.clone();
@@ -73,15 +100,41 @@ impl Orchestrator {
             let context = context.clone();
             let authorized_arguments = authorized_arguments.clone();
             let terminal_error = terminal_error.clone();
+            let suspended = terminal_suspended.clone();
+            let marker = terminal_marker.clone();
+            let resumed = resumed.clone();
             Box::pin(async move {
                 if input != authorized_arguments {
                     return Err(crabber_extension::ExtensionError::Tool(
                         "around handler changed immutable tool input".into(),
                     ));
                 }
-                let output = executor
-                    .execute_with_context(context, authorized_arguments)
-                    .await?;
+                let outcome = if let Some(tool) = executor.resumable() {
+                    if let Some(saved) = resumed {
+                        tool.resume(
+                            context,
+                            authorized_arguments,
+                            saved.checkpoint,
+                            saved.responses,
+                        )
+                        .await?
+                    } else {
+                        tool.start(context, authorized_arguments).await?
+                    }
+                } else {
+                    crabber_core::ToolPhaseOutcome::Completed(
+                        executor
+                            .execute_with_context(context, authorized_arguments)
+                            .await?,
+                    )
+                };
+                let output = match outcome {
+                    crabber_core::ToolPhaseOutcome::Completed(output) => output,
+                    crabber_core::ToolPhaseOutcome::Suspended(proposal) => {
+                        *suspended.lock().expect("tool suspension poisoned") = Some(proposal);
+                        return Ok(marker);
+                    }
+                };
                 if output.is_error() {
                     terminal_error.store(true, Ordering::SeqCst);
                 }
@@ -93,6 +146,21 @@ impl Orchestrator {
             () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
             result = plan.dispatcher.around::<ToolExecute>(arguments, terminal) => result,
         };
+        if let Some(proposal) = suspended.lock().expect("tool suspension poisoned").take() {
+            return Ok(
+                if execution_result
+                    .as_ref()
+                    .is_ok_and(|value| value == &marker)
+                    && identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.accepts(proposal.checkpoint()))
+                {
+                    ToolRun::Suspended(proposal)
+                } else {
+                    ToolRun::SuspensionInvalid
+                },
+            );
+        }
         let output = match execution_result {
             Ok(output) => output,
             Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
@@ -124,4 +192,27 @@ impl Orchestrator {
             Ok(Err(_)) | Err(_) => ToolRun::PipelineFailed,
         })
     }
+}
+
+pub(super) fn frozen_identity(
+    plan: &RunPlan,
+    name: &str,
+) -> Result<Option<crabber_core::ResumableToolIdentity>, RuntimeError> {
+    let id = format!("resumable:{name}");
+    let mut found = plan
+        .components
+        .iter()
+        .filter(|component| component.id == id);
+    let identity = found
+        .next()
+        .map(|component| {
+            serde_json::from_str(&component.version).map_err(|_| {
+                RuntimeError::from(crabber_session::ToolContinuationError::SchemaMismatch)
+            })
+        })
+        .transpose()?;
+    if found.next().is_some() {
+        return Err(crabber_session::ToolContinuationError::SchemaMismatch.into());
+    }
+    Ok(identity)
 }

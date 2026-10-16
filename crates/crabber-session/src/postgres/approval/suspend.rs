@@ -108,7 +108,7 @@ pub(super) async fn validate_calls(
     batch: &ApprovalSuspension,
 ) -> Result<(), Error> {
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running')",
+        "SELECT COUNT(*) FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting')",
     )
     .bind(&run.id.0)
     .fetch_one(&mut **tx)

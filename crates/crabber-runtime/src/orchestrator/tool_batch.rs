@@ -19,6 +19,8 @@ pub(super) struct Batch<'a> {
     pub run: &'a crabber_core::RunId,
     pub plan: &'a RunPlan,
     pub turn: Option<TurnId>,
+    pub usage: &'a crabber_core::Usage,
+    pub turns_used: usize,
     pub cancellation: &'a CancellationToken,
     pub lease_lost: &'a AtomicBool,
 }
@@ -41,72 +43,91 @@ impl Orchestrator {
         calls: Vec<ToolCallRecord>,
         approvals: Vec<GrantedApproval>,
     ) -> Result<(), RuntimeError> {
+        let frozen = approvals.clone();
         let prepared = ready(calls, approvals)?;
-        match self.execution_mode {
-            ExecutionMode::Sequential => {
-                for (record, approval) in prepared {
-                    self.execute_tool(scope.clone(), record, approval, None)
-                        .await?;
-                }
-                Ok(())
-            }
-            ExecutionMode::Parallel { max } => {
-                let (sender, receiver) = watch::channel(0usize);
-                let order = Arc::new(SettlementOrder {
-                    done: Mutex::new(vec![false; prepared.len()]),
-                    sender,
-                });
-                let halted = Arc::new(AtomicBool::new(false));
-                let results = futures::stream::iter(prepared.into_iter().enumerate().map(
-                    |(index, (record, approval))| {
-                        let receiver = receiver.clone();
-                        let order = order.clone();
-                        let halted = halted.clone();
-                        let scope = &scope;
-                        async move {
-                            if halted.load(Ordering::SeqCst) {
-                                order.complete(index);
-                                return Err(RuntimeError::TaskStopped);
-                            }
-                            let result = self
-                                .execute_tool(
-                                    scope.clone(),
-                                    record,
-                                    approval,
-                                    Some((index, receiver, order.sender.clone())),
-                                )
-                                .await;
-                            // A failed local phase must not strand completed siblings.
-                            // Its error still prevents another model turn or a false run terminal.
-                            if result.is_err() {
-                                halted.store(true, Ordering::SeqCst);
-                            }
-                            order.complete(index);
-                            result
+        let result = async {
+            match self.execution_mode {
+                ExecutionMode::Sequential => {
+                    for (record, approval) in prepared {
+                        self.execute_tool(scope.clone(), record, approval, None)
+                            .await?;
+                        if self.has_tool_suspension() {
+                            break;
                         }
-                    },
-                ))
-                .buffer_unordered(max)
-                .collect::<Vec<_>>()
-                .await;
-                // Retain the strongest recovery requirement after all started
-                // siblings have reached their own boundary.
-                if let Some(index) = results.iter().position(|result| {
-                    matches!(
-                        result,
-                        Err(RuntimeError::PhaseOutcomeUnknown { .. }
-                            | RuntimeError::ToolOutcomeUnknown { .. }
-                            | RuntimeError::AttemptCleanupIncomplete { .. })
-                    )
-                }) {
-                    return results.into_iter().nth(index).unwrap();
+                    }
+                    Ok(())
                 }
-                for result in results {
-                    result?;
+                ExecutionMode::Parallel { max } => {
+                    let (sender, receiver) = watch::channel(0usize);
+                    let order = Arc::new(SettlementOrder {
+                        done: Mutex::new(vec![false; prepared.len()]),
+                        sender,
+                    });
+                    let halted = Arc::new(AtomicBool::new(false));
+                    let results = futures::stream::iter(prepared.into_iter().enumerate().map(
+                        |(index, (record, approval))| {
+                            let receiver = receiver.clone();
+                            let order = order.clone();
+                            let halted = halted.clone();
+                            let scope = &scope;
+                            async move {
+                                if halted.load(Ordering::SeqCst) {
+                                    order.complete(index);
+                                    return Err(RuntimeError::TaskStopped);
+                                }
+                                let result = self
+                                    .execute_tool(
+                                        scope.clone(),
+                                        record,
+                                        approval,
+                                        Some((index, receiver, order.sender.clone())),
+                                    )
+                                    .await;
+                                // A failed local phase must not strand completed siblings.
+                                // Its error still prevents another model turn or a false run terminal.
+                                if result.is_err() || self.has_tool_suspension() {
+                                    halted.store(true, Ordering::SeqCst);
+                                }
+                                order.complete(index);
+                                result
+                            }
+                        },
+                    ))
+                    .buffer_unordered(max)
+                    .collect::<Vec<_>>()
+                    .await;
+                    // Retain the strongest recovery requirement after all started
+                    // siblings have reached their own boundary.
+                    if let Some(index) = results.iter().position(|result| {
+                        matches!(
+                            result,
+                            Err(RuntimeError::PhaseOutcomeUnknown { .. }
+                                | RuntimeError::ToolOutcomeUnknown { .. }
+                                | RuntimeError::AttemptCleanupIncomplete { .. })
+                        )
+                    }) {
+                        return results.into_iter().nth(index).unwrap();
+                    }
+                    for result in results {
+                        if matches!(result, Err(RuntimeError::TaskStopped))
+                            && self.has_tool_suspension()
+                        {
+                            continue;
+                        }
+                        result?;
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
         }
+        .await;
+        if self.has_tool_suspension() {
+            if result.is_err() {
+                return Err(self.fail_tool_suspensions(&scope).await);
+            }
+            return self.commit_tool_suspensions(&scope, frozen).await;
+        }
+        result
     }
 }
 fn ready(

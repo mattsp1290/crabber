@@ -11,10 +11,11 @@ use crabber_session::{
 };
 
 const REVISION_RETRIES: usize = 128;
+#[derive(Clone)]
 pub(super) struct OwnedPhase {
     pub target: PhaseTarget,
-    authority: PhaseAuthority,
-    call_binding: InputFingerprint,
+    pub(super) authority: PhaseAuthority,
+    pub(super) call_binding: InputFingerprint,
 }
 struct ReceiptScope<'a> {
     session: &'a SessionId,
@@ -80,9 +81,21 @@ impl Orchestrator {
             target,
             call_binding: &authorization.call_binding,
         };
-        let authority = self
-            .claim_tool_phase(execution, &scope, &owner.authority)
-            .await?;
+        let resumed = self
+            .tool_resumes
+            .lock()
+            .expect("tool resumes poisoned")
+            .get(&call.id)
+            .cloned();
+        let authority = if let Some(resumed) = resumed {
+            if resumed.target != *target {
+                return Err(crabber_session::ToolContinuationError::SemanticConflict.into());
+            }
+            resumed.authority
+        } else {
+            self.claim_tool_phase(execution, &scope, &owner.authority)
+                .await?
+        };
         let stored = self
             .store
             .get_run(run)

@@ -136,7 +136,7 @@ fn validate_batch(
             call.run_id == run.id
                 && matches!(
                     call.status,
-                    ToolCallStatus::Pending | ToolCallStatus::Running
+                    ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting
                 )
         })
         .collect();

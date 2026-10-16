@@ -10,8 +10,10 @@ mod prompt_contribution;
 mod registry;
 mod result_transform;
 pub use prompt_contribution::*;
+mod resumable;
 mod state;
 mod tool;
+pub use resumable::ResumableTool;
 mod tool_resources;
 pub use tool::{
     DurableInteractionUnsupported, HostServices, ProgressSink, Subprocess,

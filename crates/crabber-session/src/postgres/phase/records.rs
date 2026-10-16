@@ -85,7 +85,7 @@ pub(in super::super) async fn load(
         .map(|(data, _)| sql::decode_record(data))
         .transpose()
 }
-pub(super) async fn latest(
+pub(in super::super) async fn latest(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
     call: &ToolCallId,
@@ -158,7 +158,7 @@ pub(super) async fn exists(
         .map_err(db)
         .map_err(sql::unknown)
 }
-pub(super) async fn save(
+pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Postgres>,
     record: &PhaseRecord,
     insert: bool,

@@ -147,6 +147,7 @@ impl Orchestrator {
             turn: _,
             cancellation,
             lease_lost,
+            ..
         } = scope;
         let session_id = &session.id;
         let definition = plan
@@ -231,6 +232,28 @@ impl Orchestrator {
                             };
                         })?;
                     match run {
+                        ToolRun::Suspended(proposal) => {
+                            let identity =
+                                super::tool_invoke::frozen_identity(plan, &tool.info.name)?.ok_or(
+                                    crabber_session::ToolContinuationError::SchemaMismatch,
+                                )?;
+                            self.retain_tool_suspension(
+                                run_id,
+                                &record,
+                                owner,
+                                identity,
+                                proposal,
+                                resources,
+                                cancellation,
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                        ToolRun::SuspensionInvalid => {
+                            return Err(
+                                crabber_session::ToolContinuationError::SchemaMismatch.into()
+                            );
+                        }
                         ToolRun::Output(value) => {
                             mark_error = value.mark_error;
                             (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))

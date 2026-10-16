@@ -37,6 +37,10 @@ pub(super) enum Claimed {
     Replay(ApprovalReceipt),
 }
 pub(super) enum ApprovalControl {
+    Tool {
+        control: super::tool_continuation::ToolResumeControl,
+        sender: oneshot::Sender<super::tool_continuation::ToolClaimed>,
+    },
     Claim(ApprovalContinuationClaim),
     Recover(crabber_session::ApprovalContinuationRecovery),
 }
@@ -51,6 +55,7 @@ pub(super) struct ResumeAuthority {
     pub native_unstarted: bool,
     pub granted: Option<super::attempt::OwnedAttempt>,
     pub approved: Option<ApprovedCalls>,
+    pub tool_phases: Vec<crabber_session::ToolPhaseResume>,
 }
 impl ContinueApproval {
     pub(super) fn claim(&self, run: &Run) -> Result<ApprovalContinuationClaim, RuntimeError> {
@@ -179,7 +184,17 @@ impl Orchestrator {
         control: Option<ApprovalResume>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
         if let Some(control) = control {
+            let control = match control {
+                ApprovalResume {
+                    control: ApprovalControl::Tool { control, sender },
+                    ..
+                } => return self.acquire_tool_resume(run, control, sender).await,
+                control => control,
+            };
             let outcome = match &control.control {
+                ApprovalControl::Tool { .. } => {
+                    unreachable!("tool claim handled before approval dispatch")
+                }
                 ApprovalControl::Claim(claim) => {
                     self.store
                         .claim_approval_continuation(claim.clone())
@@ -241,6 +256,7 @@ impl Orchestrator {
             native_unstarted,
             granted: None,
             approved: None,
+            tool_phases: Vec::new(),
         }))
     }
 }
@@ -270,6 +286,7 @@ fn resume_authority(
             target: attempt.target.clone(),
             authority: grant.authority,
         }),
+        tool_phases: Vec::new(),
         approved: Some(ApprovedCalls {
             calls: grant.calls,
             turn: grant.source_turn_id,

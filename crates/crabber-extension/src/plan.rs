@@ -147,6 +147,14 @@ pub enum ExtensionError {
 /// An ordinary, run-to-completion tool returning validated ordered content.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Captured declaration for the frozen registration/plan identity.
+    fn resumable_identity(&self) -> Option<crabber_core::ResumableToolIdentity> {
+        self.resumable().map(crate::ResumableTool::identity)
+    }
+    /// Ordinary executors never expose a native continuation state machine.
+    fn resumable(&self) -> Option<&dyn crate::ResumableTool> {
+        None
+    }
     async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError>;
     async fn execute_with_context(
         &self,
@@ -306,6 +314,12 @@ impl StaticPlanProvider {
                 }
             })
             .collect::<Vec<_>>();
+        identities.extend(tools.iter().filter_map(|tool| {
+            tool.resumable_identity().map(|identity| ComponentIdentity {
+                id: format!("resumable:{}", tool.info.name),
+                version: serde_json::to_string(&identity).expect("tool identity serializes"),
+            })
+        }));
         identities.extend(prompts.iter().map(|prompt| ComponentIdentity {
             id: format!("prompt:{}", prompt.name),
             version: serde_json::json!({"order":prompt.order,"text":prompt.text}).to_string(),

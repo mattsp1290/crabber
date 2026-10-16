@@ -848,6 +848,12 @@ fn append_registration_components(
             id: format!("tool:{}", t.info.name),
             version: canonical_json(&serde_json::to_value(&t.info).unwrap()).to_string(),
         });
+        if let Some(identity) = t.resumable_identity() {
+            components.push(ComponentIdentity {
+                id: format!("resumable:{}", t.info.name),
+                version: canonical_json(&serde_json::to_value(identity).unwrap()).to_string(),
+            });
+        }
     }
     for p in &r.prompts {
         components.push(ComponentIdentity {

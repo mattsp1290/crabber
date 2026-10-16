@@ -25,6 +25,42 @@ impl Store for SqliteStore {
         self.read_public_header(request).await
     }
 
+    fn supports_tool_continuations(&self) -> bool {
+        true
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        self.read_tools(session, run).await
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ToolContinuationReceipt>, crate::ToolContinuationError> {
+        self.tool_receipt(session, id).await
+    }
+    async fn answer_tool_interaction(
+        &self,
+        request: crate::ToolInteractionAnswer,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.answer_tools(request).await
+    }
+    async fn claim_tool_continuation(
+        &self,
+        request: crate::ToolContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_tools(request).await
+    }
+    async fn recover_tool_continuation(
+        &self,
+        request: crate::ToolContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_tools(request).await
+    }
+
     async fn terminate_approval(
         &self,
         request: crate::ApprovalTermination,
@@ -441,7 +477,7 @@ impl Store for SqliteStore {
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
         sqlx::query(
             "SELECT data FROM tool_calls WHERE run_id=$1 AND status IN \
-                ('pending','running') ORDER BY id",
+                ('pending','running','waiting') ORDER BY id",
         )
         .bind(&run.0)
         .fetch_all(&self.readers)
@@ -473,6 +509,12 @@ impl Store for SqliteStore {
             if admission_execution::load_record(&mut tx, id)
                 .await?
                 .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+            {
+                return Err(StoreError::AdmissionRecoveryRequired);
+            }
+            if super::tool_continuation::pending_in_session(&mut tx, &run.session_id)
+                .await
+                .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
             {
                 return Err(StoreError::AdmissionRecoveryRequired);
             }

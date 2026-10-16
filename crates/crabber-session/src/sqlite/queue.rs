@@ -158,7 +158,7 @@ impl SqliteStore {
         ) {
             let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
                 .bind(&request.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
-            if busy || super::has_pending_continuation(tx, &request.session_id).await? {
+            if super::has_pending_continuation(tx, &request.session_id).await? || busy {
                 return Err(StoreError::Busy);
             }
         }

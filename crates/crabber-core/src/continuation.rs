@@ -4,6 +4,8 @@ use crate::{CoreError, InteractionDescription, ToolOutput, input, interaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
+mod identity;
+pub use identity::{AcceptedToolResponse, ResumableToolIdentity};
 
 pub const MAX_TOOL_CHECKPOINT_BYTES: usize = 64 * 1024;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

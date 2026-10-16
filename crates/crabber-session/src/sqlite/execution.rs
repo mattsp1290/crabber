@@ -21,6 +21,14 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn suspend_tool_continuation(
+        &self,
+        batch: crate::ToolContinuationSuspension,
+        authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.suspend_tools(batch, authority).await
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -337,7 +345,7 @@ impl ExecutionStore for SqliteExecution {
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
             let native: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
             )
             .bind(&run.id.0)
             .bind(&run.session_id.0)
@@ -370,7 +378,7 @@ impl ExecutionStore for SqliteExecution {
         let result = async {
             let mut run = self.store.fenced(&mut tx, &self.fence).await?;
             let native: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+                "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
             )
             .bind(&run.id.0)
             .bind(&run.session_id.0)

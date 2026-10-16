@@ -72,6 +72,17 @@ pub(crate) async fn fixture(
     PhaseMutation,
 ) {
     let admitted = crate::public_state_contract::admit(store, OffsetDateTime::UNIX_EPOCH).await;
+    fixture_for_admission(store, admitted).await
+}
+pub(crate) async fn fixture_for_admission(
+    store: &impl Store,
+    admitted: crate::AdmitOutcome,
+) -> (
+    crate::AdmitOutcome,
+    Box<dyn crate::ExecutionStore>,
+    AttemptAuthority,
+    PhaseMutation,
+) {
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
     let reserve = crate::attempt_contract::reserve(
         store.session_revision(&admitted.session.id).await.unwrap(),

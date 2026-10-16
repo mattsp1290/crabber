@@ -776,6 +776,26 @@ async fn prior_version_is_refused(version: i64) {
         .await
         .unwrap();
     }
+    if version >= 5 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0005_session_management.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    if version >= 6 {
+        sqlx::Executor::execute(
+            &mut connection,
+            sqlx::raw_sql(include_str!(
+                "../../migrations/sqlite/0006_future_queue.sql"
+            )),
+        )
+        .await
+        .unwrap();
+    }
     for marker in 1..=version {
         sqlx::query("INSERT INTO schema_version(version) VALUES(?1)")
             .bind(marker)
@@ -816,4 +836,10 @@ async fn current_version_requires_complete_numbered_schema_history() {
 async fn management_rejects_prior_v3_and_v4_files_without_any_changes() {
     prior_version_is_refused(3).await;
     prior_version_is_refused(4).await;
+}
+
+#[tokio::test]
+async fn version_five_and_six_files_are_refused_without_rewrites() {
+    prior_version_is_refused(5).await;
+    prior_version_is_refused(6).await;
 }

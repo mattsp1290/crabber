@@ -1,3 +1,11 @@
+#[path = "orchestrator/tool_recovery.rs"]
+mod tool_recovery;
+pub use tool_recovery::RecoverTool;
+#[path = "orchestrator/tool_continuation.rs"]
+mod tool_continuation;
+#[path = "orchestrator/tool_suspension.rs"]
+mod tool_suspension;
+pub use tool_continuation::{ContinueTool, ToolContinuation};
 #[path = "orchestrator/admission.rs"]
 mod admission;
 #[path = "orchestrator/approval.rs"]
@@ -250,6 +258,14 @@ pub enum RuntimeError {
     Attempt(#[from] crabber_session::AttemptError),
     #[error("durable approval: {0}")]
     Approval(#[from] crabber_session::ApprovalError),
+    #[error("tool continuation: {0}")]
+    ToolContinuation(#[from] crabber_session::ToolContinuationError),
+    #[error("tool checkpoint boundary outcome is unknown")]
+    ToolContinuationBoundaryUnknown {
+        run_id: RunId,
+        operation_id: crabber_core::ControlId,
+        reason: crabber_session::ToolContinuationError,
+    },
     #[error("approval boundary persistence outcome is unknown")]
     ApprovalBoundaryUnknown {
         run_id: RunId,
@@ -476,6 +492,10 @@ pub struct Orchestrator {
     behavior_fingerprint: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
+    tool_resumes: Arc<
+        std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
+    >,
+    tool_suspensions: Arc<std::sync::Mutex<Vec<tool_suspension::PendingSuspension>>>,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
@@ -761,6 +781,8 @@ impl OrchestratorBuilder {
         Ok(Orchestrator {
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             owned_attempt: None,
+            tool_resumes: Arc::default(),
+            tool_suspensions: Arc::default(),
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
             workspace_reader_resolver: self.workspace_reader_resolver,
@@ -1283,10 +1305,10 @@ impl Orchestrator {
             return Err(StoreError::Conflict.into());
         }
         if approval.is_none()
-            && run
-                .checkpoint
-                .as_ref()
-                .is_some_and(|checkpoint| checkpoint.get("approval").is_some())
+            && run.checkpoint.as_ref().is_some_and(|checkpoint| {
+                checkpoint.get("approval").is_some()
+                    || checkpoint.get("tool_continuation").is_some()
+            })
         {
             return Err(RuntimeError::DurableContinuationRequired {
                 run_id: run.id.clone(),
@@ -1352,6 +1374,7 @@ impl Orchestrator {
             native_unstarted,
             granted,
             approved,
+            tool_phases,
         } = acquisition;
         let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
@@ -1375,6 +1398,8 @@ impl Orchestrator {
         };
         let execution: Arc<dyn ExecutionStore> = execution.into();
         let mut worker = self.clone();
+        worker.tool_suspensions = Arc::default();
+        worker.tool_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(match granted {
             Some(owner) => {
                 self.begin_granted_attempt(execution.as_ref(), &run.session_id, owner)
@@ -1385,6 +1410,12 @@ impl Orchestrator {
                     .await?
             }
         }));
+        worker.tool_resumes = Arc::new(std::sync::Mutex::new(
+            tool_phases
+                .into_iter()
+                .map(|phase| (phase.target.call_id.clone(), phase))
+                .collect(),
+        ));
         let self_ = &worker;
         let heartbeat = HeartbeatGuard::start(
             Arc::clone(&execution),
@@ -1458,7 +1489,7 @@ impl Orchestrator {
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.get("version"))
                 .and_then(Value::as_u64)
-                == Some(4)
+                .is_some_and(|version| matches!(version, 4 | 5))
             {
                 // Native v4 boundaries already committed the complete prepared
                 // batch. Later model history cannot add or reorder its calls.
@@ -1503,6 +1534,8 @@ impl Orchestrator {
                         run: run_id,
                         plan: &plan,
                         turn: resumed_turn.clone(),
+                        usage: &run.usage,
+                        turns_used: resume_turns_used,
                         cancellation: &work_cancellation,
                         lease_lost: lost.as_ref(),
                     },
@@ -2535,6 +2568,8 @@ impl Orchestrator {
             execution.begin_admission_execution().await?;
         }
         let mut worker = self.clone();
+        worker.tool_suspensions = Arc::default();
+        worker.tool_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(
             self.begin_owned_attempt(execution.as_ref(), &session_id, &fence.run_id, false)
                 .await?,
@@ -2777,6 +2812,8 @@ impl Orchestrator {
                     run: run_id,
                     plan,
                     turn: Some(turn_id.clone()),
+                    usage: &usage,
+                    turns_used,
                     cancellation,
                     lease_lost,
                 },
@@ -4009,6 +4046,8 @@ pub(crate) fn unknown_tool_arguments(raw: &Value) -> Value {
 
 /// Typed result of running a resolved call, so the class never depends on error text.
 enum ToolRun {
+    Suspended(crabber_core::ToolSuspension),
+    SuspensionInvalid,
     Output(TransformOutput),
     PipelineFailed,
     ProtectionInterrupted,

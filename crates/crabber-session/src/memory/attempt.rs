@@ -9,7 +9,7 @@ use crate::{
 };
 use crabber_core::{AttemptId, ControlId, RunId, SessionId, SessionRevision, ToolCallStatus};
 
-fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Error> {
+pub(super) fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Error> {
     attempt::verify_receipt(
         receipt,
         state
@@ -73,7 +73,8 @@ impl MemoryStore {
                 | OperationReceipt::Management(_)
                 | OperationReceipt::PublicState(_)
                 | OperationReceipt::Phase(_)
-                | OperationReceipt::Approval(_),
+                | OperationReceipt::Approval(_)
+                | OperationReceipt::ToolContinuation(_),
             ) => Err(Error::SemanticConflict),
             None => Ok(None),
         }
@@ -180,6 +181,7 @@ impl MemoryExecution {
             return Err(Error::StaleOwner);
         }
         guard_approval(state, &run, &request, claiming)?;
+        super::tool_continuation::guard_attempt(state, &run, &request)?;
         let current = revision(state, &run.session_id);
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -196,6 +198,7 @@ impl MemoryExecution {
         apply_run_transition(state, &run, &request, conclusion, now)?;
         if conclusion.is_some_and(|c| matches!(c.boundary, crate::RunBoundary::Terminal { .. })) {
             super::approval::release_terminal(state, &run, &request)?;
+            super::tool_continuation::release_terminal(state, &run)?;
         }
 
         let revision = revision(state, &run.session_id)
@@ -333,7 +336,7 @@ fn check_boundary(
             call.run_id == run.id
                 && matches!(
                     call.status,
-                    ToolCallStatus::Pending | ToolCallStatus::Running
+                    ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting
                 )
         }) {
             return Err(Error::CleanupBlocked);

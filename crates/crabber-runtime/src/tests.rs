@@ -32,6 +32,8 @@ mod approval_recovery;
 #[path = "tests/durable_approval.rs"]
 mod durable_approval;
 mod native_phase;
+#[path = "tests/tool_suspension_faults.rs"]
+mod tool_suspension_faults;
 mod turn_budget;
 mod unstarted_batch;
 
@@ -1971,6 +1973,9 @@ struct SettlementGate {
     fail_permission_event: std::sync::atomic::AtomicBool,
     terminal_fault: AtomicUsize,
     phase_fault: AtomicUsize,
+    tool_suspension_fault: AtomicUsize,
+    tool_suspension_calls: AtomicUsize,
+    tool_suspension_keys: Mutex<Vec<crabber_core::ControlId>>,
     checkpoint_override: Mutex<Option<Value>>,
     call_arguments_override: Mutex<Option<Value>>,
     begin_ack_lost: std::sync::atomic::AtomicBool,
@@ -1997,6 +2002,30 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    fn supports_tool_continuations(&self) -> bool {
+        true
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<
+        Option<crabber_session::ToolContinuationSnapshot>,
+        crabber_session::ToolContinuationError,
+    > {
+        self.inner.tool_continuation_snapshot(session, run).await
+    }
+
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<
+        Option<crabber_session::ToolContinuationReceipt>,
+        crabber_session::ToolContinuationError,
+    > {
+        self.inner.lookup_tool_continuation(session, id).await
+    }
     fn supports_owned_attempts(&self) -> bool {
         true
     }
@@ -2269,6 +2298,14 @@ impl Store for DelayedTerminalStore {
 
 #[async_trait]
 impl ExecutionStore for DelayedTerminalExecution {
+    async fn suspend_tool_continuation(
+        &self,
+        request: crabber_session::ToolContinuationSuspension,
+        authority: crabber_session::ToolSuspensionAuthority,
+    ) -> Result<crabber_session::ToolContinuationReceipt, crabber_session::ToolContinuationError>
+    {
+        tool_suspension_faults::suspend(self, request, authority).await
+    }
     async fn mutate_phase(
         &self,
         request: crabber_session::PhaseMutation,

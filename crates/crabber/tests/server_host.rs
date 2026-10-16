@@ -8,6 +8,8 @@ mod factories;
 mod interaction_hooks;
 #[path = "server_host/management.rs"]
 mod management;
+#[path = "server_host/tool_continuation.rs"]
+mod tool_continuation;
 use async_trait::async_trait;
 use crabber::{
     Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,

@@ -87,9 +87,47 @@ mod queue_contract;
 pub use crabber::session::AdmissionSelectionPolicy;
 pub use crabber::session::{PublicRunOutcome, PublicRunState, PublicRunSummary};
 
+#[path = "../../crabber-session/src/tool_continuation/audit.rs"]
+#[allow(dead_code)]
+mod tool_continuation_audit;
+#[path = "../../crabber-session/src/tool_continuation/current.rs"]
+#[allow(dead_code)]
+mod tool_continuation_current;
+pub use crabber::session::{
+    FrozenToolPhase, RequiredToolInteraction, ToolContinuationClaim, ToolContinuationClaimOutcome,
+    ToolContinuationError, ToolContinuationGrant, ToolContinuationOutcome, ToolContinuationReceipt,
+    ToolContinuationRecovery, ToolContinuationSnapshot, ToolContinuationState,
+    ToolContinuationSuspension, ToolInteractionAnswer, ToolInteractionReply, ToolInteractionView,
+    ToolPhaseResume, ToolSuspensionAuthority,
+};
+#[path = "../../crabber-session/src/tool_continuation/canonical.rs"]
+#[allow(dead_code)]
+mod tool_continuation_canonical;
+#[path = "../../crabber-session/src/tool_continuation/records.rs"]
+#[allow(dead_code)]
+mod tool_continuation_records;
+mod tool_continuation {
+    pub(crate) use crate::tool_continuation_audit::*;
+    pub(crate) use crate::tool_continuation_current::*;
+    pub(crate) use crate::tool_continuation_records::*;
+
+    pub(crate) use crabber::session::{
+        FrozenToolPhase, ToolContinuationClaim, ToolContinuationError, ToolContinuationOutcome,
+        ToolContinuationReceipt, ToolContinuationSnapshot, ToolContinuationState,
+        ToolContinuationSuspension, ToolInteractionAnswer, ToolInteractionReply,
+        ToolInteractionView,
+    };
+
+    pub(crate) mod canonical {
+        pub(crate) use crate::tool_continuation_canonical::*;
+    }
+}
 #[path = "../../crabber-session/src/attempt_control/turn.rs"]
 #[allow(dead_code)]
 mod attempt_control_turn;
+#[path = "../../crabber-session/src/tool_continuation_contract.rs"]
+#[allow(dead_code)]
+mod tool_continuation_contract;
 pub use crabber::session::{
     AttemptControlOutcome, AttemptResolverClaim, AttemptRetirement, AttemptRetirementOutcome,
     AttemptUncertainty, AttemptUncertaintyCause, PendingCallDisposition,

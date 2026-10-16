@@ -1,4 +1,6 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
+pub(super) use records::receipt as host_receipt;
+pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
 mod control;
 mod pristine;
 pub(super) mod records;
@@ -191,6 +193,7 @@ impl PostgresExecution {
             return Err(Error::StaleOwner);
         }
         guard_approval(tx, run, request, claiming).await?;
+        super::tool_continuation::guard_attempt(tx, run, request).await?;
         let current = records::revision(tx, &run.session_id).await?;
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -322,7 +325,7 @@ async fn check_boundary(
                 return Err(Error::PendingInput);
             }
         }
-        let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running'))").bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
+        let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting'))").bind(&run.id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
         if unfinished {
             return Err(Error::CleanupBlocked);
         }
@@ -347,6 +350,9 @@ async fn apply_run_transition(
         super::save_run(tx, &updated).await.map_err(sql::unknown)?;
         if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
             super::approval::release_terminal(tx, run, request).await?;
+            super::tool_continuation::release_terminal(tx, run)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?;
         }
     } else if matches!(
         request.command,

@@ -38,6 +38,8 @@ impl SqliteStore {
                 return Err(Error::GenerationConflict);
             }
             super::super::approval::guard_attempt(&mut tx, &run, &control.mutation()).await?;
+            super::super::tool_continuation::guard_attempt(&mut tx, &run, &control.mutation())
+                .await?;
             let now = self.clock.now();
             let turn = reconcile_children(&mut tx, &run, &control, now).await?;
             control.apply(&mut run, &mut record, current, now)?;

@@ -45,6 +45,7 @@ impl Orchestrator {
             error,
             RuntimeError::TerminalOutcomeUnknown { .. }
                 | RuntimeError::ApprovalBoundaryUnknown { .. }
+                | RuntimeError::ToolContinuationBoundaryUnknown { .. }
                 | RuntimeError::AttemptBoundaryUnknown { .. }
                 | RuntimeError::AttemptCleanupIncomplete { .. }
                 | RuntimeError::ToolOutcomeUnknown { .. }

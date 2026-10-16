@@ -457,3 +457,15 @@ revision/history cutoff; a terminal run is included on the first attachment.
 This is a current-state resynchronization primitive, not delivery of every
 intermediate mutation. Agent reads and polling remain available after extension
 close without acquiring factories, providers or tools.
+
+
+## Explicit native tool checkpoints
+
+PostgreSQL schema 11 and fresh SQLite schema 7 add private versioned native tool
+checkpoint records, immutable required interaction/phase indexes, and a session
+admission barrier. PostgreSQL migration is idempotent and preserves older rows;
+SQLite refuses prior-version files. Connecting verifies versions without changes.
+Custom Stores opt in explicitly; defaults return Unsupported before tools execute.
+See [explicit tool continuations](../../docs/explicit-tool-continuations.md) for the
+start/resume contract, host answers, metadata-only replay, and positive-Unstarted
+recovery. Checkpoints never become tool result output or public snapshots.

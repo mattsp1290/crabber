@@ -1,3 +1,7 @@
+#[path = "agent/tool_continuation.rs"]
+mod tool_continuation;
+pub use crabber_runtime::ContinueTool;
+pub use tool_continuation::ToolContinuation;
 #[path = "agent/approval.rs"]
 mod approval;
 

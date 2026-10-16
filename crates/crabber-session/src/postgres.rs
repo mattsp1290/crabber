@@ -20,6 +20,7 @@ mod public_state;
 mod tool_result;
 
 mod queue;
+mod tool_continuation;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -59,6 +60,8 @@ pub struct PostgresStore {
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -110,6 +113,7 @@ fn status(status: RunStatus) -> &'static str {
 }
 fn call_status(status: ToolCallStatus) -> &'static str {
     match status {
+        ToolCallStatus::Waiting => "waiting",
         ToolCallStatus::Pending => "pending",
         ToolCallStatus::Running => "running",
         ToolCallStatus::Completed => "completed",
@@ -378,11 +382,17 @@ async fn has_pending_continuation(
     Box::pin(approval::verify_session(tx, session))
         .await
         .map_err(|_| StoreError::Validation("approval integrity failure".into()))?;
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)")
-        .bind(&session.0)
-        .fetch_one(&mut **tx)
+    let tool = Box::pin(tool_continuation::pending_in_session(tx, session))
         .await
-        .map_err(db)
+        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    let approval: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+    )
+    .bind(&session.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
+    Ok(approval || tool)
 }
 impl PostgresStore {
     /// Opens an already migrated dedicated database. The URL is never included in errors.
@@ -424,6 +434,8 @@ impl PostgresStore {
             binding_fault: Arc::default(),
             #[cfg(test)]
             queue_fault: Arc::default(),
+            #[cfg(test)]
+            tool_continuation_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -477,6 +489,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0011_tool_continuations.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -747,6 +763,42 @@ impl Store for PostgresStore {
         request: crate::PublicHeaderRequest,
     ) -> Result<crate::PublicHeaderOutcome, crate::PublicSessionError> {
         self.read_public_header(request).await
+    }
+
+    fn supports_tool_continuations(&self) -> bool {
+        true
+    }
+    async fn tool_continuation_snapshot(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        self.read_tools(session, run).await
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ToolContinuationReceipt>, crate::ToolContinuationError> {
+        self.tool_receipt(session, id).await
+    }
+    async fn answer_tool_interaction(
+        &self,
+        request: crate::ToolInteractionAnswer,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.answer_tools(request).await
+    }
+    async fn claim_tool_continuation(
+        &self,
+        request: crate::ToolContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_tools(request).await
+    }
+    async fn recover_tool_continuation(
+        &self,
+        request: crate::ToolContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_tools(request).await
     }
 
     async fn terminate_approval(
@@ -1153,7 +1205,7 @@ impl Store for PostgresStore {
         &self,
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError> {
-        sqlx::query("SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') ORDER BY id")
+        sqlx::query("SELECT snapshot_record FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting') ORDER BY id")
             .bind(&run.0).fetch_all(&self.pool).await.map_err(db)?.into_iter().map(|row| decode_record(&row.get::<String, _>("snapshot_record"))).collect()
     }
     async fn admission_execution_state(
@@ -1173,6 +1225,12 @@ impl Store for PostgresStore {
         if admission_execution::load_record(&mut tx, id)
             .await?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+        {
+            return Err(StoreError::AdmissionRecoveryRequired);
+        }
+        if tool_continuation::pending_in_session(&mut tx, &run.session_id)
+            .await
+            .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
         {
             return Err(StoreError::AdmissionRecoveryRequired);
         }
@@ -1244,6 +1302,14 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn suspend_tool_continuation(
+        &self,
+        batch: crate::ToolContinuationSuspension,
+        authority: crate::ToolSuspensionAuthority,
+    ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
+        self.suspend_tools(batch, authority).await
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -1519,7 +1585,7 @@ impl ExecutionStore for PostgresExecution {
     ) -> Result<(), StoreError> {
         let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
         let native: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
         )
         .bind(&run.id.0)
         .bind(&run.session_id.0)
@@ -1547,7 +1613,7 @@ impl ExecutionStore for PostgresExecution {
     ) -> Result<(), StoreError> {
         let (mut tx, mut run) = self.store.fenced(&self.fence).await?;
         let native: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM execution_attempts WHERE run_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1) OR EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$2) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$2)",
         )
         .bind(&run.id.0)
         .bind(&run.session_id.0)
