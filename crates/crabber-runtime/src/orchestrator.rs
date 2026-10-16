@@ -259,6 +259,10 @@ pub enum RecoverySkipReason {
 pub enum RuntimeError {
     #[error("original preparation must be reconciled before new work")]
     PreparationRecoveryRequired,
+    #[error("admission already committed")]
+    AdmissionAlreadyCommitted(
+        crabber_session::session_owner::preparation::PreparationAdmissionReceipt,
+    ),
     #[error("preparation requires explicit reconciliation: {source}")]
     PreparationIncomplete {
         preparation: Box<crabber_session::session_owner::preparation::PreparationReconciliation>,
@@ -2073,10 +2077,10 @@ impl Orchestrator {
                 ))
             })
             .await?;
-        let crabber_session::session_owner::preparation::PreparationCompletion::Admitted(admitted) =
-            completion
-        else {
-            return Err(StoreError::AdmissionConflict.into());
+        let admitted = match completion {
+            crabber_session::session_owner::preparation::PreparationCompletion::Admitted(admitted) => admitted,
+            crabber_session::session_owner::preparation::PreparationCompletion::AdmissionReplayed(receipt) => return Err(RuntimeError::AdmissionAlreadyCommitted(receipt)),
+            _ => return Err(StoreError::AdmissionConflict.into()),
         };
         Ok(runtime.spawn_admitted(
             request,

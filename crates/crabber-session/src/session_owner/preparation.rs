@@ -57,8 +57,8 @@ pub(crate) use origin::{Origin, origin};
 
 mod completion;
 pub use completion::{
-    JoinedPreparation, PreparationCompletion, PreparationGrant, PreparationOperationKind,
-    PreparedOperation,
+    JoinedPreparation, PreparationAdmissionReceipt, PreparationCompletion, PreparationGrant,
+    PreparationOperationKind, PreparedOperation,
 };
 
 pub(crate) mod admission;

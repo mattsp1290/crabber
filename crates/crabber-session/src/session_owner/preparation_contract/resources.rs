@@ -10,6 +10,8 @@ mod activation_guards;
 pub(crate) mod guards;
 #[path = "resources/scope_integrity.rs"]
 pub(crate) mod scope_integrity;
+#[path = "resources/unkeyed.rs"]
+mod unkeyed;
 use crate::session_owner::preparation::{
     OWNED_PREPARATION_COMPONENT, PreparationResourceLink, PreparationResourceOutcome,
 };
@@ -40,6 +42,7 @@ pub(crate) async fn run(store: &impl Store) {
     labels_are_not_proof(store).await;
     unrelated_and_cancel_refuse(store).await;
     cleanup_is_not_handoff(store).await;
+    unkeyed::run(store).await;
 }
 pub(crate) async fn successful(
     store: &impl Store,
@@ -230,6 +233,7 @@ pub(crate) async fn faults(
     native_fault: impl Fn(u8),
 ) {
     activation_faults::run(store, &owner_fault).await;
+    Box::pin(unkeyed::faults(store, &native_fault)).await;
     for point in [1, 2] {
         let (original, bound) = setup(store, true).await;
         let session = bound.binding.request.session_id.clone();

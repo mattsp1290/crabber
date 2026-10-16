@@ -164,6 +164,35 @@ impl Witness {
         .map_err(|_| Error::UnknownStoreOutcome)
     }
 
+    pub(crate) fn replay(
+        &self,
+        grant: &super::PreparationGrant,
+        session: &Session,
+        initial: &RunIssuance,
+        audits: &SourceAudits<'_>,
+    ) -> Result<super::PreparationAdmissionReceipt, Error> {
+        self.verify_sources(session, initial, audits)?;
+        super::proof::verify_join_audit(grant, Some(audits.join))?;
+        let original = grant.original_reservation();
+        let super::PreparationKey::Unkeyed(id) = &original.key else {
+            return Err(Error::SemanticConflict);
+        };
+        if self.key != original.key
+            || self.source != super::PreparationResourceLink::for_grant(grant)?
+            || grant
+                .retained_resources_authority()
+                .map(crate::session_owner::SessionOwnerAuthority::target)
+                != Some(&self.child)
+        {
+            return Err(Error::SemanticConflict);
+        }
+        Ok(super::PreparationAdmissionReceipt {
+            session_id: self.session_id().clone(),
+            run_id: self.run_id().clone(),
+            operation_id: id.clone(),
+        })
+    }
+
     pub(crate) fn verify_sources(
         &self,
         session: &Session,

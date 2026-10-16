@@ -98,8 +98,17 @@ pub enum PreparedOperation {
     ToolRecovery(crate::ToolContinuationRecovery),
 }
 
+/// Original unkeyed admission metadata. It grants no dispatch authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparationAdmissionReceipt {
+    pub session_id: crabber_core::SessionId,
+    pub run_id: crabber_core::RunId,
+    pub operation_id: crabber_core::ControlId,
+}
+
 pub enum PreparationCompletion {
     Admitted(AdmitOutcome),
+    AdmissionReplayed(PreparationAdmissionReceipt),
     Keyed(KeyedAdmitOutcome),
     Queue(crate::QueueOutcome),
     Approval(crate::ApprovalClaimOutcome),
@@ -112,6 +121,7 @@ impl PreparationCompletion {
     pub fn is_replayed(&self) -> bool {
         match self {
             Self::Admitted(_) => false,
+            Self::AdmissionReplayed(_) => true,
             Self::Keyed(outcome) => matches!(outcome, KeyedAdmitOutcome::Replayed(_)),
             Self::Queue(outcome) => matches!(outcome, crate::QueueOutcome::Replayed(_)),
             Self::Approval(outcome) => matches!(outcome, crate::ApprovalClaimOutcome::Replayed(_)),

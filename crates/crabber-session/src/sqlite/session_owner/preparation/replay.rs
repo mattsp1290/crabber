@@ -1,4 +1,6 @@
 //! Bounded original metadata reconciliation, never replacement dispatch authority.
+#[path = "replay/admission.rs"]
+mod admission;
 use crate::session_owner::preparation::{
     JoinedPreparation, PreparationCompletion, PreparedOperation,
 };
@@ -12,6 +14,9 @@ impl super::super::SqliteStore {
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
     > {
+        if let Some(outcome) = Self::replay_admission(tx, joined).await? {
+            return Ok(Some(outcome));
+        }
         if let PreparedOperation::AdmitKeyed(bound) = joined.observed_operation()
             && let Some(outcome) = self.replay_keyed(tx, bound).await?
         {

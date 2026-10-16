@@ -23,6 +23,7 @@ impl MemoryStore {
             .clone();
         let outcome = self.transact(
             |state| -> Result<_, crate::session_owner::preparation::PreparationCommitError> {
+                super::super::deletion::ensure_live(state, &session)?;
                 let now = self.clock.now();
                 // Original native reconciliation precedes current owner/CAS checks.
                 if let Some(outcome) = self.replay_prepared(state, joined)? {
