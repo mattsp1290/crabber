@@ -71,6 +71,7 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
                 0,
                 &mut components,
             );
+            super::owned::append_contract(&mount, &mut components);
             freeze_contributors(
                 &registrar.contributors,
                 &mut contributors,

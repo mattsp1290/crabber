@@ -1,5 +1,6 @@
 //! Atomic native extension mounting and immutable plan acquisition.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+mod owned;
 #[path = "registry/profile.rs"]
 mod profile;
 use crate::dispatch::{
@@ -19,6 +20,7 @@ use async_trait::async_trait;
 use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
+pub use owned::{OwnedMountHandle, OwnedMountJoin};
 pub(crate) use profile::RegistrationSnapshot;
 use serde::Serialize;
 use std::{
@@ -362,6 +364,7 @@ struct Mount {
     drained: Mutex<bool>,
     drained_notify: Notify,
     cleanup: CleanupOwner,
+    owned: Option<owned::State>,
     close_timeout: Duration,
     close_observer: Option<MountCloseObserver>,
     /// Runs once, right after the tracker first drains, before the re-check.
@@ -548,6 +551,25 @@ impl Registry {
         extension: Arc<dyn Extension>,
         scope: Scope,
     ) -> Result<MountHandle, ExtensionError> {
+        self.mount_with_cleanup(extension, scope, false).await
+    }
+    /// Mount with sealed cleanup registration and retained actual cleanup and
+    /// close-task joins. This covers this mount, not a whole Runtime Run.
+    pub async fn mount_owned(
+        &self,
+        extension: Arc<dyn Extension>,
+        scope: Scope,
+    ) -> Result<OwnedMountHandle, ExtensionError> {
+        self.mount_with_cleanup(extension, scope, true)
+            .await
+            .map(OwnedMountHandle::new)
+    }
+    async fn mount_with_cleanup(
+        &self,
+        extension: Arc<dyn Extension>,
+        scope: Scope,
+        sealed: bool,
+    ) -> Result<MountHandle, ExtensionError> {
         if self.inner.lock().unwrap().closed {
             return Err(ExtensionError::RegistryClosed);
         }
@@ -598,14 +620,19 @@ impl Registry {
         inner.next_id += 1;
         let id = inner.next_id;
         let cleanup = CleanupOwner::new();
+        let owned = sealed.then(owned::State::new);
+        let tracker = owned.as_ref().map_or_else(
+            || cleanup.tracker(),
+            |owned| owned.cleanup.cleanup_tracker(),
+        );
         for handler in &mut registrar.handlers {
-            handler.cleanup = cleanup.tracker();
+            handler.cleanup = tracker.clone();
             handler.mount_id = id;
             handler.mount_seq = id;
             handler.scope_rank = scope.rank();
         }
         for contributor in &mut registrar.contributors {
-            contributor.cleanup = cleanup.tracker();
+            contributor.cleanup = tracker.clone();
             contributor.mount_id = id;
             contributor.mount_seq = id;
         }
@@ -624,6 +651,7 @@ impl Registry {
             drained: Mutex::new(false),
             drained_notify: Notify::new(),
             cleanup,
+            owned,
             close_timeout: inner.close_timeout,
             close_observer: inner.close_observer.clone(),
             #[cfg(test)]
@@ -694,7 +722,7 @@ impl Registry {
             inner.mounts.clone()
         };
         for mount in &mounts {
-            mount.cleanup.close();
+            owned::signal(mount);
         }
         Ok(mounts
             .into_iter()
@@ -812,6 +840,7 @@ fn append_mount_components(
 ) {
     let identity = RegistrationIdentity::capture(mount.extension.as_ref());
     append_registration_components(&identity, mount.scope.rank(), r, plan_sequence, components);
+    owned::append_contract(mount, components);
 }
 
 struct RegistrationIdentity {
@@ -1105,6 +1134,11 @@ impl MountHandle {
     /// `shutdown` run unbounded, and a panic in either is contained: the mount
     /// still ends closed and `close` returns `Ok`.
     pub async fn close(&self) -> Result<(), ExtensionError> {
+        if self.mount.owned.is_some() {
+            return owned::close(&self.mount, self.mount.close_timeout)
+                .await
+                .map(|_| ());
+        }
         if dispatch::is_active_mount(self.mount.id) {
             return Err(ExtensionError::SelfClose);
         }

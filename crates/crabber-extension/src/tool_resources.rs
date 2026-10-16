@@ -87,10 +87,57 @@ impl ToolResources {
         if state.tasks.len() >= MAX_TOOL_RESOURCE_TASKS {
             return Err(ResourceRegistrationError::Capacity);
         }
-        state.tasks.push(Arc::new(ResourceTask {
-            join: tokio::sync::Mutex::new(Some(tokio::spawn(task))),
-            result: Mutex::new(None),
-        }));
+        let retained = Arc::new(ResourceTask::new());
+        state.tasks.push(retained.clone());
+        retained.launch(task);
+        Ok(())
+    }
+    /// Atomically register one actual task with both sealed owners. Neither
+    /// future nor executor is polled until both scopes accept registration.
+    pub(crate) fn spawn_shared<F>(
+        &self,
+        other: &Self,
+        task: F,
+    ) -> Result<(), ResourceRegistrationError>
+    where
+        F: Future<Output = Result<(), ResourceFailure>> + Send + 'static,
+    {
+        let a = self
+            .0
+            .as_ref()
+            .ok_or(ResourceRegistrationError::Unsupported)?;
+        let b = other
+            .0
+            .as_ref()
+            .ok_or(ResourceRegistrationError::Unsupported)?;
+        if Arc::ptr_eq(a, b) {
+            return self.spawn(task);
+        }
+        let (first, second) = if Arc::as_ptr(a) < Arc::as_ptr(b) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let mut first = first
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut second = second
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if first.sealed || second.sealed {
+            return Err(ResourceRegistrationError::Sealed);
+        }
+        if first.tasks.len() >= MAX_TOOL_RESOURCE_TASKS
+            || second.tasks.len() >= MAX_TOOL_RESOURCE_TASKS
+        {
+            return Err(ResourceRegistrationError::Capacity);
+        }
+        let retained = Arc::new(ResourceTask::new());
+        first.tasks.push(retained.clone());
+        second.tasks.push(retained.clone());
+        retained.launch(task);
         Ok(())
     }
     /// A cooperative close signal. It never aborts a resource task or proves
@@ -209,6 +256,20 @@ impl Drop for ToolResourceGuard {
     }
 }
 impl ResourceTask {
+    fn new() -> Self {
+        Self {
+            join: tokio::sync::Mutex::new(None),
+            result: Mutex::new(None),
+        }
+    }
+    fn launch<F>(&self, task: F)
+    where
+        F: Future<Output = Result<(), ResourceFailure>> + Send + 'static,
+    {
+        // Both scope locks still prevent joiners from obtaining this fresh
+        // record. Its ownership entries exist before the executor can poll.
+        *self.join.try_lock().expect("fresh retained resource task") = Some(tokio::spawn(task));
+    }
     async fn join(&self) {
         let mut slot = self.join.lock().await;
         let Some(handle) = slot.as_mut() else { return };
@@ -351,3 +412,7 @@ mod tests {
         assert_eq!(report.pending, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "tool_resources/dual_tests.rs"]
+mod dual_tests;

@@ -49,7 +49,8 @@ pub use dispatch::{
 };
 pub use registry::{
     CleanupJoinTimeout, CleanupOwner, Extension, GuardContext, GuardDecision, MountCloseObserver,
-    MountCloseTimeout, MountHandle, Registrar, Registry, Scope, ToolGuard,
+    MountCloseTimeout, MountHandle, OwnedMountHandle, OwnedMountJoin, Registrar, Registry, Scope,
+    ToolGuard,
 };
 pub use state::{StateSink, current_state_sink, with_state_sink};
 

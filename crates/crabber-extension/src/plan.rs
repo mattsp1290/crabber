@@ -136,6 +136,8 @@ pub enum ExtensionError {
     MissingCapability(&'static str),
     #[error("mount close timed out: {extension}")]
     MountCloseTimeout { extension: String },
+    #[error("owned mount cleanup incomplete: {extension}")]
+    MountCleanupIncomplete { extension: String },
     #[error("extension registry is closed")]
     RegistryClosed,
     #[error("context owner is closed")]
