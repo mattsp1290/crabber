@@ -6,6 +6,7 @@ pub(super) mod current;
 mod guards;
 pub(super) mod origin;
 mod original_plan;
+pub(super) use original_plan::batch_with_proof as original_batch_with_proof;
 pub(super) mod public_header;
 pub(super) use public_header::read as public_header;
 mod recover;

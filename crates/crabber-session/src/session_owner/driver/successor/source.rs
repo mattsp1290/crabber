@@ -1,6 +1,10 @@
 //! Immutable association to one actual native claim. No current state or grant.
+#[path = "source/approval.rs"]
+pub(crate) mod approval;
 #[path = "source/claim.rs"]
 pub(crate) mod claim;
+#[path = "source/input.rs"]
+pub(crate) mod input;
 use super::{Error, RegisterSuccessorExecutionDriver};
 pub(crate) use claim::AuthenticatedClaim;
 use crabber_core::{InputFingerprint, RunId, SessionId};
@@ -10,6 +14,9 @@ pub(crate) struct SelectedClaim {
     pub link: SuccessorDriverLink,
     pub revision: crabber_core::SessionRevision,
     pub child_begin: crate::session_owner::audit::Audit,
+    pub head: u64,
+    pub head_digest: InputFingerprint,
+    pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
 }
 pub(crate) fn selected(
     request: &RegisterSuccessorExecutionDriver,
@@ -19,6 +26,9 @@ pub(crate) fn selected(
     native: claim::Native<'_>,
     binding: Option<&crate::ExecutionBindingCapsule>,
 ) -> Result<SelectedClaim, Error> {
+    if let claim::Native::Approval { input, .. } = &native {
+        input.verify(&next.state.session_id, &next.state.run_id, binding)?;
+    }
     let verified = AuthenticatedClaim::verify(previous, next, audits, native)?;
     if let Some(binding) = binding {
         verified.verify_binding(binding)?;
@@ -27,6 +37,9 @@ pub(crate) fn selected(
         link: SuccessorDriverLink::original(request, &verified)?,
         revision: verified.revision,
         child_begin: audits[4].clone(),
+        head: verified.head,
+        head_digest: verified.head_digest,
+        approval: verified.approval,
     })
 }
 

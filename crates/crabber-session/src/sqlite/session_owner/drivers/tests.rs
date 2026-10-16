@@ -78,3 +78,37 @@ async fn successor_driver_contract() {
 mod successor_budget;
 
 mod successor_process;
+
+#[tokio::test]
+async fn approval_successor_driver_contract() {
+    let clock = Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("approval-successors.db");
+    crate::SqliteStore::migrate(&path).await.unwrap();
+    let store = crate::SqliteStore::connect(&path)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    let store = Arc::new(store);
+    Box::pin(crate::successor_driver_contract::approval::run(
+        store.as_ref(),
+        &clock,
+    ))
+    .await;
+    Box::pin(super::successor::approval_tests::run(
+        store.as_ref(),
+        &clock,
+    ))
+    .await;
+    let fault = store.session_owner_fault.clone();
+    Box::pin(crate::successor_driver_contract::approval::faults(
+        store,
+        &clock,
+        move |value| {
+            fault.store(value, std::sync::atomic::Ordering::SeqCst);
+        },
+    ))
+    .await;
+}

@@ -38,3 +38,28 @@ async fn physical_successor_commit_boundaries() {
         }
     }
 }
+
+#[tokio::test]
+async fn physical_approval_successor_commit_boundaries() {
+    for recovery in [false, true] {
+        for stage in ["before", "after"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("successor.db");
+            crate::SqliteStore::migrate(&path).await.unwrap();
+            let (request, now) = crate::successor_driver_contract::process::kill_approval(
+                "sqlite::session_owner::drivers::tests::successor_process::child",
+                stage,
+                Some(&path),
+                directory.path(),
+                recovery,
+            );
+            let clock = Arc::new(crabber_core::ManualClock::new(now));
+            let store = crate::SqliteStore::connect(path)
+                .await
+                .unwrap()
+                .with_clock(clock);
+            crate::successor_driver_contract::process::verify(&store, request, stage == "after")
+                .await;
+        }
+    }
+}

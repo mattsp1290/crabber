@@ -429,6 +429,16 @@ pub trait Store: Send + Sync {
     fn supports_successor_execution_drivers(&self) -> bool {
         false
     }
+    /// Pure origin support, suitable for checking before factories. Fresh native
+    /// registration still independently authenticates every original source.
+    fn supports_successor_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(origin, Origin::AdmissionRecovery | Origin::ExpiredRun)
+            && self.supports_successor_execution_drivers()
+    }
     /// Atomically Reserve/Begin one actual noninitial native claim's worker.
     /// Original receipt replay is metadata only and never remints dispatch authority.
     async fn register_successor_execution_driver(

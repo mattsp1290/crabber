@@ -404,9 +404,13 @@ mod approval_conclusion;
 #[path = "../../crabber-session/src/approval/current.rs"]
 #[allow(dead_code)]
 pub(crate) mod approval_current;
+#[path = "../../crabber-session/src/approval/fingerprint.rs"]
+mod approval_fingerprint;
 #[path = "../../crabber-session/src/approval/origin.rs"]
 #[allow(dead_code)]
 mod approval_origin;
+#[path = "../../crabber-session/src/approval/original.rs"]
+pub(crate) mod approval_original;
 #[path = "../../crabber-session/src/approval/records.rs"]
 #[allow(dead_code)]
 mod approval_records;
@@ -423,6 +427,8 @@ mod approval {
     pub(crate) use crate::approval_audit::{event, verify_receipt};
     pub(crate) use crate::approval_conclusion::at as conclusion_at;
     pub(crate) use crate::approval_current as current;
+    pub(crate) use crate::approval_fingerprint::fingerprint as control_fingerprint;
+    pub(crate) use crate::approval_original as original;
     pub(crate) use crate::approval_records::*;
     pub(crate) use crate::approval_recovery_provenance::{
         activate_recovery, verify_recovery_answer,

@@ -14,6 +14,8 @@ pub(crate) mod terminal_history;
 pub use recovery::ApprovalContinuationRecovery;
 mod recovery_provenance;
 pub(crate) use recovery_provenance::{activate_recovery, verify_recovery_answer};
+mod fingerprint;
+pub(crate) mod original;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod sql;
 mod validation;

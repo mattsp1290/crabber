@@ -1,9 +1,14 @@
 use crate::public_session::v2::proof::Proof;
 use crate::{PostgresStore, Store};
 pub(super) async fn run(store: &PostgresStore, clock: &crabber_core::ManualClock) {
-    for admission in [true, false] {
-        let request =
-            crate::successor_driver_contract::fixture::request(store, clock, admission).await;
+    for family in 0..4 {
+        let request = if family < 2 {
+            crate::successor_driver_contract::fixture::request(store, clock, family == 0).await
+        } else {
+            crate::successor_driver_contract::approval::fixture(store, clock, family == 3)
+                .await
+                .request
+        };
         let before = store
             .session_revision(request.context.session_id())
             .await

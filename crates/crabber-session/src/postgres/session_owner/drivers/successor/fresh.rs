@@ -21,9 +21,6 @@ pub(in crate::postgres::session_owner::drivers) async fn fresh(
         .map_err(unknown)?
         .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(&run).map_err(unknown)?;
-    if latest.sequence != request.claim.issuance {
-        return Err(Error::StaleOwner);
-    }
     let binding = crate::postgres::execution_binding::read_with_proof(tx, session, id, budget)
         .await
         .map_err(unknown)?
@@ -40,6 +37,14 @@ pub(in crate::postgres::session_owner::drivers) async fn fresh(
         Some(&binding.capsule),
     ))
     .await?;
+    if latest.sequence != selected.head
+        || crate::native_parent::issuance_digest(&latest).map_err(unknown)? != selected.head_digest
+    {
+        return Err(Error::StaleOwner);
+    }
+    if let Some((continuation, parent)) = &selected.approval {
+        super::approval::check(tx, &run, continuation, parent, now, budget).await?;
+    }
     let original = super::super::proof::audit(tx, session, &request.claim.root_join_id, budget)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;

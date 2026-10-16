@@ -81,6 +81,7 @@ delegate! {
         fn reserve_preparation(_request: s::session_owner::preparation::ReservePreparation, ) -> Result< s::session_owner::SessionOwnerOutcome, s::session_owner::SessionOwnerError, >;
         fn lookup_preparation(_session: &SessionId, _key: &s::session_owner::preparation::PreparationKey, ) -> Result< Option<s::session_owner::preparation::PreparationReconciliation>, s::session_owner::SessionOwnerError, >;
         fn retain_preparation_resources(_grant: s::session_owner::preparation::PreparationGrant, ) -> Result< s::session_owner::preparation::PreparationResourceOutcome, s::session_owner::SessionOwnerError, >;
+        fn register_successor_execution_driver(request: s::session_owner::driver::RegisterSuccessorExecutionDriver) -> Result<s::session_owner::driver::SuccessorExecutionDriverOutcome, s::session_owner::SessionOwnerError>;
         fn register_session_service_dependency(request: s::session_owner::service::RegisterSessionServiceDependency) -> Result<s::session_owner::service::SessionServiceDependencyOutcome, s::session_owner::SessionOwnerError>;
         fn check_session_service_dependency_access(request: s::session_owner::service::SessionServiceDependencyAccess) -> Result<(), s::session_owner::SessionOwnerError>;
         fn complete_preparation(_joined: s::session_owner::preparation::JoinedPreparation, ) -> Result< s::session_owner::preparation::PreparationCompletion, s::session_owner::preparation::PreparationCommitError, >;
@@ -167,6 +168,8 @@ delegate! {
         fn supports_preparation_resources() -> bool;
         fn supports_session_service_dependencies() -> bool;
         fn supports_session_owner_cancellation() -> bool;
+        fn supports_successor_execution_drivers() -> bool;
+        fn supports_successor_execution_driver_origin(origin: s::session_owner::driver::SuccessorExecutionDriverOrigin) -> bool;
         fn supports_owned_scopes() -> bool;
         fn supports_owned_attempts() -> bool;
         fn supports_owned_tool_phases() -> bool;

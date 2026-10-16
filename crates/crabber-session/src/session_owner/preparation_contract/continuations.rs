@@ -2,7 +2,7 @@
 use super::super::preparation::{ExistingWorkTarget, PreparationKey, PreparationSource};
 use super::*;
 use crabber_core::{Clock, ManualClock, Run};
-pub(super) async fn request(
+pub(crate) async fn request(
     store: &impl Store,
     run: &Run,
     source: PreparationSource,

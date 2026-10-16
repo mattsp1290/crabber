@@ -514,8 +514,9 @@ fresh actual Unstarted reclaim and Begin before execution; no parent outcome,
 resource cleanup or replay authority is synthesized. Continuation reservations
 remain subject to their own barriers and dedicated recovery contracts.
 
-Successor worker registration is a separate Store capability. Its first supported
-sources are actual prepared admission recovery and expired-Run recovery. The
+Successor worker registration is a separate Store capability. Native Stores
+support actual prepared admission recovery, expired-Run recovery, approval claim,
+and approval Unstarted recovery. The
 caller supplies an original issuer sequence and RootJoin identifier as selection
 metadata; the Store authenticates the protected native19 issuer and predecessor,
 original preparation Reserve/Begin/Join and linked child, and the original native
@@ -525,7 +526,9 @@ identities and receipts retain their existing formats.
 Fresh successor registration requires that exact claim to remain current, its
 native fence and lease to remain live, the frozen resource declaration to match,
 and the retained acquisition child to remain active, activated and uncancelled.
-The source revision comes from the actual RootJoin publication. Activation checks
+For admission and expired-Run recovery, the source revision comes from the actual
+RootJoin publication. Approval uses its original recorded compound receipt revision,
+authenticated as described below. Activation checks
 the exact successor's own Begin publication instead; unrelated public changes
 refuse dispatch. Later same-worker status advances are not inferred from token
 equality in this component. Each successor has distinct stable operation IDs and
@@ -549,11 +552,40 @@ neither terminal native metadata nor task cancellation proves those joins.
 
 These two routes preserve the original admission receipt and frozen provider
 policy. An owned provider requires successor capability before restoration.
-Other continuation families retain their existing behavior and remain outside
-this successor component. A live paused owned Run still needs a separately
+Other continuation families retain their existing Runtime behavior and remain
+outside this Runtime successor component. A live paused owned Run still needs a separately
 authenticated live-pause source; expiry is not inferred from suspension. Legacy
 providers retain the existing unqualified resume path. Static ownership defaults
 and whole-Run resource coverage remain disabled. A process that dies after native
 completion can leave its acquisition child Active; a fresh controller may recover
 eligible native work, but cannot turn that old child into Joined from process
 death, lease expiry or metadata replay.
+
+The pure `supports_successor_execution_driver_origin` selector distinguishes eight
+native origin kinds before any factory effect. Its default preserves the existing
+two-origin capability flag; the other origins default to unsupported. Native
+Stores enable the two approval origins after authenticating their complete source
+closure. A selector result supplies no authority.
+
+Approval registration authenticates the exact original frozen batch and suspension,
+its native suspend-attempt receipt/event and preceding recorded RunPaused frame,
+the original preparation intent at its captured revision, and the derived native
+Reserve or Reclaim receipt at the protected RootJoin publication. The actual native
+and compound receipt revisions must be the recorded adjacent publications; paired
+receipt/event rewrites cannot refresh that source. Approval claim also requires its
+exact protected status-only successor issuance. Fresh eligibility requires the same
+current head, live native/parent fence, claimed barrier, exact pending calls and no
+independent Begin witness for that parent. SQL charges and streams complete bounded
+witnesses, validating their bodies and indexed routing; malformed target fields
+cannot count as absence. Full original keyed Init evidence or an
+unkeyed Witness2 binding digest is required in addition to the approval source.
+A genuine initial issuer without an ownership handoff is unsupported; a protected
+issuer whose required Witness is missing is corrupt. Original metadata uses exact
+static sources and survives later current-state damage.
+
+This approval checkpoint exposes only Store registration/activation primitives.
+It does not adopt approval Runtime dispatch, prove who retained a returned private
+Attempt authority, associate native Begin with an actual Driver main, or qualify
+whole-Run cleanup. Preparation/resource-child Join and a later Driver do not provide
+that missing holder evidence. Existing initial and successor wire formats remain
+unchanged, and no declaration or legacy history gains positive coverage.

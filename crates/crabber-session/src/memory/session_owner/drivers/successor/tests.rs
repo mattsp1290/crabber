@@ -6,10 +6,15 @@ async fn successor_proof_budget_and_commit_faults() {
         time::OffsetDateTime::UNIX_EPOCH,
     ));
     let store = Arc::new(MemoryStore::with_clock(clock.clone()));
-    for admission in [true, false] {
-        let request =
-            crate::successor_driver_contract::fixture::request(store.as_ref(), &clock, admission)
-                .await;
+    for family in 0..4 {
+        let request = if family < 2 {
+            crate::successor_driver_contract::fixture::request(store.as_ref(), &clock, family == 0)
+                .await
+        } else {
+            crate::successor_driver_contract::approval::fixture(store.as_ref(), &clock, family == 3)
+                .await
+                .request
+        };
         let state = store.state.lock().unwrap();
         let before = revision(&state, request.context.session_id());
         let mut proof = Proof::bounded(32 << 20);
@@ -43,5 +48,28 @@ async fn successor_proof_budget_and_commit_faults() {
     crate::successor_driver_contract::faults(store, &clock, move |value| {
         fault.store(value, std::sync::atomic::Ordering::SeqCst);
     })
+    .await;
+}
+
+#[tokio::test]
+async fn approval_successor_driver_contract() {
+    let clock = Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = MemoryStore::with_clock(clock.clone());
+    let store = Arc::new(store);
+    Box::pin(crate::successor_driver_contract::approval::run(
+        store.as_ref(),
+        &clock,
+    ))
+    .await;
+    let fault = store.session_owner_fault.clone();
+    Box::pin(crate::successor_driver_contract::approval::faults(
+        store,
+        &clock,
+        move |value| {
+            fault.store(value, std::sync::atomic::Ordering::SeqCst);
+        },
+    ))
     .await;
 }

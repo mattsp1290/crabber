@@ -1,4 +1,6 @@
 //! Exact noninitial native claims own distinct Reserve/Begin identities.
+#[path = "successor/approval.rs"]
+mod approval;
 pub(super) mod fresh;
 mod source;
 use super::super::{
@@ -188,3 +190,7 @@ async fn publish(
         grant: Box::new(grant),
     })
 }
+
+#[cfg(test)]
+#[path = "successor/approval_tests.rs"]
+pub(super) mod approval_tests;

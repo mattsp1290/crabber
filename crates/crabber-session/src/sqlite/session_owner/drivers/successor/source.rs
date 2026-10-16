@@ -1,4 +1,6 @@
 //! Original selected native closure. Every transferred carrier shares one budget.
+#[path = "source/approval.rs"]
+mod approval;
 use super::super::proof;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::{CompletionOperation, RunIssuance};
@@ -76,6 +78,12 @@ pub(super) async fn original(
         }
         CompletionOperation::ExpiredRunResume => {
             expired(tx, request, &previous, &next, &audits, budget, binding).await
+        }
+        CompletionOperation::ApprovalClaim | CompletionOperation::ApprovalRecovery => {
+            Box::pin(approval::original(
+                tx, request, &previous, &next, &audits, budget, binding,
+            ))
+            .await
         }
         _ => Err(Error::Unsupported),
     }

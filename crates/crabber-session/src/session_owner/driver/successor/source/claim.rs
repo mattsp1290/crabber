@@ -15,11 +15,18 @@ pub(crate) enum Native<'a> {
         initial: &'a RunIssuance,
         receipt: &'a AdmissionReceipt,
     },
+    Approval {
+        evidence: super::approval::Evidence<'a>,
+        input: super::input::Input<'a>,
+    },
 }
 pub(crate) struct AuthenticatedClaim<'a> {
     pub next: &'a RunIssuance,
     pub audits: &'a [Audit],
     pub revision: SessionRevision,
+    pub head: u64,
+    pub head_digest: crabber_core::InputFingerprint,
+    pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
 }
 impl<'a> AuthenticatedClaim<'a> {
     pub(crate) fn verify_binding(
@@ -67,12 +74,13 @@ impl<'a> AuthenticatedClaim<'a> {
             audit.validate()?;
         }
         let source = next.completion_source.as_ref().ok_or(Error::Unsupported)?;
-        match (source.native_operation, native) {
+        let approval = match (source.native_operation, native) {
             (CompletionOperation::ExpiredRunResume, Native::Expired(native)) => {
                 crate::session_owner::preparation::expired::history::verify(
                     previous, next, audits, native,
                 )?
                 .ok_or(Error::Unsupported)?;
+                None
             }
             (
                 CompletionOperation::AdmissionRecovery,
@@ -83,9 +91,18 @@ impl<'a> AuthenticatedClaim<'a> {
                 },
             ) => {
                 admission(previous, next, audits, init, initial, receipt)?;
+                None
+            }
+            (
+                CompletionOperation::ApprovalClaim | CompletionOperation::ApprovalRecovery,
+                Native::Approval { evidence, input },
+            ) => {
+                let facts = evidence.verify(previous, next, audits)?;
+                input.verify(&next.state.session_id, &next.state.run_id, None)?;
+                Some(facts)
             }
             _ => return Err(Error::Unsupported),
-        }
+        };
         let RevisionState::Present(revision) = audits[2]
             .publication
             .ok_or(Error::UnknownStoreOutcome)?
@@ -96,7 +113,13 @@ impl<'a> AuthenticatedClaim<'a> {
         Ok(Self {
             next,
             audits,
-            revision,
+            revision: approval.as_ref().map_or(revision, |a| a.revision),
+            head: approval.as_ref().map_or(next.sequence, |a| a.head),
+            head_digest: approval.as_ref().map_or_else(
+                || crate::native_parent::issuance_digest(next).map_err(unknown),
+                |a| Ok(a.head_digest.clone()),
+            )?,
+            approval: approval.map(|a| (a.continuation, a.attempt)),
         })
     }
     pub(crate) fn matches_request(

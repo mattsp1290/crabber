@@ -2,7 +2,7 @@
 use super::*;
 use crate::session_owner::preparation::{bind_resource_contract, resource_contract};
 
-pub(super) fn bind(bound: &mut crate::BoundKeyedAdmitRequest, contract: &InputFingerprint) {
+pub(crate) fn bind(bound: &mut crate::BoundKeyedAdmitRequest, contract: &InputFingerprint) {
     bind_resource_contract(&mut bound.binding.runtime_semantics, Some(contract)).unwrap();
     let hash = crate::admission_config_hash(&bound.binding.runtime_semantics);
     bound.binding.config_hash = InputFingerprint::new(hash.clone()).unwrap();

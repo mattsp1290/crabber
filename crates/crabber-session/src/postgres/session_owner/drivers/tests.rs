@@ -84,3 +84,39 @@ async fn successor_driver_contract() {
 mod successor_budget;
 
 mod successor_process;
+
+#[tokio::test]
+async fn approval_successor_driver_contract() {
+    let clock = Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    let store = Arc::new(store);
+    Box::pin(crate::successor_driver_contract::approval::run(
+        store.as_ref(),
+        &clock,
+    ))
+    .await;
+    Box::pin(super::successor::approval_tests::run(
+        store.as_ref(),
+        &clock,
+    ))
+    .await;
+    let fault = store.session_owner_fault.clone();
+    Box::pin(crate::successor_driver_contract::approval::faults(
+        store,
+        &clock,
+        move |value| {
+            fault.store(value, std::sync::atomic::Ordering::SeqCst);
+        },
+    ))
+    .await;
+}

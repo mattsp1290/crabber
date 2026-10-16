@@ -53,7 +53,7 @@ pub(crate) async fn run<S: Store + 'static>(
         }
     }
 }
-async fn exercise(
+pub(super) async fn exercise(
     store: &impl Store,
     grant: Box<SuccessorExecutionDriverGrant>,
     boundary: u8,

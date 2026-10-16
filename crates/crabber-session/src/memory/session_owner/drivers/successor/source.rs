@@ -1,4 +1,6 @@
 //! Selected protected sources, charged while borrowed before any private clone.
+#[path = "source/approval.rs"]
+mod approval;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, State};
 use crate::native_parent::{CompletionOperation, RunIssuance};
 use crate::session_owner::{
@@ -65,6 +67,9 @@ pub(super) fn original(
         }
         CompletionOperation::ExpiredRunResume => {
             expired(state, request, previous, next, &audits, proof, binding)
+        }
+        CompletionOperation::ApprovalClaim | CompletionOperation::ApprovalRecovery => {
+            approval::original(state, request, previous, next, &audits, proof, binding)
         }
         _ => Err(Error::Unsupported),
     }

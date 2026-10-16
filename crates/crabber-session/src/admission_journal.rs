@@ -66,15 +66,24 @@ impl Init {
         Ok(value)
     }
     pub fn verify(&self, record: &AdmissionExecutionRecord) -> Result<(), StoreError> {
+        self.verify_capsule(&record.receipt, &record.key, &record.capsule)
+    }
+    /// Original semantics only; later mutable execution state is not an input.
+    pub(crate) fn verify_capsule(
+        &self,
+        receipt: &AdmissionReceipt,
+        key: &AdmissionKey,
+        capsule: &crate::AdmissionExecutionCapsule,
+    ) -> Result<(), StoreError> {
         self.issuance.validate().map_err(|_| invalid())?;
         if self.version != 1
             || self.issuance.sequence != 1
             || self.issuance.state.status != RunStatus::Running
-            || self.issuance.state.session_id != record.receipt.session_id
-            || self.issuance.state.run_id != record.receipt.run_id
-            || self.receipt != record.receipt
-            || self.key != record.key
-            || self.capsule_digest != record.capsule.digest().map_err(|_| invalid())?
+            || self.issuance.state.session_id != receipt.session_id
+            || self.issuance.state.run_id != receipt.run_id
+            || self.receipt != *receipt
+            || self.key != *key
+            || self.capsule_digest != capsule.digest().map_err(|_| invalid())?
         {
             return Err(invalid());
         }

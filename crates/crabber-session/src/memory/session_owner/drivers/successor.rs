@@ -1,4 +1,6 @@
 //! One exact noninitial native claim owns a distinct actual worker.
+#[path = "successor/approval.rs"]
+mod approval;
 #[path = "successor/source.rs"]
 mod source;
 use super::super::{Error, MemoryStore, before, bump_public_revision, fault, revision};
@@ -89,9 +91,6 @@ pub(in crate::memory::session_owner) fn fresh(
     let latest = crate::memory::native_parent::source_protocol::current(state, session, id, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::UnknownStoreOutcome)?;
-    if latest.sequence != request.claim.issuance {
-        return Err(Error::StaleOwner);
-    }
     let current = state.sessions.get(session).ok_or(Error::NotFound)?;
     super::measure(proof, current)?;
     if crate::snapshot::encoded_bytes(current, 16384).is_none()
@@ -109,6 +108,15 @@ pub(in crate::memory::session_owner) fn fresh(
         return Err(Error::UnknownStoreOutcome);
     }
     let selected = source::original(state, request, proof, Some(&binding.capsule))?;
+    if latest.sequence != selected.head
+        || crate::native_parent::issuance_digest(latest).map_err(|_| Error::UnknownStoreOutcome)?
+            != selected.head_digest
+    {
+        return Err(Error::StaleOwner);
+    }
+    if let Some((continuation, parent)) = &selected.approval {
+        approval::fresh(state, run, continuation, parent, now, proof)?;
+    }
     let root = state
         .session_owners
         .source_audit(session, &request.claim.root_join_id)
@@ -138,3 +146,7 @@ pub(in crate::memory::session_owner) fn fresh(
 #[cfg(test)]
 #[path = "successor/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "successor/approval_tests.rs"]
+mod approval_tests;

@@ -42,7 +42,7 @@ fn reservation(bound: &crate::BoundKeyedAdmitRequest) -> ReservePreparation {
     ))
     .unwrap()
 }
-async fn begin(store: &impl Store, request: &ReservePreparation) -> PreparationGrant {
+pub(crate) async fn begin(store: &impl Store, request: &ReservePreparation) -> PreparationGrant {
     let SessionOwnerOutcome::Applied {
         authority: Some(authority),
         ..
@@ -79,7 +79,10 @@ async fn joined(
     .unwrap()
     .1
 }
-fn fixture(session: &SessionId, revision: SessionRevision) -> crate::BoundKeyedAdmitRequest {
+pub(crate) fn fixture(
+    session: &SessionId,
+    revision: SessionRevision,
+) -> crate::BoundKeyedAdmitRequest {
     crate::typed_admission_contract::prepare(
         crate::execution_binding_contract::fixture(
             session,

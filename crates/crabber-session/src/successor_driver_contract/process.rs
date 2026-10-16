@@ -33,8 +33,13 @@ impl Wire {
     }
 }
 pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
-    let admission = std::env::var("CRABBER_SUCCESSOR_FAMILY").unwrap() == "admission";
-    let request = fixture::request(store, clock, admission).await;
+    let request = match std::env::var("CRABBER_SUCCESSOR_FAMILY").unwrap().as_str() {
+        "admission" => fixture::request(store, clock, true).await,
+        "expired" => fixture::request(store, clock, false).await,
+        "approval" => approval::fixture(store, clock, false).await.request,
+        "approval-recovery" => approval::fixture(store, clock, true).await.request,
+        _ => panic!("unknown source family"),
+    };
     let wire = Wire {
         session: request.context.session_id().clone(),
         workspace: request.context.workspace_id().into(),
@@ -62,6 +67,40 @@ pub(crate) fn kill(
     directory: &Path,
     admission: bool,
 ) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
+    kill_family(
+        test,
+        stage,
+        path,
+        directory,
+        if admission { "admission" } else { "expired" },
+    )
+}
+pub(crate) fn kill_approval(
+    test: &str,
+    stage: &str,
+    path: Option<&Path>,
+    directory: &Path,
+    recovery: bool,
+) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
+    kill_family(
+        test,
+        stage,
+        path,
+        directory,
+        if recovery {
+            "approval-recovery"
+        } else {
+            "approval"
+        },
+    )
+}
+fn kill_family(
+    test: &str,
+    stage: &str,
+    path: Option<&Path>,
+    directory: &Path,
+    family: &str,
+) -> (RegisterSuccessorExecutionDriver, time::OffsetDateTime) {
     let marker = directory.join("marker");
     let key = directory.join("key");
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -71,10 +110,7 @@ pub(crate) fn kill(
         .env("CRABBER_OWNER_KILL_POINT", format!("successor-{stage}"))
         .env("CRABBER_OWNER_MARKER", &marker)
         .env("CRABBER_SUCCESSOR_KEY", &key)
-        .env(
-            "CRABBER_SUCCESSOR_FAMILY",
-            if admission { "admission" } else { "expired" },
-        )
+        .env("CRABBER_SUCCESSOR_FAMILY", family)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if let Some(path) = path {

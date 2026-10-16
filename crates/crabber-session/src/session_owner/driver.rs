@@ -19,6 +19,18 @@ pub use successor::{
 };
 
 pub const RUNTIME_DRIVER_COMPONENT: &str = "crabber.runtime.outer-worker.v1";
+/// Pure capability selection. A supported origin never supplies authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuccessorExecutionDriverOrigin {
+    AdmissionRecovery,
+    ExpiredRun,
+    ApprovalClaim,
+    ApprovalRecovery,
+    ToolClaim,
+    ToolRecovery,
+    FrontendClaim,
+    FrontendRecovery,
+}
 /// Fixed main-task and sealed-cleanup declaration. This marker proves no join.
 /// # Errors
 /// Returns a sanitized serialization error.

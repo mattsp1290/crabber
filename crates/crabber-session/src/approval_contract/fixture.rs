@@ -28,7 +28,23 @@ pub(crate) async fn staged(store: &impl Store, clock: &ManualClock) -> Fixture {
         })
         .await
         .unwrap();
+    staged_on(store, clock, admitted).await
+}
+/// Authentic admission supplied by a preparation fixture, never a synthetic Run.
+pub(crate) async fn staged_on(
+    store: &impl Store,
+    clock: &ManualClock,
+    admitted: crate::AdmitOutcome,
+) -> Fixture {
     let execution = store.execution(admitted.fence).await.unwrap();
+    if store
+        .admission_execution_state(&admitted.run.id)
+        .await
+        .unwrap()
+        == Some(crate::AdmissionExecutionState::Unstarted)
+    {
+        execution.begin_admission_execution().await.unwrap();
+    }
     let reserve = crate::attempt_contract::reserve(
         store.session_revision(&admitted.session.id).await.unwrap(),
     );
