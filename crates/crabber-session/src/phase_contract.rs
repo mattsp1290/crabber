@@ -20,6 +20,9 @@ mod start;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 #[path = "phase_contract/storage.rs"]
 pub(crate) mod storage;
+#[cfg(test)]
+#[path = "phase_contract/terminal_carrier.rs"]
+pub(crate) mod terminal_carrier;
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptMutation, AttemptMutationOutcome, PhaseAuthority,
     PhaseCommand, PhaseError as Error, PhaseMutation, PhaseMutationOutcome as Outcome,
@@ -83,6 +86,18 @@ pub(crate) async fn fixture_for_admission(
     AttemptAuthority,
     PhaseMutation,
 ) {
+    fixture_for_admission_named(store, admitted, "phase-owned").await
+}
+async fn fixture_for_admission_named(
+    store: &impl Store,
+    admitted: crate::AdmitOutcome,
+    name: &str,
+) -> (
+    crate::AdmitOutcome,
+    Box<dyn crate::ExecutionStore>,
+    AttemptAuthority,
+    PhaseMutation,
+) {
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
     let reserve = crate::attempt_contract::reserve(
         store.session_revision(&admitted.session.id).await.unwrap(),
@@ -113,7 +128,7 @@ pub(crate) async fn fixture_for_admission(
             ToolCallRecord {
                 id: call.clone(),
                 run_id: admitted.run.id.clone(),
-                name: "phase-owned".into(),
+                name: name.into(),
                 arguments: serde_json::json!({}),
                 status: ToolCallStatus::Pending,
                 retry_safe: true,

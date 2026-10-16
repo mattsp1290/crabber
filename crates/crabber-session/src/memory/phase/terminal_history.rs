@@ -18,7 +18,12 @@ pub(in super::super) fn validate(
             e.session_id == run.session_id && e.run_id == run.id && e.cursor < terminal.1.cursor
         })
         .ok_or(Error::UnknownStoreOutcome)?;
-    if crate::snapshot::encoded_bytes(settled, 4_198_400).is_none() {
+    if crate::snapshot::encoded_bytes(
+        settled,
+        crate::phase::terminal_history::MAX_SETTLED_EVENT_BYTES,
+    )
+    .is_none()
+    {
         return Err(Error::UnknownStoreOutcome);
     }
     crate::phase::terminal_history::verify(run, next, call, current, terminal, settled)

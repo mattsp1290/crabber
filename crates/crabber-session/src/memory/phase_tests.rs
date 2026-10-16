@@ -388,3 +388,8 @@ async fn phase_page_rejects_corrupt_sentinel_instead_of_omitting_it() {
         crate::PhaseError::UnknownStoreOutcome
     );
 }
+
+#[tokio::test]
+async fn terminal_carrier_accepts_large_valid_call() {
+    crate::phase_contract::terminal_carrier::run(&MemoryStore::new()).await;
+}

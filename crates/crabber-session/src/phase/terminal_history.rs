@@ -3,6 +3,11 @@ use crate::PhaseError as Error;
 use crate::{PhaseOperation, PhaseReceipt};
 use crabber_core::{EventKind, EventRecord, Run, ToolCallRecord};
 
+// ToolCallSettled repeats the logical call's name in both `name` and `tool`.
+// Twice the 4 MiB persisted call budget also covers JSONB formatting overhead;
+// the extra 16 KiB covers bounded scope/presentation IDs and the event envelope.
+pub(crate) const MAX_SETTLED_EVENT_BYTES: usize = 2 * 4_194_304 + 16_384;
+
 pub(crate) fn verify(
     run: &Run,
     next: &crate::phase::PhaseRecord,
