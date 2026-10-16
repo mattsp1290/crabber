@@ -4,6 +4,8 @@
 mod abandonment;
 #[path = "run_history/approval.rs"]
 mod approval;
+#[path = "run_history/waiting.rs"]
+mod waiting;
 use super::super::{OperationReceipt, State};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{EventKind, Run, SessionId};
@@ -22,10 +24,11 @@ pub(super) fn verify(
         input(state, run, proof)?;
         let terminal = terminal(state, run, proof)?;
         let approved = approval::verify(state, run, proof)?;
+        let cancelled = waiting::verify(state, run, proof)?;
         let abandoned = abandonment::verify(state, run, proof)?;
         unproven |= !(state.preparation_admissions.contains_key(&run.id)
             && state.admission_execution_protocols.contains(&run.id)
-            && (terminal || approved || abandoned));
+            && (terminal || approved || abandoned || cancelled));
     }
     Ok(unproven)
 }

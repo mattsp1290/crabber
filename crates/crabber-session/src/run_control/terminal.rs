@@ -121,10 +121,6 @@ pub(crate) struct FrozenFacts<'a> {
     pub usage: &'a Usage,
     pub turn: Option<&'a crabber_core::TurnId>,
 }
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Consumed by the staged Run-history reader.")
-)]
 pub(crate) fn verify_scope(
     facts: crate::attempt::terminal::TerminalFacts<'_>,
     summary: &RunControlSummary,
@@ -158,3 +154,7 @@ pub(crate) fn verify_scope(
 #[cfg(test)]
 #[path = "terminal/contract.rs"]
 pub(crate) mod contract;
+
+#[cfg(test)]
+#[path = "terminal/history_contract.rs"]
+pub(crate) mod history_contract;

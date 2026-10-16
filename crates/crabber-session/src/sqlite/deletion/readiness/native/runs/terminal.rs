@@ -1,5 +1,6 @@
 //! Exact terminal domains share one private-fields projection and allowance.
 mod approval;
+mod waiting;
 use crate::attempt::terminal::{self, TerminalFacts};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
@@ -22,7 +23,8 @@ pub(super) async fn verify(
 ) -> Result<bool> {
     let attempted = attempt(tx, session, run, status, proof).await?;
     let approved = approval::verify(tx, session, run, status, proof).await?;
-    Ok(attempted || approved)
+    let cancelled = waiting::verify(tx, session, run, status, proof).await?;
+    Ok(attempted || approved || cancelled)
 }
 async fn attempt(
     tx: &mut Transaction<'_, Sqlite>,

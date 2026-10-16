@@ -122,3 +122,6 @@ pub(crate) fn terminal_event(
     event.payload["reason"] = serde_json::json!("host_cancelled_suspension");
     Ok(event)
 }
+
+#[path = "suspension/history.rs"]
+mod history;

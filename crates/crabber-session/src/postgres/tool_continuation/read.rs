@@ -152,9 +152,9 @@ pub(in super::super) async fn origin_with_proof(
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
-    let binding = super::super::execution_binding::read(tx, session, run)
+    let binding = super::super::execution_binding::read_with_proof(tx, session, run, proof)
         .await
-        .map_err(unknown)?
+        .map_err(|error| error.map_domain(unknown))?
         .ok_or(Error::UnknownStoreOutcome)?;
     if binding.capsule.request.workspace_id != record.workspace_id {
         return Err(Error::UnknownStoreOutcome.into());
