@@ -1,6 +1,8 @@
 //! The host registers `FnOnce` before requesting activation. Capturing a future
 //! whose constructor already performed effects would violate this boundary.
 use super::{Error, OwnedDispatchPermit, OwnedMainDisposition, OwnedScopeActivation};
+mod driver;
+pub use driver::DriverMainContext;
 use std::future::Future;
 use tokio::{sync::oneshot, task::JoinHandle};
 
@@ -9,9 +11,14 @@ use tokio::{sync::oneshot, task::JoinHandle};
 /// Dropping this handle closes the gate but supplies no cleanup/join proof.
 pub struct OwnedTaskRegistration<T> {
     activation: OwnedScopeActivation,
-    gate: Option<oneshot::Sender<()>>,
+    gate: Option<oneshot::Sender<Option<DriverMainContext>>>,
+    kind: RegistrationKind,
     task: Option<JoinHandle<Option<T>>>,
     joined: Option<JoinedOwnedTask<T>>,
+}
+enum RegistrationKind {
+    Generic,
+    Driver,
 }
 impl<T: Send + 'static> OwnedTaskRegistration<T> {
     /// The factory is invoked only after a fresh matching dispatch permit.
@@ -24,15 +31,51 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
         F: FnOnce() -> W + Send + 'static,
         W: Future<Output = T> + Send + 'static,
     {
+        Self::register_inner(source, RegistrationKind::Generic, move |_| Some(factory()))
+    }
+    /// Register an initial Driver factory behind its original task gate.
+    /// Only a matching fresh activation permit delivers the opaque context.
+    /// Generic registration and metadata replay cannot create this context.
+    /// Resources still need independently observed cleanup; this proves no
+    /// complete Run membership or whole-resource policy.
+    /// # Errors
+    /// Refuses malformed Driver metadata before registering or invoking work.
+    pub fn register_driver<F, W>(
+        grant: &crate::session_owner::driver::ExecutionDriverGrant,
+        factory: F,
+    ) -> Result<Self, Error>
+    where
+        F: FnOnce(DriverMainContext) -> W + Send + 'static,
+        W: Future<Output = T> + Send + 'static,
+    {
+        grant.original_request().fingerprint()?;
+        let source = grant.scope_source()?;
+        if &source.session != grant.original_request().context.session_id() {
+            return Err(Error::SemanticConflict);
+        }
+        Self::register_inner(source, RegistrationKind::Driver, move |context| {
+            context.map(factory)
+        })
+    }
+    fn register_inner<F, W>(
+        source: super::OwnedScopeSource,
+        kind: RegistrationKind,
+        factory: F,
+    ) -> Result<Self, Error>
+    where
+        F: FnOnce(Option<DriverMainContext>) -> Option<W> + Send + 'static,
+        W: Future<Output = T> + Send + 'static,
+    {
         let activation = OwnedScopeActivation::new(source)?;
         let (gate, ready) = oneshot::channel();
         let task = tokio::spawn(async move {
-            ready.await.ok()?;
-            Some(factory().await)
+            let context = ready.await.ok()?;
+            Some(factory(context)?.await)
         });
         Ok(Self {
             activation,
             gate: Some(gate),
+            kind,
             task: Some(task),
             joined: None,
         })
@@ -50,11 +93,12 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
         if self.activation != activation {
             return Err(Error::SemanticConflict);
         }
-        self.gate
-            .take()
-            .ok_or(Error::InvalidTransition)?
-            .send(())
-            .map_err(|()| Error::UnknownStoreOutcome)
+        let gate = self.gate.take().ok_or(Error::InvalidTransition)?;
+        let context = match self.kind {
+            RegistrationKind::Generic => None,
+            RegistrationKind::Driver => Some(DriverMainContext::dispatched(activation)),
+        };
+        gate.send(context).map_err(|_| Error::UnknownStoreOutcome)
     }
     /// Close an unacknowledged gate and observe the actual waiting task join.
     /// Interrupted observation retains the same actual task and returned value.
@@ -133,3 +177,7 @@ pub(super) fn discard_panic(error: tokio::task::JoinError) {
         std::mem::forget(nested);
     }
 }
+
+#[cfg(test)]
+#[path = "task/driver_tests.rs"]
+mod driver_tests;
