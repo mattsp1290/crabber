@@ -74,6 +74,15 @@ impl SqliteStore {
                 "user message has wrong session".into(),
             ));
         }
+        super::session_owner::context(tx, &session_id, &request.workspace_id, &request.directory)
+            .await
+            .map_err(|error| {
+                if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                    StoreError::SessionIdentityMismatch
+                } else {
+                    StoreError::Validation("session ownership proof unavailable".into())
+                }
+            })?;
         let existing = sqlx::query("SELECT data,public_revision FROM sessions WHERE id=$1")
             .bind(&session_id.0)
             .fetch_optional(&mut **tx)

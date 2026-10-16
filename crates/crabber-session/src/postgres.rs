@@ -18,6 +18,7 @@ mod phase;
 mod public_header;
 mod public_run;
 mod public_state;
+mod session_owner;
 mod tool_result;
 
 mod queue;
@@ -66,6 +67,8 @@ pub struct PostgresStore {
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     control_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -444,6 +447,8 @@ impl PostgresStore {
             tool_continuation_fault: Arc::default(),
             #[cfg(test)]
             control_fault: Arc::default(),
+            #[cfg(test)]
+            session_owner_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -505,6 +510,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0012_run_controls.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0013_session_owners.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -595,6 +604,15 @@ impl PostgresStore {
                 "user message has wrong session".into(),
             ));
         }
+        session_owner::context(tx, &session_id, &request.workspace_id, &request.directory)
+            .await
+            .map_err(|error| {
+                if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                    StoreError::SessionIdentityMismatch
+                } else {
+                    StoreError::Validation("session ownership proof unavailable".into())
+                }
+            })?;
         let existing = sqlx::query("SELECT data,public_revision FROM sessions WHERE id=$1")
             .bind(&session_id.0)
             .fetch_optional(&mut **tx)
@@ -771,6 +789,44 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    fn supports_session_owners(&self) -> bool {
+        true
+    }
+    async fn reserve_session_owner(
+        &self,
+        request: crate::session_owner::ReserveSessionOwner,
+        parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_owner(request, parent).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crate::session_owner::MutateSessionOwner,
+        authority: Option<crate::session_owner::SessionOwnerAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.mutate_owner(request, authority).await
+    }
+    async fn get_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+    ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
+    {
+        self.owner_snapshot(session, id).await
+    }
+    async fn lookup_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.owner_receipt(session, id).await
+    }
+
     async fn public_control_header(
         &self,
         request: crate::PublicHeaderRequest,

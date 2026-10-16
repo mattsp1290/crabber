@@ -1,4 +1,4 @@
-//! Schema-gated publisher hooks; draft schema13/9 remains unregistered.
+//! Native Begin witnesses bound to independent Run fence issuance.
 #[path = "native_parent/run.rs"]
 mod run;
 use crate::native_parent::{Error, Kind, Witness};
@@ -72,10 +72,6 @@ fn kind(kind: Kind) -> &'static str {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "owner-ledger handoff integration is a separate slice"
-)]
 pub(super) async fn verify_attempt(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
@@ -89,10 +85,6 @@ pub(super) async fn verify_attempt(
     witness.verify_attempt(run, attempt, &receipt, &event, &issuance)?;
     Ok(witness)
 }
-#[expect(
-    dead_code,
-    reason = "owner-ledger handoff integration is a separate slice"
-)]
 pub(super) async fn verify_phase(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

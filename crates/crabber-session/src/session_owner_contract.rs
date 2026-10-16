@@ -147,6 +147,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
         Err(SessionOwnerError::InvalidTransition)
     ));
     unstarted(&store, &clock, session).await;
+    races::run(&store).await;
 }
 async fn reserve_and_create(
     store: &impl Store,
@@ -258,3 +259,22 @@ async fn unstarted(store: &impl Store, clock: &ManualClock, session: &SessionId)
         matches!(store.mutate_session_owner(resolve, None).await.unwrap(), SessionOwnerOutcome::Replayed(saved) if saved == receipt)
     );
 }
+
+#[cfg(test)]
+#[path = "session_owner_contract/faults.rs"]
+pub(crate) mod faults;
+
+#[cfg(test)]
+#[path = "session_owner_contract/parent.rs"]
+pub(crate) mod parent;
+
+#[cfg(test)]
+#[path = "session_owner_contract/process.rs"]
+pub(crate) mod process;
+
+#[path = "session_owner_contract/races.rs"]
+mod races;
+
+#[cfg(test)]
+#[path = "session_owner_contract/capacity.rs"]
+pub(crate) mod capacity;

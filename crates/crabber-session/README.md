@@ -480,3 +480,11 @@ continuation records its own immutable host proof and retains prior answers and
 native Suspended+Complete history. Unsupported or unproven waiting states refuse
 without manufacturing cleanup. See [durable run controls](../../docs/durable-run-controls.md)
 for host request/retry/supervisor APIs and the status versus task-join distinction.
+
+### Session owner ledger (PostgreSQL 13 / SQLite 9)
+
+All native stores implement pre-session resource reservation, exact native-parent
+handoff, private lease renewal, explicit join and resolver receipts. SQL source
+proofs survive controller restarts; metadata retries never return authority.
+See [session resource ownership](../../docs/session-owners.md) for the admission
+identity guards, cleanup semantics, bounds and host responsibilities.

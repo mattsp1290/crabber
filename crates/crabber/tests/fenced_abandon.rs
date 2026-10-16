@@ -3,6 +3,9 @@ mod native_parent;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_rounds;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[path = "fenced_support/run_journal.rs"]
+mod run_journal;
 mod tests {
     pub(super) fn request(
         session_id: crabber::core::SessionId,

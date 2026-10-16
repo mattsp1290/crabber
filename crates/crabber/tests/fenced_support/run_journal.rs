@@ -1,0 +1,12 @@
+//! Intentional fixture transitions publish authentic Run fencing evidence too.
+use crate::native_parent::{RunIssuance, RunState};
+use crabber::core::Run;
+pub(super) fn advance(previous: &Run, next: &Run, latest: Option<&str>) -> Option<RunIssuance> {
+    let latest: Option<RunIssuance> = latest.map(|text| serde_json::from_str(text).unwrap());
+    crate::native_parent::advance(
+        Some(&RunState::from_run(previous).unwrap()),
+        RunState::from_run(next).unwrap(),
+        latest.as_ref(),
+    )
+    .unwrap()
+}

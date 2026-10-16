@@ -177,6 +177,9 @@ impl PostgresStore {
                 if saved.semantic_digest != digest { return Err(Error::SemanticConflict); }
                 return Ok((saved, false));
             }
+            if let crate::SessionChange::Create { workspace_id, directory, .. } = &request.change {
+                super::session_owner::context(&mut tx,&request.session_id,workspace_id,directory).await.map_err(|error| if error == crate::session_owner::SessionOwnerError::IdentityMismatch { Error::SemanticConflict } else { Error::UnknownStoreOutcome })?;
+            }
             let existing = current(&mut tx, &request.session_id).await?;
             let now = self.clock.now();
             let (session, metadata, revision) = management::apply(&request, existing, now)?;

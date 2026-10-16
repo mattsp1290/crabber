@@ -16,6 +16,7 @@ mod public_state;
 mod queue;
 mod records;
 mod run_control;
+mod session_owner;
 mod snapshot;
 mod store_impl;
 mod tool_continuation;
@@ -51,6 +52,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0007_tool_continuations.sql"),
     "\nINSERT INTO schema_version(version) VALUES(7);\n",
     include_str!("../migrations/sqlite/0008_run_controls.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(8);\n",
+    include_str!("../migrations/sqlite/0009_session_owners.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
@@ -83,6 +86,8 @@ pub struct SqliteStore {
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     control_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -207,6 +212,8 @@ async fn connect_with(
         tool_continuation_fault: Arc::default(),
         #[cfg(test)]
         control_fault: Arc::default(),
+        #[cfg(test)]
+        session_owner_fault: Arc::default(),
         #[cfg(test)]
         write_waiters: Arc::default(),
     })

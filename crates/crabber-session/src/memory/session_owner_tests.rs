@@ -123,3 +123,27 @@ async fn begin_ack_loss(
         SessionOwnerOutcome::Replayed(_)
     ));
 }
+
+#[tokio::test]
+async fn session_owner_all_commit_faults() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::session_owner_contract::faults::run(&store, &clock, |value| {
+        store.session_owner_fault.store(value, Ordering::SeqCst);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn session_owner_shared_parent_contract() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::session_owner_contract::parent::run(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn session_owner_shared_capacity() {
+    let store = super::MemoryStore::new();
+    let (request, authority) = crate::session_owner_contract::capacity::fill(&store).await;
+    crate::session_owner_contract::capacity::joined_slot(&store, request, authority).await;
+}

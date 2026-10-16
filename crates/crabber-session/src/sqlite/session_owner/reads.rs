@@ -1,0 +1,180 @@
+//! Bounded current proof reads; immutable indexed sources select their own latest.
+use super::{
+    Audit, Error, Record, SessionId, SessionOwnerId, SessionOwnerOperation,
+    SessionOwnerOperationId, Sqlite, Transaction, operation, state, unknown, verify_current,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sqlx::Row;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Context {
+    workspace: String,
+    directory: String,
+    origin: SessionOwnerOperationId,
+}
+fn decode<T: DeserializeOwned>(row: &sqlx::sqlite::SqliteRow, field: &str) -> Result<T, Error> {
+    let text = row
+        .try_get::<Option<String>, _>(field)
+        .map_err(unknown)?
+        .ok_or(Error::UnknownStoreOutcome)?;
+    serde_json::from_str(&text).map_err(unknown)
+}
+pub(super) async fn audit(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+) -> Result<Option<Audit>, Error> {
+    let row=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS owner_id,sequence,CASE WHEN length(CAST(operation AS BLOB))<=32 THEN operation END AS operation,CASE WHEN length(CAST(state AS BLOB))<=32 THEN state END AS state,CASE WHEN length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
+    row.map(|row| checked_audit(&row, session, Some(id)))
+        .transpose()
+}
+fn checked_audit(
+    row: &sqlx::sqlite::SqliteRow,
+    session: &SessionId,
+    id: Option<&SessionOwnerOperationId>,
+) -> Result<Audit, Error> {
+    let audit: Audit = decode(row, "data")?;
+    audit.validate()?;
+    if audit.receipt.session_id != *session
+        || row
+            .try_get::<Option<String>, _>("operation_id")
+            .map_err(unknown)?
+            .as_deref()
+            != Some(&audit.receipt.operation_id.0)
+        || id.is_some_and(|id| *id != audit.receipt.operation_id)
+        || row
+            .try_get::<Option<String>, _>("owner_id")
+            .map_err(unknown)?
+            .as_deref()
+            != Some(&audit.record.snapshot.target.id.0)
+        || row.try_get::<i64, _>("sequence").map_err(unknown)?
+            != i64::try_from(audit.record.sequence).map_err(unknown)?
+        || row
+            .try_get::<Option<String>, _>("operation")
+            .map_err(unknown)?
+            .as_deref()
+            != Some(operation(audit.receipt.operation))
+        || row
+            .try_get::<Option<String>, _>("state")
+            .map_err(unknown)?
+            .as_deref()
+            != Some(state(audit.record.snapshot.state))
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(audit)
+}
+pub(super) async fn context(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    workspace: &str,
+    directory: &str,
+) -> Result<(), Error> {
+    let row=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data FROM session_owner_contexts WHERE session_id=$1").bind(&session.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
+    let Some(row) = row else {
+        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits WHERE session_id=$1 UNION ALL SELECT 1 FROM session_owner_current WHERE session_id=$1)").bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+        return if exists {
+            Err(Error::UnknownStoreOutcome)
+        } else {
+            Ok(())
+        };
+    };
+    let context: Context = decode(&row, "data")?;
+    let origin=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS owner_id,sequence,CASE WHEN length(CAST(operation AS BLOB))<=32 THEN operation END AS operation,CASE WHEN length(CAST(state AS BLOB))<=32 THEN state END AS state,CASE WHEN length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id FROM session_owner_audits WHERE session_id=$1 AND operation='Reserve' ORDER BY ordinal LIMIT 1").bind(&session.0).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::UnknownStoreOutcome)?;
+    let origin = checked_audit(&origin, session, Some(&context.origin))?;
+    if origin.receipt.operation != SessionOwnerOperation::Reserve
+        || origin.record.snapshot.binding.workspace_id != context.workspace
+        || origin.record.snapshot.binding.directory != context.directory
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    if workspace != context.workspace || directory != context.directory {
+        return Err(Error::IdentityMismatch);
+    }
+    Ok(())
+}
+pub(super) async fn scope(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<(), Error> {
+    let corrupt:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits a WHERE a.session_id=$1 AND a.operation='Reserve' AND NOT EXISTS(SELECT 1 FROM session_owner_current c WHERE c.session_id=a.session_id AND c.owner_id=a.owner_id) UNION ALL SELECT 1 FROM session_owner_current c WHERE c.session_id=$1 AND NOT EXISTS(SELECT 1 FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.owner_id=c.owner_id AND a.operation='Reserve'))").bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    if corrupt {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(())
+}
+pub(super) async fn current(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerId,
+) -> Result<Record, Error> {
+    let row=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data FROM session_owner_current WHERE session_id=$1 AND owner_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
+    let Some(row) = row else {
+        let existed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM session_owner_audits WHERE session_id=$1 AND owner_id=$2)",
+        )
+        .bind(&session.0)
+        .bind(&id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unknown)?;
+        return Err(if existed {
+            Error::UnknownStoreOutcome
+        } else {
+            Error::NotFound
+        });
+    };
+    let record: Record = decode(&row, "data")?;
+    record.validate()?;
+    if record.snapshot.binding.session_id != *session || record.snapshot.target.id != *id {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    let latest=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS owner_id,sequence,CASE WHEN length(CAST(operation AS BLOB))<=32 THEN operation END AS operation,CASE WHEN length(CAST(state AS BLOB))<=32 THEN state END AS state,CASE WHEN length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id FROM session_owner_audits WHERE session_id=$1 AND owner_id=$2 ORDER BY sequence DESC LIMIT 1").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::UnknownStoreOutcome)?;
+    let latest = checked_audit(&latest, session, None)?;
+    let origin = audit(tx, session, &record.origin)
+        .await?
+        .ok_or(Error::UnknownStoreOutcome)?;
+    verify_current(&record, &origin, &latest)?;
+    context(
+        tx,
+        session,
+        &record.snapshot.binding.workspace_id,
+        &record.snapshot.binding.directory,
+    )
+    .await?;
+    Ok(record)
+}
+pub(super) async fn capacity(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<(), Error> {
+    let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM session_owner_audits a WHERE a.session_id=$1 AND a.state<>'Joined' AND NOT EXISTS(SELECT 1 FROM session_owner_audits b WHERE b.session_id=a.session_id AND b.owner_id=a.owner_id AND b.sequence>a.sequence)").bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    if count >= 1024 {
+        Err(Error::Capacity)
+    } else {
+        Ok(())
+    }
+}
+pub(super) async fn publish(
+    tx: &mut Transaction<'_, Sqlite>,
+    audit: &Audit,
+    fresh: bool,
+) -> Result<(), Error> {
+    audit.validate()?;
+    let record = &audit.record;
+    let binding = &record.snapshot.binding;
+    if fresh {
+        let context = Context {
+            workspace: binding.workspace_id.clone(),
+            directory: binding.directory.clone(),
+            origin: record.origin.clone(),
+        };
+        if crate::snapshot::encoded_bytes(&context, 32768).is_none() {
+            return Err(Error::InvalidRequest);
+        }
+        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json) VALUES($1,$2) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+    }
+    sqlx::query("INSERT INTO session_owner_audits(session_id,operation_id,owner_id,sequence,operation,state,data_json) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&binding.session_id.0).bind(&audit.receipt.operation_id.0).bind(&binding.id.0).bind(i64::try_from(record.sequence).map_err(unknown)?).bind(operation(audit.receipt.operation)).bind(state(record.snapshot.state)).bind(serde_json::to_string(audit).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+    sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json) VALUES($1,$2,$3) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+    Ok(())
+}

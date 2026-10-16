@@ -18,6 +18,44 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    fn supports_session_owners(&self) -> bool {
+        true
+    }
+    async fn reserve_session_owner(
+        &self,
+        request: crate::session_owner::ReserveSessionOwner,
+        parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_owner(request, parent).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crate::session_owner::MutateSessionOwner,
+        authority: Option<crate::session_owner::SessionOwnerAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.mutate_owner(request, authority).await
+    }
+    async fn get_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+    ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
+    {
+        self.owner_snapshot(session, id).await
+    }
+    async fn lookup_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.owner_receipt(session, id).await
+    }
+
     async fn public_control_header(
         &self,
         request: crate::PublicHeaderRequest,

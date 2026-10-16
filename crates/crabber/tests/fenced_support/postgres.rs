@@ -21,7 +21,24 @@ async fn pool() -> Option<PgPool> {
 impl abandonment_contract::FixtureStore for PostgresStore {
     async fn seed_run(&self, run: Run) {
         let pool = pool().await.unwrap();
-        sqlx::query("UPDATE runs SET status=$2,data=$3,lease_until=$4 WHERE id=$1")
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(&run.session_id.0)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let previous: String =
+            sqlx::query_scalar("SELECT data::text FROM runs WHERE id=$1 FOR UPDATE")
+                .bind(&run.id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        let previous: Run = serde_json::from_str(&previous).unwrap();
+        let latest:Option<String>=sqlx::query_scalar("SELECT data_json FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 1").bind(&run.session_id.0).bind(&run.id.0).fetch_optional(&mut *tx).await.unwrap();
+        if let Some(issuance) = super::run_journal::advance(&previous, &run, latest.as_deref()) {
+            sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,$3,$4)").bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(issuance.sequence).unwrap()).bind(serde_json::to_string(&issuance).unwrap()).execute(&mut *tx).await.unwrap();
+        }
+        sqlx::query("UPDATE runs SET status=$2,data=$3,lease_until=$4,claim_token=$5 WHERE id=$1")
             .bind(&run.id.0)
             .bind(match run.status {
                 RunStatus::Pending => "pending",
@@ -31,9 +48,11 @@ impl abandonment_contract::FixtureStore for PostgresStore {
             })
             .bind(serde_json::to_value(&run).unwrap())
             .bind(i64::try_from(run.lease_until.unix_timestamp_nanos() / 1_000).unwrap())
-            .execute(&pool)
+            .bind(&run.claim_token)
+            .execute(&mut *tx)
             .await
             .unwrap();
+        tx.commit().await.unwrap();
         pool.close().await;
     }
     async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {

@@ -321,11 +321,11 @@ redacted_debug!(
     SessionOwnerOutcome
 );
 
-mod validation;
+pub(crate) mod validation;
 use validation::{identifier, lease, resolver};
-mod audit;
+pub(crate) mod audit;
 mod ledger;
-mod record;
+pub(crate) mod record;
 pub(crate) use ledger::Ledger;
 /// Authority for the actual native parent at a detached ownership handoff.
 /// Session-only preparation/service reservations have no execution parent.
