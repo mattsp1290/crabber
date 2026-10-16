@@ -373,8 +373,8 @@ suspension conclusion and event, or a protected begun keyed admission with no
 parent reservation. It captures current R, the full original issuer digest,
 frozen capsule digest, original source receipt and chosen replacement owner and
 lease. Unsupported or ambiguous original sources fail before restoration.
-Unkeyed initial work and existing Unstarted parent reservations remain unsupported
-by this component. Run carriers are capped before private clone or SQL transfer;
+Existing Unstarted parent reservations remain unsupported by this component.
+Run carriers are capped before private clone or SQL transfer;
 checkpoint suspension inspection accepts at most 64 calls and 64 phases.
 
 Fresh Reserve, Begin and atomic completion revalidate the original native source.
@@ -413,3 +413,12 @@ mutable Joined rows cannot supply that evidence. The original admission sources
 are checked under the same caller allowance. This component classification does
 not settle the admitted Run or establish complete issuer membership, terminal
 outcome, callback cleanup or whole-run resource policy.
+
+An expired initial unkeyed Run has an explicit `UnkeyedAdmission` source only
+when its original version 2 Witness authenticates the first native issuance,
+original preparation Reserve/Begin/Join and linked child receipts, and the full
+frozen unkeyed input binding. Missing keyed initialization is never evidence of
+that source. Legacy witnesses without the input anchor and bare unowned admissions
+remain unsupported. Lost initial admission ACKs replay only admission metadata;
+a host may then explicitly inspect the current expired native fence and prepare
+recovery using this independently authenticated original source.

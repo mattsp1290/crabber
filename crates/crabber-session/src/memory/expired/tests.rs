@@ -12,6 +12,14 @@ async fn expired_preparation_faults_and_sources() {
         store.binding_fault.store(point, Ordering::SeqCst);
     })
     .await;
+    crate::run_control_contract::expired::unkeyed::faults(&store, &clock, |point| {
+        store.binding_fault.store(point, Ordering::SeqCst);
+    })
+    .await;
+    crate::run_control_contract::expired::unkeyed::lost_admission_ack(&store, &clock, |point| {
+        store.binding_fault.store(point, Ordering::SeqCst);
+    })
+    .await;
     verify_begin_guard(&store, &clock).await;
     let pending = crate::run_control_contract::expired::pending(&store, &clock).await;
     let source = &pending.source;

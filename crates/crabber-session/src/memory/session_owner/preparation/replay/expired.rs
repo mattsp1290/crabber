@@ -80,68 +80,86 @@ impl MemoryStore {
             bounded(audit, 32768)?;
             audits.push(audit.clone());
         }
-        let target = history::target(&audits)?;
-        let native = match target.origin {
-            ExpiredRunOrigin::Suspended(ref id) => {
-                let Some(OperationReceipt::Attempt(receipt)) = state
-                    .operation_receipts
-                    .get(&(session.clone().clone(), id.clone()))
-                else {
-                    return Err(Error::UnknownStoreOutcome);
-                };
-                let event = state
-                    .events
-                    .get(receipt.event_cursor)
-                    .ok_or(Error::UnknownStoreOutcome)?;
-                bounded(receipt, 8192)?;
-                bounded(event, 65536)?;
-                Native::Suspended(receipt, event)
-            }
-            ExpiredRunOrigin::KeyedInitial(ref admission_key) => {
-                use crate::admission_journal::{Kind, Source};
-                if !state.admission_execution_protocols.contains(&run.clone()) {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-                let get = |kind| {
-                    state
-                        .admission_execution_sources
-                        .get(&(run.clone().clone(), kind))
-                        .ok_or(Error::UnknownStoreOutcome)
-                };
-                let initial_source = get(Kind::Init)?;
-                let begin_source = get(Kind::Begin)?;
-                bounded(initial_source, 8192)?;
-                bounded(begin_source, 8192)?;
-                let (Source::Init(init), Source::Begin(begin)) = (initial_source, begin_source)
-                else {
-                    return Err(Error::UnknownStoreOutcome);
-                };
-                let receipt = state
-                    .receipts
-                    .get(&(session.clone().clone(), admission_key.clone()))
-                    .ok_or(Error::UnknownStoreOutcome)?;
-                let initial = state
-                    .native_run_issuances
-                    .get(&key(1))
-                    .ok_or(Error::UnknownStoreOutcome)?;
-                let activated_issuer = state
-                    .native_run_issuances
-                    .get(&key(begin.issuance.sequence))
-                    .ok_or(Error::UnknownStoreOutcome)?;
-                bounded(receipt, 8192)?;
-                bounded(initial, 2048)?;
-                bounded(activated_issuer, 2048)?;
-                Native::Initial {
-                    init,
-                    begin,
-                    receipt,
-                    initial,
-                    begun: activated_issuer,
-                }
-            }
-        };
-        history::verify(previous, next, &audits, native)
+        original_native(state, session, run, previous, next, &audits)
     }
+}
+
+fn original_native(
+    state: &State,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    previous: &crate::native_parent::RunIssuance,
+    next: &crate::native_parent::RunIssuance,
+    audits: &[crate::session_owner::audit::Audit],
+) -> Result<Option<crate::session_owner::preparation::ExpiredRunReceipt>, Error> {
+    let key = |seq| (session.clone(), run.clone(), seq);
+    let target = history::target(audits)?;
+    let unkeyed;
+    let native = match target.origin {
+        ExpiredRunOrigin::UnkeyedAdmission(_) => {
+            unkeyed = crate::memory::expired::unkeyed::read(state, session, run)?
+                .ok_or(Error::UnknownStoreOutcome)?;
+            Native::Unkeyed(&unkeyed)
+        }
+
+        ExpiredRunOrigin::Suspended(ref id) => {
+            let Some(OperationReceipt::Attempt(receipt)) = state
+                .operation_receipts
+                .get(&(session.clone().clone(), id.clone()))
+            else {
+                return Err(Error::UnknownStoreOutcome);
+            };
+            let event = state
+                .events
+                .get(receipt.event_cursor)
+                .ok_or(Error::UnknownStoreOutcome)?;
+            bounded(receipt, 8192)?;
+            bounded(event, 65536)?;
+            Native::Suspended(receipt, event)
+        }
+        ExpiredRunOrigin::KeyedInitial(ref admission_key) => {
+            use crate::admission_journal::{Kind, Source};
+            if !state.admission_execution_protocols.contains(&run.clone()) {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            let get = |kind| {
+                state
+                    .admission_execution_sources
+                    .get(&(run.clone().clone(), kind))
+                    .ok_or(Error::UnknownStoreOutcome)
+            };
+            let initial_source = get(Kind::Init)?;
+            let begin_source = get(Kind::Begin)?;
+            bounded(initial_source, 8192)?;
+            bounded(begin_source, 8192)?;
+            let (Source::Init(init), Source::Begin(begin)) = (initial_source, begin_source) else {
+                return Err(Error::UnknownStoreOutcome);
+            };
+            let receipt = state
+                .receipts
+                .get(&(session.clone().clone(), admission_key.clone()))
+                .ok_or(Error::UnknownStoreOutcome)?;
+            let initial = state
+                .native_run_issuances
+                .get(&key(1))
+                .ok_or(Error::UnknownStoreOutcome)?;
+            let activated_issuer = state
+                .native_run_issuances
+                .get(&key(begin.issuance.sequence))
+                .ok_or(Error::UnknownStoreOutcome)?;
+            bounded(receipt, 8192)?;
+            bounded(initial, 2048)?;
+            bounded(activated_issuer, 2048)?;
+            Native::Initial {
+                init,
+                begin,
+                receipt,
+                initial,
+                begun: activated_issuer,
+            }
+        }
+    };
+    history::verify(previous, next, audits, native)
 }
 fn bounded(value: &impl serde::Serialize, cap: usize) -> Result<(), Error> {
     crate::snapshot::encoded_bytes(value, cap)

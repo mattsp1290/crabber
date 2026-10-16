@@ -1,4 +1,10 @@
 //! Actual source reads, retained task joins and atomic native claims.
+#[path = "expired/owned.rs"]
+mod owned;
+#[path = "expired/owned_admission.rs"]
+mod owned_admission;
+#[path = "expired/unkeyed.rs"]
+pub(crate) mod unkeyed;
 use super::checkpoint::pause_admitted;
 use super::{Clock, ManualClock, Store};
 use crate::session_owner::{
@@ -14,7 +20,8 @@ use crate::session_owner::{
 use crabber_core::{ControlId, InputEnvelope, RunFence, SessionId, SessionRevision};
 
 pub(super) async fn expired_inspection(store: &impl Store, clock: &ManualClock) {
-    running(store, clock).await;
+    Box::pin(running(store, clock)).await;
+    Box::pin(unkeyed::run(store, clock)).await;
     let (source, binding) = paused(store, clock).await;
     let before = store
         .session_revision(&source.request().session_id)
@@ -57,7 +64,7 @@ pub(super) async fn expired_inspection(store: &impl Store, clock: &ManualClock) 
         )
         .is_err()
     );
-    atomic(store, source, binding).await;
+    Box::pin(atomic(store, source, binding)).await;
 }
 fn bound(session: &SessionId, now: time::OffsetDateTime) -> crate::BoundKeyedAdmitRequest {
     crate::typed_admission_contract::prepare(
@@ -97,7 +104,7 @@ async fn running(store: &impl Store, clock: &ManualClock) {
         .inspect_expired_run_preparation(request)
         .await
         .unwrap();
-    atomic(store, source, binding).await;
+    Box::pin(atomic(store, source, binding)).await;
 }
 async fn paused(
     store: &impl Store,
@@ -164,6 +171,12 @@ fn reservation(
         .behavior_fingerprint
         .clone_from(&binding.behavior_fingerprint);
     owner.lease_ms = 30_000;
+    let resource_contract =
+        crate::session_owner::preparation::resource_contract(&binding.runtime_semantics).unwrap();
+    if resource_contract.is_some() {
+        owner.binding.component_id =
+            crate::session_owner::preparation::OWNED_PREPARATION_COMPONENT.into();
+    }
     let key = PreparationKey::ExpiredRun {
         run_id: source.request().expected_fence.run_id.clone(),
         issuance: source.expected_issuance(),
@@ -171,7 +184,7 @@ fn reservation(
     ReservePreparation {
         owner,
         key: key.clone(),
-        resource_contract: None,
+        resource_contract,
         source: Some(PreparationSource::ExpiredRun(source.clone())),
         expected_revision: source.expected_revision(),
         purpose: PreparationPurpose::ExistingRun {
@@ -252,11 +265,20 @@ async fn prepare(
         )
         .await
         .unwrap();
+    let owned = reservation.resource_contract.is_some();
     let grant = PreparationGrant::from_fresh_begin(reservation, authority).unwrap();
     let prepared = PreparedExpiredRunResume {
         source: source.clone(),
         binding: Box::new(binding),
     };
+    if owned {
+        return Box::pin(owned::observe(
+            store,
+            grant,
+            PreparedOperation::ExpiredRunResume(Box::new(prepared)),
+        ))
+        .await;
+    }
     JoinedPreparation::observe(
         grant,
         tokio::spawn(async move {
@@ -275,7 +297,7 @@ async fn atomic(
 ) {
     let joined = prepare(store, &source, binding).await;
     assert!(lookup(store, &source).await.is_none());
-    let (left, right) = tokio::join!(
+    let (left, right) = futures::join!(
         Box::pin(store.complete_preparation(joined.clone())),
         Box::pin(store.complete_preparation(joined.clone())),
     );

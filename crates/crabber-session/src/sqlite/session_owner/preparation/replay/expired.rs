@@ -93,6 +93,13 @@ impl crate::sqlite::SqliteStore {
         let target = history::target(audits)?;
         let verify = |native| history::verify(previous, next, audits, native);
         let receipt = match &target.origin {
+            ExpiredRunOrigin::UnkeyedAdmission(_) => {
+                let original = crate::sqlite::expired::unkeyed::read(tx, session, run)
+                    .await?
+                    .ok_or(Error::UnknownStoreOutcome)?;
+                verify(Native::Unkeyed(&original))?
+            }
+
             ExpiredRunOrigin::Suspended(id) => {
                 let original = crate::sqlite::attempt::records::receipt(tx, session, id)
                     .await

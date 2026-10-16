@@ -3,6 +3,7 @@ use super::{Error, ExpiredRunOrigin};
 use crate::native_parent::RunIssuance;
 use crabber_core::{EventRecord, RunStatus};
 pub(crate) enum Native<'a> {
+    Unkeyed(&'a super::unkeyed::Original),
     Suspended(&'a crate::AttemptReceipt, &'a EventRecord),
     Initial {
         init: &'a crate::admission_journal::Init,
@@ -20,6 +21,17 @@ pub(super) fn verify_native(
     native: Native<'_>,
 ) -> Result<(), Error> {
     let digest = match (&target.origin, native) {
+        (ExpiredRunOrigin::UnkeyedAdmission(id), Native::Unkeyed(original)) => {
+            if status != RunStatus::Running
+                || original.witness.session_id() != session
+                || original.witness.run_id() != run
+                || original.witness.join_id()? != *id
+            {
+                return Err(Error::SemanticConflict);
+            }
+            original.digest()?
+        }
+
         (ExpiredRunOrigin::Suspended(id), Native::Suspended(receipt, event)) => {
             if crate::snapshot::encoded_bytes(event, 65536).is_none()
                 || crate::snapshot::encoded_bytes(receipt, 8192).is_none()

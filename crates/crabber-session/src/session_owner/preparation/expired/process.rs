@@ -8,7 +8,11 @@ use std::{
 };
 type Key = (SessionId, RunId, u64, SessionOwnerId);
 pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
-    let pending = crate::run_control_contract::expired::pending(store, clock).await;
+    let pending = if std::env::var_os("CRABBER_EXPIRED_UNKEYED").is_some() {
+        crate::run_control_contract::expired::unkeyed::pending(store, clock).await
+    } else {
+        crate::run_control_contract::expired::pending(store, clock).await
+    };
     let source = &pending.source;
     let key = (
         source.request().session_id.clone(),
@@ -33,6 +37,12 @@ pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
     panic!("controller failed to stop at commit boundary");
 }
 pub(crate) fn kill(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+    kill_kind(test, stage, path, dir, false)
+}
+pub(crate) fn kill_unkeyed(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+    kill_kind(test, stage, path, dir, true)
+}
+fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, unkeyed: bool) -> Key {
     let marker = dir.join(format!("{stage}.marker"));
     let key = dir.join(format!("{stage}.key"));
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -44,6 +54,9 @@ pub(crate) fn kill(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> 
         .env("CRABBER_EXPIRED_KEY", &key)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    if unkeyed {
+        command.env("CRABBER_EXPIRED_UNKEYED", "1");
+    }
     if let Some(path) = path {
         command.env("CRABBER_EXPIRED_DATABASE", path);
     }

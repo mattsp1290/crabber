@@ -36,6 +36,7 @@ impl InspectExpiredRunPreparation {
 pub enum ExpiredRunOrigin {
     Suspended(crabber_core::ControlId),
     KeyedInitial(crabber_core::AdmissionKey),
+    UnkeyedAdmission(crabber_core::SessionOwnerOperationId),
 }
 /// Bounded original source metadata retained in the private preparation audit.
 /// No native token or dispatch capability is stored here.
@@ -65,6 +66,9 @@ impl ExpiredRunTarget {
         crate::session_owner::identifier(&self.owner, 512, false)?;
         match &self.origin {
             ExpiredRunOrigin::Suspended(id) => crate::session_owner::identifier(&id.0, 128, false)?,
+            ExpiredRunOrigin::UnkeyedAdmission(id) => {
+                crate::session_owner::identifier(&id.0, 128, false)?;
+            }
             ExpiredRunOrigin::KeyedInitial(key) => {
                 crate::session_owner::identifier(key.as_str(), 512, false)?;
             }
@@ -140,7 +144,9 @@ impl ExpiredRunPreparation {
         }
         let status = match self.target.origin {
             ExpiredRunOrigin::Suspended(_) => crabber_core::RunStatus::Paused,
-            ExpiredRunOrigin::KeyedInitial(_) => crabber_core::RunStatus::Running,
+            ExpiredRunOrigin::KeyedInitial(_) | ExpiredRunOrigin::UnkeyedAdmission(_) => {
+                crabber_core::RunStatus::Running
+            }
         };
         let original = crate::native_parent::RunState::new(
             &self.request.session_id,
@@ -235,3 +241,5 @@ pub(crate) use native::{claimed, completion_source, replacement};
 #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 #[path = "expired/process.rs"]
 pub(crate) mod process;
+
+pub(crate) mod unkeyed;

@@ -1,4 +1,6 @@
 //! Pure expired-run eligibility and original-source authentication.
+#[path = "expired/unkeyed.rs"]
+pub(super) mod unkeyed;
 use super::SqliteStore;
 use crate::session_owner::{
     SessionOwnerError as Error,
@@ -142,6 +144,13 @@ async fn initial(
     ),
     Error,
 > {
+    if let Some(original) = unkeyed::read(tx, &run.session_id, &run.id).await? {
+        super::attempt::pristine_for_expired(tx, run)
+            .await
+            .map_err(|_| Error::Unsupported)?;
+        original.verify_binding(&binding.capsule)?;
+        return Ok((original.digest()?, original.origin()?));
+    }
     let record = super::admission_execution::load_record(tx, &run.id)
         .await
         .map_err(unknown)?

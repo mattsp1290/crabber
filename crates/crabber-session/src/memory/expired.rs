@@ -1,4 +1,6 @@
 //! Pure generic-expiry inspection under the actual Store lock.
+#[path = "expired/unkeyed.rs"]
+pub(super) mod unkeyed;
 use super::{MemoryStore, State};
 use crate::session_owner::{
     SessionOwnerError as Error,
@@ -50,9 +52,20 @@ pub(super) fn context(
     let issuer = super::native_parent::latest_run(state, run)
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
-    let native = match run.status {
-        RunStatus::Paused => suspended(state, run)?,
-        RunStatus::Running => initial(state, run, &binding)?,
+    let (native, origin) = match run.status {
+        RunStatus::Paused => (
+            suspended(state, run)?,
+            crate::session_owner::preparation::ExpiredRunOrigin::Suspended(
+                state
+                    .suspension_proofs
+                    .get(&run.id)
+                    .ok_or(Error::UnknownStoreOutcome)?
+                    .receipt
+                    .operation_id
+                    .clone(),
+            ),
+        ),
+        RunStatus::Running => initial_source(state, run, &binding)?,
         _ => return Err(Error::InvalidTransition),
     };
     let crate::session_owner::audit::RevisionState::Present(revision) =
@@ -66,29 +79,39 @@ pub(super) fn context(
         issuer_digest: crate::native_parent::issuance_digest(issuer).map_err(unknown)?,
         binding_digest: ExpiredRunPreparation::fingerprint_binding(&binding.capsule)?,
         native_source: native,
-        origin: match run.status {
-            RunStatus::Paused => crate::session_owner::preparation::ExpiredRunOrigin::Suspended(
-                state
-                    .suspension_proofs
-                    .get(&run.id)
-                    .ok_or(Error::UnknownStoreOutcome)?
-                    .receipt
-                    .operation_id
-                    .clone(),
-            ),
-            _ => crate::session_owner::preparation::ExpiredRunOrigin::KeyedInitial(
-                state
-                    .admission_executions
-                    .get(&run.id)
-                    .ok_or(Error::UnknownStoreOutcome)?
-                    .key
-                    .clone(),
-            ),
-        },
+        origin,
         owner: request.owner.clone(),
         lease: request.lease,
     };
     ExpiredRunPreparation::from_verified_source(request, revision, target)
+}
+fn initial_source(
+    state: &State,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
+) -> Result<
+    (
+        InputFingerprint,
+        crate::session_owner::preparation::ExpiredRunOrigin,
+    ),
+    Error,
+> {
+    if let Some(original) = unkeyed::read(state, &run.session_id, &run.id)? {
+        super::attempt::pristine_for_driver(state, run, binding).map_err(|_| Error::Unsupported)?;
+        original.verify_binding(&binding.capsule)?;
+        return Ok((original.digest()?, original.origin()?));
+    }
+    let digest = initial(state, run, binding)?;
+    let key = state
+        .admission_executions
+        .get(&run.id)
+        .ok_or(Error::Unsupported)?
+        .key
+        .clone();
+    Ok((
+        digest,
+        crate::session_owner::preparation::ExpiredRunOrigin::KeyedInitial(key),
+    ))
 }
 fn suspended(state: &State, run: &Run) -> Result<InputFingerprint, Error> {
     if state

@@ -334,7 +334,6 @@ impl SourceAudits<'_> {
     }
 }
 
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl<'a> SourceAudits<'a> {
     pub(crate) fn from_array(audits: &'a [Audit; 5]) -> Self {
         Self {
