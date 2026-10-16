@@ -184,6 +184,9 @@ async fn validate_phases(
                     .map_err(|_| Error::UnknownStoreOutcome)?
                     .ok_or(Error::UnknownStoreOutcome)?;
             attempt_control::validate_phase(run, call, &phase)?;
+            super::super::phase::terminal_history::validate(tx, run, &phase, call)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             found = true;
             after = Some(id);
         }

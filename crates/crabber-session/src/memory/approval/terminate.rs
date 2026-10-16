@@ -166,6 +166,8 @@ fn validate_native(
             super::terminal_history::validate(state, run, phase, call)?;
         } else {
             approval::validate_termination_phase(run, phase, call)?;
+            super::super::phase::terminal_history::validate(state, run, phase, call)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
         }
     }
     Ok(())

@@ -293,7 +293,14 @@ mod execution_binding_contract;
 mod memory;
 #[path = "../../crabber-session/src/phase/records.rs"]
 #[allow(dead_code)]
-mod phase;
+mod phase_records;
+#[path = "../../crabber-session/src/phase/terminal_history.rs"]
+#[allow(dead_code)]
+pub(crate) mod phase_terminal_history;
+mod phase {
+    pub(crate) use crate::phase_records::*;
+    pub(crate) use crate::phase_terminal_history as terminal_history;
+}
 #[path = "../../crabber-session/src/phase_contract.rs"]
 #[allow(dead_code)]
 mod phase_contract;
@@ -990,4 +997,19 @@ async fn memory_mixed_cancel_rejects_coherent_private_output_replacement() {
         store.test_terminal_history_corruption(&request);
     })
     .await;
+}
+
+#[tokio::test]
+async fn memory_waiting_cancel_rejects_coherent_ordinary_terminal_output_replacement() {
+    for approval in [true, false] {
+        let store = Arc::new(MemoryStore::new());
+        handoff_journey::cancel_completed_with_probe(
+            store.clone(),
+            approval,
+            |request| async move {
+                store.test_terminal_history_corruption(&request);
+            },
+        )
+        .await;
+    }
 }

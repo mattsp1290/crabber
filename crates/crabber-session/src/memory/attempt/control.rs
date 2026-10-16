@@ -175,6 +175,8 @@ fn retire_calls(
             }
             has_phase = true;
             attempt_control::validate_phase(run, call, phase)?;
+            super::super::phase::terminal_history::validate(state, run, phase, call)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
         }
         if is_pending {
             if has_phase || pending.len() == 64 {

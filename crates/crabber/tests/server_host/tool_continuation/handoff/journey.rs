@@ -304,6 +304,19 @@ fn worker(
     starts: Arc<AtomicUsize>,
     resumes: Arc<AtomicUsize>,
 ) -> Agent {
+    worker_with_tool(
+        store,
+        provider,
+        Arc::new(OncePaused { starts, resumes }),
+        PermissionDecision::Ask,
+    )
+}
+fn worker_with_tool(
+    store: Arc<dyn Store>,
+    provider: FakeProvider,
+    tool: Arc<dyn ResumableTool>,
+    permission: PermissionDecision,
+) -> Agent {
     Agent::builder()
         .behavior_version("mixed-handoff.v1")
         .store(store)
@@ -321,11 +334,11 @@ fn worker(
                     retry_safe: false,
                     required_permissions: vec![],
                 },
-                Arc::new(OncePaused { starts, resumes }),
+                tool,
             )
             .unwrap(),
         ))
-        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
+        .policy(Arc::new(StaticPolicy::new(permission)))
         .build()
         .unwrap()
 }
@@ -551,3 +564,7 @@ fn waiting_cancel(
         },
     }
 }
+
+#[path = "journey/terminal.rs"]
+mod terminal;
+pub(crate) use terminal::cancel_completed_with_probe;

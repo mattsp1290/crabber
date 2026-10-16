@@ -289,3 +289,5 @@ pub enum PhaseMutationOutcome {
     },
     Replayed(PhaseReceipt),
 }
+
+pub(crate) mod terminal_history;

@@ -42,6 +42,9 @@ pub(super) async fn validate(
                 super::super::terminal_history::validate(tx, run, &phase, &call).await?;
             } else {
                 crate::approval::validate_termination_phase(run, &phase, &call)?;
+                super::super::super::phase::terminal_history::validate(tx, run, &phase, &call)
+                    .await
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
             }
         }
         let Some(after) = page.next_after else {

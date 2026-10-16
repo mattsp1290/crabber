@@ -93,7 +93,7 @@ pub(super) fn validate_excluding(
                 return Err(Error::UnknownStoreOutcome);
             }
         } else {
-            crate::attempt_control::validate_phase(run, call, phase)
+            super::super::phase::terminal_history::validate(state, run, phase, call)
                 .map_err(|_| Error::UnknownStoreOutcome)?;
         }
     }

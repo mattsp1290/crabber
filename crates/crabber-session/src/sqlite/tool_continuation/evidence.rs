@@ -209,7 +209,9 @@ async fn phases(
                         return Err(Error::UnknownStoreOutcome);
                     }
                 } else {
-                    crate::attempt_control::validate_phase(run, &call, &native).map_err(unknown)?;
+                    super::super::phase::terminal_history::validate(tx, run, &native, &call)
+                        .await
+                        .map_err(unknown)?;
                 }
             }
             after = Some(id);

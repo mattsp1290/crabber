@@ -368,3 +368,6 @@ pub(super) async fn save_host_call(
         .await
         .map_err(sql::unknown)
 }
+
+#[path = "phase/terminal_history.rs"]
+pub(super) mod terminal_history;

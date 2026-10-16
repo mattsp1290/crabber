@@ -103,7 +103,8 @@ fn verify(state: &State, run: &Run) -> Result<Vec<crabber_core::ToolCallId>, Err
             .calls
             .get(&phase.snapshot.target.call_id)
             .ok_or(Error::UnknownStoreOutcome)?;
-        crate::attempt_control::validate_phase(run, call, phase).map_err(|_| Error::Busy)?;
+        super::super::phase::terminal_history::validate(state, run, phase, call)
+            .map_err(|_| Error::Busy)?;
         let parent = state
             .attempts
             .get(&phase.snapshot.target.attempt.id)

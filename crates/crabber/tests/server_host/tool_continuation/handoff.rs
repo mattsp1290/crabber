@@ -371,3 +371,51 @@ async fn sqlite_terminal_corruption(
     assert_eq!(receipt.unwrap(), None);
     assert_eq!(after, revision);
 }
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_ordinary_terminal_output_has_immutable_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ordinary-terminal.db");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    let store = Arc::new(crabber::session::SqliteStore::connect(&path).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    for approval in [true, false] {
+        let probe_store = store.clone();
+        let pool = &pool;
+        fixture::cancel_completed_with_probe(store.clone(), approval, |request| async move {
+            sqlite_terminal_corruption(probe_store.as_ref(), pool, request).await;
+        })
+        .await;
+    }
+}
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_ordinary_terminal_output_has_immutable_provenance() {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert_ne!(
+            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
+            Ok("1")
+        );
+        return;
+    };
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    let store = Arc::new(
+        crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap(),
+    );
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    for approval in [true, false] {
+        let probe_store = store.clone();
+        let pool = &pool;
+        fixture::cancel_completed_with_probe(store.clone(), approval, |request| async move {
+            postgres_terminal_corruption(probe_store.as_ref(), pool, request).await;
+        })
+        .await;
+    }
+}

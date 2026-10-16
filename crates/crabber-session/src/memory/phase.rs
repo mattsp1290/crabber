@@ -432,3 +432,6 @@ fn prepare_record(
 #[cfg(test)]
 #[path = "phase_tests.rs"]
 mod tests;
+
+#[path = "phase/terminal_history.rs"]
+pub(super) mod terminal_history;

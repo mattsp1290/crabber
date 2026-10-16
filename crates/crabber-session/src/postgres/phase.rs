@@ -350,3 +350,6 @@ mod process_tests;
 
 #[cfg(test)]
 mod resolution_tests;
+
+#[path = "phase/terminal_history.rs"]
+pub(super) mod terminal_history;
