@@ -1,8 +1,8 @@
 use super::{
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState, Error, MemoryStore,
-    PhaseQuiescence, PhaseState, State, ToolContinuationClaimOutcome, ToolContinuationGrant,
-    ToolContinuationOutcome, ToolContinuationRecord, ToolContinuationState, after, before, domain,
-    fault, publish, receipt, replay, revision,
+    PhaseQuiescence, PhaseState, State, ToolContinuationClaimOutcome, ToolContinuationOutcome,
+    ToolContinuationRecord, ToolContinuationState, after, before, domain, fault, publish, receipt,
+    replay, revision,
 };
 use crate::ToolContinuationRecovery;
 use crabber_core::{Run, RunFence, RunStatus, ToolCallStatus};
@@ -11,7 +11,31 @@ impl MemoryStore {
         &self,
         request: &ToolContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let digest = request.fingerprint()?;
+        self.recover_compound(request, None)
+    }
+    pub(in super::super) fn recover_frontend(
+        &self,
+        request: &crate::FrontendContinuationRecovery,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let common = ToolContinuationRecovery {
+            id: request.id.clone(),
+            expected_revision: request.expected_revision,
+            original: request.original.claim.clone(),
+            attempt: request.attempt.clone(),
+            owner: request.owner.clone(),
+            lease_ms: request.lease_ms,
+        };
+        self.recover_compound(&common, Some(request))
+    }
+    fn recover_compound(
+        &self,
+        request: &ToolContinuationRecovery,
+        frontend: Option<&crate::FrontendContinuationRecovery>,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let digest = match frontend {
+            Some(request) => request.fingerprint()?,
+            None => request.fingerprint()?,
+        };
         let fault = fault(self);
         let result = self.transact(|state| {
             let original = &request.original;
@@ -22,7 +46,10 @@ impl MemoryStore {
                 &request.id,
                 &digest,
             )? {
-                request.verify_receipt(&saved)?;
+                match frontend {
+                    Some(request) => request.verify_receipt(&saved)?,
+                    None => request.verify_receipt(&saved)?,
+                }
                 return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
             }
             let run = state
@@ -34,7 +61,7 @@ impl MemoryStore {
             if revision(state, &run.session_id) != request.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let mut record = eligible(state, &run, request)?;
+            let mut record = eligible(state, &run, request, frontend)?;
             let now = self.clock.now();
             let activated =
                 domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
@@ -63,7 +90,11 @@ impl MemoryStore {
                 .map_err(|_| Error::CleanupBlocked)?;
             let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
             let phases = super::phases::reclaim(state, &parent, &record)?;
-            let calls = record.grants()?;
+            let frontend_phases = if frontend.is_some() {
+                super::phases::reclaim_frontend(state, &parent, &record)?
+            } else {
+                Vec::new()
+            };
             let fence = RunFence {
                 run_id: run.id.clone(),
                 claim_token: activated.claim_token.clone(),
@@ -74,7 +105,8 @@ impl MemoryStore {
             state
                 .attempts
                 .insert(request.attempt.id.clone(), parent.clone());
-            record.recovery = Some(request.clone());
+            record.capture_recovery(request, frontend)?;
+            record.validate()?;
             state
                 .tool_continuations
                 .insert(record.batch.continuation.id.clone(), record.clone());
@@ -83,26 +115,14 @@ impl MemoryStore {
                 &run,
                 request.id.clone(),
                 digest,
-                ToolContinuationOutcome::ReclaimedUnstarted {
-                    continuation: original.continuation.clone(),
-                    original_claim_id: original.id.clone(),
-                    attempt: parent.snapshot,
-                },
+                record.recovered_outcome(parent.snapshot)?,
                 now,
             )?;
             before(fault)?;
             Ok((
                 ToolContinuationClaimOutcome::Applied {
                     receipt,
-                    grant: Box::new(ToolContinuationGrant {
-                        fence,
-                        authority,
-                        phases,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id,
-                        usage: record.batch.usage,
-                        turns_used: record.batch.turns_used,
-                    }),
+                    grant: record.into_grant(fence, authority, phases, frontend_phases)?,
                 },
                 true,
             ))
@@ -114,15 +134,47 @@ fn eligible(
     state: &State,
     run: &Run,
     request: &ToolContinuationRecovery,
+    frontend: Option<&crate::FrontendContinuationRecovery>,
 ) -> Result<ToolContinuationRecord, Error> {
     let original = receipt(state, &run.session_id, &request.original.id)?.ok_or(Error::NotFound)?;
-    if original.run_id != run.id
-        || original.semantic_digest != request.original.fingerprint()?
-        || !matches!(original.outcome,ToolContinuationOutcome::Claimed{ref continuation,ref attempt} if continuation==&request.original.continuation && attempt.target==request.attempt)
-    {
+    let expected_digest = match frontend {
+        Some(request) => request.original.fingerprint()?,
+        None => request.original.fingerprint()?,
+    };
+    let original_kind = match (&original.outcome, frontend) {
+        (
+            ToolContinuationOutcome::Claimed {
+                continuation,
+                attempt,
+            },
+            None,
+        )
+        | (
+            ToolContinuationOutcome::FrontendClaimed {
+                continuation,
+                attempt,
+            },
+            Some(_),
+        ) => continuation == &request.original.continuation && attempt.target == request.attempt,
+        _ => false,
+    };
+    if original.run_id != run.id || original.semantic_digest != expected_digest || !original_kind {
         return Err(Error::SemanticConflict);
     }
     let record = super::active(state, run)?.ok_or(Error::InvalidTransition)?;
+    match frontend {
+        Some(request) => {
+            request.original.validate_for_batch(&record.batch)?;
+            if record.frontend_claim.as_ref().is_none_or(|claim| {
+                claim.claim.id != request.original.claim.id
+                    || claim.fingerprint().ok() != request.original.fingerprint().ok()
+            }) {
+                return Err(Error::SemanticConflict);
+            }
+        }
+        None if !record.batch.frontend.is_empty() => return Err(Error::InvalidTransition),
+        None => (),
+    }
     if record.run_id != run.id
         || record.state != ToolContinuationState::Claimed
         || record.batch.continuation != request.original.continuation
@@ -154,6 +206,14 @@ fn eligible(
     {
         return Err(Error::CleanupBlocked);
     }
+    validate_reserved(state, run, &record)?;
+    Ok(record)
+}
+fn validate_reserved(
+    state: &State,
+    run: &Run,
+    record: &ToolContinuationRecord,
+) -> Result<(), Error> {
     for call in &record.batch.calls {
         let stored = state
             .calls
@@ -198,6 +258,23 @@ fn eligible(
             return Err(Error::CleanupBlocked);
         }
     }
+    for frozen in &record.batch.frontend {
+        let phase = state
+            .phases
+            .get(&frozen.target.id)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        phase.validate().map_err(|_| Error::UnknownStoreOutcome)?;
+        if phase.snapshot.target != frozen.target
+            || phase.snapshot.call_binding != frozen.call_binding
+            || phase.snapshot.session_id != run.session_id
+            || phase.snapshot.run_id != run.id
+            || phase.snapshot.state != PhaseState::Claimed
+            || phase.snapshot.quiescence != PhaseQuiescence::Pending
+            || phase.output.is_some()
+        {
+            return Err(Error::CleanupBlocked);
+        }
+    }
     super::evidence::validate_excluding(
         state,
         run,
@@ -206,7 +283,8 @@ fn eligible(
             .phases
             .iter()
             .map(|phase| phase.next.clone())
+            .chain(record.batch.frontend.iter().map(|call| call.target.clone()))
             .collect::<Vec<_>>(),
     )?;
-    Ok(record)
+    Ok(())
 }

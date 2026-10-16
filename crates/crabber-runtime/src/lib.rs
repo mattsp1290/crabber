@@ -19,12 +19,12 @@ pub use observation::{
 mod policy;
 
 pub use orchestrator::{
-    Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, ContinueTool,
-    DirectModelStream, ExecutionMode, INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT,
-    ModelStream, NoopObserver, Observer, Orchestrator, OrchestratorBuilder, QueueControl,
-    RecoverApproval, RecoverReport, RecoverTool, RecoverySkipReason, Request, RunControl,
-    RunHandle, RunResult, RuntimeError, SkippedRun, TOOL_PIPELINE_HANDLER_ID, ToolContinuation,
-    TurnSnapshot,
+    Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, ContinueFrontend,
+    ContinueTool, DirectModelStream, ExecutionMode, INTERRUPT_SETTLEMENT_BOUND,
+    INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer, Orchestrator,
+    OrchestratorBuilder, QueueControl, RecoverApproval, RecoverFrontend, RecoverReport,
+    RecoverTool, RecoverySkipReason, Request, RunControl, RunHandle, RunResult, RuntimeError,
+    SkippedRun, TOOL_PIPELINE_HANDLER_ID, ToolContinuation, TurnSnapshot,
 };
 pub use policy::{
     IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, PermissionRule,

@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 13;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 14;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 9;
+pub const SQLITE_SCHEMA_VERSION: i64 = 10;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -19,6 +19,10 @@ pub use execution_binding::{
     BoundAdmitRequest, BoundKeyedAdmitRequest, ExecutionBindingCapsule, HOST_BEHAVIOR_COMPONENT,
     PROVIDER_BINDING_COMPONENT, RetainedExecutionBinding,
 };
+mod frontend_continuation;
+#[cfg(test)]
+mod frontend_contract;
+pub use frontend_continuation::*;
 mod tool_continuation;
 pub mod tool_continuation_contract;
 pub use tool_continuation::*;
@@ -233,3 +237,14 @@ pub use admission_selection::{
 };
 
 mod continuation_origin;
+#[cfg(test)]
+#[tokio::test]
+async fn memory_frontend_contract() {
+    frontend_contract::run_contract(|clock| crate::MemoryStore::with_clock(clock)).await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn memory_frontend_near_limit_recovery() {
+    frontend_contract::large::run(|clock| crate::MemoryStore::with_clock(clock)).await;
+}

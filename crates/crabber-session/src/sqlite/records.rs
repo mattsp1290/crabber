@@ -176,6 +176,13 @@ pub(super) async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::ToolCallPending
+        && event.payload.get("frontend_origin").is_some()
+    {
+        return Err(StoreError::Validation(
+            "frontend origin requires atomic staging".into(),
+        ));
+    }
     if matches!(
         event.kind,
         crabber_core::EventKind::RunControlChanged

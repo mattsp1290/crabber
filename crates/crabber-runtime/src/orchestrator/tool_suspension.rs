@@ -21,6 +21,26 @@ pub(super) struct PendingSuspension {
     identity: ResumableToolIdentity,
     proposal: ToolSuspension,
 }
+impl PendingSuspension {
+    fn freeze(&self, next: PhaseTarget) -> FrozenToolPhase {
+        FrozenToolPhase {
+            previous: self.owner.target.clone(),
+            next,
+            call_binding: self.owner.call_binding.clone(),
+            identity: self.identity.clone(),
+            checkpoint: self.proposal.checkpoint().clone(),
+            interactions: self
+                .proposal
+                .interactions()
+                .iter()
+                .map(|description| RequiredToolInteraction {
+                    id: InteractionId::new(),
+                    description: description.clone(),
+                })
+                .collect(),
+        }
+    }
+}
 impl Orchestrator {
     pub(super) fn has_tool_suspension(&self) -> bool {
         !self

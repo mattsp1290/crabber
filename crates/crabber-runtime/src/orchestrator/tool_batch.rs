@@ -121,7 +121,18 @@ impl Orchestrator {
             }
         }
         .await;
-        if self.has_tool_suspension() {
+        let frontend_declarations = super::frontend::declarations(scope.plan)?;
+        let frontend_pending = self
+            .store
+            .list_unfinished_tool_calls(scope.run)
+            .await?
+            .iter()
+            .any(|call| {
+                frontend_declarations
+                    .iter()
+                    .any(|tool| tool.name == call.name)
+            });
+        if self.has_tool_suspension() || frontend_pending {
             if result.is_err() {
                 return Err(self.fail_tool_suspensions(&scope).await);
             }

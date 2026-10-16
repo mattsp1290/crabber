@@ -66,6 +66,24 @@ impl Store for SqliteStore {
     fn supports_tool_continuations(&self) -> bool {
         true
     }
+    fn supports_frontend_tools(&self) -> bool {
+        crate::SQLITE_SCHEMA_VERSION >= 10
+    }
+    async fn frontend_call_origin(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        call: &crabber_core::ToolCallId,
+    ) -> Result<Option<crate::FrontendCallOrigin>, crate::ToolContinuationError> {
+        self.read_frontend_origin(session, run, call).await
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::FrontendStagingReceipt>, crate::ToolContinuationError> {
+        self.frontend_staging_receipt(session, id).await
+    }
     async fn tool_continuation_snapshot(
         &self,
         session: &SessionId,
@@ -100,11 +118,23 @@ impl Store for SqliteStore {
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.claim_tools(request).await
     }
+    async fn claim_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_frontend_tools(request).await
+    }
     async fn recover_tool_continuation(
         &self,
         request: crate::ToolContinuationRecovery,
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.recover_tools(request).await
+    }
+    async fn recover_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_frontend_tools(request).await
     }
 
     async fn settle_waiting_cancellation(

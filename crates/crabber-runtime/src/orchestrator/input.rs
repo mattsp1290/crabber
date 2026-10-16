@@ -40,9 +40,7 @@ impl Orchestrator {
             };
             InputEnvelope::text(request.text.clone(), revision)?
         };
-        // Waiting frontend calls and continuation authority are installed with
-        // the durable interaction driver; never silently treat them as ordinary.
-        if !input.frontend_tools().is_empty()
+        if (!input.frontend_tools().is_empty() && !self.store.supports_frontend_tools())
             || !matches!(input.admission_kind(), AdmissionKind::Ordinary)
         {
             return Err(StoreError::HostUnsupported.into());

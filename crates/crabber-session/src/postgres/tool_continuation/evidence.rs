@@ -44,18 +44,29 @@ pub(super) async fn suspend(
                 if call.result.is_some() {
                     return Err(Error::InvalidTransition);
                 }
-                match (
-                    batch.phases.iter().find(|p| p.previous.call_id == call.id),
-                    latest,
-                ) {
-                    (Some(frozen), Some(native))
-                        if native.target == frozen.previous
-                            && call.status == ToolCallStatus::Running => {}
-                    (None, None)
-                        if call.status == ToolCallStatus::Pending
-                            && prepared.target.generation
-                                == crabber_core::PhaseGeneration::INITIAL => {}
-                    _ => return Err(Error::CleanupBlocked),
+                if !super::super::frontend::pending_call(
+                    tx,
+                    run,
+                    &call,
+                    batch,
+                    latest.as_ref(),
+                    false,
+                )
+                .await?
+                {
+                    match (
+                        batch.phases.iter().find(|p| p.previous.call_id == call.id),
+                        latest,
+                    ) {
+                        (Some(frozen), Some(native))
+                            if native.target == frozen.previous
+                                && call.status == ToolCallStatus::Running => {}
+                        (None, None)
+                            if call.status == ToolCallStatus::Pending
+                                && prepared.target.generation
+                                    == crabber_core::PhaseGeneration::INITIAL => {}
+                        _ => return Err(Error::CleanupBlocked),
+                    }
                 }
             } else {
                 crate::attempt_control::validate_logical(&call).map_err(unknown)?;
@@ -108,21 +119,32 @@ pub(super) async fn ready(
                 if call.result.is_some() {
                     return Err(Error::SemanticConflict);
                 }
-                match (
-                    record
-                        .batch
-                        .phases
-                        .iter()
-                        .find(|p| p.previous.call_id == call.id),
-                    latest,
-                ) {
-                    (Some(frozen), Some(native))
-                        if native.target == frozen.previous
-                            && call.status == ToolCallStatus::Waiting
-                            && native.state == PhaseState::Suspended
-                            && native.quiescence == PhaseQuiescence::Complete => {}
-                    (None, None) if call.status == ToolCallStatus::Pending => (),
-                    _ => return Err(Error::CleanupBlocked),
+                if !super::super::frontend::pending_call(
+                    tx,
+                    run,
+                    &call,
+                    &record.batch,
+                    latest.as_ref(),
+                    true,
+                )
+                .await?
+                {
+                    match (
+                        record
+                            .batch
+                            .phases
+                            .iter()
+                            .find(|p| p.previous.call_id == call.id),
+                        latest,
+                    ) {
+                        (Some(frozen), Some(native))
+                            if native.target == frozen.previous
+                                && call.status == ToolCallStatus::Waiting
+                                && native.state == PhaseState::Suspended
+                                && native.quiescence == PhaseQuiescence::Complete => {}
+                        (None, None) if call.status == ToolCallStatus::Pending => (),
+                        _ => return Err(Error::CleanupBlocked),
+                    }
                 }
             } else {
                 crate::attempt_control::validate_logical(&call).map_err(unknown)?;
@@ -176,6 +198,11 @@ async fn phases(
                     .phases
                     .iter()
                     .any(|phase| phase.next == native.snapshot.target)
+                    || record
+                        .batch
+                        .frontend
+                        .iter()
+                        .any(|call| call.target == native.snapshot.target)
             });
             if !selected {
                 if native.snapshot.quiescence != PhaseQuiescence::Complete
@@ -260,21 +287,23 @@ pub(super) async fn recover(
                 let latest = super::super::phase::latest_host_phase(tx, &run.id, &call.id)
                     .await
                     .map_err(unknown)?;
-                match (
-                    record
-                        .batch
-                        .phases
-                        .iter()
-                        .find(|phase| phase.next.call_id == call.id),
-                    latest,
-                ) {
-                    (Some(frozen), Some(native))
-                        if native.target == frozen.next
-                            && native.call_binding == frozen.call_binding
-                            && native.state == PhaseState::Claimed
-                            && native.quiescence == PhaseQuiescence::Pending => {}
-                    (None, None) => (),
-                    _ => return Err(Error::CleanupBlocked),
+                if !super::super::frontend::recover_call(&call, record, latest.as_ref())? {
+                    match (
+                        record
+                            .batch
+                            .phases
+                            .iter()
+                            .find(|phase| phase.next.call_id == call.id),
+                        latest,
+                    ) {
+                        (Some(frozen), Some(native))
+                            if native.target == frozen.next
+                                && native.call_binding == frozen.call_binding
+                                && native.state == PhaseState::Claimed
+                                && native.quiescence == PhaseQuiescence::Pending => {}
+                        (None, None) => (),
+                        _ => return Err(Error::CleanupBlocked),
+                    }
                 }
             } else {
                 crate::attempt_control::validate_logical(&call).map_err(unknown)?;

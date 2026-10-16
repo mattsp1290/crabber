@@ -9,7 +9,7 @@ mod mixed;
 #[path = "tool_continuation/process.rs"]
 mod process;
 #[path = "tool_continuation/protection.rs"]
-mod protection;
+pub(super) mod protection;
 #[path = "tool_continuation/recovery.rs"]
 mod recovery;
 #[path = "tool_continuation/resources.rs"]

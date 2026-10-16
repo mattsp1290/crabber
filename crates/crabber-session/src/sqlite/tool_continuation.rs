@@ -42,7 +42,7 @@ async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Res
         }
     }
 }
-async fn revision(
+pub(super) async fn revision(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
 ) -> Result<SessionRevision, Error> {
@@ -96,7 +96,7 @@ impl SqliteStore {
         finish(tx, result).await
     }
 }
-fn fault(store: &SqliteStore) -> u8 {
+pub(super) fn fault(store: &SqliteStore) -> u8 {
     #[cfg(test)]
     {
         store
@@ -109,14 +109,14 @@ fn fault(store: &SqliteStore) -> u8 {
         0
     }
 }
-fn before(fault: u8) -> Result<(), Error> {
+pub(super) fn before(fault: u8) -> Result<(), Error> {
     if fault == 1 {
         Err(Error::UnknownStoreOutcome)
     } else {
         Ok(())
     }
 }
-fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
+pub(super) fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
     match result {
         Ok((_, true)) if fault == 2 => Err(Error::UnknownStoreOutcome),
         Ok((value, _)) => Ok(value),

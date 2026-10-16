@@ -1,20 +1,53 @@
 use super::{
     Error, SqliteStore, ToolContinuationClaim, ToolContinuationClaimOutcome,
-    ToolContinuationOutcome, ToolContinuationRecord, ToolContinuationState, after, before, domain,
-    evidence, fault, finish, revision, unknown, write,
+    ToolContinuationRecord, ToolContinuationState, after, before, domain, evidence, fault, finish,
+    revision, unknown, write,
 };
-use crate::{AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState, ToolContinuationGrant};
+use crate::{AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState};
 use crabber_core::{Run, RunFence, RunStatus};
 impl SqliteStore {
     pub(in super::super) async fn claim_tools(
         &self,
         claim: ToolContinuationClaim,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let digest = claim.fingerprint()?;
+        self.claim_compound(&claim, None).await
+    }
+    pub(in super::super) async fn claim_frontend_tools(
+        &self,
+        request: crate::FrontendContinuationClaim,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let digest = request.fingerprint()?;
+        if let Some(saved) = self
+            .tool_receipt(&request.claim.session_id, &request.claim.id)
+            .await?
+        {
+            if saved.run_id != request.claim.run_id || saved.semantic_digest != digest {
+                return Err(Error::SemanticConflict);
+            }
+            return Ok(ToolContinuationClaimOutcome::Replayed(saved));
+        }
+        if crate::SQLITE_SCHEMA_VERSION < 10 {
+            return Err(Error::Unsupported);
+        }
+        self.claim_compound(&request.claim, Some(&request)).await
+    }
+    async fn claim_compound(
+        &self,
+        claim: &ToolContinuationClaim,
+        frontend: Option<&crate::FrontendContinuationClaim>,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let digest = match frontend {
+            Some(request) => request.fingerprint()?,
+            None => claim.fingerprint()?,
+        };
         let fault = fault(self);
-        let (mut tx, run) = self
-            .tool_transaction(&claim.session_id, &claim.run_id)
-            .await?;
+        let (mut tx, run) = if frontend.is_some() {
+            self.frontend_transaction(&claim.session_id, &claim.run_id)
+                .await?
+        } else {
+            self.tool_transaction(&claim.session_id, &claim.run_id)
+                .await?
+        };
         let result = async {
             if let Some(saved) = write::replay(&mut tx, &run, &claim.id, &digest).await? {
                 return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
@@ -22,7 +55,7 @@ impl SqliteStore {
             if revision(&mut tx, &run.session_id).await? != claim.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let mut record = ready(&mut tx, &run, &claim).await?;
+            let mut record = ready(&mut tx, &run, claim, frontend).await?;
             let now = self.clock.now();
             let activated =
                 domain::canonical::activated_run(&run, &claim.owner, claim.lease_ms, now)?;
@@ -54,9 +87,18 @@ impl SqliteStore {
             let phases =
                 super::phases::claim(&mut tx, &run, &activated, &parent, &record, &authority)
                     .await?;
-            let calls = record.grants()?;
+            let frontend_phases = match frontend {
+                Some(request) => {
+                    super::phases::claim_frontend(
+                        &mut tx, &activated, &parent, &record, request, &authority,
+                    )
+                    .await?
+                }
+                None => Vec::new(),
+            };
             record.state = ToolContinuationState::Claimed;
             record.claim = Some(claim.clone());
+            record.frontend_claim = frontend.cloned().map(Box::new);
             for question in &mut record.questions {
                 question.view.consumed = true;
             }
@@ -66,10 +108,7 @@ impl SqliteStore {
                 &run,
                 claim.id.clone(),
                 digest,
-                ToolContinuationOutcome::Claimed {
-                    continuation: record.batch.continuation.clone(),
-                    attempt: parent.snapshot,
-                },
+                record.claimed_outcome(parent.snapshot),
                 now,
             )
             .await?;
@@ -77,18 +116,15 @@ impl SqliteStore {
             Ok((
                 ToolContinuationClaimOutcome::Applied {
                     receipt,
-                    grant: Box::new(ToolContinuationGrant {
-                        fence: RunFence {
+                    grant: record.into_grant(
+                        RunFence {
                             run_id: run.id.clone(),
                             claim_token: activated.claim_token,
                         },
                         authority,
                         phases,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id,
-                        usage: record.batch.usage,
-                        turns_used: record.batch.turns_used,
-                    }),
+                        frontend_phases,
+                    )?,
                 },
                 true,
             ))
@@ -101,10 +137,16 @@ async fn ready(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     claim: &ToolContinuationClaim,
+    frontend: Option<&crate::FrontendContinuationClaim>,
 ) -> Result<ToolContinuationRecord, Error> {
     let record = super::waiting_context(tx, run)
         .await?
         .ok_or(Error::InvalidTransition)?;
+    match frontend {
+        Some(request) => request.validate_for_batch(&record.batch)?,
+        None if !record.batch.frontend.is_empty() => return Err(Error::InvalidTransition),
+        None => (),
+    }
     if record.batch.continuation != claim.continuation {
         return Err(Error::GenerationConflict);
     }

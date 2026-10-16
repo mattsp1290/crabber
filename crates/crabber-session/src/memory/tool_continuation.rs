@@ -6,7 +6,7 @@ use crate::tool_continuation::{self as domain, ToolContinuationRecord};
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptMutation, AttemptMutationOutcome,
     AttemptState, PhaseQuiescence, PhaseState, ToolContinuationClaim, ToolContinuationClaimOutcome,
-    ToolContinuationError, ToolContinuationGrant, ToolContinuationOutcome, ToolContinuationReceipt,
+    ToolContinuationError, ToolContinuationOutcome, ToolContinuationReceipt,
     ToolContinuationSnapshot, ToolContinuationState, ToolContinuationSuspension,
     ToolInteractionAnswer, ToolPhaseResume, ToolSuspensionAuthority,
 };
@@ -159,6 +159,13 @@ pub(super) fn origin_record(
     if binding.capsule.request.workspace_id != record.workspace_id {
         return Err(Error::UnknownStoreOutcome);
     }
+    let run = state
+        .runs
+        .get(&record.run_id)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    for frontend in &record.batch.frontend {
+        super::frontend::verify_frozen(state, run, frontend)?;
+    }
 
     let original =
         receipt(state, &record.session_id, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
@@ -203,14 +210,16 @@ pub(super) fn origin_record(
     if let Some(claim) = &record.claim {
         let claimed =
             receipt(state, &record.session_id, &claim.id)?.ok_or(Error::UnknownStoreOutcome)?;
-        if claimed.run_id != record.run_id
-            || claimed.semantic_digest != claim.fingerprint()?
-            || !matches!(claimed.outcome,ToolContinuationOutcome::Claimed{ref continuation,ref attempt} if continuation==&record.batch.continuation && attempt.target==record.batch.next_attempt)
-        {
-            return Err(Error::UnknownStoreOutcome);
-        }
+        record.verify_claim_receipt(&claimed)?;
     }
     if let Some(recovery) = &record.recovery {
+        let receipt =
+            receipt(state, &record.session_id, &recovery.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        recovery
+            .verify_receipt(&receipt)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    if let Some(recovery) = &record.frontend_recovery {
         let receipt =
             receipt(state, &record.session_id, &recovery.id)?.ok_or(Error::UnknownStoreOutcome)?;
         recovery
@@ -227,7 +236,7 @@ pub(super) fn checked_record(
     current::verify(state, &record)?;
     Ok(record)
 }
-fn fault(store: &MemoryStore) -> u8 {
+pub(super) fn fault(store: &MemoryStore) -> u8 {
     #[cfg(test)]
     {
         store
@@ -240,14 +249,14 @@ fn fault(store: &MemoryStore) -> u8 {
         0
     }
 }
-fn before(fault: u8) -> Result<(), Error> {
+pub(super) fn before(fault: u8) -> Result<(), Error> {
     if fault == 1 {
         Err(Error::UnknownStoreOutcome)
     } else {
         Ok(())
     }
 }
-fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
+pub(super) fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
     match result {
         Ok((_, true)) if fault == 2 => Err(Error::UnknownStoreOutcome),
         Ok((value, _)) => Ok(value),

@@ -3,8 +3,30 @@ mod continuation_handoff;
 #[path = "../../crabber-session/src/continuation_origin.rs"]
 #[allow(dead_code)]
 mod continuation_origin;
+#[path = "../../crabber-session/src/frontend_contract.rs"]
+#[allow(dead_code)]
+mod frontend_contract;
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;
+pub use crabber::session::{
+    FrontendCallOrigin, FrontendCallStaging, FrontendCallView, FrontendContinuationClaim,
+    FrontendContinuationRecovery, FrontendPhaseResume, FrontendResolverClaim,
+    FrontendStagingReceipt, FrozenFrontendCall, frontend_descriptor_fingerprint,
+};
+#[path = "../../crabber-session/src/frontend_continuation/origin.rs"]
+#[allow(dead_code)]
+mod frontend_origin;
+#[path = "../../crabber-session/src/frontend_continuation/record.rs"]
+#[allow(dead_code)]
+mod frontend_record;
+mod frontend_continuation {
+    pub(crate) use crate::frontend_origin::{
+        FrontendOriginRecord, staging_receipt, verify_assistant_source, verify_declaration,
+        verify_receipt as verify_staging_receipt,
+    };
+    pub(crate) use crate::frontend_record::FrontendRecoveryRecord;
+}
+type Error = crabber::session::ToolContinuationError;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_rounds;

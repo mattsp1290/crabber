@@ -1,6 +1,9 @@
+#[path = "agent/frontend_continuation.rs"]
+mod frontend_continuation;
 #[path = "agent/tool_continuation.rs"]
 mod tool_continuation;
 pub use crabber_runtime::ContinueTool;
+pub use crabber_runtime::{ContinueFrontend, RecoverFrontend};
 pub use tool_continuation::ToolContinuation;
 #[path = "agent/approval.rs"]
 mod approval;

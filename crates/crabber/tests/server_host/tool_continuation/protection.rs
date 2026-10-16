@@ -1,7 +1,7 @@
 use super::*;
 use crabber::extension::{Extension, Registrar, TransformOutput};
 
-pub(super) struct Protection(pub Arc<AtomicUsize>);
+pub(in super::super) struct Protection(pub Arc<AtomicUsize>);
 #[async_trait]
 impl Extension for Protection {
     fn id(&self) -> &'static str {

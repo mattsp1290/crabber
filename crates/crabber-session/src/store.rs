@@ -502,6 +502,42 @@ pub trait Store: Send + Sync {
     fn supports_owned_tool_phases(&self) -> bool {
         false
     }
+    async fn frontend_call_origin(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+        _call: &ToolCallId,
+    ) -> Result<Option<crate::FrontendCallOrigin>, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::FrontendStagingReceipt>, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    /// Explicit external frontend result continuations require authoritative
+    /// staging, complete-set claims and the shared native ownership contract.
+    fn supports_frontend_tools(&self) -> bool {
+        false
+    }
+    /// Atomically consume the complete authenticated external result set and
+    /// reserve fresh native result-processing authority. Replays are metadata.
+    async fn claim_frontend_continuation(
+        &self,
+        _claim: crate::FrontendContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    /// Rotate authority only while every reserved result phase is still Claimed
+    /// and the parent is positively Unstarted. Started protection is uncertain.
+    async fn recover_frontend_continuation(
+        &self,
+        _request: crate::FrontendContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
     /// Pure declaration for durable prepared-batch approvals and their controls,
     /// including bounded original-plan provenance reads for pure reconciliation.
     fn supports_tool_continuations(&self) -> bool {
@@ -806,6 +842,14 @@ pub trait Store: Send + Sync {
 /// lossless JSON contract, including embedded NUL values.
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+    async fn stage_frontend_call(
+        &self,
+        _request: crate::FrontendCallStaging,
+        _authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+
     /// Commit explicit checkpoints only after the actual phase/attempt resource joins.
     async fn suspend_tool_continuation(
         &self,

@@ -58,6 +58,37 @@ fn unknown(
     }
 }
 impl Orchestrator {
+    fn resumed_phase_authority(
+        &self,
+        call: &crabber_core::ToolCallId,
+        target: &PhaseTarget,
+    ) -> Result<Option<PhaseAuthority>, RuntimeError> {
+        let native = self
+            .tool_resumes
+            .lock()
+            .expect("tool resumes poisoned")
+            .get(call)
+            .map(|phase| (phase.target.clone(), phase.authority.clone()));
+        let frontend = self
+            .frontend_resumes
+            .lock()
+            .expect("frontend resumes poisoned")
+            .get(call)
+            .map(|phase| (phase.target.clone(), phase.authority.clone()));
+        let selected = match (native, frontend) {
+            (Some(selected), None) | (None, Some(selected)) => Some(selected),
+            (None, None) => None,
+            _ => return Err(crabber_session::ToolContinuationError::SemanticConflict.into()),
+        };
+        selected
+            .map(|(saved, authority)| {
+                if saved != *target {
+                    return Err(crabber_session::ToolContinuationError::SemanticConflict.into());
+                }
+                Ok(authority)
+            })
+            .transpose()
+    }
     pub(super) async fn begin_tool_phase(
         &self,
         execution: &dyn ExecutionStore,
@@ -81,17 +112,8 @@ impl Orchestrator {
             target,
             call_binding: &authorization.call_binding,
         };
-        let resumed = self
-            .tool_resumes
-            .lock()
-            .expect("tool resumes poisoned")
-            .get(&call.id)
-            .cloned();
-        let authority = if let Some(resumed) = resumed {
-            if resumed.target != *target {
-                return Err(crabber_session::ToolContinuationError::SemanticConflict.into());
-            }
-            resumed.authority
+        let authority = if let Some(authority) = self.resumed_phase_authority(&call.id, target)? {
+            authority
         } else {
             self.claim_tool_phase(execution, &scope, &owner.authority)
                 .await?

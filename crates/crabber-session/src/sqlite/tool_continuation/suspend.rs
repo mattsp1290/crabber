@@ -19,19 +19,35 @@ impl SqliteExecution {
     ) -> Result<ToolContinuationReceipt, Error> {
         let scope = scope(self).await?;
 
-        let (mut tx, run) = self
-            .store
-            .tool_transaction(&scope, &self.fence.run_id)
-            .await?;
+        if !batch.frontend.is_empty()
+            && let Some(saved) = self.store.tool_receipt(&scope, &batch.id).await?
+        {
+            if saved.run_id != self.fence.run_id
+                || saved.semantic_digest != batch.fingerprint(&scope, &self.fence.run_id)?
+            {
+                return Err(Error::SemanticConflict);
+            }
+            return Ok(saved);
+        }
+        let (mut tx, run) = if batch.frontend.is_empty() {
+            self.store
+                .tool_transaction(&scope, &self.fence.run_id)
+                .await?
+        } else {
+            self.store
+                .frontend_transaction(&scope, &self.fence.run_id)
+                .await?
+        };
 
         let fault = fault(&self.store);
 
-        let result = async {
+        let result = Box::pin(async {
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
 
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? {
                 return Ok((saved, false));
             }
+            batch.require_frontend_support(crate::SQLITE_SCHEMA_VERSION >= 10)?;
 
             if revision(&mut tx, &run.session_id).await? != batch.expected_revision {
                 return Err(Error::RevisionConflict);
@@ -104,13 +120,7 @@ impl SqliteExecution {
 
             write::save(&mut tx, &record, true).await?;
 
-            sqlx::query(BARRIER)
-                .bind(&run.session_id.0)
-                .bind(&run.id.0)
-                .bind(&batch.continuation.id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(unknown)?;
+            barrier(&mut tx, &run, &batch.continuation).await?;
 
             let receipt = write::publish_handoff(
                 &mut tx,
@@ -127,11 +137,25 @@ impl SqliteExecution {
 
             before(fault)?;
             Ok((receipt, true))
-        }
+        })
         .await;
 
         after(finish(tx, result).await, fault)
     }
+}
+async fn barrier(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &crabber_core::Run,
+    target: &crate::ContinuationTarget,
+) -> Result<(), Error> {
+    sqlx::query(BARRIER)
+        .bind(&run.session_id.0)
+        .bind(&run.id.0)
+        .bind(&target.id.0)
+        .execute(&mut **tx)
+        .await
+        .map_err(unknown)?;
+    Ok(())
 }
 
 async fn scope(execution: &SqliteExecution) -> Result<SessionId, Error> {

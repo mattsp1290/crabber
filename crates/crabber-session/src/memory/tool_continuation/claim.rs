@@ -1,8 +1,8 @@
 use super::{
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState, Error, MemoryStore,
     PhaseQuiescence, PhaseState, Run, State, ToolContinuationClaim, ToolContinuationClaimOutcome,
-    ToolContinuationGrant, ToolContinuationOutcome, ToolContinuationRecord, ToolContinuationState,
-    after, before, domain, fault, publish, replay, revision,
+    ToolContinuationRecord, ToolContinuationState, after, before, domain, fault, publish, replay,
+    revision,
 };
 use crabber_core::{RunFence, RunStatus, ToolCallStatus};
 impl MemoryStore {
@@ -10,7 +10,23 @@ impl MemoryStore {
         &self,
         claim: &ToolContinuationClaim,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let digest = claim.fingerprint()?;
+        self.claim_compound(claim, None)
+    }
+    pub(in super::super) fn claim_frontend(
+        &self,
+        request: &crate::FrontendContinuationClaim,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        self.claim_compound(&request.claim, Some(request))
+    }
+    fn claim_compound(
+        &self,
+        claim: &ToolContinuationClaim,
+        frontend: Option<&crate::FrontendContinuationClaim>,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let digest = match frontend {
+            Some(request) => request.fingerprint()?,
+            None => claim.fingerprint()?,
+        };
         let fault = fault(self);
         let result = self.transact(|state| {
             if let Some(saved) =
@@ -27,7 +43,7 @@ impl MemoryStore {
             if revision(state, &run.session_id) != claim.expected_revision {
                 return Err(Error::RevisionConflict);
             }
-            let mut record = ready(state, &run, claim)?;
+            let mut record = ready(state, &run, claim, frontend)?;
             let now = self.clock.now();
             let activated =
                 domain::canonical::activated_run(&run, &claim.owner, claim.lease_ms, now)?;
@@ -50,7 +66,12 @@ impl MemoryStore {
             .map_err(|_| Error::CleanupBlocked)?;
             let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
             let phases = super::phases::claim(state, &activated, &parent, &record)?;
-            let calls = record.grants()?;
+            let frontend_phases = match frontend {
+                Some(request) => {
+                    super::phases::claim_frontend(state, &activated, &parent, &record, request)?
+                }
+                None => Vec::new(),
+            };
             let fence = RunFence {
                 run_id: run.id.clone(),
                 claim_token: activated.claim_token.clone(),
@@ -63,9 +84,11 @@ impl MemoryStore {
                 .insert(parent.snapshot.target.id.clone(), parent.clone());
             record.state = ToolContinuationState::Claimed;
             record.claim = Some(claim.clone());
+            record.frontend_claim = frontend.cloned().map(Box::new);
             for question in &mut record.questions {
                 question.view.consumed = true;
             }
+            record.validate()?;
             state
                 .tool_continuations
                 .insert(record.batch.continuation.id.clone(), record.clone());
@@ -74,25 +97,14 @@ impl MemoryStore {
                 &run,
                 claim.id.clone(),
                 digest,
-                ToolContinuationOutcome::Claimed {
-                    continuation: record.batch.continuation.clone(),
-                    attempt: parent.snapshot,
-                },
+                record.claimed_outcome(parent.snapshot),
                 now,
             )?;
             before(fault)?;
             Ok((
                 ToolContinuationClaimOutcome::Applied {
                     receipt,
-                    grant: Box::new(ToolContinuationGrant {
-                        fence,
-                        authority,
-                        phases,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id,
-                        usage: record.batch.usage,
-                        turns_used: record.batch.turns_used,
-                    }),
+                    grant: record.into_grant(fence, authority, phases, frontend_phases)?,
                 },
                 true,
             ))
@@ -104,8 +116,14 @@ fn ready(
     state: &State,
     run: &Run,
     claim: &ToolContinuationClaim,
+    frontend: Option<&crate::FrontendContinuationClaim>,
 ) -> Result<ToolContinuationRecord, Error> {
     let record = super::waiting_context(state, run)?.ok_or(Error::InvalidTransition)?;
+    match frontend {
+        Some(request) => request.validate_for_batch(&record.batch)?,
+        None if !record.batch.frontend.is_empty() => return Err(Error::InvalidTransition),
+        None => (),
+    }
     if record.batch.continuation != claim.continuation {
         return Err(Error::GenerationConflict);
     }
@@ -188,6 +206,26 @@ pub(in super::super) fn waiting_context(
             .values()
             .filter(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == call.id)
             .max_by_key(|p| p.snapshot.target.generation);
+        let frontend = record
+            .batch
+            .frontend
+            .iter()
+            .find(|f| f.target.call_id == call.id);
+        let origin = super::super::frontend::origin(state, run, &call.id)?;
+        if let Some(frontend) = frontend {
+            super::super::frontend::verify_frozen(state, run, frontend)?;
+            if latest.is_some()
+                || frozen.is_some()
+                || call.status != ToolCallStatus::Waiting
+                || call.result.is_some()
+            {
+                return Err(Error::CleanupBlocked);
+            }
+            continue;
+        }
+        if origin.is_some() {
+            return Err(Error::SemanticConflict);
+        }
         match (frozen, latest) {
             (Some(frozen), Some(phase))
                 if call.status == ToolCallStatus::Waiting

@@ -42,7 +42,7 @@ async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> R
         }
     }
 }
-async fn revision(
+pub(super) async fn revision(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
 ) -> Result<SessionRevision, Error> {
@@ -106,7 +106,7 @@ impl PostgresStore {
         finish(tx, result).await
     }
 }
-fn fault(store: &PostgresStore) -> u8 {
+pub(super) fn fault(store: &PostgresStore) -> u8 {
     #[cfg(test)]
     {
         store
@@ -119,14 +119,14 @@ fn fault(store: &PostgresStore) -> u8 {
         0
     }
 }
-fn before(fault: u8) -> Result<(), Error> {
+pub(super) fn before(fault: u8) -> Result<(), Error> {
     if fault == 1 {
         Err(Error::UnknownStoreOutcome)
     } else {
         Ok(())
     }
 }
-fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
+pub(super) fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T, Error> {
     match result {
         Ok((_, true)) if fault == 2 => Err(Error::UnknownStoreOutcome),
         Ok((value, _)) => Ok(value),

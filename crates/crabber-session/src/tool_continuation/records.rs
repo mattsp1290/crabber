@@ -26,12 +26,16 @@ pub(crate) struct ToolContinuationRecord {
     pub state: ToolContinuationState,
     pub questions: Vec<ToolQuestion>,
     pub claim: Option<ToolContinuationClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontend_claim: Option<Box<crate::FrontendContinuationClaim>>,
     #[serde(default)]
     pub recovery: Option<crate::ToolContinuationRecovery>,
     #[serde(default)]
     pub termination: Option<crate::tool_continuation::ToolContinuationTermination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<Box<crate::continuation_handoff::Handoff>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontend_recovery: Option<Box<crate::frontend_continuation::FrontendRecoveryRecord>>,
 }
 impl ToolContinuationRecord {
     pub(crate) fn new(
@@ -79,9 +83,11 @@ impl ToolContinuationRecord {
             state: ToolContinuationState::Waiting,
             questions,
             claim: None,
+            frontend_claim: None,
             recovery: None,
             termination: None,
             handoff: None,
+            frontend_recovery: None,
         })
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
@@ -163,6 +169,7 @@ impl ToolContinuationRecord {
             }
             recovery.fingerprint()?;
         }
+        self.validate_frontend()?;
         if crate::snapshot::encoded_bytes(self, 4 * 1024 * 1024).is_none() {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -179,6 +186,18 @@ impl ToolContinuationRecord {
             revision,
             state: self.state,
             interactions: self.questions.iter().map(|q| q.view.clone()).collect(),
+            frontend_calls: self
+                .batch
+                .frontend
+                .iter()
+                .map(|call| crate::FrontendCallView {
+                    call_id: call.target.call_id.clone(),
+                    descriptor: call.descriptor.clone(),
+                    descriptor_fingerprint: call.descriptor_fingerprint.clone(),
+                    arguments: call.arguments.clone(),
+                    consumed: self.state != ToolContinuationState::Waiting,
+                })
+                .collect(),
         }
     }
     pub(crate) fn answer(
@@ -265,6 +284,65 @@ fn validate_value(
     Ok(())
 }
 impl ToolContinuationRecord {
+    pub(crate) fn claimed_outcome(
+        &self,
+        attempt: crate::AttemptSnapshot,
+    ) -> crate::ToolContinuationOutcome {
+        if self.frontend_claim.is_some() {
+            crate::ToolContinuationOutcome::FrontendClaimed {
+                continuation: self.batch.continuation.clone(),
+                attempt,
+            }
+        } else {
+            crate::ToolContinuationOutcome::Claimed {
+                continuation: self.batch.continuation.clone(),
+                attempt,
+            }
+        }
+    }
+    pub(crate) fn recovered_outcome(
+        &self,
+        attempt: crate::AttemptSnapshot,
+    ) -> Result<crate::ToolContinuationOutcome, Error> {
+        let original_claim_id = self
+            .claim
+            .as_ref()
+            .ok_or(Error::UnknownStoreOutcome)?
+            .id
+            .clone();
+        let continuation = self.batch.continuation.clone();
+        Ok(if self.frontend_recovery.is_some() {
+            crate::ToolContinuationOutcome::FrontendReclaimedUnstarted {
+                continuation,
+                original_claim_id,
+                attempt,
+            }
+        } else {
+            crate::ToolContinuationOutcome::ReclaimedUnstarted {
+                continuation,
+                original_claim_id,
+                attempt,
+            }
+        })
+    }
+    pub(crate) fn into_grant(
+        self,
+        fence: crabber_core::RunFence,
+        authority: crate::AttemptAuthority,
+        phases: Vec<crate::ToolPhaseResume>,
+        frontend: Vec<crate::FrontendPhaseResume>,
+    ) -> Result<Box<crate::ToolContinuationGrant>, Error> {
+        Ok(Box::new(crate::ToolContinuationGrant {
+            calls: self.grants()?,
+            fence,
+            authority,
+            phases,
+            frontend,
+            source_turn_id: self.batch.source_turn_id,
+            usage: self.batch.usage,
+            turns_used: self.batch.turns_used,
+        }))
+    }
     pub(crate) fn grants(&self) -> Result<Vec<crate::GrantedApproval>, Error> {
         self.batch
             .calls

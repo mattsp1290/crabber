@@ -41,6 +41,7 @@ impl MemoryStore {
             }
             Some(
                 OperationReceipt::RunControl(_)
+                | OperationReceipt::FrontendStaging(_)
                 | OperationReceipt::Queue(_)
                 | OperationReceipt::Management(_)
                 | OperationReceipt::Attempt(_)

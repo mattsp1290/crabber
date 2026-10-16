@@ -36,6 +36,7 @@ pub(in super::super) async fn save(
         return Err(Error::UnknownStoreOutcome);
     }
     if insert {
+        super::super::frontend::save_links(tx, record).await?;
         for phase in &record.batch.phases {
             sqlx::query("INSERT INTO tool_continuation_phases(continuation_id,run_id,phase_id) VALUES($1,$2,$3)").bind(&record.batch.continuation.id.0).bind(&record.run_id.0).bind(&phase.previous.id.0).execute(&mut **tx).await.map_err(unknown)?;
         }

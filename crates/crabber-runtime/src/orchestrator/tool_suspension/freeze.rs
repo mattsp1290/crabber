@@ -1,8 +1,8 @@
 use super::{
     AttemptTarget, Batch, CallApproval, ContinuationGeneration, ContinuationId, ContinuationTarget,
-    ControlId, Error, FrozenToolPhase, GrantedApproval, GrantedDecision, InputFingerprint,
-    InteractionId, Orchestrator, PhaseGeneration, PhaseId, PhaseTarget, PreparedApproval,
-    RequiredToolInteraction, RuntimeError, ToolContinuationSuspension, ToolSuspensionAuthority,
+    ControlId, Error, GrantedApproval, GrantedDecision, InputFingerprint, Orchestrator,
+    PhaseGeneration, PhaseId, PhaseTarget, PreparedApproval, RuntimeError,
+    ToolContinuationSuspension, ToolSuspensionAuthority,
 };
 impl Orchestrator {
     pub(super) async fn freeze_tool_suspensions(
@@ -23,7 +23,9 @@ impl Orchestrator {
         let unfinished = self.store.list_unfinished_tool_calls(scope.run).await?;
         let mut calls = Vec::new();
         let mut phases = Vec::new();
+        let mut frontend = Vec::new();
         let mut authorities = Vec::new();
+        let frontend_declarations = super::super::frontend::declarations(scope.plan)?;
         for approval in approvals {
             let Some(call) = unfinished
                 .iter()
@@ -47,23 +49,20 @@ impl Orchestrator {
                 attempt: next_attempt.clone(),
             };
             if let Some(s) = suspension {
-                phases.push(FrozenToolPhase {
-                    previous: s.owner.target.clone(),
-                    next: target.clone(),
-                    call_binding: s.owner.call_binding.clone(),
-                    identity: s.identity.clone(),
-                    checkpoint: s.proposal.checkpoint().clone(),
-                    interactions: s
-                        .proposal
-                        .interactions()
-                        .iter()
-                        .map(|description| RequiredToolInteraction {
-                            id: InteractionId::new(),
-                            description: description.clone(),
-                        })
-                        .collect(),
-                });
+                phases.push(s.freeze(target.clone()));
                 authorities.push(s.owner.authority.clone());
+            }
+            if frontend_declarations
+                .iter()
+                .any(|tool| tool.name == call.name)
+            {
+                if suspension.is_some() || approval.decision != GrantedDecision::NotRequired {
+                    return Err(Error::SemanticConflict.into());
+                }
+                frontend.push(
+                    self.freeze_frontend_call(scope, call, target.clone())
+                        .await?,
+                );
             }
             calls.push(PreparedApproval::new(
                 target,
@@ -86,6 +85,7 @@ impl Orchestrator {
             continuation,
             expected_plan: InputFingerprint::new(scope.plan.fingerprint.to_string())?,
             phases,
+            frontend,
             calls,
             usage: scope.usage.clone(),
             turns_used: u64::try_from(scope.turns_used).map_err(|_| Error::InvalidRequest)?,

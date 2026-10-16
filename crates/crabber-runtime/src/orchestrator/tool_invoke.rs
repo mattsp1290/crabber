@@ -189,12 +189,29 @@ impl Orchestrator {
             Ok(output) => output,
             Err(error) => return Ok(ToolRun::ExecutionFailed(error.to_string())),
         };
+        self.protect_tool_output(
+            &tool.info,
+            output,
+            pipeline_context,
+            cancellation,
+            lease_lost,
+        )
+        .await
+    }
+    pub(super) async fn protect_tool_output(
+        &self,
+        info: &crabber_core::ToolInfo,
+        output: crabber_core::ToolOutput,
+        pipeline_context: &ToolResultContext,
+        cancellation: &CancellationToken,
+        lease_lost: &AtomicBool,
+    ) -> Result<ToolRun, RuntimeError> {
         let output_is_error = output.is_error();
         let pipeline_context = ToolResultContext::for_completion(pipeline_context.clone(), &output);
         ensure_lease(lease_lost)?;
         let protection = std::panic::AssertUnwindSafe(async {
             self.tool_pipeline
-                .transform_result(&pipeline_context, &tool.info, output)
+                .transform_result(&pipeline_context, info, output)
                 .await
         })
         .catch_unwind();

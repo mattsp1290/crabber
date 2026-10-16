@@ -26,6 +26,8 @@ pub enum ToolContinuation {
 pub(super) enum ToolResumeControl {
     Claim(ToolContinuationClaim),
     Recover(crabber_session::ToolContinuationRecovery),
+    FrontendClaim(crabber_session::FrontendContinuationClaim),
+    FrontendRecover(crabber_session::FrontendContinuationRecovery),
 }
 pub(super) enum ToolClaimed {
     Fresh(ToolContinuationReceipt),
@@ -187,6 +189,21 @@ impl Orchestrator {
         sender: oneshot::Sender<ToolClaimed>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
         let outcome = match control {
+            ToolResumeControl::FrontendClaim(claim) => {
+                self.store.claim_frontend_continuation(claim).await?
+            }
+            ToolResumeControl::FrontendRecover(request) => {
+                let outcome = self
+                    .store
+                    .recover_frontend_continuation(request.clone())
+                    .await?;
+                let receipt = match &outcome {
+                    ToolContinuationClaimOutcome::Applied { receipt, .. }
+                    | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
+                };
+                request.verify_receipt(receipt)?;
+                outcome
+            }
             ToolResumeControl::Claim(claim) => self.store.claim_tool_continuation(claim).await?,
             ToolResumeControl::Recover(request) => {
                 let outcome = self
@@ -208,7 +225,10 @@ impl Orchestrator {
             }
             ToolContinuationClaimOutcome::Applied { receipt, grant } => {
                 let (ToolContinuationOutcome::Claimed { attempt, .. }
-                | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }) = &receipt.outcome
+                | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
+                | ToolContinuationOutcome::FrontendClaimed { attempt, .. }
+                | ToolContinuationOutcome::FrontendReclaimedUnstarted { attempt, .. }) =
+                    &receipt.outcome
                 else {
                     return Err(Error::UnknownStoreOutcome.into());
                 };
@@ -222,6 +242,10 @@ impl Orchestrator {
                         .calls
                         .iter()
                         .any(|call| call.target.attempt != attempt.target)
+                    || grant
+                        .frontend
+                        .iter()
+                        .any(|phase| phase.target.attempt != attempt.target)
                 {
                     return Err(Error::UnknownStoreOutcome.into());
                 }
@@ -240,6 +264,7 @@ impl Orchestrator {
                             .map_err(|_| Error::UnknownStoreOutcome)?,
                     }),
                     tool_phases: grant.phases,
+                    frontend_phases: grant.frontend,
                 };
                 let _ = sender.send(ToolClaimed::Fresh(receipt));
                 Ok(Some(authority))

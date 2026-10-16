@@ -24,6 +24,7 @@ mod public_state;
 mod session_owner;
 mod tool_result;
 
+mod frontend;
 mod queue;
 mod run_control;
 mod tool_continuation;
@@ -241,6 +242,13 @@ async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::ToolCallPending
+        && event.payload.get("frontend_origin").is_some()
+    {
+        return Err(StoreError::Validation(
+            "frontend origin requires atomic staging".into(),
+        ));
+    }
     if matches!(
         event.kind,
         crabber_core::EventKind::RunControlChanged
@@ -520,6 +528,12 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(include_str!(
+            "../migrations/0014_frontend_continuations.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -840,6 +854,24 @@ impl Store for PostgresStore {
     fn supports_tool_continuations(&self) -> bool {
         true
     }
+    fn supports_frontend_tools(&self) -> bool {
+        crate::POSTGRES_SCHEMA_VERSION >= 14
+    }
+    async fn frontend_call_origin(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        call: &ToolCallId,
+    ) -> Result<Option<crate::FrontendCallOrigin>, crate::ToolContinuationError> {
+        self.read_frontend_origin(session, run, call).await
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::FrontendStagingReceipt>, crate::ToolContinuationError> {
+        self.frontend_staging_receipt(session, id).await
+    }
     async fn tool_continuation_snapshot(
         &self,
         session: &SessionId,
@@ -874,11 +906,23 @@ impl Store for PostgresStore {
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.claim_tools(request).await
     }
+    async fn claim_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_frontend_tools(request).await
+    }
     async fn recover_tool_continuation(
         &self,
         request: crate::ToolContinuationRecovery,
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.recover_tools(request).await
+    }
+    async fn recover_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_frontend_tools(request).await
     }
 
     async fn settle_waiting_cancellation(
@@ -1428,12 +1472,19 @@ impl Store for PostgresStore {
 
 #[async_trait]
 impl ExecutionStore for PostgresExecution {
+    async fn stage_frontend_call(
+        &self,
+        request: crate::FrontendCallStaging,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        self.stage_frontend(request, authority).await
+    }
     async fn suspend_tool_continuation(
         &self,
         batch: crate::ToolContinuationSuspension,
         authority: crate::ToolSuspensionAuthority,
     ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
-        self.suspend_tools(batch, authority).await
+        Box::pin(self.suspend_tools(batch, authority)).await
     }
 
     async fn observe_run_controls(
@@ -1567,6 +1618,17 @@ impl ExecutionStore for PostgresExecution {
         pending_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
+        if crate::POSTGRES_SCHEMA_VERSION >= 14
+            && frontend::declared(&mut tx, &run, &call.name)
+                .await
+                .map_err(|_| {
+                    StoreError::Validation("frontend declaration integrity failure".into())
+                })?
+        {
+            return Err(StoreError::Validation(
+                "frontend calls require atomic staging".into(),
+            ));
+        }
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Validation("invalid new tool call".into()));
         }

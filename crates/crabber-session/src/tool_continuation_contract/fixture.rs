@@ -105,6 +105,7 @@ pub(crate) async fn fixture(store: &impl Store) -> Fixture {
             generation: ContinuationGeneration::INITIAL,
         },
         expected_plan: InputFingerprint::new(admitted.run.plan_fingerprint.clone()).unwrap(),
+        frontend: Vec::new(),
         phases: vec![FrozenToolPhase {
             previous: started.phase.target,
             next: next.clone(),

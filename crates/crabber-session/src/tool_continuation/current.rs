@@ -55,7 +55,9 @@ impl CurrentAudits {
             | Outcome::Suspended { continuation }
             | Outcome::Answered { continuation, .. }
             | Outcome::Claimed { continuation, .. }
-            | Outcome::ReclaimedUnstarted { continuation, .. } => continuation,
+            | Outcome::FrontendClaimed { continuation, .. }
+            | Outcome::ReclaimedUnstarted { continuation, .. }
+            | Outcome::FrontendReclaimedUnstarted { continuation, .. } => continuation,
         };
         if receipt.session_id != record.session_id
             || receipt.run_id != record.run_id
@@ -73,8 +75,10 @@ impl CurrentAudits {
                     .is_some();
                 duplicate || self.answers.len() > 64
             }
-            Outcome::Claimed { .. } => self.claim.replace(receipt).is_some(),
-            Outcome::ReclaimedUnstarted { .. } => {
+            Outcome::Claimed { .. } | Outcome::FrontendClaimed { .. } => {
+                self.claim.replace(receipt).is_some()
+            }
+            Outcome::ReclaimedUnstarted { .. } | Outcome::FrontendReclaimedUnstarted { .. } => {
                 if self
                     .recovery
                     .as_ref()
@@ -155,7 +159,7 @@ impl CurrentAudits {
             (None, None) if !released => State::Waiting,
             (Some(receipt), Some(claim))
                 if receipt.operation_id == claim.id
-                    && receipt.semantic_digest == claim.fingerprint()?
+                    && receipt.semantic_digest == record.claim_digest()?
                     && receipt.event_cursor > origin.event_cursor =>
             {
                 if record
@@ -176,22 +180,39 @@ impl CurrentAudits {
         if record.state != expected {
             return Err(Error::UnknownStoreOutcome);
         }
-        match (&self.recovery, &record.recovery) {
-            (None, None) => (),
-            (Some(receipt), Some(recovery)) if receipt.operation_id == recovery.id => {
-                recovery.verify_receipt(receipt)?;
-                if self
-                    .claim
-                    .as_ref()
-                    .is_none_or(|claim| claim.event_cursor >= receipt.event_cursor)
-                {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-            }
-            _ => return Err(Error::UnknownStoreOutcome),
-        }
-        Ok(())
+        verify_claim_transition(self.recovery.as_ref(), self.claim.as_ref(), record)
     }
+}
+fn verify_claim_transition(
+    recovery: Option<&ToolContinuationReceipt>,
+    claim: Option<&ToolContinuationReceipt>,
+    record: &ToolContinuationRecord,
+) -> Result<(), Error> {
+    match (recovery, &record.recovery, &record.frontend_recovery) {
+        (None, None, None) => (),
+        (Some(receipt), Some(recovery), None) if receipt.operation_id == recovery.id => {
+            recovery.verify_receipt(receipt)?;
+        }
+        (Some(receipt), None, Some(recovery)) if receipt.operation_id == recovery.id => {
+            recovery.verify_receipt(receipt)?;
+        }
+        _ => return Err(Error::UnknownStoreOutcome),
+    }
+    if recovery
+        .is_some_and(|receipt| claim.is_none_or(|claim| claim.event_cursor >= receipt.event_cursor))
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    if let Some(receipt) = recovery.or(claim)
+        && record.latest_claim_source()?
+            != (
+                receipt.operation_id.clone(),
+                receipt.semantic_digest.clone(),
+            )
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(())
 }
 
 pub(crate) fn terminal_candidate(event: &EventRecord, record: &ToolContinuationRecord) -> bool {

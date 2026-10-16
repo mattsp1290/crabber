@@ -19,6 +19,9 @@ pub use public_state::{
     PublicStateContents,
 };
 
+mod frontend_result;
+pub use frontend_result::{FrontendResultStatus, FrontendToolResult};
+
 mod tool_output;
 pub use tool_output::{TOOL_OUTPUT_ENVELOPE_VERSION, ToolOutput};
 

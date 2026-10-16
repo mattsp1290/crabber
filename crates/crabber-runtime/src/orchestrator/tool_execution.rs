@@ -37,6 +37,23 @@ impl Orchestrator {
         if scope.cancellation.is_cancelled() {
             return Err(RuntimeError::Interrupted);
         }
+        if super::frontend::declarations(scope.plan)?
+            .iter()
+            .any(|tool| tool.name == record.name)
+            && !self
+                .frontend_resumes
+                .lock()
+                .expect("frontend resumes poisoned")
+                .contains_key(&record.id)
+        {
+            // Initial frontend calls wait for the host. They acquire no native
+            // phase and never enter the backend executor or its middleware.
+            self.store
+                .frontend_call_origin(&scope.session.id, scope.run, &record.id)
+                .await?
+                .ok_or(crabber_session::ToolContinuationError::UnknownStoreOutcome)?;
+            return Ok(());
+        }
         let (owner, running) = self
             .begin_tool_phase(
                 scope.execution,
@@ -155,6 +172,12 @@ impl Orchestrator {
             .iter()
             .find(|tool| tool.info.name == call.name)
             .cloned();
+        let frontend = self
+            .frontend_resumes
+            .lock()
+            .expect("frontend resumes poisoned")
+            .get(&record.id)
+            .cloned();
         let recorded =
             read_recorded_call(record.arguments.clone(), &call.name, definition.is_some());
         ensure_lease(lease_lost)?;
@@ -191,111 +214,187 @@ impl Orchestrator {
         let mut pipeline_failed = false;
         let mut protection_interrupted = false;
         let (class, input, resolved, outcome): (_, _, _, Result<crabber_core::ToolOutput, String>) =
-            match recorded {
-                RecordedCall::Execute(arguments) => {
-                    let tool =
-                        definition.expect("the record reader executes only calls that resolve");
-                    let input = ToolInput::Normalized(arguments.clone());
-                    let pipeline_context = ToolResultContext::new(
-                        call.name.clone(),
-                        true,
-                        input.clone(),
-                        record.id.clone(),
-                        session_id.clone(),
-                        run_id.clone(),
-                        ToolOutcomeClass::Succeeded,
+            if let Some(frontend) = frontend {
+                if frontend.target != owner.target
+                    || frontend.frozen.arguments != record.arguments
+                    || frontend.frozen.descriptor.name != record.name
+                    || frontend.frozen.call_binding != owner.call_binding
+                    || definition.is_some()
+                {
+                    return Err(crabber_session::ToolContinuationError::SemanticConflict.into());
+                }
+                crabber_session::validate_frontend_result(
+                    &frontend.frozen.descriptor,
+                    &frontend.result,
+                )?;
+                let input = ToolInput::Normalized(record.arguments.clone());
+                let context = ToolResultContext::new(
+                    call.name.clone(),
+                    true,
+                    input.clone(),
+                    record.id.clone(),
+                    session_id.clone(),
+                    run_id.clone(),
+                    ToolOutcomeClass::Succeeded,
+                )
+                .with_cancellation(child_cancellation.clone())
+                .with_cleanup(resources.cleanup_tracker());
+                let descriptor = frontend.frozen.descriptor;
+                let info = crabber_core::ToolInfo {
+                    name: descriptor.name,
+                    description: descriptor.description,
+                    parameters: descriptor.input_parameters,
+                    retry_safe: false,
+                    required_permissions: Vec::new(),
+                };
+                match self
+                    .protect_tool_output(
+                        &info,
+                        frontend.result.output().clone(),
+                        &context,
+                        cancellation,
+                        lease_lost,
                     )
-                    .with_cancellation(child_cancellation.clone())
-                    .with_cleanup(resources.cleanup_tracker());
-                    let task_resources = resources.resources();
-                    let run = self
-                        .permit_and_execute(
-                            execution,
-                            session,
-                            run_id,
-                            &call.id,
-                            plan,
-                            &tool,
-                            authorization.decision,
-                            arguments,
-                            cancellation,
-                            lease_lost,
-                            &pipeline_context,
-                            &task_resources,
-                            owner,
-                        )
-                        .await
-                        .inspect_err(|error| {
-                            measurement.observation.reason = match error {
-                                RuntimeError::LeaseLost => TerminalReason::LeaseLost,
-                                RuntimeError::Interrupted => TerminalReason::Cancelled,
-                                _ => TerminalReason::RuntimeError,
-                            };
-                        })?;
-                    match run {
-                        ToolRun::Suspended(proposal) => {
-                            let identity =
-                                super::tool_invoke::frozen_identity(plan, &tool.info.name)?.ok_or(
-                                    crabber_session::ToolContinuationError::SchemaMismatch,
-                                )?;
-                            self.retain_tool_suspension(
-                                run_id,
-                                &record,
-                                owner,
-                                identity,
-                                proposal,
-                                resources,
-                                cancellation,
-                            )
-                            .await?;
-                            return Ok(());
-                        }
-                        ToolRun::SuspensionInvalid => {
-                            return Err(
-                                crabber_session::ToolContinuationError::SchemaMismatch.into()
-                            );
-                        }
-                        ToolRun::Output(value) => {
-                            mark_error = value.mark_error;
-                            (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
-                        }
-                        ToolRun::PipelineFailed => {
-                            pipeline_failed = true;
-                            (
-                                ToolOutcomeClass::Succeeded,
-                                input,
-                                true,
-                                Ok(runtime_error_output(&result_transform_failed_message(
-                                    TOOL_PIPELINE_HANDLER_ID,
-                                ))),
-                            )
-                        }
-                        ToolRun::ProtectionInterrupted => {
-                            protection_interrupted = true;
-                            (
-                                ToolOutcomeClass::Succeeded,
-                                input,
-                                true,
-                                Ok(runtime_error_output(super::INTERRUPTED_RESULT_TEXT)),
-                            )
-                        }
-                        ToolRun::PermissionDenied => (
-                            ToolOutcomeClass::PermissionDenied,
+                    .await?
+                {
+                    ToolRun::Output(value) => {
+                        mark_error = value.mark_error;
+                        (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
+                    }
+                    ToolRun::PipelineFailed => {
+                        pipeline_failed = true;
+                        (
+                            ToolOutcomeClass::Succeeded,
                             input,
                             true,
-                            Err("permission denied".into()),
-                        ),
-                        ToolRun::ExecutionFailed(error) => {
-                            (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
-                        }
+                            Ok(runtime_error_output(&result_transform_failed_message(
+                                TOOL_PIPELINE_HANDLER_ID,
+                            ))),
+                        )
+                    }
+                    ToolRun::ProtectionInterrupted => {
+                        protection_interrupted = true;
+                        (
+                            ToolOutcomeClass::Succeeded,
+                            input,
+                            true,
+                            Ok(runtime_error_output(super::INTERRUPTED_RESULT_TEXT)),
+                        )
+                    }
+                    _ => {
+                        return Err(
+                            crabber_session::ToolContinuationError::UnknownStoreOutcome.into()
+                        );
                     }
                 }
-                RecordedCall::Settled {
-                    class,
-                    input,
-                    resolved,
-                    seed,
-                } => (class, input, resolved, Err(seed)),
+            } else {
+                match recorded {
+                    RecordedCall::Execute(arguments) => {
+                        let tool =
+                            definition.expect("the record reader executes only calls that resolve");
+                        let input = ToolInput::Normalized(arguments.clone());
+                        let pipeline_context = ToolResultContext::new(
+                            call.name.clone(),
+                            true,
+                            input.clone(),
+                            record.id.clone(),
+                            session_id.clone(),
+                            run_id.clone(),
+                            ToolOutcomeClass::Succeeded,
+                        )
+                        .with_cancellation(child_cancellation.clone())
+                        .with_cleanup(resources.cleanup_tracker());
+                        let task_resources = resources.resources();
+                        let run = self
+                            .permit_and_execute(
+                                execution,
+                                session,
+                                run_id,
+                                &call.id,
+                                plan,
+                                &tool,
+                                authorization.decision,
+                                arguments,
+                                cancellation,
+                                lease_lost,
+                                &pipeline_context,
+                                &task_resources,
+                                owner,
+                            )
+                            .await
+                            .inspect_err(|error| {
+                                measurement.observation.reason = match error {
+                                    RuntimeError::LeaseLost => TerminalReason::LeaseLost,
+                                    RuntimeError::Interrupted => TerminalReason::Cancelled,
+                                    _ => TerminalReason::RuntimeError,
+                                };
+                            })?;
+                        match run {
+                            ToolRun::Suspended(proposal) => {
+                                let identity =
+                                    super::tool_invoke::frozen_identity(plan, &tool.info.name)?
+                                        .ok_or(
+                                            crabber_session::ToolContinuationError::SchemaMismatch,
+                                        )?;
+                                self.retain_tool_suspension(
+                                    run_id,
+                                    &record,
+                                    owner,
+                                    identity,
+                                    proposal,
+                                    resources,
+                                    cancellation,
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                            ToolRun::SuspensionInvalid => {
+                                return Err(
+                                    crabber_session::ToolContinuationError::SchemaMismatch.into()
+                                );
+                            }
+                            ToolRun::Output(value) => {
+                                mark_error = value.mark_error;
+                                (ToolOutcomeClass::Succeeded, input, true, Ok(value.result))
+                            }
+                            ToolRun::PipelineFailed => {
+                                pipeline_failed = true;
+                                (
+                                    ToolOutcomeClass::Succeeded,
+                                    input,
+                                    true,
+                                    Ok(runtime_error_output(&result_transform_failed_message(
+                                        TOOL_PIPELINE_HANDLER_ID,
+                                    ))),
+                                )
+                            }
+                            ToolRun::ProtectionInterrupted => {
+                                protection_interrupted = true;
+                                (
+                                    ToolOutcomeClass::Succeeded,
+                                    input,
+                                    true,
+                                    Ok(runtime_error_output(super::INTERRUPTED_RESULT_TEXT)),
+                                )
+                            }
+                            ToolRun::PermissionDenied => (
+                                ToolOutcomeClass::PermissionDenied,
+                                input,
+                                true,
+                                Err("permission denied".into()),
+                            ),
+                            ToolRun::ExecutionFailed(error) => {
+                                (ToolOutcomeClass::ExecutionFailed, input, true, Err(error))
+                            }
+                        }
+                    }
+                    RecordedCall::Settled {
+                        class,
+                        input,
+                        resolved,
+                        seed,
+                    } => (class, input, resolved, Err(seed)),
+                }
             };
         ensure_lease(lease_lost)?;
         // Built from the stored record only, so a resumed call derives the same context.

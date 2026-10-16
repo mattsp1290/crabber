@@ -1,6 +1,73 @@
 use super::{Error, Run, State, ToolContinuationRecord, ToolPhaseResume};
 use crate::{AttemptAuthority, FrozenToolPhase, attempt::AttemptRecord, phase::PhaseRecord};
 use crabber_core::ToolCallStatus;
+pub(super) fn frontend_waiting(
+    state: &mut State,
+    run: &Run,
+    batch: &crate::ToolContinuationSuspension,
+) -> Result<(), Error> {
+    for frontend in &batch.frontend {
+        state
+            .calls
+            .get_mut(&frontend.target.call_id)
+            .ok_or(Error::NotFound)?
+            .status = ToolCallStatus::Waiting;
+        *state
+            .snapshot_revisions
+            .entry(run.session_id.clone())
+            .or_default() += 1;
+    }
+    Ok(())
+}
+pub(super) fn claim_frontend(
+    state: &mut State,
+    run: &Run,
+    parent: &AttemptRecord,
+    record: &ToolContinuationRecord,
+    claim: &crate::FrontendContinuationClaim,
+) -> Result<Vec<crate::FrontendPhaseResume>, Error> {
+    claim.validate_for_batch(&record.batch)?;
+    let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut grants = Vec::new();
+    for frozen in &record.batch.frontend {
+        if state.phases.values().any(|p| {
+            p.snapshot.run_id == run.id && p.snapshot.target.call_id == frozen.target.call_id
+        }) || state.phases.contains_key(&frozen.target.id)
+        {
+            return Err(Error::CleanupBlocked);
+        }
+        let call = state
+            .calls
+            .get(&frozen.target.call_id)
+            .ok_or(Error::NotFound)?;
+        let native = PhaseRecord::claim_frontend_result(run, parent, call, frozen)
+            .map_err(|_| Error::CleanupBlocked)?;
+        grants.push(crate::FrontendPhaseResume {
+            target: frozen.target.clone(),
+            authority: native
+                .authority(authority.clone())
+                .map_err(|_| Error::UnknownStoreOutcome)?,
+            result: claim
+                .results
+                .iter()
+                .find(|r| r.call_id() == &frozen.target.call_id)
+                .ok_or(Error::SemanticConflict)?
+                .clone(),
+            frozen: frozen.clone(),
+        });
+        state.phases.insert(frozen.target.id.clone(), native);
+        state
+            .calls
+            .get_mut(&frozen.target.call_id)
+            .ok_or(Error::NotFound)?
+            .status = ToolCallStatus::Pending;
+        *state
+            .snapshot_revisions
+            .entry(run.session_id.clone())
+            .or_default() += 1;
+    }
+    Ok(grants)
+}
 pub(super) fn claim(
     state: &mut State,
     run: &Run,
@@ -54,6 +121,40 @@ pub(super) fn reclaim(
         phases.push(resume(native, &authority, record, frozen)?);
     }
     Ok(phases)
+}
+pub(super) fn reclaim_frontend(
+    state: &mut State,
+    parent: &AttemptRecord,
+    record: &ToolContinuationRecord,
+) -> Result<Vec<crate::FrontendPhaseResume>, Error> {
+    let claim = record
+        .frontend_claim
+        .as_ref()
+        .ok_or(Error::UnknownStoreOutcome)?;
+    claim.validate_for_batch(&record.batch)?;
+    let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut grants = Vec::new();
+    for frozen in &record.batch.frontend {
+        let native = state
+            .phases
+            .get_mut(&frozen.target.id)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        native.token = uuid::Uuid::new_v4().to_string();
+        grants.push(crate::FrontendPhaseResume {
+            target: frozen.target.clone(),
+            authority: native
+                .authority(authority.clone())
+                .map_err(|_| Error::UnknownStoreOutcome)?,
+            result: claim
+                .results
+                .iter()
+                .find(|r| r.call_id() == &frozen.target.call_id)
+                .ok_or(Error::UnknownStoreOutcome)?
+                .clone(),
+            frozen: frozen.clone(),
+        });
+    }
+    Ok(grants)
 }
 fn resume(
     native: &PhaseRecord,

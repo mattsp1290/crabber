@@ -70,6 +70,8 @@ pub struct ToolContinuationSuspension {
     pub continuation: ContinuationTarget,
     pub expected_plan: InputFingerprint,
     pub phases: Vec<FrozenToolPhase>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frontend: Vec<crate::FrozenFrontendCall>,
     /// All unfinished calls, in their original frozen execution order.
     pub calls: Vec<PreparedApproval>,
     pub usage: Usage,
@@ -143,6 +145,8 @@ pub struct ToolContinuationSnapshot {
     pub revision: SessionRevision,
     pub state: ToolContinuationState,
     pub interactions: Vec<ToolInteractionView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frontend_calls: Vec<crate::FrontendCallView>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -163,7 +167,16 @@ pub enum ToolContinuationOutcome {
         continuation: ContinuationTarget,
         attempt: AttemptSnapshot,
     },
+    FrontendClaimed {
+        continuation: ContinuationTarget,
+        attempt: AttemptSnapshot,
+    },
     ReclaimedUnstarted {
+        continuation: ContinuationTarget,
+        original_claim_id: ControlId,
+        attempt: AttemptSnapshot,
+    },
+    FrontendReclaimedUnstarted {
         continuation: ContinuationTarget,
         original_claim_id: ControlId,
         attempt: AttemptSnapshot,
@@ -192,6 +205,7 @@ pub struct ToolContinuationGrant {
     pub fence: RunFence,
     pub authority: AttemptAuthority,
     pub phases: Vec<ToolPhaseResume>,
+    pub frontend: Vec<crate::FrontendPhaseResume>,
     pub calls: Vec<crate::GrantedApproval>,
     pub source_turn_id: Option<TurnId>,
     pub usage: Usage,

@@ -4,6 +4,8 @@ mod admission;
 mod approval;
 #[path = "memory/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "memory/frontend.rs"]
+mod frontend;
 #[path = "memory/tool_continuation.rs"]
 mod tool_continuation;
 use admission::{admit_keyed_transaction, admit_transaction};
@@ -98,6 +100,7 @@ struct State {
     run_controls: BTreeMap<(SessionId, crabber_core::ControlId), crate::run_control::Record>,
     run_control_audits:
         BTreeMap<(SessionId, crabber_core::ControlId, u64), crate::RunControlSummary>,
+    frontend_origins: BTreeMap<ToolCallId, crate::frontend_continuation::FrontendOriginRecord>,
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
     tool_continuations:
@@ -137,6 +140,7 @@ struct State {
 #[derive(Clone)]
 enum OperationReceipt {
     RunControl(crate::RunControlReceipt),
+    FrontendStaging(crate::FrontendStagingReceipt),
     Queue(crate::QueueReceipt),
     ToolContinuation(crate::ToolContinuationReceipt),
     Management(crate::ManagementReceipt),
@@ -316,6 +320,13 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
 }
 
 fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
+    if event.kind == crabber_core::EventKind::ToolCallPending
+        && event.payload.get("frontend_origin").is_some()
+    {
+        return Err(StoreError::Validation(
+            "frontend origin requires atomic staging".into(),
+        ));
+    }
     if matches!(
         event.kind,
         crabber_core::EventKind::RunControlChanged
@@ -452,6 +463,47 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn frontend_call_origin(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        call: &ToolCallId,
+    ) -> Result<Option<crate::FrontendCallOrigin>, crate::ToolContinuationError> {
+        crate::tool_continuation::canonical::identity(&session.0, 512)?;
+        crate::tool_continuation::canonical::identity(&run.0, 128)?;
+        crate::tool_continuation::canonical::identity(&call.0, 512)?;
+        let state = self.state.lock().expect("memory store poisoned");
+        let run = state
+            .runs
+            .get(run)
+            .filter(|run| run.session_id == *session)
+            .ok_or(crate::ToolContinuationError::NotFound)?;
+        frontend::origin(&state, run, call)?
+            .map(|record| {
+                Ok(crate::FrontendCallOrigin {
+                    call_id: record.request.call.id.clone(),
+                    descriptor: record.request.descriptor.clone(),
+                    descriptor_fingerprint: record.request.descriptor_fingerprint.clone(),
+                    call_binding: crate::phase::call_binding(&record.request.call)
+                        .map_err(|_| crate::ToolContinuationError::UnknownStoreOutcome)?,
+                })
+            })
+            .transpose()
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::FrontendStagingReceipt>, crate::ToolContinuationError> {
+        crate::tool_continuation::canonical::identity(&session.0, 512)?;
+        crate::tool_continuation::canonical::identity(&id.0, 128)?;
+        frontend::receipt(
+            &self.state.lock().expect("memory store poisoned"),
+            session,
+            id,
+        )
+    }
+
     async fn public_control_header(
         &self,
         request: crate::PublicHeaderRequest,
@@ -727,6 +779,21 @@ impl Store for MemoryStore {
         claim: crate::ToolContinuationClaim,
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.claim_tools(&claim)
+    }
+    async fn claim_frontend_continuation(
+        &self,
+        claim: crate::FrontendContinuationClaim,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.claim_frontend(&claim)
+    }
+    fn supports_frontend_tools(&self) -> bool {
+        true
+    }
+    async fn recover_frontend_continuation(
+        &self,
+        request: crate::FrontendContinuationRecovery,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        self.recover_frontend(&request)
     }
     fn supports_pre_effect_approvals(&self) -> bool {
         true
@@ -1101,6 +1168,14 @@ impl Store for MemoryStore {
 
 #[async_trait]
 impl ExecutionStore for MemoryExecution {
+    async fn stage_frontend_call(
+        &self,
+        request: crate::FrontendCallStaging,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        self.stage_frontend(&request, &authority)
+    }
+
     async fn suspend_tool_continuation(
         &self,
         batch: crate::ToolContinuationSuspension,
@@ -1247,6 +1322,13 @@ impl ExecutionStore for MemoryExecution {
             {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
+            if frontend::declared(state, run, &call.name)
+                .map_err(|_| StoreError::Validation("invalid frontend origin evidence".into()))?
+            {
+                return Err(StoreError::Validation(
+                    "frontend calls require atomic staging".into(),
+                ));
+            }
             crate::ensure_storable(&call)?;
             insert_event(state, run, pending_event)?;
             state
@@ -1263,6 +1345,12 @@ impl ExecutionStore for MemoryExecution {
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.store.fenced(&self.fence, |state, run| {
+            if frontend::origin(state, run, id)
+                .map_err(|_| StoreError::Validation("frontend origin integrity failure".into()))?
+                .is_some()
+            {
+                return Err(StoreError::Conflict);
+            }
             if state
                 .phases
                 .values()
@@ -1296,6 +1384,9 @@ impl ExecutionStore for MemoryExecution {
         terminal_event: EventRecord,
     ) -> Result<(), StoreError> {
         self.store.fenced(&self.fence, |state, run| {
+            if frontend::origin(state, run, id).map_err(|_| StoreError::Validation("frontend origin integrity failure".into()))?.is_some() {
+                return Err(StoreError::Conflict);
+            }
             if state.phases.values().any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id) {
                 return Err(StoreError::Conflict);
             }

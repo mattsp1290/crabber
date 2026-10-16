@@ -10,6 +10,7 @@ mod approval;
 mod attempt;
 mod execution;
 mod execution_binding;
+mod frontend;
 mod management;
 mod native_parent;
 mod phase;
@@ -57,6 +58,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0008_run_controls.sql"),
     "\nINSERT INTO schema_version(version) VALUES(8);\n",
     include_str!("../migrations/sqlite/0009_session_owners.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(9);\n",
+    include_str!("../migrations/sqlite/0010_frontend_continuations.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

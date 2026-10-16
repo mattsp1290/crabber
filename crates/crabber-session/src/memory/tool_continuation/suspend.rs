@@ -51,6 +51,7 @@ impl MemoryExecution {
             .map_err(|_| Error::UnknownStoreOutcome)?
             .map(Box::new);
             suspend_phases(state, &run, &parent, batch, authority, now)?;
+            super::phases::frontend_waiting(state, &run, batch)?;
             let conclusion = batch.conclusion(&run)?;
             if !matches!(
                 self.apply_attempt(
@@ -172,6 +173,22 @@ fn validate(state: &State, run: &Run, batch: &ToolContinuationSuspension) -> Res
             .values()
             .filter(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == call.id)
             .max_by_key(|p| p.snapshot.target.generation);
+        let frontend = batch.frontend.iter().find(|f| f.target.call_id == call.id);
+        let origin = super::super::frontend::origin(state, run, &call.id)?;
+        if let Some(frontend) = frontend {
+            super::super::frontend::verify_frozen(state, run, frontend)?;
+            if latest.is_some()
+                || phase.is_some()
+                || state.phases.contains_key(&frontend.target.id)
+                || call.status != ToolCallStatus::Pending
+            {
+                return Err(Error::CleanupBlocked);
+            }
+            continue;
+        }
+        if origin.is_some() {
+            return Err(Error::SemanticConflict);
+        }
         match (phase, latest) {
             (Some(frozen), Some(native))
                 if native.snapshot.target == frozen.previous
@@ -183,6 +200,9 @@ fn validate(state: &State, run: &Run, batch: &ToolContinuationSuspension) -> Res
         }
     }
     super::evidence::validate(state, run, Some(batch))?;
+    unique_questions(state, batch)
+}
+fn unique_questions(state: &State, batch: &ToolContinuationSuspension) -> Result<(), Error> {
     for frozen in &batch.phases {
         for question in &frozen.interactions {
             if state

@@ -119,6 +119,7 @@ pub(in super::super) async fn origin(
         return Err(Error::UnknownStoreOutcome);
     }
     verify(tx, &record).await?;
+    Box::pin(super::super::frontend::verify_batch(tx, &record)).await?;
     Ok(Some(record))
 }
 async fn verify(
@@ -167,14 +168,15 @@ async fn verify(
         let (accepted, _) = receipt(tx, &record.session_id, &claim.id)
             .await?
             .ok_or(Error::UnknownStoreOutcome)?;
-        if accepted.run_id != record.run_id
-            || accepted.semantic_digest != claim.fingerprint()?
-            || !matches!(accepted.outcome,ToolContinuationOutcome::Claimed{ref continuation,ref attempt} if continuation==&record.batch.continuation && attempt.target==record.batch.next_attempt)
-        {
-            return Err(Error::UnknownStoreOutcome);
-        }
+        record.verify_claim_receipt(&accepted)?;
     }
     if let Some(recovery) = &record.recovery {
+        let (accepted, _) = receipt(tx, &record.session_id, &recovery.id)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        recovery.verify_receipt(&accepted).map_err(unknown)?;
+    }
+    if let Some(recovery) = &record.frontend_recovery {
         let (accepted, _) = receipt(tx, &record.session_id, &recovery.id)
             .await?
             .ok_or(Error::UnknownStoreOutcome)?;

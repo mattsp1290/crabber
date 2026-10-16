@@ -4,6 +4,48 @@ use super::{
     PhaseRecord, PhaseSnapshot, PhaseState, Run, ToolCallRecord, ToolCallStatus, call_binding,
 };
 impl PhaseRecord {
+    /// This initial phase processes an authenticated external result. It is
+    /// reserved only by the compound continuation transaction, before Begin.
+    pub(crate) fn claim_frontend_result(
+        run: &Run,
+        parent: &AttemptRecord,
+        call: &ToolCallRecord,
+        frozen: &crate::FrozenFrontendCall,
+    ) -> Result<Self, PhaseError> {
+        parent
+            .validate()
+            .map_err(|_| PhaseError::UnknownStoreOutcome)?;
+        frozen.validate().map_err(|_| PhaseError::InvalidRequest)?;
+        if run.status != crabber_core::RunStatus::Running
+            || parent.snapshot.state != AttemptState::Unstarted
+            || parent.snapshot.cleanup != crate::AttemptCleanup::Pending
+            || parent.snapshot.target != frozen.target.attempt
+            || parent.snapshot.session_id != run.session_id
+            || parent.snapshot.run_id != run.id
+            || parent.run_token != run.claim_token
+            || call.run_id != run.id
+            || call.id != frozen.target.call_id
+            || call.status != ToolCallStatus::Waiting
+            || call.result.is_some()
+            || call_binding(call)? != frozen.call_binding
+        {
+            return Err(PhaseError::InvalidTransition);
+        }
+        let next = Self {
+            snapshot: PhaseSnapshot {
+                session_id: run.session_id.clone(),
+                run_id: run.id.clone(),
+                target: frozen.target.clone(),
+                call_binding: frozen.call_binding.clone(),
+                state: PhaseState::Claimed,
+                quiescence: PhaseQuiescence::Pending,
+            },
+            token: uuid::Uuid::new_v4().to_string(),
+            output: None,
+        };
+        next.validate()?;
+        Ok(next)
+    }
     pub(crate) fn suspend_checkpoint(
         &mut self,
         run: &Run,

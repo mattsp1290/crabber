@@ -5,6 +5,13 @@ use super::{
 };
 use std::collections::BTreeSet;
 impl ToolContinuationSuspension {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(crate) fn require_frontend_support(&self, supported: bool) -> Result<(), Error> {
+        if !supported && !self.frontend.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        Ok(())
+    }
     pub(crate) fn validate(&self) -> Result<(), Error> {
         for text in [
             &self.id.0,
@@ -19,8 +26,9 @@ impl ToolContinuationSuspension {
             || self.turns_used == 0
             || self.calls.is_empty()
             || self.calls.len() > 64
-            || self.phases.is_empty()
+            || (self.phases.is_empty() && self.frontend.is_empty())
             || self.phases.len() > 64
+            || self.frontend.len() > 64
         {
             return Err(Error::InvalidRequest);
         }
@@ -28,12 +36,14 @@ impl ToolContinuationSuspension {
             identity(&turn.0, 512)?;
         }
         let mut calls = BTreeSet::new();
+        let mut targets = BTreeSet::new();
         let mut phases = BTreeSet::new();
         let mut questions = BTreeSet::new();
         for call in &self.calls {
             identity(&call.target.call_id.0, 512)?;
             identity(&call.target.id.0, 128)?;
             if !calls.insert(&call.target.call_id)
+                || !targets.insert(&call.target.id)
                 || call.target.attempt != self.next_attempt
                 || matches!(call.decision, crate::CallApproval::Ask { .. })
             {
@@ -78,7 +88,20 @@ impl ToolContinuationSuspension {
                 count += 1;
             }
         }
-        if count > 64 {
+        for frontend in &self.frontend {
+            frontend.validate()?;
+            if frontend.target.attempt != self.next_attempt
+                || !phases.insert(&frontend.target.call_id)
+                || !self.calls.iter().any(|call| {
+                    call.target == frontend.target
+                        && call.call_binding == frontend.call_binding
+                        && matches!(call.decision, crate::CallApproval::NotRequired)
+                })
+            {
+                return Err(Error::InvalidRequest);
+            }
+        }
+        if count + self.frontend.len() > 64 {
             return Err(Error::InvalidRequest);
         }
         Ok(())
@@ -91,7 +114,12 @@ impl ToolContinuationSuspension {
         self.validate()?;
         identity(&session.0, 512)?;
         identity(&run.0, 128)?;
-        digest(&("crabber.tool-continuation.suspend.v1", session, run, self))
+        let domain = if self.frontend.is_empty() {
+            "crabber.tool-continuation.suspend.v1"
+        } else {
+            "crabber.tool-continuation.suspend.v2"
+        };
+        digest(&(domain, session, run, self))
     }
 }
 impl ToolInteractionAnswer {

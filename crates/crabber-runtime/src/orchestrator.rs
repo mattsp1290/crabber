@@ -1,8 +1,13 @@
 #[path = "orchestrator/observation_lifetime.rs"]
 mod observation_lifetime;
 use observation_lifetime::ObservationLifetime;
+#[path = "orchestrator/frontend.rs"]
+mod frontend;
+#[path = "orchestrator/frontend_control.rs"]
+mod frontend_control;
 #[path = "orchestrator/tool_recovery.rs"]
 mod tool_recovery;
+pub use frontend_control::{ContinueFrontend, RecoverFrontend};
 pub use tool_recovery::RecoverTool;
 #[path = "orchestrator/tool_continuation.rs"]
 mod tool_continuation;
@@ -503,6 +508,11 @@ pub struct Orchestrator {
     tool_resumes: Arc<
         std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
     >,
+    frontend_resumes: Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<ToolCallId, crabber_session::FrontendPhaseResume>,
+        >,
+    >,
     tool_suspensions: Arc<std::sync::Mutex<Vec<tool_suspension::PendingSuspension>>>,
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
@@ -792,6 +802,7 @@ impl OrchestratorBuilder {
             owned_attempt: None,
             observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
+            frontend_resumes: Arc::default(),
             tool_suspensions: Arc::default(),
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
@@ -1405,6 +1416,7 @@ impl Orchestrator {
             granted,
             approved,
             tool_phases,
+            frontend_phases,
         } = acquisition;
         let measurement_lost = Arc::new(AtomicBool::new(false));
         let measurement_cancellation = CancellationToken::new();
@@ -1431,6 +1443,7 @@ impl Orchestrator {
         worker.observation_lifetime = Arc::default();
         worker.tool_suspensions = Arc::default();
         worker.tool_resumes = Arc::default();
+        worker.frontend_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(match granted {
             Some(owner) => {
                 self.begin_granted_attempt(execution.as_ref(), &run.session_id, owner)
@@ -1443,6 +1456,12 @@ impl Orchestrator {
         }));
         worker.tool_resumes = Arc::new(std::sync::Mutex::new(
             tool_phases
+                .into_iter()
+                .map(|phase| (phase.target.call_id.clone(), phase))
+                .collect(),
+        ));
+        worker.frontend_resumes = Arc::new(std::sync::Mutex::new(
+            frontend_phases
                 .into_iter()
                 .map(|phase| (phase.target.call_id.clone(), phase))
                 .collect(),
@@ -2404,6 +2423,7 @@ impl Orchestrator {
         let mut messages = input.materialize_messages(&session_id, now)?;
         let first_message = messages.remove(0);
         let plan = self.acquire_execution_plan(&context).await?;
+        let plan = frontend::bind(plan, input.frontend_tools())?;
         let plan = Self::bind_selection_policy(plan, &request.selection_policy)?;
         let provider = self.describe_provider(&plan, &request.selection)?;
         let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
@@ -2620,6 +2640,7 @@ impl Orchestrator {
         worker.observation_lifetime = Arc::default();
         worker.tool_suspensions = Arc::default();
         worker.tool_resumes = Arc::default();
+        worker.frontend_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(
             self.begin_owned_attempt(execution.as_ref(), &session_id, &fence.run_id, false)
                 .await?,
@@ -3037,7 +3058,7 @@ impl Orchestrator {
             messages,
             system: (!system.is_empty()).then_some(system),
             max_output_tokens: request.max_output_tokens,
-            tools: plan.tools.iter().map(|tool| tool.info.clone()).collect(),
+            tools: frontend::model_tools(plan)?,
         })
     }
 
@@ -3975,6 +3996,16 @@ impl Orchestrator {
         call: PendingCall,
         lease_lost: &AtomicBool,
     ) -> Result<ToolCallRecord, RuntimeError> {
+        if let Some(descriptor) = frontend::declarations(plan)?
+            .into_iter()
+            .find(|tool| tool.name == call.name)
+        {
+            return self
+                .stage_frontend(
+                    execution, session_id, run_id, plan, call, descriptor, lease_lost,
+                )
+                .await;
+        }
         let definition = plan
             .tools
             .iter()

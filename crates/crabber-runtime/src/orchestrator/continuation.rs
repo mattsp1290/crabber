@@ -56,6 +56,7 @@ pub(super) struct ResumeAuthority {
     pub granted: Option<super::attempt::OwnedAttempt>,
     pub approved: Option<ApprovedCalls>,
     pub tool_phases: Vec<crabber_session::ToolPhaseResume>,
+    pub frontend_phases: Vec<crabber_session::FrontendPhaseResume>,
 }
 impl ContinueApproval {
     pub(super) fn claim(&self, run: &Run) -> Result<ApprovalContinuationClaim, RuntimeError> {
@@ -267,6 +268,7 @@ impl Orchestrator {
             granted: None,
             approved: None,
             tool_phases: Vec::new(),
+            frontend_phases: Vec::new(),
         }))
     }
 }
@@ -297,6 +299,7 @@ fn resume_authority(
             authority: grant.authority,
         }),
         tool_phases: Vec::new(),
+        frontend_phases: Vec::new(),
         approved: Some(ApprovedCalls {
             calls: grant.calls,
             turn: grant.source_turn_id,

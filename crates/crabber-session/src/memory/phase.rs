@@ -394,6 +394,13 @@ fn prepare_record(
         .filter(|c| c.run_id == run.id)
         .ok_or(Error::NotFound)?;
     if matches!(request.command, PhaseCommand::Claim { .. }) {
+        if super::frontend::origin(state, run, &call.id)
+            .map_err(|_| Error::UnknownStoreOutcome)?
+            .is_some()
+        {
+            return Err(Error::InvalidTransition);
+        }
+
         if state.phases.contains_key(&target.id) {
             return Err(Error::SemanticConflict);
         }

@@ -11,14 +11,14 @@ pub(super) async fn verify(
     record: &ToolContinuationRecord,
 ) -> Result<(), Error> {
     let mut audits = domain::CurrentAudits::default();
-    let events = select(tx, record, "CAST(json_extract({event},'$.payload.outcome.continuation.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.kind') AS TEXT)='tool_continuation' AND CAST(json_extract({event},'$.payload.outcome.operation') AS TEXT)<>'reclaimed_unstarted'", &record.batch.continuation.id.0, false, 67).await?;
+    let events = select(tx, record, "CAST(json_extract({event},'$.payload.outcome.continuation.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.kind') AS TEXT)='tool_continuation' AND CAST(json_extract({event},'$.payload.outcome.operation') AS TEXT)NOT IN ('reclaimed_unstarted','frontend_reclaimed_unstarted')", &record.batch.continuation.id.0, false, 67).await?;
     if events.len() > 66 {
         return Err(Error::UnknownStoreOutcome);
     }
     for event in events {
         insert(tx, record, &mut audits, &event).await?;
     }
-    for event in select(tx, record, "CAST(json_extract({event},'$.payload.outcome.continuation.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.kind') AS TEXT)='tool_continuation' AND CAST(json_extract({event},'$.payload.outcome.operation') AS TEXT)='reclaimed_unstarted'", &record.batch.continuation.id.0, true, 1).await? {
+    for event in select(tx, record, "CAST(json_extract({event},'$.payload.outcome.continuation.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.kind') AS TEXT)='tool_continuation' AND CAST(json_extract({event},'$.payload.outcome.operation') AS TEXT)IN ('reclaimed_unstarted','frontend_reclaimed_unstarted')", &record.batch.continuation.id.0, true, 1).await? {
         insert(tx, record, &mut audits, &event).await?;
     }
     let cross = super::super::continuation_handoff::verify(

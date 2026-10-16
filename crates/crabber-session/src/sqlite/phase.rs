@@ -297,6 +297,14 @@ async fn prepare(
         .ok_or(Error::NotFound)?;
     let call = calls::load(tx, run, &target.call_id).await?;
     if matches!(request.command, PhaseCommand::Claim { .. }) {
+        if crate::SQLITE_SCHEMA_VERSION >= 10
+            && super::frontend::origin(tx, run, &target.call_id)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?
+                .is_some()
+        {
+            return Err(Error::InvalidTransition);
+        }
         if records::exists(tx, &target.id).await? {
             return Err(Error::SemanticConflict);
         }
@@ -337,6 +345,14 @@ pub(super) async fn legacy_guard(
     run: &Run,
     id: &crabber_core::ToolCallId,
 ) -> Result<(), crate::StoreError> {
+    if crate::SQLITE_SCHEMA_VERSION >= 10
+        && super::frontend::origin(tx, run, id)
+            .await
+            .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
+            .is_some()
+    {
+        return Err(crate::StoreError::Conflict);
+    }
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND call_id=$2)",
     )

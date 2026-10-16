@@ -21,6 +21,13 @@ pub(super) struct SqliteExecution {
 
 #[async_trait]
 impl ExecutionStore for SqliteExecution {
+    async fn stage_frontend_call(
+        &self,
+        request: crate::FrontendCallStaging,
+        authority: crate::AttemptAuthority,
+    ) -> Result<crate::FrontendStagingReceipt, crate::ToolContinuationError> {
+        self.stage_frontend(request, authority).await
+    }
     async fn suspend_tool_continuation(
         &self,
         batch: crate::ToolContinuationSuspension,
@@ -185,6 +192,17 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
+            if crate::SQLITE_SCHEMA_VERSION >= 10
+                && super::frontend::declared(&mut tx, &run, &call.name)
+                    .await
+                    .map_err(|_| {
+                        StoreError::Validation("frontend declaration integrity failure".into())
+                    })?
+            {
+                return Err(StoreError::Validation(
+                    "frontend calls require atomic staging".into(),
+                ));
+            }
             if call.run_id != run.id || call.status != ToolCallStatus::Pending {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }
