@@ -1,11 +1,39 @@
 //! Private current state cannot erase or replace immutable cancellation evidence.
 use super::*;
+use crate::public_session::v2::proof::Failure;
 use crate::{Store, session_owner::cancellation_contract as contract};
 pub(super) async fn corruption(store: &PostgresStore) {
-    for case in 0..8 {
+    for case in 0..9 {
         let (owner, authority, request, observation) = contract::source_fixture(store).await;
         let session = &owner.binding.session_id;
         corrupt(store, &owner, &request, &observation, case).await;
+        let mut tx = store.pool.begin().await.unwrap();
+        let mut safe = crate::public_session::budget::Budget::new(
+            65536,
+            crate::PublicSessionLimit::HeaderBytes,
+        );
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(65536);
+        let result = super::public::registered(&mut tx, session, 1, &mut safe, &mut proof).await;
+        if matches!(case, 5 | 6 | 8) {
+            assert!(
+                matches!(
+                    result,
+                    Err(Failure::Limited(crate::PublicSessionLimitV2::ProofBytes))
+                ),
+                "case{case}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(Failure::Error(
+                        crate::PublicSessionError::UnknownStoreOutcome
+                    ))
+                ),
+                "case{case}"
+            );
+        }
+        tx.rollback().await.unwrap();
         assert_eq!(
             store
                 .get_session_owner(session, &owner.target.id)
@@ -100,6 +128,9 @@ async fn corrupt(
         }
         7 => {
             sqlx::query("UPDATE session_owner_audits SET operation='Renew' WHERE session_id=$1 AND operation_id=$2").bind(&session.0).bind(&request.id.0).execute(&store.pool).await.unwrap();
+        }
+        8 => {
+            sqlx::query("UPDATE session_owner_audits SET data_json=$3 WHERE session_id=$1 AND operation_id=$2").bind(&session.0).bind(&observation.id.0).bind("x".repeat(1_048_576)).execute(&store.pool).await.unwrap();
         }
         _ => unreachable!(),
     }

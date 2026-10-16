@@ -68,6 +68,7 @@ pub struct PublicRegisteredOwner {
     pub parent: Option<SessionOwnerParent>,
     pub state: SessionOwnerState,
     pub termination: Option<SessionOwnerTermination>,
+    pub cancellation: Option<crate::session_owner::SessionOwnerCancellation>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -80,6 +81,7 @@ impl From<&SessionOwnerSnapshot> for PublicRegisteredOwner {
             parent: owner.binding.parent.clone(),
             state: owner.state,
             termination: owner.termination,
+            cancellation: owner.cancellation.clone(),
             created_at: owner.created_at,
             updated_at: owner.updated_at,
         }

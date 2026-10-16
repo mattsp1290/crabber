@@ -97,6 +97,7 @@ async fn journey(store: Arc<dyn Store>, cold: Arc<dyn Store>) {
         assert_eq!(fixture.starts.load(Ordering::SeqCst), 1);
         if !matches!(mode, Mode::Cooperative) {
             assert_eq!(observed.state, SessionOwnerState::Active);
+            aggregate(&controller, &*cold, &session, Some(&observed)).await;
             let report = agent
                 .drain_session_invocations(&session, false, Duration::from_millis(1))
                 .await;
@@ -119,11 +120,49 @@ async fn journey(store: Arc<dyn Store>, cold: Arc<dyn Store>) {
             .unwrap();
         assert_eq!(joined.state, SessionOwnerState::Joined);
         assert!(joined.cancellation.unwrap().observed.is_some());
+        aggregate(&controller, &*cold, &session, None).await;
         assert!(
             matches!(controller.request_session_owner_cancel(request).await.unwrap(),SessionOwnerOutcome::Replayed(saved) if saved==receipt)
         );
         agent.close_extensions().await.unwrap();
     }
+}
+async fn aggregate(
+    controller: &Agent,
+    store: &dyn Store,
+    session: &SessionId,
+    expected: Option<&crabber::session::session_owner::SessionOwnerSnapshot>,
+) {
+    let revision = store.session_revision(session).await.unwrap();
+    let crabber::PublicSessionOutcomeV2::Page(page) = controller
+        .public_session_snapshot_v2(crabber::PublicSessionRequestV2 {
+            session_id: session.clone(),
+            continuation: None,
+            limits: crate::aggregate_v2::limits(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("closed controller aggregate")
+    };
+    assert_eq!(page.captured_revision, revision);
+    if let Some(expected) = expected {
+        let owner = page
+            .header
+            .owners
+            .iter()
+            .find(|owner| owner.target == expected.target)
+            .unwrap();
+        assert_eq!(owner.state, SessionOwnerState::Active);
+        assert_eq!(owner.cancellation, expected.cancellation);
+        assert!(owner.cancellation.as_ref().unwrap().observed.is_some());
+    } else {
+        assert_eq!(
+            page.header.owners,
+            [] as [crabber::PublicRegisteredOwner; 0]
+        );
+    }
+    assert_eq!(store.session_revision(session).await.unwrap(), revision);
 }
 async fn wait_observed(
     cold: &dyn Store,

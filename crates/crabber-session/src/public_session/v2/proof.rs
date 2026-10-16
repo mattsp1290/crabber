@@ -81,6 +81,7 @@ pub(crate) fn owner(
         parent: &'a Option<crate::session_owner::SessionOwnerParent>,
         state: crate::session_owner::SessionOwnerState,
         termination: Option<crate::session_owner::SessionOwnerTermination>,
+        cancellation: &'a Option<crate::session_owner::SessionOwnerCancellation>,
         created_at: time::OffsetDateTime,
         updated_at: time::OffsetDateTime,
     }
@@ -91,6 +92,7 @@ pub(crate) fn owner(
         parent: &snapshot.binding.parent,
         state: snapshot.state,
         termination: snapshot.termination,
+        cancellation: &snapshot.cancellation,
         created_at: snapshot.created_at,
         updated_at: snapshot.updated_at,
     })?;

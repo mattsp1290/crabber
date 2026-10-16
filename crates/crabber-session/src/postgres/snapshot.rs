@@ -4,7 +4,9 @@ use super::{
     EventCursor, Message, Postgres, PostgresStore, Row, StoreError, ToolCallRecord, Transaction,
     db, decode,
 };
-use crate::sql_snapshot::{Boundary, Profile, RecordKind, digest, invalid, parse_profile, token_profile};
+use crate::sql_snapshot::{
+    Boundary, Profile, RecordKind, digest, invalid, parse_profile, token_profile,
+};
 pub(super) use crate::sql_snapshot::{call_record, message_record};
 use crate::{SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage};
 

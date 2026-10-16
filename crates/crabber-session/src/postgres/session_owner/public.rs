@@ -63,7 +63,8 @@ pub(in crate::postgres) async fn registered(
     }
     Ok(result)
 }
-/// The five carriers and repeated routing fields fetched by `reads::current`.
+/// Current/origin/context carriers, plus exact optional cancellation sources,
+/// and repeated routing fields fetched by `reads::current`.
 /// Length-only selection happens before ANY of their private bodies transfer.
 async fn preflight(
     tx: &mut Transaction<'_, Postgres>,
@@ -100,6 +101,11 @@ async fn preflight(
             .ok_or_else(|| unknown("owner source absent"))?;
         proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
     }
+    for field in ["request_bytes", "observed_bytes"] {
+        if let Some(bytes) = row.try_get::<Option<i64>, _>(field).map_err(unknown)? {
+            proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
+        }
+    }
     Ok(())
 }
 const IDS: &str = r"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id>$2 ORDER BY owner_id LIMIT 32";
@@ -107,12 +113,16 @@ const CURRENT_COST: &str = "SELECT CAST(octet_length(data_json) AS BIGINT) FROM 
 const COST: &str = r"SELECT CAST(octet_length(c.data_json) AS BIGINT) AS current_bytes,CAST(octet_length(l.data_json)+octet_length(l.owner_id)+octet_length(l.operation_id)+octet_length(l.operation)+octet_length(l.state) AS BIGINT) AS latest_bytes,
  CAST(octet_length(o.data_json)+octet_length(o.owner_id)+octet_length(o.operation_id)+octet_length(o.operation)+octet_length(o.state) AS BIGINT) AS origin_bytes,
  CAST(octet_length(x.data_json) AS BIGINT) AS context_bytes,
- CAST(octet_length(f.data_json)+octet_length(f.owner_id)+octet_length(f.operation_id)+octet_length(f.operation)+octet_length(f.state) AS BIGINT) AS first_bytes
+ CAST(octet_length(f.data_json)+octet_length(f.owner_id)+octet_length(f.operation_id)+octet_length(f.operation)+octet_length(f.state) AS BIGINT) AS first_bytes,
+ CAST(octet_length(r.data_json)+octet_length(r.owner_id)+octet_length(r.operation_id)+octet_length(r.operation)+octet_length(r.state) AS BIGINT) AS request_bytes,
+ CAST(octet_length(v.data_json)+octet_length(v.owner_id)+octet_length(v.operation_id)+octet_length(v.operation)+octet_length(v.state) AS BIGINT) AS observed_bytes
  FROM session_owner_current c
  LEFT JOIN session_owner_audits l ON l.session_id=c.session_id AND l.owner_id=c.owner_id AND l.sequence=(SELECT MAX(a.sequence) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.owner_id=c.owner_id)
  LEFT JOIN session_owner_audits o ON o.session_id=c.session_id AND o.operation_id=c.data_json::json->>'origin'
  LEFT JOIN session_owner_contexts x ON x.session_id=c.session_id
  LEFT JOIN session_owner_audits f ON f.session_id=c.session_id AND f.ordinal=(SELECT MIN(a.ordinal) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.operation='Reserve')
+ LEFT JOIN session_owner_audits r ON r.session_id=c.session_id AND r.operation_id=c.data_json::json#>>'{cancellation,request,id}'
+ LEFT JOIN session_owner_audits v ON v.session_id=c.session_id AND v.operation_id=c.data_json::json#>>'{cancellation,observed,request,id}'
  WHERE c.session_id=$1 AND c.owner_id=$2";
 
 #[cfg(test)]

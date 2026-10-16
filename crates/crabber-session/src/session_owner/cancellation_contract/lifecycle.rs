@@ -12,6 +12,7 @@ pub(super) async fn absent(store: &impl Store, clock: &ManualClock) {
     assert_eq!(accepted.owner.state, SessionOwnerState::ReservedUnstarted);
     assert_eq!(accepted.owner.target, owner.target);
     create(store, &owner).await;
+    super::aggregate::check(store, &owner).await;
     store
         .mutate_session_owner(
             mutation(&owner, SessionOwnerCommand::Begin),
@@ -46,6 +47,7 @@ pub(super) async fn absent(store: &impl Store, clock: &ManualClock) {
             .unwrap(),
     );
     assert_eq!(observed.owner.state, SessionOwnerState::Active);
+    super::aggregate::check(store, &owner).await;
     expired_still_cannot_renew(store, &owner, &authority).await;
     assert!(
         observed
@@ -71,6 +73,7 @@ pub(super) async fn absent(store: &impl Store, clock: &ManualClock) {
     assert!(
         matches!(joined, SessionOwnerOutcome::Applied { receipt, authority:None } if receipt.owner.state == SessionOwnerState::Joined)
     );
+    super::aggregate::check(store, &owner).await;
     assert!(
         matches!(store.request_session_owner_cancel(request.clone()).await.unwrap(), SessionOwnerOutcome::Replayed(saved) if saved==accepted)
     );

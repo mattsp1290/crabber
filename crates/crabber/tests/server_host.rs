@@ -1,3 +1,5 @@
+#[path = "server_host/aggregate_v2.rs"]
+mod aggregate_v2;
 #[path = "server_host/approval.rs"]
 mod approval;
 #[path = "server_host/attempt_control.rs"]

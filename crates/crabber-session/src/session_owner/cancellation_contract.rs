@@ -4,6 +4,8 @@ use crate::{ManageSession, SessionChange, SessionDefaults, Store};
 use crabber_core::{
     Clock, ControlId, ManualClock, SessionId, SessionOwnerOperationId, SessionRevision,
 };
+#[path = "cancellation_contract/aggregate.rs"]
+mod aggregate;
 #[path = "cancellation_contract/faults.rs"]
 pub(crate) mod faults;
 #[path = "cancellation_contract/lifecycle.rs"]

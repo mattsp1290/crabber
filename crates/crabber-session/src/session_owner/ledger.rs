@@ -216,6 +216,20 @@ impl Ledger {
                 .get(&(session.clone(), context.origin.clone()))
                 .ok_or_else(|| unknown("owner context origin"))?;
             proof.measure(context_origin)?;
+            if let Some(cancel) = &record.cancellation {
+                let request = self
+                    .audits
+                    .get(&(session.clone(), cancel.request.id.clone()))
+                    .ok_or_else(|| unknown("owner cancellation source"))?;
+                proof.measure(request)?;
+                if let Some(observed) = &cancel.observed {
+                    let audit = self
+                        .audits
+                        .get(&(session.clone(), observed.request.id.clone()))
+                        .ok_or_else(|| unknown("owner observation source"))?;
+                    proof.measure(audit)?;
+                }
+            }
             let checked = self.checked(session, id).map_err(unknown)?;
             if checked.snapshot.state == SessionOwnerState::Joined {
                 continue;

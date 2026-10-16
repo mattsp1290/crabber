@@ -293,9 +293,10 @@ fn cancellation_sources_and_absence_are_independently_authenticated() {
         .mutate(&renew, Some(&authority), OffsetDateTime::UNIX_EPOCH)
         .unwrap();
     let correct = ledger.clone();
-    for case in 0..6 {
+    for case in 0..7 {
         let mut ledger = correct.clone();
         corrupt_cancellation_evidence(&mut ledger, &key, &request, &observation, &unobserved, case);
+        aggregate_cancellation_failure(&ledger, &request.session_id, case);
         assert_eq!(
             ledger.snapshot(&request.session_id, &request.target.id),
             Err(Error::UnknownStoreOutcome),
@@ -377,10 +378,18 @@ fn corrupt_cancellation_evidence(
                 .audits
                 .remove(&(request.session_id.clone(), observation.id.clone()));
         }
-        _ => {
+        5 => {
             ledger
                 .audits
                 .get_mut(&(request.session_id.clone(), request.id.clone()))
+                .unwrap()
+                .record
+                .owner = "x".repeat(1024 * 1024);
+        }
+        _ => {
+            ledger
+                .audits
+                .get_mut(&(request.session_id.clone(), observation.id.clone()))
                 .unwrap()
                 .record
                 .owner = "x".repeat(1024 * 1024);
@@ -531,4 +540,27 @@ fn aggregate_owner_invalid_sentinel_does_not_become_limited() {
             crate::PublicSessionError::UnknownStoreOutcome
         ))
     ));
+}
+
+fn aggregate_cancellation_failure(ledger: &Ledger, session: &SessionId, case: u8) {
+    use crate::public_session::{
+        budget::Budget,
+        v2::proof::{Failure, Proof},
+    };
+    let mut safe = Budget::new(65536, crate::PublicSessionLimit::HeaderBytes);
+    let mut proof = Proof::bounded(65536);
+    let result = ledger.public_registered(session, 1, &mut safe, &mut proof);
+    if case >= 5 {
+        assert!(matches!(
+            result,
+            Err(Failure::Limited(crate::PublicSessionLimitV2::ProofBytes))
+        ));
+    } else {
+        assert!(matches!(
+            result,
+            Err(Failure::Error(
+                crate::PublicSessionError::UnknownStoreOutcome
+            ))
+        ));
+    }
 }

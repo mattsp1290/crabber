@@ -286,8 +286,12 @@ mod aggregate_token_tests {
             public_revision: 2,
             messages: 3,
             calls: 0,
+            imported: 0,
+            provenance: 0,
             message_after: 1,
             call_after: 0,
+            imported_after: 0,
+            provenance_after: 0,
             high_water: EventCursor(4),
         };
         let raw = token(&boundary, "key").unwrap();
