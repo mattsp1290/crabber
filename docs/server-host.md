@@ -90,12 +90,12 @@ Cleanup signals every captured scope before awaiting any one join. A worker pani
 remains visible even if its supervisor returns normally. Pending control I/O can
 delay retirement; bounded drains continue to report that supervisor as pending.
 
-The Runtime bridge currently covers initial keyed admission. Memory also supports
+The Runtime bridge currently covers initial keyed admission. Native adapters also support
 an initial unkeyed native driver from the complete frozen binding anchored in the
 original preparation Join. Fresh unkeyed registration requires the original admission
 revision; activation requires the exact original driver Begin revision. Any intervening
 publication conservatively refuses fresh dispatch. Original metadata retries require
-no current binding, keyed receipt, or fabricated journal. SQL unkeyed adoption and
+no current binding, keyed receipt, or fabricated journal. Unkeyed Runtime adoption and
 recovered workers still require their own authenticated driver paths. The driver does not
 certify provider, shared-service, callback or whole-run resource coverage. A failed
 cleanup leaves native retirement unresolved, and retained resource failures remain

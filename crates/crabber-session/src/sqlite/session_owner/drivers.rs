@@ -33,7 +33,8 @@ impl SqliteStore {
             let link = Box::pin(fresh::fresh(&mut tx,&request,None,self.clock.now(),&mut proof))
             .await?;
             let reservation = link.reservation(&request)?;
-            reads::context(&mut tx,request.context.session_id(),request.context.workspace_id(),request.context.directory()).await?;
+            // Fresh source validation already authenticated the current child context.
+            proof.charge(9).map_err(unknown)?; // Capacity count and target-existence scalar.
             reads::capacity(&mut tx,request.context.session_id()).await?;
             let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_current WHERE session_id=$1 AND owner_id=$2)").bind(&reservation.binding.session_id.0).bind(&reservation.binding.id.0).fetch_one(&mut *tx).await.map_err(unknown)?;
             if exists { return Err(Error::SemanticConflict); }
@@ -148,13 +149,7 @@ async fn metadata(
         .ok_or(Error::UnknownStoreOutcome)?;
     crate::session_owner::audit::verify_current(&begin.record, &reserve, &begin)?;
     let original = source::original(tx, session, &request.fence.run_id, proof).await?;
-    link.verify_original(
-        &original.session,
-        &original.initial,
-        &original.witness,
-        &original.audits(),
-        &original.init,
-    )?;
+    original.verify_link(link)?;
     let receipt = ExecutionDriverReceipt {
         session_id: session.clone(),
         run_id: request.fence.run_id.clone(),

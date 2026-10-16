@@ -19,9 +19,34 @@ pub(crate) async fn request(store: &impl Store) -> RegisterExecutionDriver {
         fence: admitted.fence,
     }
 }
+pub(crate) async fn request_unkeyed(store: &impl Store) -> RegisterExecutionDriver {
+    let admitted =
+        crate::session_owner::preparation_contract::resources::initial_unkeyed_driver(store).await;
+    RegisterExecutionDriver {
+        context: crabber_core::SessionContext::new(
+            admitted.session.id,
+            admitted.session.workspace_id,
+            admitted.session.directory,
+        ),
+        fence: admitted.fence,
+    }
+}
+async fn request_for(store: &impl Store, unkeyed: bool) -> RegisterExecutionDriver {
+    if unkeyed {
+        request_unkeyed(store).await
+    } else {
+        request(store).await
+    }
+}
+pub(crate) async fn run_unkeyed<S: Store + 'static>(store: Arc<S>) {
+    run_for(store, true).await;
+}
 pub(crate) async fn run<S: Store + 'static>(store: Arc<S>) {
+    run_for(store, false).await;
+}
+async fn run_for<S: Store + 'static>(store: Arc<S>, unkeyed: bool) {
     assert!(store.supports_execution_drivers());
-    let request = request(store.as_ref()).await;
+    let request = request_for(store.as_ref(), unkeyed).await;
     let ExecutionDriverOutcome::Applied { receipt, grant } = store
         .register_execution_driver(request.clone())
         .await
@@ -37,15 +62,20 @@ pub(crate) async fn run<S: Store + 'static>(store: Arc<S>) {
     let effect = count.clone();
     let worker = store.clone();
     let fence = request.fence.clone();
+    let session = request.context.session_id().clone();
     let mut task =
         OwnedTaskRegistration::register(grant.scope_source().unwrap(), move || async move {
-            worker
-                .execution(fence)
-                .await
-                .unwrap()
-                .begin_admission_execution()
-                .await
-                .unwrap();
+            if unkeyed {
+                begin_unkeyed(worker.as_ref(), &session, fence).await;
+            } else {
+                worker
+                    .execution(fence)
+                    .await
+                    .unwrap()
+                    .begin_admission_execution()
+                    .await
+                    .unwrap();
+            }
             effect.fetch_add(1, Ordering::SeqCst);
         })
         .unwrap();
@@ -77,6 +107,40 @@ pub(crate) async fn run<S: Store + 'static>(store: Arc<S>) {
         matches!(store.register_execution_driver(request).await.unwrap(),ExecutionDriverOutcome::Replayed(saved) if saved==receipt)
     );
 }
+async fn begin_unkeyed(
+    store: &impl Store,
+    session: &crabber_core::SessionId,
+    fence: crabber_core::RunFence,
+) {
+    let execution = store.execution(fence).await.unwrap();
+    let mut reserve =
+        crate::attempt_contract::reserve(store.session_revision(session).await.unwrap());
+    reserve.command = crate::AttemptCommand::ReserveBound {
+        target: reserve.command.target().clone(),
+    };
+    let crate::AttemptMutationOutcome::Applied { receipt, authority } =
+        execution.mutate_attempt(reserve, None).await.unwrap()
+    else {
+        panic!("fresh unkeyed attempt");
+    };
+    execution
+        .mutate_attempt(
+            crate::AttemptMutation {
+                id: crabber_core::ControlId::new(),
+                expected_revision: receipt.revision,
+                command: crate::AttemptCommand::Begin {
+                    target: receipt.attempt.target,
+                },
+            },
+            authority,
+        )
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn memory_unkeyed_driver_contract() {
+    run_unkeyed(Arc::new(crate::MemoryStore::new())).await;
+}
 #[tokio::test]
 async fn memory_initial_driver_contract() {
     run(Arc::new(crate::MemoryStore::new())).await;
@@ -84,9 +148,17 @@ async fn memory_initial_driver_contract() {
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn faults<S: Store + 'static>(store: Arc<S>, fault: impl Fn(u8)) {
+    faults_for(store, fault, false).await;
+}
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) async fn faults_unkeyed<S: Store + 'static>(store: Arc<S>, fault: impl Fn(u8)) {
+    faults_for(store, fault, true).await;
+}
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+async fn faults_for<S: Store + 'static>(store: Arc<S>, fault: impl Fn(u8), unkeyed: bool) {
     for boundary in [1, 2] {
         fault(0);
-        let request = request(store.as_ref()).await;
+        let request = request_for(store.as_ref(), unkeyed).await;
         fault(boundary);
         assert!(matches!(
             store.register_execution_driver(request.clone()).await,
@@ -100,13 +172,18 @@ pub(crate) async fn faults<S: Store + 'static>(store: Arc<S>, fault: impl Fn(u8)
         );
     }
     for boundary in [1, 2] {
-        activation_fault(store.clone(), &fault, boundary).await;
+        activation_fault(store.clone(), &fault, boundary, unkeyed).await;
     }
 }
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-async fn activation_fault<S: Store + 'static>(store: Arc<S>, fault: &impl Fn(u8), boundary: u8) {
+async fn activation_fault<S: Store + 'static>(
+    store: Arc<S>,
+    fault: &impl Fn(u8),
+    boundary: u8,
+    unkeyed: bool,
+) {
     fault(0);
-    let request = request(store.as_ref()).await;
+    let request = request_for(store.as_ref(), unkeyed).await;
     let ExecutionDriverOutcome::Applied { grant, .. } =
         store.register_execution_driver(request).await.unwrap()
     else {
@@ -195,7 +272,20 @@ async fn rejects_changed_metadata(
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn concurrent<S: Store + 'static>(store: Arc<S>) -> RegisterExecutionDriver {
-    let request = request(store.as_ref()).await;
+    concurrent_for(store, false).await
+}
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) async fn concurrent_unkeyed<S: Store + 'static>(
+    store: Arc<S>,
+) -> RegisterExecutionDriver {
+    concurrent_for(store, true).await
+}
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+async fn concurrent_for<S: Store + 'static>(
+    store: Arc<S>,
+    unkeyed: bool,
+) -> RegisterExecutionDriver {
+    let request = request_for(store.as_ref(), unkeyed).await;
     let (first, second) = tokio::join!(
         store.register_execution_driver(request.clone()),
         store.register_execution_driver(request.clone())

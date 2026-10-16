@@ -67,7 +67,9 @@ async fn refuse(
             .await;
         assert!(
             matches!(result, Err(Error::UnknownStoreOutcome))
-                || stale && matches!(result, Err(Error::StaleOwner))
+                || stale && matches!(result, Err(Error::StaleOwner)),
+            "unexpected refusal: {:?}",
+            result.as_ref().err()
         );
         assert_eq!(
             task.join().await.unwrap().disposition(),
@@ -77,7 +79,9 @@ async fn refuse(
         let result = store.register_execution_driver(request).await;
         assert!(
             matches!(result, Err(Error::UnknownStoreOutcome))
-                || stale && matches!(result, Err(Error::StaleOwner))
+                || stale && matches!(result, Err(Error::StaleOwner)),
+            "unexpected refusal: {:?}",
+            result.as_ref().err()
         );
     }
 }
@@ -280,4 +284,10 @@ async fn altered_admission_receipt(store: &PostgresStore) {
         .execute(&store.pool)
         .await
         .unwrap();
+}
+
+#[path = "protection/unkeyed.rs"]
+mod unkeyed;
+pub(super) async fn unkeyed_contract(store: &PostgresStore) {
+    unkeyed::run(store).await;
 }

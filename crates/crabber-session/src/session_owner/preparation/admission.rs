@@ -111,7 +111,7 @@ impl Witness {
     ) -> Result<&InputFingerprint, Error> {
         let original = self.unkeyed_binding_digest()?;
         if super::binding_digest::unkeyed_binding(binding)? != *original {
-            return Err(Error::SemanticConflict);
+            return Err(Error::UnknownStoreOutcome);
         }
         Ok(original)
     }

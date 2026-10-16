@@ -14,11 +14,35 @@ pub(super) struct Original {
     pub initial: RunIssuance,
     pub witness: Witness,
     pub audits: [Audit; 5],
-    pub init: Init,
+    pub init: Option<Init>,
 }
 impl Original {
     pub fn audits(&self) -> SourceAudits<'_> {
         SourceAudits::from_array(&self.audits)
+    }
+    pub fn verify_link(
+        &self,
+        link: &crate::session_owner::driver::DriverLink,
+    ) -> Result<(), Error> {
+        if link.is_unkeyed() {
+            if self.init.is_some() {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            link.verify_original_unkeyed(
+                &self.session,
+                &self.initial,
+                &self.witness,
+                &self.audits(),
+            )
+        } else {
+            link.verify_original(
+                &self.session,
+                &self.initial,
+                &self.witness,
+                &self.audits(),
+                self.init.as_ref().ok_or(Error::UnknownStoreOutcome)?,
+            )
+        }
     }
 }
 pub(super) async fn original(
@@ -83,7 +107,12 @@ pub(super) async fn original(
         );
     }
     let audits = audits.try_into().map_err(unknown)?;
-    let init = init(tx, session, run, &initial, budget).await?;
+    let init = if witness.is_unkeyed() {
+        witness.unkeyed_binding_digest()?;
+        None
+    } else {
+        Some(init(tx, session, run, &initial, budget).await?)
+    };
     let result = Original {
         session: current,
         initial,

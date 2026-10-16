@@ -90,9 +90,17 @@ pub(super) async fn fresh(
         budget,
     )
     .await?;
+    preparation_child(tx, &original, budget).await?;
+    initial_link(tx, request, &run, &binding, &original, budget).await
+}
+async fn preparation_child(
+    tx: &mut Transaction<'_, Postgres>,
+    original: &source::Original,
+    budget: &mut Proof,
+) -> Result<(), Error> {
     let child = proof::current(
         tx,
-        session,
+        &original.session.id,
         &original.audits[4].receipt.owner.target.id,
         budget,
     )
@@ -108,16 +116,9 @@ pub(super) async fn fresh(
     {
         return Err(Error::StaleOwner);
     }
-    DriverLink::initial(
-        request,
-        &original.session,
-        &run,
-        &original.initial,
-        &original.witness,
-        &original.audits(),
-        &original.init,
-    )
+    Ok(())
 }
+
 async fn pristine(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
@@ -134,6 +135,15 @@ async fn pristine(
     if dirty || count_actual != i64::try_from(count).map_err(unknown)? {
         return Err(Error::InvalidTransition);
     }
+    Ok(())
+}
+async fn keyed_journal(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
+    budget: &mut Proof,
+) -> Result<(), Error> {
+    let id = &run.id;
     let record = super::super::super::admission_execution::load_record_with_proof(tx, id, budget)
         .await
         .map_err(unknown)?
@@ -153,6 +163,43 @@ async fn pristine(
     Ok(())
 }
 
+async fn initial_link(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &RegisterExecutionDriver,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
+    original: &source::Original,
+    budget: &mut Proof,
+) -> Result<DriverLink, Error> {
+    if original.witness.is_unkeyed() {
+        budget.charge(1).map_err(unknown)?;
+        let incompatible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admission_executions WHERE session_id=$1 AND run_id=$2) OR EXISTS(SELECT 1 FROM admission_execution_sources WHERE session_id=$1 AND run_id=$2)")
+            .bind(&run.session_id.0).bind(&run.id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+        if incompatible {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        DriverLink::initial_unkeyed(
+            request,
+            &original.session,
+            run,
+            &original.initial,
+            &original.witness,
+            &original.audits(),
+            &binding.capsule,
+        )
+    } else {
+        keyed_journal(tx, run, binding, budget).await?;
+        DriverLink::initial(
+            request,
+            &original.session,
+            run,
+            &original.initial,
+            &original.witness,
+            &original.audits(),
+            original.init.as_ref().ok_or(Error::UnknownStoreOutcome)?,
+        )
+    }
+}
 async fn revision(
     tx: &mut Transaction<'_, Postgres>,
     session: &crabber_core::SessionId,

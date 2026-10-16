@@ -223,6 +223,9 @@ async fn dispatch_and_erase_attempt(store: &MemoryStore, request: &RegisterExecu
     state
         .operation_receipts
         .remove(&(request.context.session_id().clone(), begin.id));
+    state
+        .native_parent_witnesses
+        .retain(|_, witness| witness.source.run_id != request.fence.run_id);
     state.events.remove_session(request.context.session_id());
 }
 #[tokio::test]
