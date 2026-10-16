@@ -79,7 +79,16 @@ impl super::super::MemoryStore {
             let event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
             super::super::insert_event(state, &run, event)
                 .map_err(|_| Error::UnknownStoreOutcome)?;
+            let previous = crate::native_parent::RunState::from_run(&run)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             request.apply_run(&mut run, now)?;
+            super::super::native_parent::record_run_states(
+                state,
+                Some(&previous),
+                crate::native_parent::RunState::from_run(&run)
+                    .map_err(|_| Error::UnknownStoreOutcome)?,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             state.runs.insert(run.id.clone(), run.clone());
             state.approvals.insert(id, record);
             state.approval_barriers.remove(&run.session_id);

@@ -1,6 +1,6 @@
 //! Exact immutable native Begin sources and private issuance witnesses.
 use super::{OperationReceipt, State};
-use crate::native_parent::{Error, Witness};
+use crate::native_parent::{Error, RunIssuance, RunState, Witness};
 use crabber_core::{EventKind, EventRecord, Run};
 
 pub(super) fn record_attempt(
@@ -11,7 +11,12 @@ pub(super) fn record_attempt(
     receipt: &crate::AttemptReceipt,
 ) -> Result<(), crate::AttemptError> {
     if matches!(command, crate::AttemptCommand::Begin { .. }) {
-        let witness = Witness::attempt(run, attempt, receipt)
+        let Some(issuance) =
+            latest_run(state, run).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        let witness = Witness::attempt(run, attempt, receipt, issuance)
             .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
         insert(state, witness).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
     }
@@ -28,7 +33,12 @@ pub(super) fn record_phase(
             .attempts
             .get(&phase.snapshot.target.attempt.id)
             .ok_or(crate::PhaseError::UnknownStoreOutcome)?;
-        let witness = Witness::phase(run, attempt, phase, receipt)
+        let Some(issuance) =
+            latest_run(state, run).map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        else {
+            return Ok(());
+        };
+        let witness = Witness::phase(run, attempt, phase, receipt, issuance)
             .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
         insert(state, witness).map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
     }
@@ -78,7 +88,8 @@ pub(super) fn verify_attempt(
         .native_parent_witnesses
         .get(&receipt.event_cursor)
         .ok_or(Error)?;
-    witness.verify_attempt(run, attempt, receipt, event)?;
+    let issuance = latest_run(state, run)?.ok_or(Error)?;
+    witness.verify_attempt(run, attempt, receipt, event, issuance)?;
     Ok(witness.clone())
 }
 #[cfg_attr(
@@ -120,7 +131,8 @@ pub(super) fn verify_phase(
         .native_parent_witnesses
         .get(&receipt.event_cursor)
         .ok_or(Error)?;
-    witness.verify_phase(run, attempt, phase, receipt, event)?;
+    let issuance = latest_run(state, run)?.ok_or(Error)?;
+    witness.verify_phase(run, attempt, phase, receipt, event, issuance)?;
     Ok(witness.clone())
 }
 fn source_key(
@@ -132,6 +144,61 @@ fn source_key(
     let id = event.correlation.as_deref().ok_or(Error)?;
     crate::attempt::validate_identifier(id).map_err(|_| Error)?;
     Ok((event.session_id.clone(), crabber_core::ControlId(id.into())))
+}
+
+/// Real Run creation/claim/activation/status writes use this before publication.
+pub(super) fn record_run(
+    state: &mut State,
+    previous: Option<&Run>,
+    updated: &Run,
+) -> Result<(), Error> {
+    let previous = previous.map(RunState::from_run).transpose()?;
+    record_run_states(state, previous.as_ref(), RunState::from_run(updated)?)
+}
+pub(super) fn record_run_states(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+) -> Result<(), Error> {
+    let latest = state
+        .native_run_issuances
+        .range(
+            (next.session_id.clone(), next.run_id.clone(), 0)
+                ..=(
+                    next.session_id.clone(),
+                    next.run_id.clone(),
+                    i64::MAX as u64,
+                ),
+        )
+        .next_back()
+        .map(|(_, value)| value);
+    if let Some(issuance) = crate::native_parent::advance(previous, next, latest)? {
+        let key = (
+            issuance.state.session_id.clone(),
+            issuance.state.run_id.clone(),
+            issuance.sequence,
+        );
+        if state.native_run_issuances.contains_key(&key) {
+            return Err(Error);
+        }
+        state.native_run_issuances.insert(key, issuance);
+    }
+    Ok(())
+}
+fn latest_run<'a>(state: &'a State, run: &Run) -> Result<Option<&'a RunIssuance>, Error> {
+    let scope = RunState::from_run(run)?;
+    let latest = state
+        .native_run_issuances
+        .range(
+            (scope.session_id.clone(), scope.run_id.clone(), 0)
+                ..=(scope.session_id, scope.run_id, i64::MAX as u64),
+        )
+        .next_back()
+        .map(|(_, value)| value);
+    if let Some(latest) = latest {
+        latest.verify(run)?;
+    }
+    Ok(latest)
 }
 
 #[cfg(test)]

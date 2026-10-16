@@ -93,6 +93,8 @@ pub(super) fn admit_transaction_guarded(
         insert_message(state, &run, message)?;
     }
     state.sessions.insert(session_id.clone(), session.clone());
+    super::native_parent::record_run(state, None, &run)
+        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
     state.runs.insert(run_id.clone(), run.clone());
     state.run_order.push(run_id.clone());
     let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);

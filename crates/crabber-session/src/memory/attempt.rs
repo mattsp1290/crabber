@@ -300,6 +300,8 @@ fn apply_run_transition(
         let mut activated = run.clone();
         activated.status = crabber_core::RunStatus::Running;
         activated.updated_at = now;
+        super::native_parent::record_run(state, Some(run), &activated)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);
     }
     Ok(())
@@ -315,6 +317,8 @@ fn apply_boundary(
         .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut updated = run.clone();
     conclusion.apply_run(&mut updated, now)?;
+    super::native_parent::record_run(state, Some(run), &updated)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), updated);
     Ok(())
 }

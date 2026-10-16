@@ -1,5 +1,7 @@
 //! Private token issuance evidence for a genuine native Begin. Reads never
 //! produce authority, and absence is not reconstructed from mutable records.
+#[path = "native_parent/run.rs"]
+mod run;
 use crate::{
     AttemptCleanup, AttemptReceipt, AttemptState, AttemptTarget, PhaseOperation, PhaseReceipt,
     PhaseTarget,
@@ -7,6 +9,7 @@ use crate::{
 use crabber_core::{
     ControlId, EventCursor, EventRecord, InputFingerprint, Run, RunId, RunStatus, SessionId,
 };
+pub(crate) use run::{RunIssuance, RunState, advance};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -37,6 +40,7 @@ pub(crate) struct Source {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Witness {
     pub version: u32,
+    pub run_issuance: u64,
     pub source: Source,
     pub run_token: InputFingerprint,
     pub attempt_token: InputFingerprint,
@@ -48,6 +52,7 @@ impl Witness {
         run: &Run,
         attempt: &crate::attempt::AttemptRecord,
         receipt: &AttemptReceipt,
+        issuance: &RunIssuance,
     ) -> Result<Self, Error> {
         if crate::snapshot::encoded_bytes(receipt, 8192).is_none()
             || receipt.attempt != attempt.snapshot
@@ -57,6 +62,7 @@ impl Witness {
         }
         Self::new(
             run,
+            issuance,
             attempt,
             None,
             Source {
@@ -77,6 +83,7 @@ impl Witness {
         attempt: &crate::attempt::AttemptRecord,
         phase: &crate::phase::PhaseRecord,
         receipt: &PhaseReceipt,
+        issuance: &RunIssuance,
     ) -> Result<Self, Error> {
         if crate::snapshot::encoded_bytes(receipt, 8192).is_none() {
             return Err(Error);
@@ -91,6 +98,7 @@ impl Witness {
         }
         Self::new(
             run,
+            issuance,
             attempt,
             Some(&phase.token),
             Source {
@@ -108,10 +116,12 @@ impl Witness {
     }
     fn new(
         run: &Run,
+        issuance: &RunIssuance,
         attempt: &crate::attempt::AttemptRecord,
         phase_token: Option<&str>,
         source: Source,
     ) -> Result<Self, Error> {
+        issuance.verify(run)?;
         attempt.validate().map_err(|_| Error)?;
         source.validate()?;
         if run.status != RunStatus::Running
@@ -128,6 +138,7 @@ impl Witness {
         }
         Ok(Self {
             version: 1,
+            run_issuance: issuance.sequence,
             run_token: token_hash(&source, "run", &run.claim_token)?,
             attempt_token: token_hash(&source, "attempt", &attempt.token)?,
             attempt_run_token: token_hash(&source, "attempt-run", &attempt.run_token)?,
@@ -140,6 +151,8 @@ impl Witness {
     pub fn validate(&self) -> Result<(), Error> {
         self.source.validate()?;
         if self.version != 1
+            || self.run_issuance == 0
+            || self.run_issuance > i64::MAX as u64
             || (self.source.kind == Kind::Phase) != self.phase_token.is_some()
             || crate::snapshot::encoded_bytes(self, 8192).is_none()
         {
@@ -160,10 +173,11 @@ impl Witness {
         attempt: &crate::attempt::AttemptRecord,
         receipt: &AttemptReceipt,
         event: &EventRecord,
+        issuance: &RunIssuance,
     ) -> Result<(), Error> {
         self.validate()?;
         attempt_source(receipt, event)?;
-        if *self != Self::attempt(run, attempt, receipt)? {
+        if *self != Self::attempt(run, attempt, receipt, issuance)? {
             return Err(Error);
         }
         Ok(())
@@ -182,10 +196,11 @@ impl Witness {
         phase: &crate::phase::PhaseRecord,
         receipt: &PhaseReceipt,
         event: &EventRecord,
+        issuance: &RunIssuance,
     ) -> Result<(), Error> {
         self.validate()?;
         phase_source(receipt, event)?;
-        if *self != Self::phase(run, attempt, phase, receipt)? {
+        if *self != Self::phase(run, attempt, phase, receipt, issuance)? {
             return Err(Error);
         }
         Ok(())

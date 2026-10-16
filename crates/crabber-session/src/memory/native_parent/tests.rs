@@ -451,3 +451,90 @@ fn corrupt_parent_carriers_are_bounded_before_copying() {
         assert!(measured.bytes_max < 131_072, "case {case}: {measured:?}");
     }
 }
+
+#[tokio::test]
+async fn real_run_only_claim_cannot_be_hidden_by_restoring_live_private_tokens() {
+    let (store, clock) = store();
+    let (admitted, execution, owner, planned) = crate::phase_contract::fixture(&store).await;
+    let before = store.get_run(&admitted.run.id).await.unwrap().unwrap();
+    let issuance = current(&store, &admitted.run.id, None).unwrap();
+    clock.set(before.lease_until);
+    store
+        .claim_expired_run(&before.id, "replacement")
+        .await
+        .unwrap();
+    let live = store.get_run(&before.id).await.unwrap().unwrap();
+    let sequence = store.state.lock().unwrap().native_run_issuances.len();
+    {
+        let mut state = store.state.lock().unwrap();
+        let mut restored = before;
+        restored.lease_until = live.lease_until;
+        restored.updated_at = live.updated_at;
+        state.runs.insert(restored.id.clone(), restored);
+        let attempt = state
+            .attempts
+            .get_mut(&planned.command.target().attempt.id)
+            .unwrap();
+        attempt.lease_until = live.lease_until;
+        assert!(owner.matches_store(&attempt.snapshot, &attempt.token, &attempt.run_token));
+        assert_eq!(state.native_parent_witnesses.len(), 1);
+        assert!(state.native_parent_witnesses.values().next().unwrap() == &issuance);
+    }
+    assert!(current(&store, &admitted.run.id, None).is_err());
+    // Saving a private heartbeat with that stale restored fence cannot make its
+    // token the new immutable source. No public revision is involved.
+    assert!(
+        execution
+            .renew_lease(live.lease_until + time::Duration::seconds(1))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.state.lock().unwrap().native_run_issuances.len(),
+        sequence
+    );
+    assert!(current(&store, &admitted.run.id, None).is_err());
+}
+
+#[tokio::test]
+async fn legacy_run_without_issuance_executes_begin_but_cannot_issue_parent_proof() {
+    let (store, _clock) = store();
+    let admitted = crate::public_state_contract::admit(&store, OffsetDateTime::UNIX_EPOCH).await;
+    let execution = store.execution(admitted.fence).await.unwrap();
+    let AttemptMutationOutcome::Applied { receipt, authority } = execution
+        .mutate_attempt(
+            crate::attempt_contract::reserve(
+                store.session_revision(&admitted.session.id).await.unwrap(),
+            ),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("reserve")
+    };
+    store.state.lock().unwrap().native_run_issuances.clear();
+    let begin = AttemptMutation {
+        id: ControlId::new(),
+        expected_revision: receipt.revision,
+        command: AttemptCommand::Begin {
+            target: receipt.attempt.target,
+        },
+    };
+    assert!(matches!(
+        execution
+            .mutate_attempt(begin.clone(), authority)
+            .await
+            .unwrap(),
+        AttemptMutationOutcome::Applied { .. }
+    ));
+    assert!(matches!(
+        execution.mutate_attempt(begin, None).await.unwrap(),
+        AttemptMutationOutcome::Replayed(_)
+    ));
+    let state = store.state.lock().unwrap();
+    assert!(state.native_run_issuances.is_empty());
+    assert!(state.native_parent_witnesses.is_empty());
+    drop(state);
+    assert!(current(&store, &admitted.run.id, None).is_err());
+}

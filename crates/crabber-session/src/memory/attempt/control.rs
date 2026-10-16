@@ -44,7 +44,7 @@ impl MemoryStore {
             super::super::tool_continuation::guard_attempt(state, &run, &control.mutation())?;
             let now = self.clock.now();
             let turn = reconcile_children(state, &run, control, now)?;
-            control.apply(&mut run, &mut record, current, now)?;
+            apply_control(state, &mut run, &mut record, control, current, now)?;
             if matches!(control, Control::Retire(_)) {
                 if let Some(turn) = &turn.close {
                     super::super::insert_event(
@@ -101,6 +101,25 @@ impl MemoryStore {
         result
     }
 }
+fn apply_control(
+    state: &mut State,
+    run: &mut Run,
+    record: &mut crate::attempt::AttemptRecord,
+    control: &Control,
+    current: crabber_core::SessionRevision,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    let previous =
+        crate::native_parent::RunState::from_run(run).map_err(|_| Error::UnknownStoreOutcome)?;
+    control.apply(run, record, current, now)?;
+    super::super::native_parent::record_run_states(
+        state,
+        Some(&previous),
+        crate::native_parent::RunState::from_run(run).map_err(|_| Error::UnknownStoreOutcome)?,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)
+}
+
 fn reconcile_children(
     state: &mut State,
     run: &Run,

@@ -54,12 +54,7 @@ impl super::super::MemoryStore {
             let calls = record.recovery_grants(&run, request, &parent, now)?;
             validate_native(state, &run, request, &record, now)?;
             super::claim::validate_calls(state, &run, &record)?;
-            let activated = approval::activate_recovery(request, &run, now)?;
-            let fence = RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token.clone(),
-            };
-            state.runs.insert(run.id.clone(), activated);
+            let fence = activate(state, &run, request, now)?;
             let execution = super::super::MemoryExecution {
                 store: self.clone(),
                 fence: fence.clone(),
@@ -112,6 +107,23 @@ impl super::super::MemoryStore {
         super::after_commit(result, fault)
     }
 }
+fn activate(
+    state: &mut super::super::State,
+    run: &crabber_core::Run,
+    request: &ApprovalContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<RunFence, Error> {
+    let activated = approval::activate_recovery(request, run, now)?;
+    let fence = RunFence {
+        run_id: run.id.clone(),
+        claim_token: activated.claim_token.clone(),
+    };
+    super::super::native_parent::record_run(state, Some(run), &activated)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state.runs.insert(run.id.clone(), activated);
+    Ok(fence)
+}
+
 fn validate_native(
     state: &super::super::State,
     run: &crabber_core::Run,

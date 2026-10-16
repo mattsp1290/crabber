@@ -60,19 +60,29 @@ impl MemoryStore {
             if lease <= time::Duration::ZERO {
                 return Err(Error::SemanticConflict);
             }
+            let previous = crate::native_parent::RunState::from_run(run)
+                .map_err(|_| Error::UnknownStoreFailure)?;
             run.owner = claim.owner;
             run.claim_token = uuid::Uuid::new_v4().to_string();
             run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
             run.updated_at = now;
             crate::ensure_storable(run).map_err(|_| Error::UnknownStoreFailure)?;
-            Ok(ClaimedAdmission {
+            let outcome = ClaimedAdmission {
                 record: record.clone(),
                 run: run.clone(),
                 fence: RunFence {
                     run_id: run.id.clone(),
                     claim_token: run.claim_token.clone(),
                 },
-            })
+            };
+            super::native_parent::record_run_states(
+                state,
+                Some(&previous),
+                crate::native_parent::RunState::from_run(&outcome.run)
+                    .map_err(|_| Error::UnknownStoreFailure)?,
+            )
+            .map_err(|_| Error::UnknownStoreFailure)?;
+            Ok(outcome)
         })
     }
 }

@@ -55,6 +55,8 @@ impl MemoryStore {
                 run_id: run.id.clone(),
                 claim_token: activated.claim_token.clone(),
             };
+            super::super::native_parent::record_run(state, Some(&run), &activated)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             state.runs.insert(run.id.clone(), activated);
             state
                 .attempts

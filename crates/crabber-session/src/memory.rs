@@ -82,6 +82,7 @@ pub struct MemoryStore {
 
 #[derive(Clone, Default)]
 struct State {
+    native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
@@ -213,7 +214,18 @@ impl MemoryStore {
             {
                 return Err(StoreError::Conflict);
             }
-            operation(state, &run)
+            let previous = crate::native_parent::RunState::from_run(&run).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            let output = operation(state, &run)?;
+            let updated = state.runs.get(&run.id).ok_or(StoreError::NotFound)?;
+            let updated = crate::native_parent::RunState::from_run(updated).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            native_parent::record_run_states(state, Some(&previous), updated).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            Ok(output)
         })
     }
     fn fenced<T>(
@@ -896,6 +908,10 @@ impl Store for MemoryStore {
             {
                 return Err(StoreError::Busy);
             }
+            let previous = crate::native_parent::RunState::from_run(
+                state.runs.get(id).ok_or(StoreError::NotFound)?,
+            )
+            .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
             let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
             if run.status.is_terminal() || run.lease_until > now {
                 return Err(StoreError::Conflict);
@@ -905,10 +921,17 @@ impl Store for MemoryStore {
             run.lease_until = now + time::Duration::seconds(30);
             run.updated_at = now;
             crate::ensure_storable(run)?;
-            Ok(RunFence {
+            let fence = RunFence {
                 run_id: id.clone(),
                 claim_token: run.claim_token.clone(),
-            })
+            };
+            let updated = crate::native_parent::RunState::from_run(run).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            native_parent::record_run_states(state, Some(&previous), updated).map_err(|_| {
+                StoreError::Validation("native run fence evidence unavailable".into())
+            })?;
+            Ok(fence)
         })
     }
 

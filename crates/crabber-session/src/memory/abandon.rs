@@ -38,10 +38,7 @@ pub(super) fn abandon_transaction(
     }
     // Revoke first in the transaction candidate. Publication of any
     // change waits until all settlements and evidence have succeeded.
-    run.claim_token = uuid::Uuid::new_v4().to_string();
-    run.lease_until = now;
-    run.updated_at = now;
-    state.runs.insert(run.id.clone(), run.clone());
+    revoke_run(state, &mut run, now)?;
     #[cfg(test)]
     fail_boundary(state, 1)?;
     let calls: Vec<_> = state
@@ -79,9 +76,10 @@ pub(super) fn abandon_transaction(
     if state.abandon_fail_after_tools {
         return Err(StoreError::Validation("injected abandonment failure".into()).into());
     }
+    let previous = fence_state(&run)?;
     run.status = RunStatus::Interrupted;
     // Retain usage, checkpoint and prior error/history verbatim.
-    state.runs.insert(run.id.clone(), run.clone());
+    persist_run(state, &previous, &run)?;
     #[cfg(test)]
     fail_boundary(state, 5)?;
     let evidence = AbandonEvidence {
@@ -112,6 +110,29 @@ pub(super) fn abandon_transaction(
     #[cfg(test)]
     fail_boundary(state, 7)?;
     Ok(outcome)
+}
+
+fn revoke_run(state: &mut State, run: &mut Run, now: OffsetDateTime) -> Result<(), AbandonError> {
+    let previous = fence_state(run)?;
+    run.claim_token = uuid::Uuid::new_v4().to_string();
+    run.lease_until = now;
+    run.updated_at = now;
+    persist_run(state, &previous, run)
+}
+
+fn fence_state(run: &Run) -> Result<crate::native_parent::RunState, AbandonError> {
+    crate::native_parent::RunState::from_run(run)
+        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()).into())
+}
+fn persist_run(
+    state: &mut State,
+    previous: &crate::native_parent::RunState,
+    run: &Run,
+) -> Result<(), AbandonError> {
+    super::native_parent::record_run_states(state, Some(previous), fence_state(run)?)
+        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
+    state.runs.insert(run.id.clone(), run.clone());
+    Ok(())
 }
 
 fn replay(
