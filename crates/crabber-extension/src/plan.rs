@@ -106,6 +106,8 @@ pub enum ExtensionError {
     PreparationResourcesUnsupported,
     #[error("plan already has an owned preparation lease")]
     PreparationLeaseAlreadyBound,
+    #[error("preparation acquisition registration rejected: {0}")]
+    PreparationRegistration(#[from] crate::ResourceRegistrationError),
     #[error(transparent)]
     DurableInteractionUnsupported(#[from] crate::DurableInteractionUnsupported),
     #[error("frozen registration declarations are unavailable")]
