@@ -9,6 +9,8 @@ pub enum ManagementError {
     Unsupported,
     #[error("session not found")]
     NotFound,
+    #[error("session was permanently deleted")]
+    Deleted,
     #[error("invalid session management request")]
     InvalidRequest,
     #[error("session control semantics conflict")]

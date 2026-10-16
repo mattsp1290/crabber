@@ -6,6 +6,36 @@ use crabber_session::{
     SessionSummary,
 };
 impl Orchestrator {
+    /// Erase a session only after the Store proves that accepted work and
+    /// session resources have settled. Does not initialize or stop extensions.
+    /// # Errors
+    /// Returns typed unsupported, revision, erasure or storage failures.
+    pub async fn delete_session(
+        &self,
+        request: crabber_session::DeleteSession,
+    ) -> Result<crabber_session::DeletionOutcome, crabber_session::DeletionError> {
+        self.store.delete_session(request).await
+    }
+    /// Reconcile the original minimal erasure receipt, including after close.
+    /// # Errors
+    /// Returns typed unsupported or storage-integrity failures.
+    pub async fn lookup_session_deletion(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<crabber_session::DeletionReceipt>, crabber_session::DeletionError> {
+        self.store.lookup_session_deletion(session, id).await
+    }
+    /// Read authoritative erasure disposition without restoring a runtime.
+    /// # Errors
+    /// Returns typed unsupported or storage-integrity failures.
+    pub async fn session_disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_session::SessionDisposition, crabber_session::DeletionError> {
+        self.store.session_disposition(session).await
+    }
+
     /// Copy one closed committed history prefix without acquiring a worker.
     /// # Errors
     /// Rejects unsupported stores, changed source scope/revision or corrupt provenance.

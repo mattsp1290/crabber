@@ -298,6 +298,34 @@ pub use crabber::session::{
     ManagementError, ManagementReceipt, PreparedApproval, SessionChange, SessionDefaults,
     SessionListCursor, SessionListPage, SessionSummary,
 };
+pub use crabber::session::{
+    DeleteSession, DeletionBlocker, DeletionError, DeletionOutcome, DeletionReceipt,
+    SessionDisposition,
+};
+#[path = "../../crabber-session/src/deletion/contract.rs"]
+#[allow(dead_code)]
+pub(crate) mod deletion_contract;
+#[path = "../../crabber-session/src/deletion/coverage.rs"]
+#[allow(dead_code)]
+pub(crate) mod deletion_coverage;
+#[path = "../../crabber-session/src/deletion/origin.rs"]
+#[allow(dead_code)]
+pub(crate) mod deletion_origin;
+#[path = "../../crabber-session/src/deletion/records.rs"]
+#[allow(dead_code)]
+mod deletion_records;
+#[path = "../../crabber-session/src/deletion/validation.rs"]
+#[allow(dead_code)]
+mod deletion_validation;
+mod deletion {
+    pub(crate) use crate::deletion_contract as contract;
+    pub(crate) use crate::deletion_coverage as coverage;
+    pub(crate) use crate::deletion_origin as origin;
+    pub(crate) use crate::deletion_records::Tombstone;
+    pub(crate) use crate::deletion_validation::{
+        fork_error, management_error, owner_error, validate_session,
+    };
+}
 #[path = "../../crabber-session/src/management/records.rs"]
 #[allow(dead_code)]
 mod management;

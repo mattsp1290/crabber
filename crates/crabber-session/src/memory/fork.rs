@@ -15,6 +15,7 @@ fn receipt(
     target: &SessionId,
     id: &ControlId,
 ) -> Result<Option<ForkReceipt>, Error> {
+    super::deletion::ensure_live(state, target).map_err(crate::deletion::fork_error)?;
     match state.operation_receipts.get(&(target.clone(), id.clone())) {
         None => Ok(None),
         Some(OperationReceipt::Fork(saved)) => {
@@ -55,6 +56,16 @@ impl MemoryStore {
                     return Err(Error::SemanticConflict);
                 }
                 return Ok(ForkOutcome::Replayed(saved));
+            }
+            if !state.sessions.contains_key(&request.target_session_id)
+                && (state
+                    .ownership_origins
+                    .contains_key(&request.target_session_id)
+                    || state
+                        .ownership_protocol_sessions
+                        .contains(&request.target_session_id))
+            {
+                return Err(Error::UnknownStoreOutcome);
             }
             let source = state
                 .sessions
@@ -155,6 +166,7 @@ fn publish(
         receipt: saved.clone(),
     };
     audit.validate()?;
+    let origin = crate::deletion::origin::OwnershipOrigin::fork(&saved);
     // Every fallible check precedes the first mutation under the same lock.
     if history.calls.iter().any(|call| {
         state.calls.contains_key(&call.id) || state.imported_call_ids.contains(&call.id)
@@ -162,6 +174,8 @@ fn publish(
         return Err(Error::UnknownStoreOutcome);
     }
     let target = &session.id;
+    state.ownership_protocol_sessions.insert(target.clone());
+    state.ownership_origins.insert(target.clone(), origin);
     for message in history.messages {
         state.messages.push(target.clone(), message);
     }

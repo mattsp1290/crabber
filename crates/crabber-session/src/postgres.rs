@@ -16,12 +16,14 @@ mod abandon;
 mod admission_execution;
 mod approval;
 mod attempt;
+mod deletion;
 mod execution_binding;
 #[cfg(test)]
 mod lock_order_tests;
 mod management;
 mod migration;
 mod native_parent;
+mod ownership_origin;
 mod phase;
 mod public_header;
 mod public_run;
@@ -88,6 +90,9 @@ struct PostgresExecution {
 #[allow(clippy::needless_pass_by_value)] // Required by map_err.
 fn db(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(ref detail) = error {
+        if detail.message() == "crabber_session_deleted" {
+            return StoreError::SessionDeleted;
+        }
         if detail.code().as_deref() == Some("23505") {
             return StoreError::Conflict;
         }
@@ -142,6 +147,13 @@ fn call_status(status: ToolCallStatus) -> &'static str {
 // events/revision. Every existing and new write path must enter through this
 // gate, including lease renewal and keyed replay. No external I/O under locks.
 async fn lock_session(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<(), StoreError> {
+    lock_session_scope(tx, session).await?;
+    deletion::ensure_live(tx, session).await
+}
+async fn lock_session_scope(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
 ) -> Result<(), StoreError> {
@@ -558,6 +570,10 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0016_session_deletion.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -830,6 +846,19 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn lookup_session_deletion(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::DeletionReceipt>, crate::DeletionError> {
+        self.deletion_receipt(session, id).await
+    }
+    async fn session_disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionDisposition, crate::DeletionError> {
+        self.disposition(session).await
+    }
     fn supports_session_owners(&self) -> bool {
         true
     }

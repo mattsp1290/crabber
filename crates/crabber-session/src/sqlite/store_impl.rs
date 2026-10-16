@@ -18,6 +18,19 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn lookup_session_deletion(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::DeletionReceipt>, crate::DeletionError> {
+        self.deletion_receipt(session, id).await
+    }
+    async fn session_disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionDisposition, crate::DeletionError> {
+        self.disposition(session).await
+    }
     fn supports_session_owners(&self) -> bool {
         true
     }

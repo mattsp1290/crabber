@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 15;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 16;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 11;
+pub const SQLITE_SCHEMA_VERSION: i64 = 12;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -76,8 +76,13 @@ pub use run_control::{
     RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus,
     RunControlSummary, RunControlTarget, WaitingCancellation,
 };
-mod fork;
+mod deletion;
 mod management;
+pub use deletion::{
+    DeleteSession, DeletionBlocker, DeletionError, DeletionOutcome, DeletionReceipt,
+    SessionDisposition,
+};
+mod fork;
 pub use fork::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
 pub mod management_contract;
 pub mod session_owner;

@@ -1,0 +1,287 @@
+//! Permanent identity checks under the ordinary Memory session gate.
+use super::{MemoryStore, State};
+use crate::deletion::coverage::{self, CoverageRead};
+use crate::deletion::origin::OriginKind;
+use crate::{DeletionError, DeletionReceipt, SessionDisposition, StoreError};
+use crabber_core::{ControlId, SessionId, SessionRevision};
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
+)]
+pub(super) fn coverage(state: &State, session: &SessionId) -> Result<CoverageRead, DeletionError> {
+    let Some(origin) = state.ownership_origins.get(session) else {
+        return Ok(CoverageRead::Unknown);
+    };
+    if !state.ownership_protocol_sessions.contains(session) {
+        return Err(DeletionError::UnknownStoreOutcome);
+    }
+    let session = state
+        .sessions
+        .get(session)
+        .ok_or(DeletionError::UnknownStoreOutcome)?;
+    let revision = state
+        .public_revisions
+        .get(&session.id)
+        .copied()
+        .unwrap_or(SessionRevision::INITIAL);
+    let mut bytes = 0;
+    if !charge(origin, 8192, &mut bytes) || !charge(session, 16384, &mut bytes) {
+        return Ok(CoverageRead::Limited);
+    }
+    origin.validate(&session.id, revision)?;
+    let key = (session.id.clone(), origin.operation_id.clone());
+    let proof = match (origin.kind, state.operation_receipts.get(&key)) {
+        (OriginKind::ManagedCreate, Some(super::OperationReceipt::Management(receipt))) => {
+            let audit = state
+                .management_audits
+                .get(&key)
+                .ok_or(DeletionError::UnknownStoreOutcome)?;
+            if !charge(audit, 32768, &mut bytes) || !charge(receipt, 32768, &mut bytes) {
+                return Ok(CoverageRead::Limited);
+            }
+            coverage::managed(origin, session, revision, audit, receipt, bytes)?
+        }
+        (OriginKind::Fork, Some(super::OperationReceipt::Fork(receipt))) => {
+            let audit = state
+                .fork_audits
+                .get(&key)
+                .ok_or(DeletionError::UnknownStoreOutcome)?;
+            if !charge(audit, 32768, &mut bytes) || !charge(receipt, 32768, &mut bytes) {
+                return Ok(CoverageRead::Limited);
+            }
+            coverage::fork(origin, session, revision, audit, receipt, bytes)?
+        }
+        _ => return Err(DeletionError::UnknownStoreOutcome),
+    };
+    Ok(CoverageRead::Verified(proof))
+}
+fn charge(value: &impl serde::Serialize, cap: usize, used: &mut usize) -> bool {
+    let remaining = coverage::MAX_PROOF_BYTES.saturating_sub(*used);
+    let Some(bytes) = crate::snapshot::encoded_bytes(value, remaining.min(cap)) else {
+        return false;
+    };
+    *used += bytes;
+    true
+}
+
+pub(super) fn ensure_live(state: &State, session: &SessionId) -> Result<(), StoreError> {
+    if let Some(tombstone) = state.tombstones.get(session) {
+        tombstone
+            .verify(session)
+            .map_err(|_| StoreError::Validation("session deletion evidence unavailable".into()))?;
+        return Err(StoreError::SessionDeleted);
+    }
+    Ok(())
+}
+
+impl MemoryStore {
+    pub(super) fn deletion_receipt(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<DeletionReceipt>, DeletionError> {
+        crate::management::validate_scope(session, id)
+            .map_err(|_| DeletionError::InvalidRequest)?;
+        let state = self.state.lock().expect("memory store poisoned");
+        let Some(tombstone) = state.tombstones.get(session) else {
+            return Ok(None);
+        };
+        tombstone.verify(session)?;
+        if state.sessions.contains_key(session) {
+            return Err(DeletionError::UnknownStoreOutcome);
+        }
+        if tombstone.receipt.operation_id != *id {
+            return Err(DeletionError::Deleted);
+        }
+        Ok(Some(tombstone.receipt.clone()))
+    }
+
+    pub(super) fn disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<SessionDisposition, DeletionError> {
+        crate::deletion::validate_session(session)?;
+        let state = self.state.lock().expect("memory store poisoned");
+        if let Some(tombstone) = state.tombstones.get(session) {
+            tombstone.verify(session)?;
+            if state.sessions.contains_key(session) {
+                return Err(DeletionError::UnknownStoreOutcome);
+            }
+            return Ok(SessionDisposition::Deleted {
+                final_revision: tombstone.receipt.final_revision,
+                deleted_at: tombstone.receipt.deleted_at,
+            });
+        }
+        Ok(if state.sessions.contains_key(session) {
+            SessionDisposition::Present {
+                revision: state
+                    .public_revisions
+                    .get(session)
+                    .copied()
+                    .unwrap_or(SessionRevision::INITIAL),
+            }
+        } else {
+            // Absence says nothing about pre-session preparation ownership.
+            SessionDisposition::Missing
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+    #[tokio::test]
+    async fn bare_admission_and_rename_never_install_coverage() {
+        let store = super::MemoryStore::new();
+        let session = crabber_core::SessionId::new();
+        store
+            .admit_run(crate::deletion::contract::admission(&session))
+            .await
+            .unwrap();
+        let revision = store.session_revision(&session).await.unwrap();
+        store
+            .manage_session(crate::ManageSession {
+                id: crabber_core::ControlId::new(),
+                session_id: session.clone(),
+                expected_revision: revision,
+                change: crate::SessionChange::Rename {
+                    title: "renamed legacy session".into(),
+                },
+            })
+            .await
+            .unwrap();
+        let state = store.state.lock().unwrap();
+        assert!(!state.ownership_protocol_sessions.contains(&session));
+        assert!(matches!(
+            super::coverage(&state, &session).unwrap(),
+            super::CoverageRead::Unknown
+        ));
+    }
+    #[tokio::test]
+    async fn creation_coverage_requires_exact_original_evidence() {
+        let store = super::MemoryStore::new();
+        let created = store
+            .manage_session(crate::management_contract::create())
+            .await
+            .unwrap();
+        let id = &created.session_id;
+        let original = store.state.lock().unwrap().ownership_origins[id].clone();
+        assert_coverage(&store, id, created.revision);
+        let renamed = store
+            .manage_session(crate::ManageSession {
+                id: crabber_core::ControlId::new(),
+                session_id: id.clone(),
+                expected_revision: created.revision,
+                change: crate::SessionChange::Rename {
+                    title: "renamed".into(),
+                },
+            })
+            .await
+            .unwrap();
+        assert_coverage(&store, id, renamed.revision);
+        store
+            .state
+            .lock()
+            .unwrap()
+            .ownership_protocol_sessions
+            .remove(id);
+        assert!(matches!(
+            super::coverage(&store.state.lock().unwrap(), id),
+            Err(crate::DeletionError::UnknownStoreOutcome)
+        ));
+        store
+            .state
+            .lock()
+            .unwrap()
+            .ownership_protocol_sessions
+            .insert(id.clone());
+        store.state.lock().unwrap().ownership_origins.remove(id);
+        assert!(matches!(
+            super::coverage(&store.state.lock().unwrap(), id).unwrap(),
+            super::CoverageRead::Unknown
+        ));
+        store
+            .state
+            .lock()
+            .unwrap()
+            .ownership_origins
+            .insert(id.clone(), original);
+        store
+            .state
+            .lock()
+            .unwrap()
+            .management_audits
+            .remove(&(id.clone(), created.operation_id));
+        assert!(matches!(
+            super::coverage(&store.state.lock().unwrap(), id),
+            Err(crate::DeletionError::UnknownStoreOutcome)
+        ));
+    }
+    fn assert_coverage(
+        store: &super::MemoryStore,
+        id: &crabber_core::SessionId,
+        revision: crabber_core::SessionRevision,
+    ) {
+        let super::CoverageRead::Verified(proof) =
+            super::coverage(&store.state.lock().unwrap(), id).unwrap()
+        else {
+            panic!("positive original coverage")
+        };
+        assert_eq!(proof.session_id(), id);
+        assert_eq!(proof.revision(), revision);
+        assert!(proof.proof_bytes() > 0);
+    }
+    #[tokio::test]
+    async fn dangling_creation_origin_cannot_be_overwritten() {
+        let store = super::MemoryStore::new();
+        let mut create = crate::management_contract::create();
+        store.manage_session(create.clone()).await.unwrap();
+        let original = store.state.lock().unwrap().ownership_origins[&create.session_id].clone();
+        store
+            .state
+            .lock()
+            .unwrap()
+            .sessions
+            .remove(&create.session_id);
+        create.id = crabber_core::ControlId::new();
+        assert_eq!(
+            store.manage_session(create.clone()).await.unwrap_err(),
+            crate::ManagementError::UnknownStoreOutcome
+        );
+        assert_eq!(
+            store.state.lock().unwrap().ownership_origins[&create.session_id],
+            original
+        );
+    }
+    #[tokio::test]
+    async fn permanent_identity_guards() {
+        let store = super::MemoryStore::new();
+        let tombstone = crate::deletion::contract::deleted();
+        store
+            .state
+            .lock()
+            .unwrap()
+            .tombstones
+            .insert(tombstone.receipt.session_id.clone(), tombstone.clone());
+        crate::deletion::contract::metadata(&store, &tombstone).await;
+        crate::deletion::contract::creation_guards(&store, &tombstone).await;
+        store
+            .state
+            .lock()
+            .unwrap()
+            .tombstones
+            .get_mut(&tombstone.receipt.session_id)
+            .unwrap()
+            .expected_revision = tombstone.receipt.final_revision;
+        assert_eq!(
+            store
+                .deletion_receipt(
+                    &tombstone.receipt.session_id,
+                    &tombstone.receipt.operation_id
+                )
+                .unwrap_err(),
+            crate::DeletionError::UnknownStoreOutcome
+        );
+    }
+}

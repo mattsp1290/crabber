@@ -444,6 +444,8 @@ pub enum CoreError {
     HostUnsupported,
     #[error("session identity does not match")]
     SessionIdentityMismatch,
+    #[error("session was permanently deleted")]
+    SessionDeleted,
     #[error("session is busy")]
     Busy,
     #[error("record not found")]

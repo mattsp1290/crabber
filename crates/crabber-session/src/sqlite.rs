@@ -12,12 +12,14 @@ mod abandon;
 mod admission_execution;
 mod approval;
 mod attempt;
+mod deletion;
 mod execution;
 mod execution_binding;
 mod fork;
 mod frontend;
 mod management;
 mod native_parent;
+mod ownership_origin;
 mod phase;
 mod public_header;
 mod public_run;
@@ -67,6 +69,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0010_frontend_continuations.sql"),
     "\nINSERT INTO schema_version(version) VALUES(10);\n",
     include_str!("../migrations/sqlite/0011_safe_forks.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(11);\n",
+    include_str!("../migrations/sqlite/0012_session_deletion.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
@@ -371,6 +375,9 @@ async fn initialize(
 #[allow(clippy::needless_pass_by_value)] // Required by map_err.
 fn db(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(detail) = &error {
+        if detail.message() == "crabber_session_deleted" {
+            return StoreError::SessionDeleted;
+        }
         match detail.kind() {
             ErrorKind::UniqueViolation => return StoreError::Conflict,
             ErrorKind::ForeignKeyViolation => return StoreError::NotFound,

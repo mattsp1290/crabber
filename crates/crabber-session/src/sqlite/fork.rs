@@ -84,11 +84,12 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = async {
-
+            super::deletion::ensure_live(&mut tx,&request.target_session_id).await.map_err(crate::deletion::fork_error)?;
             if let Some(saved) = receipt(&mut tx,&request.target_session_id,&request.id).await? {
                 if saved.semantic_digest != digest { return Err(Error::SemanticConflict) }
                 return Ok(ForkOutcome::Replayed(saved))
             }
+            super::deletion::ensure_live(&mut tx,&request.source_session_id).await.map_err(crate::deletion::fork_error)?;
             let (source,_,revision) = super::management::current(&mut tx,&request.source_session_id).await.map_err(unknown)?.ok_or(Error::NotFound)?;
             if revision != request.expected_source_revision { return Err(Error::RevisionConflict) }
             if source.workspace_id != request.workspace_id || source.directory != request.directory { return Err(Error::SemanticConflict) }
@@ -144,13 +145,15 @@ async fn publish(
         receipt: saved.clone(),
     };
     audit.validate()?;
-    sqlx::query("INSERT INTO sessions(id,data,public_revision) VALUES($1,$2,$3)")
-        .bind(&session.id.0)
-        .bind(serde_json::to_string(&session).map_err(unknown)?)
-        .bind(i64::try_from(revision.get()).map_err(unknown)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(unknown)?;
+    sqlx::query(
+        "INSERT INTO sessions(id,data,public_revision,ownership_protocol) VALUES($1,$2,$3,1)",
+    )
+    .bind(&session.id.0)
+    .bind(serde_json::to_string(&session).map_err(unknown)?)
+    .bind(i64::try_from(revision.get()).map_err(unknown)?)
+    .execute(&mut **tx)
+    .await
+    .map_err(unknown)?;
     sqlx::query("INSERT INTO session_management(session_id,workspace_id,archived,format_version,data_json) VALUES($1,$2,$3,1,$4)").bind(&session.id.0).bind(&session.workspace_id).bind(false).bind(serde_json::to_string(&metadata).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
     for message in &history.messages {
         insert_message(tx, message).await?;
@@ -188,6 +191,9 @@ async fn publish(
     .await
     .map_err(unknown)?;
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'session_fork',$3,NULL,$4)").bind(&session.id.0).bind(&saved.operation_id.0).bind(saved.semantic_digest.as_str()).bind(serde_json::to_string(&saved).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+    super::ownership_origin::record(tx, &crate::deletion::origin::OwnershipOrigin::fork(&saved))
+        .await
+        .map_err(crate::deletion::fork_error)?;
     Ok(ForkOutcome::Applied(saved))
 }
 async fn insert_message(

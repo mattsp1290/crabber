@@ -159,6 +159,7 @@ fn admission_session(
         .session_id
         .clone()
         .unwrap_or_else(|| request.user_message.session_id.clone());
+    super::deletion::ensure_live(state, &session_id)?;
     state
         .session_owners
         .context(&session_id, &request.workspace_id, &request.directory)
@@ -218,6 +219,7 @@ pub(super) fn admit_keyed_guarded(
         .session_id
         .as_ref()
         .ok_or(StoreError::AdmissionConflict)?;
+    super::deletion::ensure_live(state, session_id)?;
     if let Some(session) = state.sessions.get(session_id) {
         session.ensure_identity(&request.workspace_id, &request.directory)?;
     }

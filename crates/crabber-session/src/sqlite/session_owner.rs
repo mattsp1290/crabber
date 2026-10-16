@@ -87,6 +87,9 @@ impl SqliteStore {
         )?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = async {
+            super::deletion::ensure_live(&mut tx, &request.binding.session_id)
+                .await
+                .map_err(crate::deletion::owner_error)?;
             if let Some(audit) =
                 reads::audit(&mut tx, &request.binding.session_id, &request.id).await?
             {
@@ -195,6 +198,9 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = async {
+            super::deletion::ensure_live(&mut tx, &request.session_id)
+                .await
+                .map_err(crate::deletion::owner_error)?;
             if let Some(audit) = reads::audit(&mut tx, &request.session_id, &request.id).await? {
                 if audit.receipt.semantic_digest != digest {
                     return Err(Error::SemanticConflict);
