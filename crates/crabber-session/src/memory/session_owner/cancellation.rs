@@ -10,6 +10,8 @@ impl MemoryStore {
         request.fingerprint()?;
         let fault = super::fault(self);
         let outcome = self.transact(|state| {
+            super::super::deletion::ensure_live(state, &request.session_id)
+                .map_err(crate::deletion::owner_error)?;
             let before = revision(state, &request.session_id);
             let outcome = state
                 .session_owners
@@ -33,6 +35,8 @@ impl MemoryStore {
         request.fingerprint()?;
         let fault = super::fault(self);
         let outcome = self.transact(|state| {
+            super::super::deletion::ensure_live(state, &request.session_id)
+                .map_err(crate::deletion::owner_error)?;
             let before = revision(state, &request.session_id);
             let outcome = state.session_owners.observe_cancel(
                 request,
@@ -55,10 +59,9 @@ impl MemoryStore {
         &self,
         authority: &SessionOwnerAuthority,
     ) -> Result<Option<SessionOwnerCancellation>, Error> {
-        self.state
-            .lock()
-            .unwrap()
-            .session_owners
-            .pending_cancel(authority)
+        let state = self.state.lock().unwrap();
+        super::super::deletion::ensure_live(&state, authority.session_id())
+            .map_err(crate::deletion::owner_error)?;
+        state.session_owners.pending_cancel(authority)
     }
 }

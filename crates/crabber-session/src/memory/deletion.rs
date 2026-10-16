@@ -4,6 +4,9 @@ use crate::deletion::coverage::{self, CoverageRead};
 use crate::deletion::origin::OriginKind;
 use crate::{DeletionError, DeletionReceipt, SessionDisposition, StoreError};
 use crabber_core::{ControlId, SessionId, SessionRevision};
+#[cfg(test)]
+#[path = "deletion/lookup_tests.rs"]
+mod lookup_tests;
 
 #[cfg_attr(
     not(test),

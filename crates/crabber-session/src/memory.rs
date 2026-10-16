@@ -664,11 +664,9 @@ impl Store for MemoryStore {
         Option<crate::session_owner::preparation::PreparationReconciliation>,
         crate::session_owner::SessionOwnerError,
     > {
-        self.state
-            .lock()
-            .unwrap()
-            .session_owners
-            .preparation_metadata(session, key)
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.preparation_metadata(session, key)
     }
     async fn complete_preparation(
         &self,
@@ -720,11 +718,9 @@ impl Store for MemoryStore {
         id: &crabber_core::SessionOwnerId,
     ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
     {
-        self.state
-            .lock()
-            .unwrap()
-            .session_owners
-            .snapshot(session, id)
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.snapshot(session, id)
     }
     async fn lookup_session_owner(
         &self,
@@ -734,11 +730,9 @@ impl Store for MemoryStore {
         Option<crate::session_owner::SessionOwnerReceipt>,
         crate::session_owner::SessionOwnerError,
     > {
-        self.state
-            .lock()
-            .unwrap()
-            .session_owners
-            .receipt(session, id)
+        let state = self.state.lock().unwrap();
+        deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
+        state.session_owners.receipt(session, id)
     }
 
     async fn lookup_session_deletion(
