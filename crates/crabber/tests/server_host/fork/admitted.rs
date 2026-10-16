@@ -5,6 +5,8 @@ use crabber::core::{
 };
 
 fn supplied_pair() -> InputEnvelope {
+    let nonce = uuid::Uuid::new_v4();
+    let call: crabber::core::ToolCallId = format!("supplied:原本/call-{nonce}").into();
     let entries = [
         (
             Role::User,
@@ -17,7 +19,7 @@ fn supplied_pair() -> InputEnvelope {
         (
             Role::Assistant,
             InputContent::ToolCall {
-                call_id: "supplied:原本/call".into(),
+                call_id: call.clone(),
                 name: "identity".into(),
                 arguments: json!({"supplied":true}),
             },
@@ -25,7 +27,7 @@ fn supplied_pair() -> InputEnvelope {
         (
             Role::Tool,
             InputContent::ToolResult {
-                call_id: "supplied:原本/call".into(),
+                call_id: call,
                 content: vec![MessageContent::Text {
                     text: "supplied result".into(),
                 }],
@@ -38,11 +40,11 @@ fn supplied_pair() -> InputEnvelope {
             .into_iter()
             .enumerate()
             .map(|(index, (role, content))| InputMessage {
-                id: Some(format!("supplied:原本/message-{index}")),
+                id: Some(format!("supplied:原本/message-{nonce}-{index}")),
                 parent_id: None,
                 role,
                 parts: vec![InputPart {
-                    id: Some(format!("supplied:原本/part-{index}")),
+                    id: Some(format!("supplied:原本/part-{nonce}-{index}")),
                     content,
                 }],
             })
