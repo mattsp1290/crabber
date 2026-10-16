@@ -159,7 +159,8 @@ async fn session_drain_joins_only_selected_preparation_workers_and_resources() {
     assert_eq!(report.pending, [] as [RunId; 0]);
     assert_eq!(report.pending_preparations, [] as [PreparationTaskId; 0]);
     assert_eq!(report.resources, [] as [ToolResourceDrain; 0]);
-    let (pending, preparations, resources) = tasks.pending(Some(&other));
+    let (pending, preparations, resources, heartbeats) = tasks.pending(Some(&other));
+    assert_eq!(heartbeats.len(), 0);
     assert_eq!(pending, vec![other_run]);
     assert_eq!(preparations.len(), 1);
     assert_eq!(resources.len(), 1);

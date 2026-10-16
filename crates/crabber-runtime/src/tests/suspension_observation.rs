@@ -397,3 +397,56 @@ fn assert_ack_result(
         (_, result) => panic!("{boundary:?}: {result:?}"),
     }
 }
+
+#[tokio::test]
+async fn worker_join_retains_original_heartbeat_renewal_after_main_returns() {
+    let inner = Arc::new(MemoryStore::new());
+    let gate = Arc::new(ObservationGate {
+        heartbeat_probe: true,
+        ..Default::default()
+    });
+    let provider =
+        FakeProvider::scripted(vec![call_script(ToolCallId::new(), r#"{"text":"once"}"#)]);
+    let runtime = runtime(
+        Boundary::Generic,
+        inner.clone(),
+        gate.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        provider.clone(),
+    );
+    let handle = runtime.start(request()).await.unwrap();
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    let done = handle.done();
+    tokio::pin!(done);
+    wait(&gate.model_entered, "model entered").await;
+    wait(&gate.heartbeat_entered, "original renewal entered").await;
+    gate.release_model.notify_one();
+    wait(&gate.committed, "native pause committed").await;
+    gate.release_ack.notify_one();
+    let early = tokio::time::timeout(std::time::Duration::from_millis(50), done.as_mut()).await;
+    assert!(
+        early.is_err(),
+        "worker joined while its original renewal was blocked: {early:?}"
+    );
+    let pending = runtime
+        .drain_session_execution_tasks(&session, std::time::Duration::from_millis(20))
+        .await;
+    assert_eq!(pending.pending, vec![run.clone()]);
+    assert!(pending.heartbeats.iter().any(|scope| {
+        scope.session_id == session && scope.run_id == run && scope.resources.pending == 1
+    }));
+    assert_eq!(gate.stale_renewals.load(Ordering::SeqCst), 0);
+    gate.release_heartbeat.notify_one();
+    wait(&gate.heartbeat_returned, "same original renewal returned").await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), done)
+        .await
+        .unwrap();
+    assert_ack_result(Boundary::Generic, false, result);
+    let joined = runtime
+        .drain_session_execution_tasks(&session, std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(joined.pending.len(), 0);
+    assert_eq!(gate.stale_renewals.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+}

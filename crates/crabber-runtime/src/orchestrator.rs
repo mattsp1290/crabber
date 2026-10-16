@@ -1,4 +1,6 @@
 mod driver;
+mod heartbeat;
+use heartbeat::HeartbeatGuard;
 mod host_callbacks;
 #[path = "orchestrator/observation_lifetime.rs"]
 mod observation_lifetime;
@@ -954,76 +956,6 @@ impl StateSink for RunStateSink {
     }
 }
 
-struct HeartbeatGuard {
-    task: tokio::task::JoinHandle<()>,
-    lost: Arc<AtomicBool>,
-    signal: watch::Receiver<bool>,
-    _signal_sender: watch::Sender<bool>,
-}
-
-impl HeartbeatGuard {
-    fn start(
-        execution: Arc<dyn ExecutionStore>,
-        store: Arc<dyn Store>,
-        fence: RunFence,
-        clock: Arc<dyn Clock>,
-        period: Duration,
-        observation_lifetime: Arc<ObservationLifetime>,
-    ) -> Self {
-        let lost = Arc::new(AtomicBool::new(false));
-        let lost_in_task = Arc::clone(&lost);
-        let (sender, signal) = watch::channel(false);
-        let task_sender = sender.clone();
-        let task = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                if !observation_lifetime.active() {
-                    break;
-                }
-                if execution
-                    .renew_lease(clock.now() + time::Duration::seconds(30))
-                    .await
-                    .is_err()
-                {
-                    // A native pause can commit before its ACK returns. Recheck
-                    // after the Store await before treating our own revocation as loss.
-                    if !observation_lifetime.active() {
-                        break;
-                    }
-                    let settled_by_this_owner = store
-                        .get_run(&fence.run_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some_and(|run| {
-                            run.status.is_terminal() && run.claim_token == fence.claim_token
-                        });
-                    if settled_by_this_owner || !observation_lifetime.active() {
-                        break;
-                    }
-                    lost_in_task.store(true, Ordering::SeqCst);
-                    let _ = task_sender.send(true);
-                    break;
-                }
-            }
-        });
-        Self {
-            task,
-            lost,
-            signal,
-            _signal_sender: sender,
-        }
-    }
-}
-
-impl Drop for HeartbeatGuard {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 impl RunHandle {
     #[cfg(test)]
     pub(crate) fn worker_resources_for_test(&self) -> &crate::execution_tasks::WorkerResources {
@@ -1137,13 +1069,13 @@ impl Orchestrator {
     /// deadline. A dropped run handle leaves its worker retained here.
     /// This does not stop ingress, cancel work, or prove durable settlement or
     /// external resource cleanup. Inspect `pending`, `pending_preparations` and
-    /// `resources` (sealed state, pending joins and failures). Active tool scopes
+    /// tool `resources` and `heartbeats` (sealed state, pending joins and failures). Active tool scopes
     /// remain open; the host must stop its ingress before a final drain.
     pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
         self.execution_tasks.drain(bound).await
     }
 
-    /// Join only this session's retained preparation, workers and tool resources.
+    /// Join this session's retained preparation, workers, tools and heartbeats.
     /// This is a local observation: it neither stops ingress nor proves durable
     /// cleanup or the absence of work on another controller.
     pub async fn drain_session_execution_tasks(
@@ -1524,7 +1456,11 @@ impl Orchestrator {
             Arc::clone(&self.clock),
             self.heartbeat_interval,
             Arc::clone(&worker.observation_lifetime),
-        );
+            worker
+                .worker_resources
+                .as_ref()
+                .ok_or(RuntimeError::PreparationRecoveryRequired)?,
+        )?;
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
         let work_cancellation = cancellation.clone();
@@ -2728,6 +2664,9 @@ impl Orchestrator {
                     }
                 } else {
                     worker().await;
+                    // Resource failures remain visible in the separate drain;
+                    // they are not a panic of this actual returned worker.
+                    let _ = resources.finish().await;
                 }
                 failed.termination()
             },
@@ -2828,7 +2767,11 @@ impl Orchestrator {
             Arc::clone(&self.clock),
             self.heartbeat_interval,
             Arc::clone(&worker.observation_lifetime),
-        );
+            worker
+                .worker_resources
+                .as_ref()
+                .ok_or(RuntimeError::PreparationRecoveryRequired)?,
+        )?;
         let run_id = fence.run_id.clone();
         let run_started_at = self.clock.now();
         let mut signal = heartbeat.signal.clone();

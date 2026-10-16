@@ -1,7 +1,10 @@
 //! Local task ownership. These joins say nothing about durable outcome or
 //! extension-owned resources; those must be reconciled independently.
+mod heartbeat;
 use crabber_core::{RunId, SessionId, ToolCallId};
 use futures::{StreamExt, stream::FuturesUnordered};
+pub use heartbeat::HeartbeatResourceDrain;
+use heartbeat::OwnedHeartbeatResources;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -47,6 +50,8 @@ pub struct JoinedPreparationTask {
 pub struct ExecutionTaskDrain {
     /// Native tool-task joins and retained leftovers, independent of worker joins.
     pub resources: Vec<ToolResourceDrain>,
+    /// Actual lease-heartbeat joins, separate from tool scopes.
+    pub heartbeats: Vec<HeartbeatResourceDrain>,
     pub joined: Vec<JoinedExecutionTask>,
     /// Tasks still retained after the deadline, including newly started tasks.
     pub pending: Vec<RunId>,
@@ -80,6 +85,7 @@ pub(crate) struct ExecutionTasks {
 struct ExecutionOwners {
     tasks: BTreeMap<RunId, Arc<ExecutionTask>>,
     resources: Vec<Arc<OwnedToolResources>>,
+    heartbeats: Vec<Arc<OwnedHeartbeatResources>>,
 }
 
 /// Local ownership of one actual worker's resources; never native authority.
@@ -118,9 +124,12 @@ impl WorkerResources {
             .await
     }
     pub(crate) async fn finish(&self) -> Result<(), ()> {
-        self.tasks
-            .finish_worker_resources(&self.run_id, Some(&self.id))
-            .await
+        let (tools, heartbeat) = futures::join!(
+            self.tasks
+                .finish_worker_resources(&self.run_id, Some(&self.id)),
+            self.finish_heartbeats(),
+        );
+        tools.and(heartbeat)
     }
 }
 
@@ -390,7 +399,12 @@ impl ExecutionTasks {
     fn pending(
         &self,
         session: Option<&SessionId>,
-    ) -> (Vec<RunId>, Vec<PreparationTaskId>, Vec<ToolResourceDrain>) {
+    ) -> (
+        Vec<RunId>,
+        Vec<PreparationTaskId>,
+        Vec<ToolResourceDrain>,
+        Vec<HeartbeatResourceDrain>,
+    ) {
         // Preparation -> worker -> tool-resource handoffs are observed under
         // one lock, so a deadline cannot miss both the former and new owner.
         let mut owners = self.owners.lock().unwrap();
@@ -423,7 +437,8 @@ impl ExecutionTasks {
             let report = scope.owner.snapshot();
             !report.sealed || report.pending != 0 || !report.failures.is_empty()
         });
-        (runs, preparations, resources)
+        let heartbeats = heartbeat::snapshots(&mut owners, session);
+        (runs, preparations, resources, heartbeats)
     }
     pub(crate) async fn drain(&self, bound: Duration) -> ExecutionTaskDrain {
         self.drain_scoped(None, bound).await
@@ -486,10 +501,12 @@ impl ExecutionTasks {
             .joined_preparations
             .sort_by(|a, b| a.task_id.cmp(&b.task_id));
         self.drain_resources(session, deadline).await;
+        self.drain_heartbeats(session, deadline).await;
         (
             report.pending,
             report.pending_preparations,
             report.resources,
+            report.heartbeats,
         ) = self.pending(session);
         report
     }
