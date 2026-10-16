@@ -179,8 +179,8 @@ const COST: &str = r"SELECT length(CAST(c.data_json AS BLOB)) AS current_bytes,l
  LEFT JOIN session_owner_audits r ON r.session_id=c.session_id AND r.operation_id=json_extract(c.data_json,'$.cancellation.request.id')
  LEFT JOIN session_owner_audits v ON v.session_id=c.session_id AND v.operation_id=json_extract(c.data_json,'$.cancellation.observed.request.id')
 
- LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=json_extract(c.data_json,'$.resource.root_reserve')
- LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=json_extract(c.data_json,'$.resource.root_begin')
+ LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=COALESCE(json_extract(c.data_json,'$.resource.root_reserve'),json_extract(c.data_json,'$.service.root.root_reserve'))
+ LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=COALESCE(json_extract(c.data_json,'$.resource.root_begin'),json_extract(c.data_json,'$.service.root.root_begin'))
  LEFT JOIN session_owner_audits sr ON sr.session_id=c.session_id AND sr.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.source.reserve'),json_extract(c.data_json,'$.owned_join.activation.source.reserve'))
  LEFT JOIN session_owner_audits sb ON sb.session_id=c.session_id AND sb.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.source.begin'),json_extract(c.data_json,'$.owned_join.activation.source.begin'))
  LEFT JOIN session_owner_audits sa ON sa.session_id=c.session_id AND sa.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.id'),json_extract(c.data_json,'$.owned_join.activation.id'))

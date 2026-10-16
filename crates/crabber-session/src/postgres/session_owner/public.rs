@@ -179,8 +179,8 @@ const COST: &str = r"SELECT CAST(octet_length(c.data_json) AS BIGINT) AS current
  LEFT JOIN session_owner_audits r ON r.session_id=c.session_id AND r.operation_id=c.data_json::json#>>'{cancellation,request,id}'
  LEFT JOIN session_owner_audits v ON v.session_id=c.session_id AND v.operation_id=c.data_json::json#>>'{cancellation,observed,request,id}'
 
- LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=c.data_json::json#>>'{resource,root_reserve}'
- LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=c.data_json::json#>>'{resource,root_begin}'
+ LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=COALESCE(c.data_json::json#>>'{resource,root_reserve}',c.data_json::json#>>'{service,root,root_reserve}')
+ LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=COALESCE(c.data_json::json#>>'{resource,root_begin}',c.data_json::json#>>'{service,root,root_begin}')
  LEFT JOIN session_owner_audits sr ON sr.session_id=c.session_id AND sr.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,source,reserve}',c.data_json::json#>>'{owned_join,activation,source,reserve}')
  LEFT JOIN session_owner_audits sb ON sb.session_id=c.session_id AND sb.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,source,begin}',c.data_json::json#>>'{owned_join,activation,source,begin}')
  LEFT JOIN session_owner_audits sa ON sa.session_id=c.session_id AND sa.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,id}',c.data_json::json#>>'{owned_join,activation,id}')

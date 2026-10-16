@@ -109,7 +109,7 @@ impl Ledger {
     ) -> Result<(), crate::public_session::v2::proof::Failure> {
         use crate::public_session::v2::proof::unknown;
         let mut ids = Vec::with_capacity(5);
-        if let Some(link) = &record.resource {
+        if let Some(link) = crate::session_owner::preparation::resource_source::link(record) {
             ids.extend([&link.root_reserve, &link.root_begin]);
         }
         if let Some(scope) = source::context(record) {

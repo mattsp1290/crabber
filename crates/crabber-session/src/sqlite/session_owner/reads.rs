@@ -135,7 +135,7 @@ pub(super) async fn current(
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     verify_current(&record, &origin, &latest)?;
-    if let Some(link) = &record.resource {
+    if let Some(link) = crate::session_owner::preparation::resource_source::link(&record) {
         let root_reserve = audit(tx, session, &link.root_reserve)
             .await?
             .ok_or(Error::UnknownStoreOutcome)?;

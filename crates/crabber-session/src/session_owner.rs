@@ -347,6 +347,7 @@ pub enum SessionOwnerParentAuthority {
 }
 
 pub mod preparation;
+pub mod service;
 
 pub mod cancellation;
 pub use cancellation::{

@@ -180,7 +180,7 @@ impl Ledger {
             .get(&(session.clone(), record.origin.clone()))
             .ok_or(Error::UnknownStoreOutcome)?;
         verify_current(record, origin, latest)?;
-        if let Some(link) = &record.resource {
+        if let Some(link) = crate::session_owner::preparation::resource_source::link(record) {
             let reserve = self
                 .audits
                 .get(&(session.clone(), link.root_reserve.clone()))

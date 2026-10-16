@@ -22,6 +22,8 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<super::preparation::PreparationResourceLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<Box<super::service::SessionServiceLink>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
@@ -61,6 +63,7 @@ impl Record {
             origin: request.id.clone(),
             preparation: None,
             resource: None,
+            service: None,
             retained_resources: None,
             cancellation: None,
             parent,

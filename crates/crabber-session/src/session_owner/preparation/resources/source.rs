@@ -5,12 +5,19 @@ use crate::session_owner::{
     record::Record,
 };
 
+pub(crate) fn link(record: &Record) -> Option<&super::PreparationResourceLink> {
+    record
+        .resource
+        .as_ref()
+        .or_else(|| record.service.as_ref().map(|source| &source.root))
+}
+
 pub(crate) fn verify(
     child: &Record,
     root_reserve: &Audit,
     root_begin: &Audit,
 ) -> Result<(), Error> {
-    let link = child.resource.as_ref().ok_or(Error::UnknownStoreOutcome)?;
+    let link = link(child).ok_or(Error::UnknownStoreOutcome)?;
     verify_current(&root_begin.record, root_reserve, root_begin)?;
     let root = &root_reserve.record.snapshot.binding;
     let binding = &child.snapshot.binding;
@@ -23,7 +30,13 @@ pub(crate) fn verify(
         || root.session_id != binding.session_id
         || root.workspace_id != binding.workspace_id
         || root.directory != binding.directory
-        || root.behavior_fingerprint != binding.behavior_fingerprint
+        || (child.resource.is_some() && root.behavior_fingerprint != binding.behavior_fingerprint)
+        || (child.service.is_some()
+            && root_reserve
+                .record
+                .preparation
+                .as_ref()
+                .is_none_or(|source| source.resource_contract.is_none()))
     {
         return Err(Error::UnknownStoreOutcome);
     }

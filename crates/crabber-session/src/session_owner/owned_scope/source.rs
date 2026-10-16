@@ -27,6 +27,7 @@ pub(crate) fn verify(
         || record.snapshot.target != source.target
         || record.parent != begin.record.parent
         || record.resource != begin.record.resource
+        || record.service != begin.record.service
     {
         return Err(Error::UnknownStoreOutcome);
     }
