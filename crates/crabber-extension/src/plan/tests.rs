@@ -54,7 +54,7 @@ fn canonical_tool_identity_retains_default_build_serialization() {
 }
 
 /// Pins component identities plus result-transform version 3 and the
-/// native tool resource contract (version 1, capacity 64), and interaction
+/// native tool resource contract (version 3, capacity 64), and interaction
 /// contract version 2 (no live human hooks). Workspace routing
 /// values remain excluded; old execution plans fail closed on restoration.
 #[test]
@@ -71,7 +71,7 @@ fn fingerprint_of_fixed_components_is_pinned() {
     ];
     assert_eq!(
         compute_fingerprint(&components).to_string(),
-        "25de13c68d075012bf7f369a1785dcae211970e03a447b5ebfec519fc7642354"
+        "8983ee967d21a9dc43e2823567cd348126325fcccc9e5a76543c1a6a4ec7f9a6"
     );
     let provider = StaticPlanProvider::new(
         Vec::new(),
@@ -83,7 +83,7 @@ fn fingerprint_of_fixed_components_is_pinned() {
     );
     assert_eq!(
         provider.plan.fingerprint.to_string(),
-        "e3d029235f1bdd56bf506e88e449e1e82780c8678693c984abb521c3f8f82df6"
+        "dab6ef3e01dbff45e62355e88c71f6dfc778a5693efc6c833c726b0ee25032f9"
     );
 }
 
