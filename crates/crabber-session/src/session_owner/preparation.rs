@@ -63,8 +63,8 @@ pub(crate) use origin::{Origin, origin};
 
 pub(crate) mod expired;
 pub use expired::{
-    ExpiredRunOrigin, ExpiredRunPreparation, ExpiredRunTarget, InspectExpiredRunPreparation,
-    PreparedExpiredRunResume,
+    ExpiredAdmissionOrigin, ExpiredRunOrigin, ExpiredRunPreparation, ExpiredRunTarget,
+    InspectExpiredRunPreparation, PreparedExpiredRunResume,
 };
 
 pub(crate) mod recovery;

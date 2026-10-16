@@ -91,8 +91,34 @@ impl crate::sqlite::SqliteStore {
         audits: &[crate::session_owner::audit::Audit],
     ) -> Result<Option<crate::session_owner::preparation::ExpiredRunReceipt>, Error> {
         let target = history::target(audits)?;
-        let verify = |native| history::verify(previous, next, audits, native);
-        let receipt = match &target.origin {
+        let parent = if let ExpiredRunOrigin::InitialUnstarted { reservation, .. } = &target.origin
+        {
+            Some(crate::sqlite::expired::unstarted::read(tx, session, reservation).await?)
+        } else {
+            None
+        };
+        let origin = if let ExpiredRunOrigin::InitialUnstarted { admission, .. } = &target.origin {
+            crate::session_owner::preparation::expired::unstarted::admission(admission)
+        } else {
+            target.origin.clone()
+        };
+        let verify = |native| {
+            history::verify(
+                previous,
+                next,
+                audits,
+                if let Some(original) = &parent {
+                    Native::Unstarted {
+                        initial: Box::new(native),
+                        original,
+                    }
+                } else {
+                    native
+                },
+            )
+        };
+        let receipt = match &origin {
+            ExpiredRunOrigin::InitialUnstarted { .. } => return Err(Error::UnknownStoreOutcome),
             ExpiredRunOrigin::UnkeyedAdmission(_) => {
                 let original = crate::sqlite::expired::unkeyed::read(tx, session, run)
                     .await?

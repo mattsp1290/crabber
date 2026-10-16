@@ -6,6 +6,9 @@ pub(crate) fn validate(
     source: &PreparationSource,
     request: &ReservePreparation,
 ) -> Result<(), Error> {
+    if let PreparationSource::ExpiredRun(source) = source {
+        super::expired::unstarted::validate_capture(source)?;
+    }
     let PreparationPurpose::ExistingRun { run_id, work } = &request.purpose else {
         return Err(Error::InvalidRequest);
     };

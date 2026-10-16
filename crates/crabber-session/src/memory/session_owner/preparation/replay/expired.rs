@@ -94,8 +94,23 @@ fn original_native(
 ) -> Result<Option<crate::session_owner::preparation::ExpiredRunReceipt>, Error> {
     let key = |seq| (session.clone(), run.clone(), seq);
     let target = history::target(audits)?;
+    let parent = if let ExpiredRunOrigin::InitialUnstarted { reservation, .. } = &target.origin {
+        Some(crate::memory::expired::unstarted::read(
+            state,
+            session,
+            reservation,
+        )?)
+    } else {
+        None
+    };
+    let origin = if let ExpiredRunOrigin::InitialUnstarted { admission, .. } = &target.origin {
+        crate::session_owner::preparation::expired::unstarted::admission(admission)
+    } else {
+        target.origin.clone()
+    };
     let unkeyed;
-    let native = match target.origin {
+    let native = match origin {
+        ExpiredRunOrigin::InitialUnstarted { .. } => return Err(Error::UnknownStoreOutcome),
         ExpiredRunOrigin::UnkeyedAdmission(_) => {
             unkeyed = crate::memory::expired::unkeyed::read(state, session, run)?
                 .ok_or(Error::UnknownStoreOutcome)?;
@@ -159,7 +174,19 @@ fn original_native(
             }
         }
     };
-    history::verify(previous, next, audits, native)
+    history::verify(
+        previous,
+        next,
+        audits,
+        if let Some(original) = &parent {
+            Native::Unstarted {
+                initial: Box::new(native),
+                original,
+            }
+        } else {
+            native
+        },
+    )
 }
 fn bounded(value: &impl serde::Serialize, cap: usize) -> Result<(), Error> {
     crate::snapshot::encoded_bytes(value, cap)

@@ -5,6 +5,8 @@ mod owned;
 mod owned_admission;
 #[path = "expired/unkeyed.rs"]
 pub(crate) mod unkeyed;
+#[path = "expired/unstarted.rs"]
+pub(crate) mod unstarted;
 use super::checkpoint::pause_admitted;
 use super::{Clock, ManualClock, Store};
 use crate::session_owner::{
@@ -22,6 +24,7 @@ use crabber_core::{ControlId, InputEnvelope, RunFence, SessionId, SessionRevisio
 pub(super) async fn expired_inspection(store: &impl Store, clock: &ManualClock) {
     Box::pin(running(store, clock)).await;
     Box::pin(unkeyed::run(store, clock)).await;
+    Box::pin(unstarted::run(store, clock)).await;
     let (source, binding) = paused(store, clock).await;
     let before = store
         .session_revision(&source.request().session_id)

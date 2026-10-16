@@ -1,6 +1,8 @@
 //! Pure generic-expiry inspection under the actual Store lock.
 #[path = "expired/unkeyed.rs"]
 pub(super) mod unkeyed;
+#[path = "expired/unstarted.rs"]
+pub(super) mod unstarted;
 use super::{MemoryStore, State};
 use crate::session_owner::{
     SessionOwnerError as Error,
@@ -16,7 +18,9 @@ impl MemoryStore {
         let state = self.state.lock().map_err(unknown)?;
         super::deletion::ensure_live(&state, &request.session_id)
             .map_err(crate::deletion::owner_error)?;
-        context(&state, request, self.clock.now())
+        let source = context(&state, request, self.clock.now())?;
+        crate::session_owner::preparation::expired::unstarted::validate_capture(&source)?;
+        Ok(source)
     }
 }
 pub(super) fn context(
@@ -65,7 +69,7 @@ pub(super) fn context(
                     .clone(),
             ),
         ),
-        RunStatus::Running => initial_source(state, run, &binding)?,
+        RunStatus::Running => initial_source(state, run, &binding, now)?,
         _ => return Err(Error::InvalidTransition),
     };
     let crate::session_owner::audit::RevisionState::Present(revision) =
@@ -89,6 +93,21 @@ fn initial_source(
     state: &State,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    now: time::OffsetDateTime,
+) -> Result<
+    (
+        InputFingerprint,
+        crate::session_owner::preparation::ExpiredRunOrigin,
+    ),
+    Error,
+> {
+    let initial = initial_provenance(state, run, binding)?;
+    unstarted::guard(state, run, binding, now, initial)
+}
+fn initial_provenance(
+    state: &State,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
 ) -> Result<
     (
         InputFingerprint,
@@ -97,7 +116,6 @@ fn initial_source(
     Error,
 > {
     if let Some(original) = unkeyed::read(state, &run.session_id, &run.id)? {
-        super::attempt::pristine_for_driver(state, run, binding).map_err(|_| Error::Unsupported)?;
         original.verify_binding(&binding.capsule)?;
         return Ok((original.digest()?, original.origin()?));
     }
@@ -175,9 +193,6 @@ fn initial(
     else {
         return Err(Error::UnknownStoreOutcome);
     };
-    // This first eligibility source covers no parent reservation yet. A real
-    // Unstarted parent needs its independently protected Reserve receipt.
-    super::attempt::pristine_for_driver(state, run, binding).map_err(|_| Error::Unsupported)?;
     let frozen = &record.capsule;
     if frozen.request != binding.capsule.request
         || frozen.runtime_semantics != binding.capsule.runtime_semantics

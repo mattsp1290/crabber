@@ -37,6 +37,18 @@ pub enum ExpiredRunOrigin {
     Suspended(crabber_core::ControlId),
     KeyedInitial(crabber_core::AdmissionKey),
     UnkeyedAdmission(crabber_core::SessionOwnerOperationId),
+    InitialUnstarted {
+        admission: ExpiredAdmissionOrigin,
+        reservation: crabber_core::ControlId,
+        revision: SessionRevision,
+    },
+}
+/// An authenticated original admission; absence of execution is not an origin.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum ExpiredAdmissionOrigin {
+    Keyed(crabber_core::AdmissionKey),
+    Unkeyed(crabber_core::SessionOwnerOperationId),
 }
 /// Bounded original source metadata retained in the private preparation audit.
 /// No native token or dispatch capability is stored here.
@@ -65,6 +77,21 @@ impl ExpiredRunTarget {
     ) -> Result<InputFingerprint, Error> {
         crate::session_owner::identifier(&self.owner, 512, false)?;
         match &self.origin {
+            ExpiredRunOrigin::InitialUnstarted {
+                admission,
+                reservation,
+                ..
+            } => {
+                crate::session_owner::identifier(&reservation.0, 128, false)?;
+                match admission {
+                    ExpiredAdmissionOrigin::Keyed(key) => {
+                        crate::session_owner::identifier(key.as_str(), 512, false)?;
+                    }
+                    ExpiredAdmissionOrigin::Unkeyed(id) => {
+                        crate::session_owner::identifier(&id.0, 128, false)?;
+                    }
+                }
+            }
             ExpiredRunOrigin::Suspended(id) => crate::session_owner::identifier(&id.0, 128, false)?,
             ExpiredRunOrigin::UnkeyedAdmission(id) => {
                 crate::session_owner::identifier(&id.0, 128, false)?;
@@ -144,9 +171,9 @@ impl ExpiredRunPreparation {
         }
         let status = match self.target.origin {
             ExpiredRunOrigin::Suspended(_) => crabber_core::RunStatus::Paused,
-            ExpiredRunOrigin::KeyedInitial(_) | ExpiredRunOrigin::UnkeyedAdmission(_) => {
-                crabber_core::RunStatus::Running
-            }
+            ExpiredRunOrigin::KeyedInitial(_)
+            | ExpiredRunOrigin::UnkeyedAdmission(_)
+            | ExpiredRunOrigin::InitialUnstarted { .. } => crabber_core::RunStatus::Running,
         };
         let original = crate::native_parent::RunState::new(
             &self.request.session_id,
@@ -243,3 +270,4 @@ pub(crate) use native::{claimed, completion_source, replacement};
 pub(crate) mod process;
 
 pub(crate) mod unkeyed;
+pub(crate) mod unstarted;

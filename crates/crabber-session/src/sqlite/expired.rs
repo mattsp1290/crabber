@@ -1,6 +1,8 @@
 //! Pure expired-run eligibility and original-source authentication.
 #[path = "expired/unkeyed.rs"]
 pub(super) mod unkeyed;
+#[path = "expired/unstarted.rs"]
+pub(super) mod unstarted;
 use super::SqliteStore;
 use crate::session_owner::{
     SessionOwnerError as Error,
@@ -17,7 +19,12 @@ pub(super) async fn inspect(
     super::deletion::ensure_live(&mut tx, &request.session_id)
         .await
         .map_err(crate::deletion::owner_error)?;
-    let result = context(&mut tx, request, store.clock.now()).await;
+    let result = context(&mut tx, request, store.clock.now())
+        .await
+        .and_then(|source| {
+            crate::session_owner::preparation::expired::unstarted::validate_capture(&source)?;
+            Ok(source)
+        });
     tx.rollback().await.map_err(unknown)?;
     result
 }
@@ -52,7 +59,7 @@ pub(super) async fn context(
         .map_err(unknown)?;
     let (native, origin) = match run.status {
         RunStatus::Paused => suspended(tx, &run).await?,
-        RunStatus::Running => initial(tx, &run, &binding).await?,
+        RunStatus::Running => initial(tx, &run, &binding, now).await?,
         _ => return Err(Error::InvalidTransition),
     };
     let revision: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
@@ -137,6 +144,21 @@ async fn initial(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    now: time::OffsetDateTime,
+) -> Result<
+    (
+        InputFingerprint,
+        crate::session_owner::preparation::ExpiredRunOrigin,
+    ),
+    Error,
+> {
+    let initial = initial_provenance(tx, run, binding).await?;
+    unstarted::guard(tx, run, binding, now, initial).await
+}
+async fn initial_provenance(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
 ) -> Result<
     (
         InputFingerprint,
@@ -145,9 +167,6 @@ async fn initial(
     Error,
 > {
     if let Some(original) = unkeyed::read(tx, &run.session_id, &run.id).await? {
-        super::attempt::pristine_for_expired(tx, run)
-            .await
-            .map_err(|_| Error::Unsupported)?;
         original.verify_binding(&binding.capsule)?;
         return Ok((original.digest()?, original.origin()?));
     }
@@ -168,9 +187,6 @@ async fn initial(
     if receipt.as_ref() != Some(&record.receipt) {
         return Err(Error::UnknownStoreOutcome);
     }
-    super::attempt::pristine_for_expired(tx, run)
-        .await
-        .map_err(|_| Error::Unsupported)?;
     let frozen = &record.capsule;
     if frozen.request != binding.capsule.request
         || frozen.runtime_semantics != binding.capsule.runtime_semantics

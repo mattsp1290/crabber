@@ -21,6 +21,10 @@ async fn expired_preparation_faults_and_sources() {
         store.binding_fault.store(point, Ordering::SeqCst);
     })
     .await;
+    crate::run_control_contract::expired::unstarted::faults(&store, &clock, |point| {
+        store.binding_fault.store(point, Ordering::SeqCst);
+    })
+    .await;
     verify_begin_guard(&store, &clock).await;
     let pending = crate::run_control_contract::expired::pending(&store, &clock).await;
     let source = &pending.source;
@@ -189,6 +193,14 @@ async fn expired_preparation_process_boundaries() {
             stage,
             Some(&path),
             unkeyed.path(),
+        );
+        process::verify(&cold, key, stage == "after").await;
+        let parent = tempfile::tempdir().unwrap();
+        let key = process::kill_unstarted(
+            "sqlite::expired::tests::expired_preparation_process_boundaries",
+            stage,
+            Some(&path),
+            parent.path(),
         );
         process::verify(&cold, key, stage == "after").await;
     }

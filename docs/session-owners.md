@@ -405,7 +405,6 @@ suspension conclusion and event, or a protected begun keyed admission with no
 parent reservation. It captures current R, the full original issuer digest,
 frozen capsule digest, original source receipt and chosen replacement owner and
 lease. Unsupported or ambiguous original sources fail before restoration.
-Existing Unstarted parent reservations remain unsupported by this component.
 Run carriers are capped before private clone or SQL transfer;
 checkpoint suspension inspection accepts at most 64 calls and 64 phases.
 
@@ -504,3 +503,14 @@ The issuer publisher honors the caller's remaining allowance before reading or
 hashing its carriers. Existing native ready/load/provenance helpers still include
 legacy readers, so this source allowance does not establish a bound for every
 carrier in the entire native transaction.
+
+An initial `ReserveBound` parent can also remain genuinely Unstarted during this
+recovery. Its original receipt and event must authenticate the exact initial
+target. Inspection requires the public revision from that reservation, the
+original admission source, Store-clock expiry, and no independent Begin witness
+or execution history beyond that reservation. A later unrelated public change
+refuses inspection; supplying a refreshed revision cannot bypass this guard.
+The parent remains pending while the Run fence rotates. A worker must obtain a
+fresh actual Unstarted reclaim and Begin before execution; no parent outcome,
+resource cleanup or replay authority is synthesized. Continuation reservations
+remain subject to their own barriers and dedicated recovery contracts.

@@ -8,7 +8,9 @@ use std::{
 };
 type Key = (SessionId, RunId, u64, SessionOwnerId);
 pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
-    let pending = if std::env::var_os("CRABBER_EXPIRED_UNKEYED").is_some() {
+    let pending = if std::env::var_os("CRABBER_EXPIRED_PARENT").is_some() {
+        crate::run_control_contract::expired::unstarted::pending(store, clock).await
+    } else if std::env::var_os("CRABBER_EXPIRED_UNKEYED").is_some() {
         crate::run_control_contract::expired::unkeyed::pending(store, clock).await
     } else {
         crate::run_control_contract::expired::pending(store, clock).await
@@ -37,12 +39,15 @@ pub(crate) async fn child(store: &impl Store, clock: &ManualClock) {
     panic!("controller failed to stop at commit boundary");
 }
 pub(crate) fn kill(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
-    kill_kind(test, stage, path, dir, false)
+    kill_kind(test, stage, path, dir, "paused")
 }
 pub(crate) fn kill_unkeyed(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
-    kill_kind(test, stage, path, dir, true)
+    kill_kind(test, stage, path, dir, "unkeyed")
 }
-fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, unkeyed: bool) -> Key {
+pub(crate) fn kill_unstarted(test: &str, stage: &str, path: Option<&Path>, dir: &Path) -> Key {
+    kill_kind(test, stage, path, dir, "unstarted")
+}
+fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, kind: &str) -> Key {
     let marker = dir.join(format!("{stage}.marker"));
     let key = dir.join(format!("{stage}.key"));
     let mut command = Command::new(std::env::current_exe().unwrap());
@@ -54,8 +59,10 @@ fn kill_kind(test: &str, stage: &str, path: Option<&Path>, dir: &Path, unkeyed: 
         .env("CRABBER_EXPIRED_KEY", &key)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if unkeyed {
+    if kind == "unkeyed" {
         command.env("CRABBER_EXPIRED_UNKEYED", "1");
+    } else if kind == "unstarted" {
+        command.env("CRABBER_EXPIRED_PARENT", "1");
     }
     if let Some(path) = path {
         command.env("CRABBER_EXPIRED_DATABASE", path);
