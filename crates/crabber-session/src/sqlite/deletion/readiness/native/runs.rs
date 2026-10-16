@@ -2,20 +2,20 @@
 //! Missing legacy issuance never becomes positive ownership coverage.
 mod sources;
 mod terminal;
+use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
 use crate::native_parent::{RunIssuance, RunState};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{RunId, RunStatus, SessionId};
 use sqlx::{Row, Sqlite, Transaction};
-/// True authenticates the original keyed admission and its terminal domain.
-/// Noninitial claim/dispatch resource coverage is separate and remains unknown.
+/// Independent source facts remain distinct from actual resource joins.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: &RunId,
     status: RunStatus,
     proof: &mut Proof,
-) -> Result<bool> {
+) -> Result<RunHistoryReport> {
     super::super::super::super::read_proof::charge(
         tx,
         sqlx::query_scalar(TOKEN_COST).bind(&session.0).bind(&run.0),
@@ -35,7 +35,7 @@ pub(super) async fn verify(
         &token.ok_or_else(|| unknown("current Run token"))?,
     )
     .map_err(unknown)?;
-    let (initial, latest) = journal(tx, session, run, proof).await?;
+    let (initial, latest, claims) = journal(tx, session, run, proof).await?;
     if let Some(latest) = latest
         && latest != expected
     {
@@ -45,17 +45,26 @@ pub(super) async fn verify(
     let terminal = terminal::verify(tx, session, run, status, proof).await?;
     let abandoned =
         super::super::super::super::abandon_history::verify(tx, session, run, proof).await?;
-    Ok(admitted && (terminal || abandoned))
+    Ok(RunHistoryReport::sources(
+        admitted,
+        claims,
+        terminal || abandoned,
+    ))
 }
 async fn journal(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: &RunId,
     proof: &mut Proof,
-) -> Result<(Option<RunIssuance>, Option<RunState>)> {
+) -> Result<(
+    Option<RunIssuance>,
+    Option<RunState>,
+    crate::deletion::history::Fact,
+)> {
     let mut after = 0_i64;
     let mut latest = None;
     let mut initial = None;
+    let mut claims = NoninitialClaims::default();
     loop {
         let rows = sqlx::query(JOURNAL)
             .bind(&session.0)
@@ -66,7 +75,8 @@ async fn journal(
             .await
             .map_err(unknown)?;
         if rows.is_empty() {
-            return Ok((initial, latest));
+            let claims = claims.finish(initial.is_some());
+            return Ok((initial, latest, claims));
         }
         for row in &rows {
             proof.charge(
@@ -92,6 +102,7 @@ async fn journal(
             {
                 return Err(unknown("Run issuance scope"));
             }
+            claims.observe(&source);
             after = sequence;
             latest = Some(source.state.clone());
             if sequence == 1 {
@@ -103,3 +114,6 @@ async fn journal(
 const TOKEN_COST: &str = "SELECT CAST(length(CAST(claim_token AS BLOB)) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2";
 const TOKEN: &str = "SELECT CASE WHEN length(CAST(claim_token AS BLOB))<=512 AND json_type(data,'$.claim_token')='text' AND json_extract(data,'$.claim_token')=claim_token AND json_extract(data,'$.status')=status THEN claim_token END FROM runs WHERE session_id=$1 AND id=$2";
 const JOURNAL: &str = "WITH candidates AS (SELECT sequence,data_json,CAST(length(CAST(data_json AS BLOB))+8 AS BIGINT) AS bytes FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 AND sequence>$3 ORDER BY sequence LIMIT 16), bounded AS (SELECT *,SUM(bytes) OVER(ORDER BY sequence) AS used FROM candidates) SELECT sequence,bytes,CASE WHEN used<=$4 AND length(CAST(data_json AS BLOB))<=2048 THEN data_json END AS record FROM bounded ORDER BY sequence";
+
+#[cfg(test)]
+mod report_tests;

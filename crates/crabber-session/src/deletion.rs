@@ -128,3 +128,5 @@ pub(crate) mod coordinator_contract;
 
 #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 pub(crate) mod process;
+
+pub(crate) mod history;

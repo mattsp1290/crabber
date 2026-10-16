@@ -79,7 +79,7 @@ async fn read(
     budget: usize,
 ) -> crate::sql_deletion::readiness::Result<bool> {
     let mut proof = Proof::bounded(budget);
-    let (initial, _) =
+    let (initial, _, _) =
         super::super::journal(tx, &receipt.session_id, &receipt.run_id, &mut proof).await?;
     verify(
         tx,

@@ -326,6 +326,8 @@ mod deletion_coordinator_contract;
 #[path = "../../crabber-session/src/deletion/coverage.rs"]
 #[allow(dead_code)]
 pub(crate) mod deletion_coverage;
+#[path = "../../crabber-session/src/deletion/history.rs"]
+pub(crate) mod deletion_history;
 #[path = "../../crabber-session/src/deletion/origin.rs"]
 #[allow(dead_code)]
 pub(crate) mod deletion_origin;
@@ -346,6 +348,7 @@ mod deletion {
     pub(crate) use crate::deletion_coordinator as coordinator;
     pub(crate) use crate::deletion_coordinator_contract as coordinator_contract;
     pub(crate) use crate::deletion_coverage as coverage;
+    pub(crate) use crate::deletion_history as history;
     pub(crate) use crate::deletion_origin as origin;
     pub(crate) use crate::deletion_records::Tombstone;
     pub(crate) use crate::deletion_validation::{

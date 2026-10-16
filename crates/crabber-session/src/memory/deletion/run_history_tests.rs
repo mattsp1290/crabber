@@ -14,6 +14,27 @@ async fn original_input_and_owned_sources_remain_independent_of_current_rows() {
         let mut state = store.state.lock().unwrap();
         super::super::owned::verify(&state, &receipt.session_id, &mut bounded()).unwrap();
         verify(&state, &receipt.session_id, &mut bounded()).unwrap();
+        let run = state.runs.get(&receipt.run_id).unwrap();
+        let report = report(&state, run, &mut bounded()).unwrap();
+        assert_eq!(
+            report.initial_source,
+            crate::deletion::history::Fact::Authenticated
+        );
+        assert_eq!(
+            report.every_noninitial_claim,
+            crate::deletion::history::Fact::Authenticated
+        );
+        assert_eq!(
+            report.terminal_source,
+            crate::deletion::history::Fact::Unproven
+        );
+        assert_eq!(report.main_join, crate::deletion::history::Fact::Unproven);
+        assert_eq!(
+            report.resource_policy,
+            crate::deletion::history::Fact::Unproven
+        );
+        assert!(!report.complete());
+
         assert!(matches!(
             verify(&state, &receipt.session_id, &mut Proof::bounded(1)),
             Err(Failure::Limited(_))
@@ -91,6 +112,36 @@ async fn terminal_source_authenticates_actual_private_result_before_ownership_un
     state.runs.get_mut(&admitted.run.id).unwrap().error = Some("forged private result".into());
     assert!(matches!(
         verify(&state, &admitted.session.id, &mut bounded()),
+        Err(Failure::Error(_))
+    ));
+}
+
+#[tokio::test]
+async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
+    use crate::deletion::history::Fact;
+    let store = MemoryStore::new();
+    let receipt =
+        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
+    let mut state = store.state.lock().unwrap();
+    let key = (receipt.session_id.clone(), receipt.run_id.clone(), 1);
+    let mut issuer = state.native_run_issuances.get(&key).unwrap().clone();
+    issuer.version = 1;
+    issuer.sequence = 2;
+    issuer.ownership_handoff = None;
+    issuer.validate().unwrap();
+    state.native_run_issuances.insert(
+        (receipt.session_id.clone(), receipt.run_id.clone(), 2),
+        issuer,
+    );
+    let run = state.runs.get(&receipt.run_id).unwrap();
+    let observed = report(&state, run, &mut bounded()).unwrap();
+    assert_eq!(observed.initial_source, Fact::Authenticated);
+    assert_eq!(observed.every_noninitial_claim, Fact::Unproven);
+    assert!(!observed.complete());
+    // The original witness cannot silently relink to the remaining issuer.
+    state.native_run_issuances.remove(&key);
+    assert!(matches!(
+        super::super::owned::verify(&state, &receipt.session_id, &mut bounded()),
         Err(Failure::Error(_))
     ));
 }

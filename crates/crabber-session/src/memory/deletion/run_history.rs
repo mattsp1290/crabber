@@ -7,6 +7,7 @@ mod approval;
 #[path = "run_history/waiting.rs"]
 mod waiting;
 use super::super::{OperationReceipt, State};
+use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{EventKind, Run, SessionId};
 
@@ -21,17 +22,35 @@ pub(super) fn verify(
     // these validators canonicalize the retained original input.
     let mut unproven = false;
     for run in state.runs.values().filter(|run| &run.session_id == session) {
-        input(state, run, proof)?;
-        let terminal = terminal(state, run, proof)?;
-        let approved = approval::verify(state, run, proof)?;
-        let cancelled = waiting::verify(state, run, proof)?;
-        let abandoned = abandonment::verify(state, run, proof)?;
-        unproven |= !(state.preparation_admissions.contains_key(&run.id)
-            && state.admission_execution_protocols.contains(&run.id)
-            && (terminal || approved || abandoned || cancelled));
+        unproven |= !report(state, run, proof)?.complete();
     }
     Ok(unproven)
 }
+fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
+    input(state, run, proof)?;
+    let mut claims = NoninitialClaims::default();
+    let mut initial_present = false;
+    for ((session, id, sequence), issuance) in &state.native_run_issuances {
+        if session != &run.session_id || id != &run.id {
+            continue;
+        }
+        proof.measure(&(session, id, sequence, issuance))?;
+        claims.observe(issuance);
+        initial_present |= *sequence == 1;
+    }
+    let terminal = terminal(state, run, proof)?;
+    let approved = approval::verify(state, run, proof)?;
+    let cancelled = waiting::verify(state, run, proof)?;
+    let abandoned = abandonment::verify(state, run, proof)?;
+    Ok(RunHistoryReport::sources(
+        initial_present
+            && state.preparation_admissions.contains_key(&run.id)
+            && state.admission_execution_protocols.contains(&run.id),
+        claims.finish(initial_present),
+        terminal || approved || abandoned || cancelled,
+    ))
+}
+
 fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<(), Failure> {
     super::super::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
         .map_err(ReadError::public)?;

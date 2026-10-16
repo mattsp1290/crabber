@@ -50,7 +50,13 @@ pub(super) async fn no_effect_still_requires_resource_policy(store: &crate::Sqli
             &mut Proof::bounded(MAX_PROOF_BYTES)
         )
         .await,
-        Ok(true)
+        Ok(crate::deletion::history::RunHistoryReport {
+            initial_source: crate::deletion::history::Fact::Authenticated,
+            terminal_source: crate::deletion::history::Fact::Authenticated,
+            main_join: crate::deletion::history::Fact::Unproven,
+            resource_policy: crate::deletion::history::Fact::Unproven,
+            ..
+        })
     ));
     let crate::deletion::coverage::CoverageRead::Verified(coverage) =
         crate::sqlite::ownership_origin::coverage(&mut tx, &receipt.session_id)

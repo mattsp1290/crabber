@@ -40,7 +40,9 @@ pub(super) async fn runtime(
             ) {
                 return Err(blocked(DeletionBlocker::Runtime));
             }
-            unproven |= !runs::verify(tx, session, &id, facts.status, proof).await?;
+            unproven |= !runs::verify(tx, session, &id, facts.status, proof)
+                .await?
+                .complete();
             after = id.0;
         }
     }
