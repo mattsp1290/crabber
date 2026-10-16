@@ -180,6 +180,7 @@ impl Orchestrator {
             reservation.owner.binding.workspace_id.clone(),
             reservation.owner.binding.directory.clone(),
         );
+        let parent_done = tokio_util::sync::CancellationToken::new();
         let scope = PlanScope {
             contract: reservation
                 .resource_contract
@@ -189,11 +190,20 @@ impl Orchestrator {
                 context,
                 resources.resources(),
             )
-            .map_err(|_| StoreError::HostUnsupported)?,
+            .map_err(|_| StoreError::HostUnsupported)?
+            .with_service_dependencies(self.session_services.bind(
+                self.store.clone(),
+                grant.clone(),
+                parent_done.clone(),
+            )),
             lease: crabber_extension::PreparationResourceLease::from_host(disposed.clone()),
         };
         let source = OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began)?;
         let task = OwnedTaskRegistration::register(source, move || async move {
+            // Closing this ingress is not a main/resource Join acknowledgement.
+            // Escaped preparation capabilities cannot start another factory
+            // after this actual initializer future has returned or been dropped.
+            let _ingress = parent_done.drop_guard();
             work(Some(scope))
                 .await
                 .map(|(value, operation)| (value.retain(), operation))

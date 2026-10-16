@@ -1773,6 +1773,22 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 
 #[derive(Default)]
 struct SettlementGate {
+    service_register_fault: AtomicUsize,
+    service_register_calls: AtomicUsize,
+    service_register_hold: std::sync::atomic::AtomicBool,
+    service_register_entered: Notify,
+    service_register_release: Notify,
+    service_access_panic: std::sync::atomic::AtomicBool,
+    service_activation_fault: AtomicUsize,
+    service_activation_hold: std::sync::atomic::AtomicBool,
+    service_activation_entered: Notify,
+    service_activation_release: Notify,
+    service_join_fault: AtomicUsize,
+    service_join_panic: AtomicUsize,
+    service_join_bad_termination: std::sync::atomic::AtomicBool,
+    service_join_bad_binding: std::sync::atomic::AtomicBool,
+    service_join_calls: AtomicUsize,
+    service_join_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
     driver_register_fault: AtomicUsize,
     driver_register_request_override:
         Mutex<Option<crabber_session::session_owner::driver::RegisterExecutionDriver>>,
@@ -1942,6 +1958,48 @@ impl Store for DelayedTerminalStore {
         Ok(completed)
     }
 
+    fn supports_session_service_dependencies(&self) -> bool {
+        self.inner.supports_session_service_dependencies()
+    }
+    async fn register_session_service_dependency(
+        &self,
+        request: crabber_session::session_owner::service::RegisterSessionServiceDependency,
+    ) -> Result<
+        crabber_session::session_owner::service::SessionServiceDependencyOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.gate
+            .service_register_calls
+            .fetch_add(1, Ordering::SeqCst);
+        let point = self.gate.service_register_fault.swap(0, Ordering::SeqCst);
+        if point == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let result = self
+            .inner
+            .register_session_service_dependency(request)
+            .await?;
+        if self.gate.service_register_hold.load(Ordering::SeqCst) {
+            self.gate.service_register_entered.notify_one();
+            self.gate.service_register_release.notified().await;
+        }
+        if point == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
+    async fn check_session_service_dependency_access(
+        &self,
+        request: crabber_session::session_owner::service::SessionServiceDependencyAccess,
+    ) -> Result<(), crabber_session::session_owner::SessionOwnerError> {
+        assert!(
+            !self.gate.service_access_panic.swap(false, Ordering::SeqCst),
+            "service access store future panicked after actual task dispatch"
+        );
+        self.inner
+            .check_session_service_dependency_access(request)
+            .await
+    }
     fn supports_execution_drivers(&self) -> bool {
         self.inner.supports_execution_drivers()
     }
@@ -2002,7 +2060,9 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::SessionOwnerOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
-        let fault = if authority.target().id.0.starts_with("driver-owner-") {
+        let fault = if authority.target().id.0.starts_with("service-owner-") {
+            &self.gate.service_activation_fault
+        } else if authority.target().id.0.starts_with("driver-owner-") {
             &self.gate.driver_activation_fault
         } else {
             &self.gate.activation_fault
@@ -2014,9 +2074,15 @@ impl Store for DelayedTerminalStore {
         }
         let outcome = self
             .inner
-            .publish_owned_scope_activation(request, authority, parent)
+            .publish_owned_scope_activation(request, authority.clone(), parent)
             .await?;
         assert_ne!(point, 4, "activation Store panic after publication");
+        if authority.target().id.0.starts_with("service-owner-")
+            && self.gate.service_activation_hold.load(Ordering::SeqCst)
+        {
+            self.gate.service_activation_entered.notify_one();
+            self.gate.service_activation_release.notified().await;
+        }
         if point == 2 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
         }
@@ -2030,6 +2096,45 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::SessionOwnerOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        if authority.target().id.0.starts_with("service-owner-") {
+            self.gate.service_join_calls.fetch_add(1, Ordering::SeqCst);
+            self.gate
+                .service_join_keys
+                .lock()
+                .unwrap()
+                .push(proof.request()?.id);
+            let point = self.gate.service_join_fault.swap(0, Ordering::SeqCst);
+            let panic = self.gate.service_join_panic.load(Ordering::SeqCst);
+            assert_ne!(panic, 1, "service Join store panicked before commit");
+            if point == 1 {
+                return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+            }
+            let mut result = self.inner.join_owned_scope(proof, authority).await?;
+            assert_ne!(panic, 2, "service Join store panicked after commit");
+            match &mut result {
+                crabber_session::session_owner::SessionOwnerOutcome::Applied {
+                    receipt, ..
+                }
+                | crabber_session::session_owner::SessionOwnerOutcome::Replayed(receipt) => {
+                    if self
+                        .gate
+                        .service_join_bad_termination
+                        .load(Ordering::SeqCst)
+                    {
+                        receipt.owner.termination = Some(
+                            crabber_session::session_owner::SessionOwnerTermination::Cancelled,
+                        );
+                    }
+                    if self.gate.service_join_bad_binding.load(Ordering::SeqCst) {
+                        receipt.owner.binding.component_id = "changed-service-component".into();
+                    }
+                }
+            }
+            if point == 2 {
+                return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+            }
+            return Ok(result);
+        }
         if authority.target().id.0.starts_with("driver-owner-") {
             self.gate.driver_join_calls.fetch_add(1, Ordering::SeqCst);
             let point = self.gate.driver_join_fault.swap(0, Ordering::SeqCst);

@@ -9,6 +9,8 @@ mod faults;
 mod provider_binding;
 #[path = "preparation_resources/recovery.rs"]
 mod recovery;
+#[path = "preparation_resources/services.rs"]
+mod services;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "preparation_resources/sql.rs"]
 mod sql;

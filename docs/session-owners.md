@@ -365,6 +365,38 @@ Legacy service scopes return Unsupported; hosts must not use that refusal to
 fall back to an unowned factory.
 
 
+### Runtime session-service dependencies
+
+An explicitly declared owned preparation receives a grant-bound
+`PreparationResourceContext::service_dependencies()` capability. The Runtime
+manager retains its supervisor before native registration I/O and admits the
+exact dependency task only after fresh native activation and an acknowledgement
+from that task's guarded constructor. A preparation capability cannot admit new
+tasks after its actual initializer future returns or is dropped. This seals
+local ingress; it supplies no main or resource Join evidence. An already
+transferred dependency continues independently after the preparation ends.
+
+A later preparation checks the original live dependency under its own current
+grant. It never replaces the original source, task, generation or authority.
+Unknown registration retains its original opaque control and generation without
+running a factory. Metadata replay carries no activation authority and cannot
+become a new acquisition. A lost activation ACK keeps the local gate closed.
+
+Contextual session close seals that session's dependency and waits for its
+actual acquisition references, dependency task, registered resource tasks and
+native Join acknowledgement. A timeout preserves those same joins for retry.
+Failed or panicked cleanup remains Uncertain. Releasing session A does not
+close a shared/workspace generation or session B's dependency; physical
+workspace/service cleanup remains a separate lifecycle.
+
+The built-in Contextual provider still declares no automatic owned preparation
+contract. Advanced embeddings can supply an explicit `RunPlanProvider` bridge
+and delegate owned acquisition to Contextual. This component owns the session
+dependency only: legacy shared mounts, provider pools, arbitrary callbacks,
+physical generation coverage and whole-Run deletion readiness remain separate
+requirements. A provider-reference release is not a service-shutdown proof.
+
+
 ### Prepared generic expired Run claim
 
 Bundled Stores expose `inspect_expired_run_preparation` for an exact expired
