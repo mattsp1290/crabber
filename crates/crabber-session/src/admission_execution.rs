@@ -225,9 +225,29 @@ impl AdmissionExecutionRecord {
         run: &Run,
         messages: &[crabber_core::Message],
     ) -> Result<(), AdmissionExecutionError> {
+        self.validate_messages_scope(
+            &run.session_id,
+            &run.id,
+            &run.config_hash,
+            &run.plan_fingerprint,
+            &run.owner,
+            messages,
+        )
+    }
+    /// Authenticate retained input against actual narrow Run facts. This read
+    /// grants no execution authority and never materializes a private checkpoint.
+    pub(crate) fn validate_messages_scope(
+        &self,
+        session: &SessionId,
+        run_id: &crabber_core::RunId,
+        config: &str,
+        plan: &str,
+        owner: &str,
+        messages: &[crabber_core::Message],
+    ) -> Result<(), AdmissionExecutionError> {
         if let Some(input) = &self.capsule.input_envelope {
             input
-                .validate_message_projection(&run.session_id, Some(&run.id), messages)
+                .validate_message_projection(session, Some(run_id), messages)
                 .map_err(|_| AdmissionExecutionError::SemanticConflict)?;
         } else if messages.len() != 1 {
             return Err(AdmissionExecutionError::SemanticConflict);
@@ -235,10 +255,10 @@ impl AdmissionExecutionRecord {
         let user = messages
             .first()
             .ok_or(AdmissionExecutionError::SemanticConflict)?;
-        if self.receipt.run_id != run.id
-            || self.receipt.session_id != run.session_id
+        if self.receipt.run_id != *run_id
+            || self.receipt.session_id != *session
             || self.receipt.user_message_id != user.id
-            || user.run_id.as_ref() != Some(&run.id)
+            || user.run_id.as_ref() != Some(run_id)
             || self.receipt.semantic_digest_version
                 != if self.capsule.input_envelope.is_some() {
                     2
@@ -247,8 +267,8 @@ impl AdmissionExecutionRecord {
                 }
             || self.receipt.fingerprint != self.capsule.fingerprint
             || self.receipt.semantic_digest != self.capsule.semantic_digest
-            || run.config_hash != self.capsule.config_hash
-            || run.plan_fingerprint != self.capsule.plan_fingerprint
+            || config != self.capsule.config_hash
+            || plan != self.capsule.plan_fingerprint
         {
             return Err(AdmissionExecutionError::SemanticConflict);
         }
@@ -273,14 +293,14 @@ impl AdmissionExecutionRecord {
                     .input_envelope
                     .as_ref()
                     .map(crabber_core::InputEnvelope::expected_revision),
-                session_id: Some(run.session_id.clone()),
+                session_id: Some(session.clone()),
                 workspace_id: data.workspace_id.clone(),
                 directory: data.directory.clone(),
                 title: data.title.clone(),
                 user_message: user,
-                config_hash: run.config_hash.clone(),
-                plan_fingerprint: run.plan_fingerprint.clone(),
-                owner: run.owner.clone(),
+                config_hash: config.to_owned(),
+                plan_fingerprint: plan.to_owned(),
+                owner: owner.to_owned(),
                 lease: Duration::from_secs(30),
             },
             options: crabber_core::AdmissionOptions {
