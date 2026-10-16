@@ -6,7 +6,7 @@ impl Agent {
     fn default_request(&self, session: SessionId, text: String) -> crabber_runtime::Request {
         self.default_policy(self.request(Some(session), text))
     }
-    fn default_request_in(
+    pub(super) fn default_request_in(
         &self,
         context: &SessionContext,
         text: String,

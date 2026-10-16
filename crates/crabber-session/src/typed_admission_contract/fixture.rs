@@ -63,7 +63,7 @@ pub(super) fn envelope(session: &SessionId) -> InputEnvelope {
     )
     .unwrap()
 }
-pub(super) fn prepare(
+pub(crate) fn prepare(
     mut fixture: BoundKeyedAdmitRequest,
     input: InputEnvelope,
     now: OffsetDateTime,

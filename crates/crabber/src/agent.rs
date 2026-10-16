@@ -1513,4 +1513,5 @@ mod tests {
     }
 }
 
+mod queue;
 mod session_defaults;

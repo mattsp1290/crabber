@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 pub(super) struct TestStore {
     pub inner: Arc<dyn Store>,
     pub summary_reads: AtomicUsize,
+    pub queue_loss: AtomicUsize,
     pub unsupported: AtomicBool,
     pub hold_summary: AtomicBool,
     pub hold_admission: AtomicBool,
@@ -23,6 +24,7 @@ impl TestStore {
         Self {
             inner,
             summary_reads: AtomicUsize::new(0),
+            queue_loss: AtomicUsize::new(0),
             unsupported: AtomicBool::new(false),
             hold_summary: AtomicBool::new(false),
             hold_admission: AtomicBool::new(false),
@@ -34,6 +36,63 @@ impl TestStore {
 }
 #[async_trait]
 impl Store for TestStore {
+    async fn queue_preparation_snapshot(
+        &self,
+        id: &SessionId,
+    ) -> Result<SessionSummary, StoreError> {
+        let result = self.inner.queue_preparation_snapshot(id).await;
+        if self.hold_summary.swap(false, Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        result
+    }
+
+    fn supports_future_queue(&self) -> bool {
+        !self.unsupported.load(Ordering::SeqCst) && self.inner.supports_future_queue()
+    }
+    async fn mutate_queue(&self, request: QueueMutation) -> Result<QueueOutcome, StoreError> {
+        let step = match request.action {
+            QueueAction::Prepare { .. } => 1,
+            QueueAction::Admit { .. } => 2,
+            _ => 0,
+        };
+        let result = self.inner.mutate_queue(request).await?;
+        if step != 0
+            && self
+                .queue_loss
+                .compare_exchange(step, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StoreError::Validation("queue acknowledgement lost".into()));
+        }
+        Ok(result)
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<QueueReceipt>, StoreError> {
+        self.inner.lookup_queue(session, id).await
+    }
+    async fn list_queue(&self, request: QueuePageRequest) -> Result<QueuePage, StoreError> {
+        self.inner.list_queue(request).await
+    }
+    async fn get_queue(
+        &self,
+        session: &SessionId,
+        id: &QueueId,
+    ) -> Result<QueueSummary, StoreError> {
+        self.inner.get_queue(session, id).await
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &QueueId,
+    ) -> Result<RetainedQueue, StoreError> {
+        self.inner.retained_queue(session, id).await
+    }
+
     fn supports_owned_attempts(&self) -> bool {
         self.inner.supports_owned_attempts()
     }

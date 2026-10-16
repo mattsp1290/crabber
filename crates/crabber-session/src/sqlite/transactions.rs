@@ -33,13 +33,29 @@ pub(super) async fn finish<T, E>(
 }
 
 impl SqliteStore {
-    #[allow(clippy::too_many_lines)] // One atomic admission transaction.
     pub(super) async fn admit_transaction(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         request: AdmitRequest,
         allow_create: bool,
     ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_transaction_guarded(
+            tx,
+            request,
+            allow_create,
+            crate::queue::AdmissionGuard::Ordinary,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
+    pub(super) async fn admit_transaction_guarded(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        request: AdmitRequest,
+        allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+    ) -> Result<AdmitOutcome, StoreError> {
+        guard.verify(&request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
         }
@@ -83,23 +99,20 @@ impl SqliteStore {
                 updated_at: now,
             }
         };
-        if let Some(expected) = request.expected_revision {
+        if guard.is_ordinary()
+            && let Some(expected) = request.expected_revision
+        {
             let current = u64::try_from(current_revision)
                 .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
             if expected.get() != current {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
         }
+        if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND state='Claimed' AND prepared=true)").bind(&session_id.0).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::Busy); }
         if super::management::admission_archived(tx, &session_id).await? {
             return Err(StoreError::Conflict);
         }
-        let barrier: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
-        )
-        .bind(&session_id.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(db)?;
+        let barrier = super::has_pending_continuation(tx, &session_id).await?;
         if barrier {
             return Err(StoreError::Busy);
         }

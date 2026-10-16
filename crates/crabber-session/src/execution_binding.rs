@@ -46,7 +46,7 @@ pub struct BoundAdmitRequest {
     pub binding: ExecutionBindingCapsule,
 }
 /// A keyed admission that must retain its exact provider binding atomically.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BoundKeyedAdmitRequest {
     pub keyed: KeyedAdmitRequest,
     pub binding: ExecutionBindingCapsule,

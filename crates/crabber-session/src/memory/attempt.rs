@@ -69,7 +69,8 @@ impl MemoryStore {
                 Ok(Some(receipt.clone()))
             }
             Some(
-                OperationReceipt::Management(_)
+                OperationReceipt::Queue(_)
+                | OperationReceipt::Management(_)
                 | OperationReceipt::PublicState(_)
                 | OperationReceipt::Phase(_)
                 | OperationReceipt::Approval(_),

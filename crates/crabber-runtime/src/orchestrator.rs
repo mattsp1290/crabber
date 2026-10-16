@@ -9,6 +9,9 @@ mod attempt_control;
 #[path = "orchestrator/continuation.rs"]
 mod continuation;
 mod management;
+#[path = "orchestrator/queue.rs"]
+mod queue;
+pub use queue::QueueControl;
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
 pub use continuation::{Continuation, ContinueApproval};

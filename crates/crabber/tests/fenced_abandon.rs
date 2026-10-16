@@ -1,6 +1,37 @@
 #[path = "../../crabber-session/src/public_run.rs"]
 #[allow(dead_code)]
 mod public_run;
+
+pub use crabber::session::{
+    QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
+    QueuePageRequest, QueueReceipt, QueueState, QueueSummary, RetainedQueue,
+};
+#[path = "../../crabber-session/src/queue/records.rs"]
+#[allow(dead_code)]
+mod queue_records;
+#[path = "../../crabber-session/src/queue/transition.rs"]
+#[allow(dead_code)]
+mod queue_transition;
+mod queue {
+    pub(crate) use crate::queue_records::*;
+    pub(crate) use crate::queue_transition::*;
+    pub(crate) use crabber::core::{ControlId, QueueId, SessionId, SessionRevision};
+    pub(crate) use crabber::session::{
+        BoundKeyedAdmitRequest, QueueAction, QueueAuthority, QueueInput, QueueMutation,
+        QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueState, QueueSummary,
+        RetainedQueue, StoreError,
+    };
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) fn invalid() -> StoreError {
+        StoreError::Validation("invalid future admission queue request".into())
+    }
+    pub(crate) fn corrupt() -> StoreError {
+        StoreError::Validation("invalid retained future admission queue evidence".into())
+    }
+}
+#[path = "../../crabber-session/src/queue_contract.rs"]
+#[allow(dead_code)]
+mod queue_contract;
 pub use crabber::session::AdmissionSelectionPolicy;
 pub use crabber::session::{PublicRunOutcome, PublicRunState, PublicRunSummary};
 

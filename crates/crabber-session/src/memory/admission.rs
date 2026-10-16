@@ -12,6 +12,22 @@ pub(super) fn admit_transaction(
     now: OffsetDateTime,
     allow_create: bool,
 ) -> Result<AdmitOutcome, StoreError> {
+    admit_transaction_guarded(
+        state,
+        request,
+        now,
+        allow_create,
+        crate::queue::AdmissionGuard::Ordinary,
+    )
+}
+pub(super) fn admit_transaction_guarded(
+    state: &mut State,
+    request: &AdmitRequest,
+    now: OffsetDateTime,
+    allow_create: bool,
+    guard: crate::queue::AdmissionGuard<'_>,
+) -> Result<AdmitOutcome, StoreError> {
+    guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
         request.validate_messages()?;
     }
@@ -20,26 +36,9 @@ pub(super) fn admit_transaction(
     if lease <= time::Duration::ZERO {
         return Err(StoreError::Validation("lease must be positive".into()));
     }
-    let session = admission_session(state, request, now, allow_create)?;
+    let session = admission_session(state, request, now, allow_create, guard)?;
     let session_id = session.id.clone();
-    if state
-        .management
-        .get(&session_id)
-        .is_some_and(|metadata| metadata.archived)
-    {
-        return Err(StoreError::Conflict);
-    }
-    if state.approval_barriers.contains_key(&session_id) {
-        return Err(StoreError::Busy);
-    }
-
-    if state
-        .runs
-        .values()
-        .any(|run| run.session_id == session_id && !run.status.is_terminal())
-    {
-        return Err(StoreError::Busy);
-    }
+    admission_guards(state, &session_id, guard)?;
     request.validate_messages()?;
     if request.user_message.session_id != session_id {
         return Err(StoreError::Validation(
@@ -112,11 +111,47 @@ pub(super) fn admit_transaction(
     })
 }
 
+fn admission_guards(
+    state: &State,
+    session_id: &crabber_core::SessionId,
+    guard: crate::queue::AdmissionGuard<'_>,
+) -> Result<(), StoreError> {
+    if state
+        .management
+        .get(session_id)
+        .is_some_and(|metadata| metadata.archived)
+    {
+        return Err(StoreError::Conflict);
+    }
+    if guard.is_ordinary()
+        && state.queue.values().any(|record| {
+            record.summary.session_id == *session_id
+                && record.summary.state == crate::QueueState::Claimed
+                && record.prepared.is_some()
+        })
+    {
+        return Err(StoreError::Busy);
+    }
+    if super::has_pending_continuation(state, session_id) {
+        return Err(StoreError::Busy);
+    }
+
+    if state
+        .runs
+        .values()
+        .any(|run| run.session_id == *session_id && !run.status.is_terminal())
+    {
+        return Err(StoreError::Busy);
+    }
+    Ok(())
+}
+
 fn admission_session(
     state: &State,
     request: &AdmitRequest,
     now: OffsetDateTime,
     allow_create: bool,
+    guard: crate::queue::AdmissionGuard<'_>,
 ) -> Result<Session, StoreError> {
     let session_id = request
         .session_id
@@ -137,7 +172,9 @@ fn admission_session(
             updated_at: now,
         }
     };
-    if let Some(expected) = request.expected_revision {
+    if guard.is_ordinary()
+        && let Some(expected) = request.expected_revision
+    {
         let current = state
             .public_revisions
             .get(&session_id)
@@ -155,6 +192,14 @@ pub(super) fn admit_keyed_transaction(
     keyed: &KeyedAdmitRequest,
     now: OffsetDateTime,
 ) -> Result<KeyedAdmitOutcome, StoreError> {
+    admit_keyed_guarded(state, keyed, now, crate::queue::AdmissionGuard::Ordinary)
+}
+pub(super) fn admit_keyed_guarded(
+    state: &mut State,
+    keyed: &KeyedAdmitRequest,
+    now: OffsetDateTime,
+    guard: crate::queue::AdmissionGuard<'_>,
+) -> Result<KeyedAdmitOutcome, StoreError> {
     let digest = keyed.validated_digest()?;
     let request = &keyed.request;
     let session_id = request
@@ -171,7 +216,15 @@ pub(super) fn admit_keyed_transaction(
         }
         return Ok(KeyedAdmitOutcome::Replayed(receipt.clone()));
     }
-    let admitted = admit_transaction(state, request, now, true)?;
+    if guard.is_ordinary()
+        && state.queue.values().any(|record| {
+            record.summary.session_id == *session_id
+                && record.input.admission.key == keyed.options.key
+        })
+    {
+        return Err(StoreError::AdmissionConflict);
+    }
+    let admitted = admit_transaction_guarded(state, request, now, true, guard)?;
     let receipt = AdmissionReceipt {
         session_id: session_id.clone(),
         run_id: admitted.run.id.clone(),

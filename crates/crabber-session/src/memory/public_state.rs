@@ -40,7 +40,8 @@ impl MemoryStore {
                 Some(receipt.clone())
             }
             Some(
-                OperationReceipt::Management(_)
+                OperationReceipt::Queue(_)
+                | OperationReceipt::Management(_)
                 | OperationReceipt::Attempt(_)
                 | OperationReceipt::Phase(_)
                 | OperationReceipt::Approval(_),

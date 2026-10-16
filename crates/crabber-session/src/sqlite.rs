@@ -11,6 +11,7 @@ mod management;
 mod phase;
 mod public_run;
 mod public_state;
+mod queue;
 mod records;
 mod snapshot;
 mod store_impl;
@@ -40,6 +41,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0004_continuations.sql"),
     "\nINSERT INTO schema_version(version) VALUES(4);\n",
     include_str!("../migrations/sqlite/0005_session_management.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(5);\n",
+    include_str!("../migrations/sqlite/0006_future_queue.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
@@ -67,9 +70,21 @@ pub struct SqliteStore {
     #[cfg(test)]
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     write_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+async fn has_pending_continuation(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &crabber_core::SessionId,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)")
+        .bind(&session.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)
+}
 impl SqliteStore {
     /// Creates or verifies the dedicated schema and enables WAL journaling.
     /// The parent directory must already exist. Unknown schemas and foreign
@@ -165,6 +180,8 @@ async fn connect_with(
         approval_fault: Arc::default(),
         #[cfg(test)]
         binding_fault: Arc::default(),
+        #[cfg(test)]
+        queue_fault: Arc::default(),
         #[cfg(test)]
         write_waiters: Arc::default(),
     })

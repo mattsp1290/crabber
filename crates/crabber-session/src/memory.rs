@@ -25,6 +25,9 @@ mod public_state;
 #[path = "memory/tool_result.rs"]
 mod tool_result;
 
+#[path = "memory/queue.rs"]
+mod queue;
+
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -62,10 +65,14 @@ pub struct MemoryStore {
     approval_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
 struct State {
+    queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
+    queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
     #[cfg(test)]
     abandon_fail_after_tools: bool,
     #[cfg(test)]
@@ -98,6 +105,7 @@ struct State {
 
 #[derive(Clone)]
 enum OperationReceipt {
+    Queue(crate::QueueReceipt),
     Management(crate::ManagementReceipt),
     Approval(crate::ApprovalReceipt),
     PublicState(crate::PublicStateReceipt),
@@ -150,6 +158,8 @@ impl MemoryStore {
             approval_fault: Arc::default(),
             #[cfg(test)]
             binding_fault: Arc::default(),
+            #[cfg(test)]
+            queue_fault: Arc::default(),
         }
     }
 
@@ -206,6 +216,9 @@ impl MemoryStore {
     }
 }
 
+fn has_pending_continuation(state: &State, session: &SessionId) -> bool {
+    state.approval_barriers.contains_key(session)
+}
 fn bump_public_revision(state: &mut State, session: &SessionId) -> Result<(), StoreError> {
     let current = state
         .public_revisions
@@ -395,6 +408,49 @@ impl Store for MemoryStore {
         request: crate::AttemptRetirement,
     ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
         self.host_attempt(&crate::attempt_control::Control::Retire(request))
+    }
+
+    async fn queue_preparation_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, StoreError> {
+        self.queue_session_snapshot(session)
+    }
+    fn supports_future_queue(&self) -> bool {
+        true
+    }
+    async fn mutate_queue(
+        &self,
+        request: crate::QueueMutation,
+    ) -> Result<crate::QueueOutcome, StoreError> {
+        self.queue_mutate(request)
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::QueueReceipt>, StoreError> {
+        self.queue_lookup(session, id)
+    }
+    async fn list_queue(
+        &self,
+        request: crate::QueuePageRequest,
+    ) -> Result<crate::QueuePage, StoreError> {
+        self.queue_list(&request)
+    }
+    async fn get_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::QueueSummary, StoreError> {
+        self.queue_get(session, id)
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_private(session, id)
     }
 
     async fn manage_session(

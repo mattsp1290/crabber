@@ -10,8 +10,9 @@ use std::{sync::Arc, time::Duration};
 use time::OffsetDateTime;
 
 mod fixture;
+use fixture::envelope;
 pub(crate) use fixture::fixture;
-use fixture::{envelope, prepare};
+pub(crate) use fixture::prepare;
 
 /// Validate full typed binding/capsule retention, exact replay after revision
 /// changes, uncertainty-safe Unstarted claim, and generated-ID independence.

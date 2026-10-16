@@ -91,7 +91,7 @@ impl fmt::Debug for InputFingerprint {
 /// behavior/configuration (native callbacks, policies, provider routing) whose
 /// implementation cannot be inspected by the runtime. It is not the claimed
 /// input fingerprint; changing any reflected input is independently detected.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmissionOptions {
     pub key: AdmissionKey,
     pub fingerprint: InputFingerprint,

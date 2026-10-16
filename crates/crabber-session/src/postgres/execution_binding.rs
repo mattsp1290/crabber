@@ -30,6 +30,15 @@ impl PostgresStore {
         tx: &mut Transaction<'_, Postgres>,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
+        self.admit_keyed_guarded(tx, keyed, crate::queue::AdmissionGuard::Ordinary)
+            .await
+    }
+    pub(super) async fn admit_keyed_guarded(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        keyed: KeyedAdmitRequest,
+        guard: crate::queue::AdmissionGuard<'_>,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
         let digest = keyed.validated_digest()?;
         let request = &keyed.request;
         let session = request
@@ -52,6 +61,7 @@ impl PostgresStore {
             }
             return Ok(KeyedAdmitOutcome::Replayed(receipt));
         }
+        if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND admission_key=$2)").bind(&session.0).bind(keyed.options.key.as_str()).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::AdmissionConflict); }
         let session_id = session.clone();
         let user_message_id = request.user_message.id.clone();
         let semantic_digest_version = if request.input_envelope.is_some() {
@@ -59,7 +69,9 @@ impl PostgresStore {
         } else {
             1
         };
-        let admitted = self.admit_transaction(tx, keyed.request, true).await?;
+        let admitted = self
+            .admit_transaction_guarded(tx, keyed.request, true, guard)
+            .await?;
         let receipt = AdmissionReceipt {
             session_id,
             run_id: admitted.run.id.clone(),
@@ -198,7 +210,7 @@ impl PostgresStore {
         finish(tx, result).await
     }
 }
-async fn save(
+pub(super) async fn save(
     tx: &mut Transaction<'_, Postgres>,
     binding: &RetainedExecutionBinding,
 ) -> Result<(), StoreError> {

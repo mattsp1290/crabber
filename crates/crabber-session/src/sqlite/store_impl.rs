@@ -39,6 +39,49 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn queue_preparation_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, StoreError> {
+        self.queue_session_snapshot(session).await
+    }
+    fn supports_future_queue(&self) -> bool {
+        true
+    }
+    async fn mutate_queue(
+        &self,
+        request: crate::QueueMutation,
+    ) -> Result<crate::QueueOutcome, StoreError> {
+        self.queue_mutate(request).await
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::QueueReceipt>, StoreError> {
+        self.queue_lookup(session, id).await
+    }
+    async fn list_queue(
+        &self,
+        request: crate::QueuePageRequest,
+    ) -> Result<crate::QueuePage, StoreError> {
+        self.queue_list(request).await
+    }
+    async fn get_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::QueueSummary, StoreError> {
+        self.queue_get(session, id).await
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_private(session, id).await
+    }
+
     async fn reclaim_approval_continuation(
         &self,
         request: crate::ApprovalContinuationRecovery,

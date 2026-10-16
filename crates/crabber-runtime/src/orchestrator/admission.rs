@@ -229,8 +229,14 @@ impl Orchestrator {
         record: &AdmissionExecutionRecord,
         context: &SessionContext,
     ) -> Result<(), RuntimeError> {
-        let semantics = record
-            .capsule
+        self.verify_configuration_capsule(&record.capsule, context)
+    }
+    pub(super) fn verify_configuration_capsule(
+        &self,
+        capsule: &crabber_session::AdmissionExecutionCapsule,
+        context: &SessionContext,
+    ) -> Result<(), RuntimeError> {
+        let semantics = capsule
             .runtime_semantics
             .as_array()
             .ok_or(StoreError::AdmissionConflict)?;
@@ -262,7 +268,7 @@ impl Orchestrator {
         let registration: Registration = serde_json::from_str(&declaration.version)
             .map_err(|_| AdmissionExecutionError::MissingEvidence)?;
         if registration.declaration != current
-            || compute_fingerprint(&components).to_string() != record.capsule.plan_fingerprint
+            || compute_fingerprint(&components).to_string() != capsule.plan_fingerprint
         {
             return Err(StoreError::AdmissionConflict.into());
         }

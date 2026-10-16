@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 
 pub type StoreError = crabber_core::CoreError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdmitRequest {
     /// Optional guard for a host's previously validated coherent snapshot.
     /// Checked under the admission transaction after identity and receipt replay.
@@ -101,7 +101,7 @@ pub struct AdmitOutcome {
 /// Store-side keyed request. The runtime independently computes `config_hash`
 /// from all reflected configuration and plan inputs. Stores MUST independently
 /// hash message semantics and immutable identity using `semantic_digest`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KeyedAdmitRequest {
     pub request: AdmitRequest,
     pub options: AdmissionOptions,
@@ -237,6 +237,57 @@ pub trait Store: Send + Sync {
         _request: crate::AttemptRetirement,
     ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
         Err(crate::AttemptError::Unsupported)
+    }
+
+    /// Durable future-run FIFO capability. Unsupported adapters must refuse before accepting input.
+    fn supports_future_queue(&self) -> bool {
+        false
+    }
+    /// Coherent preparation defaults and revision; does not infer workspace authorization.
+    /// Queue implementations must preserve valid lazy-session scope verbatim.
+    async fn queue_preparation_snapshot(
+        &self,
+        _session: &SessionId,
+    ) -> Result<crate::SessionSummary, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Keyed session control; only a fresh claim/admission returns authority.
+    async fn mutate_queue(
+        &self,
+        _request: crate::QueueMutation,
+    ) -> Result<crate::QueueOutcome, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Original safe receipt, including after cancellation or admission. Never dispatches.
+    async fn lookup_queue(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::QueueReceipt>, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Bounded coherent metadata; continuation requires the original revision.
+    async fn list_queue(
+        &self,
+        _request: crate::QueuePageRequest,
+    ) -> Result<crate::QueuePage, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Safe exact item metadata; contains no input or worker authority.
+    async fn get_queue(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::QueueId,
+    ) -> Result<crate::QueueSummary, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Explicit private host evidence read; never authorizes dispatch.
+    async fn retained_queue(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::QueueId,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        Err(StoreError::HostUnsupported)
     }
 
     /// Pure host metadata control; never initializes runtime/provider/tool code.

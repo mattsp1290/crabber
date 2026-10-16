@@ -4,7 +4,7 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v9.
+//! connect remains read-only and requires explicit migration to schema v10.
 mod abandon;
 mod admission_execution;
 mod approval;
@@ -17,6 +17,8 @@ mod phase;
 mod public_run;
 mod public_state;
 mod tool_result;
+
+mod queue;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -54,6 +56,8 @@ pub struct PostgresStore {
     approval_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     binding_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    queue_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -366,6 +370,16 @@ async fn lookup_receipt(
         .transpose()
 }
 
+async fn has_pending_continuation(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)")
+        .bind(&session.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)
+}
 impl PostgresStore {
     /// Opens an already migrated dedicated database. The URL is never included in errors.
     /// # Errors
@@ -404,6 +418,8 @@ impl PostgresStore {
             approval_fault: Arc::default(),
             #[cfg(test)]
             binding_fault: Arc::default(),
+            #[cfg(test)]
+            queue_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -456,6 +472,10 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -502,13 +522,29 @@ impl PostgresStore {
         }
         Ok((tx, run))
     }
-    #[allow(clippy::too_many_lines)] // One atomic admission transaction.
     async fn admit_transaction(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         request: AdmitRequest,
         allow_create: bool,
     ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_transaction_guarded(
+            tx,
+            request,
+            allow_create,
+            crate::queue::AdmissionGuard::Ordinary,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
+    pub(super) async fn admit_transaction_guarded(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: AdmitRequest,
+        allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+    ) -> Result<AdmitOutcome, StoreError> {
+        guard.verify(&request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
         }
@@ -552,23 +588,20 @@ impl PostgresStore {
                 updated_at: now,
             }
         };
-        if let Some(expected) = request.expected_revision {
+        if guard.is_ordinary()
+            && let Some(expected) = request.expected_revision
+        {
             let current = u64::try_from(current_revision)
                 .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
             if expected.get() != current {
                 return Err(StoreError::AdmissionRevisionConflict);
             }
         }
+        if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND state='Claimed' AND prepared=true)").bind(&session_id.0).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::Busy); }
         if management::admission_archived(tx, &session_id).await? {
             return Err(StoreError::Conflict);
         }
-        let barrier: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
-        )
-        .bind(&session_id.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(db)?;
+        let barrier = has_pending_continuation(tx, &session_id).await?;
         if barrier {
             return Err(StoreError::Busy);
         }
@@ -724,6 +757,49 @@ impl Store for PostgresStore {
     ) -> Result<crate::AttemptControlOutcome, crate::AttemptError> {
         self.host_attempt(crate::attempt_control::Control::Retire(request))
             .await
+    }
+
+    async fn queue_preparation_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionSummary, StoreError> {
+        self.queue_session_snapshot(session).await
+    }
+    fn supports_future_queue(&self) -> bool {
+        true
+    }
+    async fn mutate_queue(
+        &self,
+        request: crate::QueueMutation,
+    ) -> Result<crate::QueueOutcome, StoreError> {
+        Box::pin(self.queue_mutate(request)).await
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::QueueReceipt>, StoreError> {
+        self.queue_lookup(session, id).await
+    }
+    async fn list_queue(
+        &self,
+        request: crate::QueuePageRequest,
+    ) -> Result<crate::QueuePage, StoreError> {
+        self.queue_list(request).await
+    }
+    async fn get_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::QueueSummary, StoreError> {
+        self.queue_get(session, id).await
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_private(session, id).await
     }
 
     async fn reclaim_approval_continuation(
