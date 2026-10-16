@@ -1,4 +1,6 @@
 //! Actual driver lifetime and uncertain native acknowledgements.
+#[path = "driver/ack.rs"]
+mod ack;
 #[path = "driver/faults.rs"]
 mod faults;
 use super::*;

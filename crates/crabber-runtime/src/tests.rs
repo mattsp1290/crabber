@@ -1803,6 +1803,8 @@ struct SettlementGate {
     driver_activation_fault: AtomicUsize,
     driver_join_fault: AtomicUsize,
     driver_join_calls: AtomicUsize,
+    driver_join_bad: AtomicUsize,
+    driver_join_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
     driver_poll_panic: std::sync::atomic::AtomicBool,
     driver_poll_entered: Notify,
     driver_poll_hold: std::sync::atomic::AtomicBool,
@@ -1850,6 +1852,53 @@ struct SettlementGate {
     session_owner_cancel_on_begin: AtomicUsize,
     owner_observe_ack_lost: std::sync::atomic::AtomicBool,
     owner_observe_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
+}
+
+impl SettlementGate {
+    fn malformed_driver_ack(
+        &self,
+        outcome: &mut crabber_session::session_owner::SessionOwnerOutcome,
+    ) {
+        use crabber_session::session_owner::{
+            SessionOwnerOperation, SessionOwnerOutcome, SessionOwnerState, SessionOwnerTermination,
+        };
+        match outcome {
+            SessionOwnerOutcome::Applied { receipt, .. }
+            | SessionOwnerOutcome::Replayed(receipt) => {
+                match self.driver_join_bad.load(Ordering::SeqCst) {
+                    1 => {
+                        receipt.owner.termination = Some(SessionOwnerTermination::Cancelled);
+                    }
+                    2 => {
+                        receipt.owner.binding.component_id = "changed-initial-driver".into();
+                    }
+                    3 => {
+                        receipt.owner.created_at += time::Duration::seconds(1);
+                    }
+                    4 => {
+                        receipt.owner.state = SessionOwnerState::Active;
+                    }
+                    5 => {
+                        receipt.semantic_digest =
+                            crabber_core::InputFingerprint::new("e".repeat(64)).unwrap();
+                    }
+                    6 => {
+                        receipt.session_id = SessionId::new();
+                    }
+                    7 => {
+                        receipt.operation_id = crabber_core::SessionOwnerOperationId::new();
+                    }
+                    8 => {
+                        receipt.owner.target.id.0 = "changed-initial-owner".into();
+                    }
+                    9 => {
+                        receipt.operation = SessionOwnerOperation::Begin;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 struct DelayedTerminalStore {
@@ -2146,12 +2195,18 @@ impl Store for DelayedTerminalStore {
         }
         if authority.target().id.0.starts_with("driver-owner-") {
             self.gate.driver_join_calls.fetch_add(1, Ordering::SeqCst);
+            self.gate
+                .driver_join_keys
+                .lock()
+                .unwrap()
+                .push(proof.request()?.id);
             let point = self.gate.driver_join_fault.swap(0, Ordering::SeqCst);
             assert_ne!(point, 3, "Join Store panic before publication");
             if point == 1 {
                 return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
             }
-            let outcome = self.inner.join_owned_scope(proof, authority).await?;
+            let mut outcome = self.inner.join_owned_scope(proof, authority).await?;
+            self.gate.malformed_driver_ack(&mut outcome);
             assert_ne!(point, 4, "Join Store panic after publication");
             if point == 2 {
                 return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);

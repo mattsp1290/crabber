@@ -28,34 +28,32 @@ pub(super) async fn join(
         })
         .await
         {
-            Ok(outcome) => {
-                let (SessionOwnerOutcome::Applied {
+            Ok(outcome) => match outcome {
+                SessionOwnerOutcome::Applied {
                     receipt,
                     authority: None,
                 }
-                | SessionOwnerOutcome::Replayed(receipt)) = outcome
-                else {
-                    return Err(RuntimeError::PreparationRecoveryRequired);
-                };
-                if receipt.operation != SessionOwnerOperation::Join
-                    || receipt.owner.state != SessionOwnerState::Joined
-                    || receipt.owner.binding != grant.receipt().begin.owner.binding
-                    || receipt.owner.created_at != grant.receipt().begin.owner.created_at
-                    || receipt.owner.termination != Some(termination)
-                    || receipt.session_id != native.session_id
-                    || receipt.operation_id != native.id
-                    || receipt.owner.target != native.target
-                    || receipt.semantic_digest != fingerprint
+                | SessionOwnerOutcome::Replayed(receipt)
+                    if receipt.operation == SessionOwnerOperation::Join
+                        && receipt.owner.state == SessionOwnerState::Joined
+                        && receipt.owner.binding == grant.receipt().begin.owner.binding
+                        && receipt.owner.created_at == grant.receipt().begin.owner.created_at
+                        && receipt.owner.termination == Some(termination)
+                        && receipt.session_id == native.session_id
+                        && receipt.operation_id == native.id
+                        && receipt.owner.target == native.target
+                        && receipt.semantic_digest == fingerprint =>
                 {
-                    return Err(RuntimeError::PreparationRecoveryRequired);
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            Err(SessionOwnerError::UnknownStoreOutcome) => {
-                tokio::time::sleep(retry_wait).await;
-                retry_wait = (retry_wait * 2).min(Duration::from_secs(1));
-            }
+                // A malformed acknowledgement cannot release the original proof,
+                // even when the native transaction actually committed its Join.
+                _ => {}
+            },
+            Err(SessionOwnerError::UnknownStoreOutcome) => {}
             Err(error) => return Err(error.into()),
         }
+        tokio::time::sleep(retry_wait).await;
+        retry_wait = (retry_wait * 2).min(Duration::from_secs(1));
     }
 }
