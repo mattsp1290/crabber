@@ -1991,6 +1991,7 @@ struct SettlementGate {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
+    reject_run_reads: std::sync::atomic::AtomicBool,
     session_owner_ack_lost: AtomicUsize,
 }
 
@@ -2105,6 +2106,16 @@ impl Store for DelayedTerminalStore {
         self.inner.tool_continuation_snapshot(session, run).await
     }
 
+    async fn original_tool_continuation_plan(
+        &self,
+        selected: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+        target: &crabber_session::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crabber_session::ToolContinuationError> {
+        self.inner
+            .original_tool_continuation_plan(selected, run, target)
+            .await
+    }
     async fn lookup_tool_continuation(
         &self,
         session: &SessionId,
@@ -2176,6 +2187,16 @@ impl Store for DelayedTerminalStore {
         run: &crabber_core::RunId,
     ) -> Result<Option<crabber_session::ApprovalSnapshot>, crabber_session::ApprovalError> {
         self.inner.approval_snapshot(session, run).await
+    }
+    async fn original_approval_plan(
+        &self,
+        selected: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+        target: &crabber_session::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crabber_session::ApprovalError> {
+        self.inner
+            .original_approval_plan(selected, run, target)
+            .await
     }
     async fn lookup_approval(
         &self,
@@ -2319,6 +2340,10 @@ impl Store for DelayedTerminalStore {
         self.inner.get_session(id).await
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
+        assert!(
+            !self.gate.reject_run_reads.load(Ordering::SeqCst),
+            "metadata replay attempted a full private Run read"
+        );
         let mut run = self.inner.get_run(id).await?;
         if let Some(checkpoint) = self.gate.checkpoint_override.lock().unwrap().clone()
             && let Some(run) = &mut run

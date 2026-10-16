@@ -53,6 +53,13 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
 async fn lifecycle(store: &impl Store, clock: &ManualClock) {
     let mut f = staged(store, clock).await;
     let suspended = presentation::suspend(store, clock, &mut f).await;
+    assert_eq!(
+        store
+            .original_approval_plan(&f.run.session_id, &f.run.id, &f.batch.continuation)
+            .await
+            .unwrap(),
+        f.batch.expected_plan
+    );
     let run = store.get_run(&f.run.id).await.unwrap().unwrap();
     assert_eq!(run.status, RunStatus::Paused);
     assert!(matches!(

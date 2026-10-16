@@ -36,16 +36,22 @@ impl ContinueTool {
         if run.session_id != self.session_id || run.id != self.run_id {
             return Err(Error::NotFound.into());
         }
-        Ok(ToolContinuationClaim {
+        Ok(self.claim_with_plan(InputFingerprint::new(run.plan_fingerprint.clone())?))
+    }
+    pub(super) fn claim_with_plan(
+        &self,
+        expected_plan: crabber_core::InputFingerprint,
+    ) -> ToolContinuationClaim {
+        ToolContinuationClaim {
             id: self.id.clone(),
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
             continuation: self.continuation.clone(),
             expected_revision: self.expected_revision,
-            expected_plan: InputFingerprint::new(run.plan_fingerprint.clone())?,
+            expected_plan,
             owner: RunId::new().to_string(),
             lease_ms: 30000,
-        })
+        }
     }
 }
 impl Orchestrator {
@@ -82,15 +88,20 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let run = self
-            .store
-            .get_run(&request.run_id)
-            .await?
-            .ok_or(Error::NotFound)?;
         if receipt.run_id != request.run_id
-            || !matches!(receipt.outcome, ToolContinuationOutcome::Claimed { .. })
-            || receipt.semantic_digest != request.claim(&run)?.fingerprint()?
+            || !matches!(&receipt.outcome, ToolContinuationOutcome::Claimed { continuation, .. } if *continuation == request.continuation)
         {
+            return Err(Error::SemanticConflict.into());
+        }
+        let original_plan = self
+            .store
+            .original_tool_continuation_plan(
+                &request.session_id,
+                &request.run_id,
+                &request.continuation,
+            )
+            .await?;
+        if receipt.semantic_digest != request.claim_with_plan(original_plan).fingerprint()? {
             return Err(Error::SemanticConflict.into());
         }
         Ok(Some(receipt))

@@ -59,6 +59,16 @@ impl Store for SqliteFixture {
     ) -> Result<Option<crabber::session::ApprovalSnapshot>, crabber::session::ApprovalError> {
         self.store.approval_snapshot(session, run).await
     }
+    async fn original_approval_plan(
+        &self,
+        selected: &crabber::core::SessionId,
+        run: &crabber::core::RunId,
+        target: &crabber::session::ContinuationTarget,
+    ) -> Result<crabber::core::InputFingerprint, crabber::session::ApprovalError> {
+        self.store
+            .original_approval_plan(selected, run, target)
+            .await
+    }
     async fn lookup_approval(
         &self,
         session: &crabber::core::SessionId,

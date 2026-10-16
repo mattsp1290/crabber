@@ -276,6 +276,16 @@ impl Store for DriftStore {
     ) -> Result<Option<crabber_session::ApprovalSnapshot>, crabber_session::ApprovalError> {
         self.inner.approval_snapshot(session, run).await
     }
+    async fn original_approval_plan(
+        &self,
+        selected: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+        target: &crabber_session::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crabber_session::ApprovalError> {
+        self.inner
+            .original_approval_plan(selected, run, target)
+            .await
+    }
     async fn lookup_approval(
         &self,
         session: &crabber_core::SessionId,

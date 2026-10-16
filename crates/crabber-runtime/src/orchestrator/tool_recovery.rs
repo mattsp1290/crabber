@@ -19,6 +19,14 @@ impl Orchestrator {
         request: &RecoverTool,
         run: &Run,
     ) -> Result<ToolContinuationRecovery, RuntimeError> {
+        self.tool_recovery_request_for_claim(request, request.original.claim(run)?)
+            .await
+    }
+    async fn tool_recovery_request_for_claim(
+        &self,
+        request: &RecoverTool,
+        claim: crabber_session::ToolContinuationClaim,
+    ) -> Result<ToolContinuationRecovery, RuntimeError> {
         let original = self
             .lookup_tool_continuation(&request.original)
             .await?
@@ -29,7 +37,7 @@ impl Orchestrator {
         Ok(ToolContinuationRecovery {
             id: request.id.clone(),
             expected_revision: request.expected_revision,
-            original: request.original.claim(run)?,
+            original: claim,
             attempt: attempt.target,
             owner: crabber_core::RunId::new().to_string(),
             lease_ms: 30000,
@@ -49,14 +57,25 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let run = self
+        if receipt.run_id != request.original.run_id
+            || !matches!(&receipt.outcome, ToolContinuationOutcome::ReclaimedUnstarted { continuation, .. } if *continuation == request.original.continuation)
+        {
+            return Err(Error::SemanticConflict.into());
+        }
+        let original_plan = self
             .store
-            .get_run(&request.original.run_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        self.tool_recovery_request(request, &run)
-            .await?
-            .verify_receipt(&receipt)?;
+            .original_tool_continuation_plan(
+                &request.original.session_id,
+                &request.original.run_id,
+                &request.original.continuation,
+            )
+            .await?;
+        self.tool_recovery_request_for_claim(
+            request,
+            request.original.claim_with_plan(original_plan),
+        )
+        .await?
+        .verify_receipt(&receipt)?;
         Ok(Some(receipt))
     }
     /// Explicitly reclaim an expired, proven Unstarted tool continuation owner.

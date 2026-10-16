@@ -1,6 +1,7 @@
 //! Explicit tool checkpoint transactions; session gate precedes run/native rows.
 mod answer;
 mod claim;
+mod original_plan;
 pub(super) use claim::waiting_context;
 mod cancel;
 mod current;

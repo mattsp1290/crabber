@@ -231,3 +231,5 @@ mod admission_selection;
 pub use admission_selection::{
     AdmissionSelectionPolicy, SELECTION_POLICY_COMPONENT, SelectionFallback,
 };
+
+mod continuation_origin;

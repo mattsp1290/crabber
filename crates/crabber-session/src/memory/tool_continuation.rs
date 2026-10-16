@@ -1,4 +1,6 @@
 //! Atomic explicit checkpoint controls under the `MemoryStore` mutation lock.
+#[path = "tool_continuation/original_plan.rs"]
+mod original_plan;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::tool_continuation::{self as domain, ToolContinuationRecord};
 use crate::{

@@ -1,5 +1,8 @@
 #[path = "../../crabber-session/src/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "../../crabber-session/src/continuation_origin.rs"]
+#[allow(dead_code)]
+mod continuation_origin;
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]

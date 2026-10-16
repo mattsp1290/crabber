@@ -440,6 +440,16 @@ pub trait Store: Send + Sync {
         Err(crate::ApprovalError::Unsupported)
     }
     /// Reconcile an original control key without restoring a plan or owner.
+    /// Authenticate the exact original frozen plan without reading a mutable Run,
+    /// current answers, checkpoints, owner tokens, or initializing factories.
+    async fn original_approval_plan(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+        _target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ApprovalError> {
+        Err(crate::ApprovalError::Unsupported)
+    }
     async fn lookup_approval(
         &self,
         _session: &SessionId,
@@ -492,7 +502,8 @@ pub trait Store: Send + Sync {
     fn supports_owned_tool_phases(&self) -> bool {
         false
     }
-    /// Pure declaration for durable prepared-batch approvals and their controls.
+    /// Pure declaration for durable prepared-batch approvals and their controls,
+    /// including bounded original-plan provenance reads for pure reconciliation.
     fn supports_tool_continuations(&self) -> bool {
         false
     }
@@ -501,6 +512,16 @@ pub trait Store: Send + Sync {
         _session: &SessionId,
         _run: &RunId,
     ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
+        Err(crate::ToolContinuationError::Unsupported)
+    }
+    /// Authenticate the exact original frozen plan without reading a mutable Run,
+    /// current answers, checkpoints, owner tokens, or initializing factories.
+    async fn original_tool_continuation_plan(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+        _target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ToolContinuationError> {
         Err(crate::ToolContinuationError::Unsupported)
     }
     async fn lookup_tool_continuation(

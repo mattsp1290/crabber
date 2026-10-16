@@ -49,6 +49,17 @@ pub(crate) async fn lifecycle(store: &impl Store) -> fixture::Fixture {
             .unwrap(),
         receipt
     );
+    assert_eq!(
+        store
+            .original_tool_continuation_plan(
+                &f.admitted.session.id,
+                &f.admitted.run.id,
+                &f.suspension.continuation
+            )
+            .await
+            .unwrap(),
+        f.suspension.expected_plan
+    );
     let session = &f.admitted.session.id;
     let run = &f.admitted.run.id;
     let snapshot = store

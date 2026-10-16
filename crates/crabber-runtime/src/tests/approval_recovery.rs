@@ -136,10 +136,28 @@ async fn cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget() 
             ));
             assert!(effects.lock().unwrap().is_empty());
             assert_eq!(provider.requests().len(), 1);
+            gate.reject_run_reads.store(true, Ordering::SeqCst);
             assert!(matches!(
                 runtime.continue_approval(original.clone()).await.unwrap(),
                 crate::Continuation::Replayed(_)
             ));
+            let mut changed = original.clone();
+            changed.continuation.generation = changed.continuation.generation.next().unwrap();
+            assert!(matches!(
+                runtime.lookup_approval_continuation(&changed).await,
+                Err(RuntimeError::Approval(
+                    crabber_session::ApprovalError::SemanticConflict
+                ))
+            ));
+            changed = original.clone();
+            changed.expected_revision = changed.expected_revision.next().unwrap();
+            assert!(matches!(
+                runtime.lookup_approval_continuation(&changed).await,
+                Err(RuntimeError::Approval(
+                    crabber_session::ApprovalError::SemanticConflict
+                ))
+            ));
+            gate.reject_run_reads.store(false, Ordering::SeqCst);
             let mut recovery = crate::RecoverApproval {
                 id: crabber_core::ControlId::new(),
                 expected_revision: store.session_revision(&session).await.unwrap(),
@@ -264,6 +282,7 @@ async fn cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget() 
             }
             assert_eq!(decisions.load(Ordering::SeqCst), 4);
             assert_eq!(prepares.load(Ordering::SeqCst), 4);
+            gate.reject_run_reads.store(true, Ordering::SeqCst);
             assert!(
                 matches!(cold.recover_approval_continuation(recovery).await.unwrap(),crate::Continuation::Replayed(saved) if saved==receipt)
             );
@@ -271,6 +290,7 @@ async fn cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget() 
                 cold.continue_approval(original).await.unwrap(),
                 crate::Continuation::Replayed(_)
             ));
+            gate.reject_run_reads.store(false, Ordering::SeqCst);
             assert!(matches!(
                 cold.resume(&run).await,
                 Err(RuntimeError::DurableContinuationRequired { .. }

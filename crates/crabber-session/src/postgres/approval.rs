@@ -4,6 +4,7 @@ mod claim;
 pub(super) mod current;
 mod guards;
 pub(super) mod origin;
+mod original_plan;
 pub(super) mod public_header;
 pub(super) use public_header::read as public_header;
 mod recover;
@@ -243,3 +244,6 @@ mod process_tests;
 
 #[cfg(test)]
 mod current_tests;
+
+#[cfg(test)]
+mod original_plan_tests;

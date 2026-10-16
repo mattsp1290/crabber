@@ -62,17 +62,25 @@ impl ContinueApproval {
         if self.session_id != run.session_id || self.run_id != run.id {
             return Err(StoreError::NotFound.into());
         }
-        Ok(ApprovalContinuationClaim {
+        Ok(self.claim_with_plan(
+            crabber_core::InputFingerprint::new(run.plan_fingerprint.clone())
+                .map_err(|_| ApprovalError::InvalidRequest)?,
+        ))
+    }
+    pub(super) fn claim_with_plan(
+        &self,
+        expected_plan: crabber_core::InputFingerprint,
+    ) -> ApprovalContinuationClaim {
+        ApprovalContinuationClaim {
             id: self.id.clone(),
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
             continuation: self.continuation.clone(),
             expected_revision: self.expected_revision,
-            expected_plan: crabber_core::InputFingerprint::new(run.plan_fingerprint.clone())
-                .map_err(|_| ApprovalError::InvalidRequest)?,
+            expected_plan,
             owner: RunId::new().to_string(),
             lease_ms: 30_000,
-        })
+        }
     }
 }
 impl Orchestrator {
@@ -112,16 +120,15 @@ impl Orchestrator {
             return Ok(None);
         };
         if receipt.run_id != request.run_id
-            || !matches!(receipt.outcome, ApprovalOutcome::Claimed { .. })
+            || !matches!(&receipt.outcome, ApprovalOutcome::Claimed { continuation, .. } if *continuation == request.continuation)
         {
             return Err(ApprovalError::SemanticConflict.into());
         }
-        let run = self
+        let original_plan = self
             .store
-            .get_run(&request.run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        if request.claim(&run)?.fingerprint()? != receipt.semantic_digest {
+            .original_approval_plan(&request.session_id, &request.run_id, &request.continuation)
+            .await?;
+        if request.claim_with_plan(original_plan).fingerprint()? != receipt.semantic_digest {
             return Err(ApprovalError::SemanticConflict.into());
         }
         Ok(Some(receipt))

@@ -19,6 +19,14 @@ impl Orchestrator {
         request: &RecoverApproval,
         run: &Run,
     ) -> Result<ApprovalContinuationRecovery, RuntimeError> {
+        self.recovery_request_for_claim(request, request.original.claim(run)?)
+            .await
+    }
+    async fn recovery_request_for_claim(
+        &self,
+        request: &RecoverApproval,
+        claim: crabber_session::ApprovalContinuationClaim,
+    ) -> Result<ApprovalContinuationRecovery, RuntimeError> {
         let original = self
             .lookup_approval_continuation(&request.original)
             .await?
@@ -29,7 +37,7 @@ impl Orchestrator {
         Ok(ApprovalContinuationRecovery {
             id: request.id.clone(),
             expected_revision: request.expected_revision,
-            original: request.original.claim(run)?,
+            original: claim,
             attempt: attempt.target,
             owner: crabber_core::RunId::new().to_string(),
             lease_ms: 30_000,
@@ -49,12 +57,20 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let run = self
+        if receipt.run_id != request.original.run_id
+            || !matches!(&receipt.outcome, ApprovalOutcome::ReclaimedUnstarted { continuation, .. } if *continuation == request.original.continuation)
+        {
+            return Err(ApprovalError::SemanticConflict.into());
+        }
+        let original_plan = self
             .store
-            .get_run(&request.original.run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        self.recovery_request(request, &run)
+            .original_approval_plan(
+                &request.original.session_id,
+                &request.original.run_id,
+                &request.original.continuation,
+            )
+            .await?;
+        self.recovery_request_for_claim(request, request.original.claim_with_plan(original_plan))
             .await?
             .verify_receipt(&receipt)?;
         Ok(Some(receipt))

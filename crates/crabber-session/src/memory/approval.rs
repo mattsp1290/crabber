@@ -7,6 +7,8 @@ mod claim;
 pub(super) mod current;
 #[path = "approval/origin.rs"]
 pub(super) mod origin;
+#[path = "approval/original_plan.rs"]
+mod original_plan;
 #[path = "approval/recover.rs"]
 mod recover;
 #[path = "approval/suspend.rs"]
@@ -296,3 +298,7 @@ pub(super) fn guard_claiming(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "approval/original_plan_tests.rs"]
+mod original_plan_tests;

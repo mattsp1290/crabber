@@ -73,6 +73,14 @@ impl Store for SqliteStore {
     ) -> Result<Option<crate::ToolContinuationSnapshot>, crate::ToolContinuationError> {
         self.read_tools(session, run).await
     }
+    async fn original_tool_continuation_plan(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ToolContinuationError> {
+        self.read_original_tool_plan(session, run, target).await
+    }
     async fn lookup_tool_continuation(
         &self,
         session: &SessionId,
@@ -260,6 +268,14 @@ impl Store for SqliteStore {
         run: &RunId,
     ) -> Result<Option<crate::ApprovalSnapshot>, crate::ApprovalError> {
         self.read_approval(session, run).await
+    }
+    async fn original_approval_plan(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        target: &crate::ContinuationTarget,
+    ) -> Result<crabber_core::InputFingerprint, crate::ApprovalError> {
+        self.read_original_approval_plan(session, run, target).await
     }
     async fn lookup_approval(
         &self,
