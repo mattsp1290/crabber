@@ -23,7 +23,12 @@ pub struct RecoverFrontend {
 }
 impl ContinueFrontend {
     fn claim(&self, run: &Run) -> Result<FrontendContinuationClaim, RuntimeError> {
-        let claim = self.continuation.claim(run)?;
+        self.claim_from_native(self.continuation.claim(run)?)
+    }
+    fn claim_from_native(
+        &self,
+        claim: crabber_session::ToolContinuationClaim,
+    ) -> Result<FrontendContinuationClaim, RuntimeError> {
         FrontendContinuationClaim::fingerprint_parts(&claim, &self.resolver, &self.results)?;
         Ok(FrontendContinuationClaim {
             claim,
@@ -106,17 +111,23 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let run = self
-            .store
-            .get_run(&scope.run_id)
-            .await?
-            .ok_or(Error::NotFound)?;
         if receipt.run_id != scope.run_id
-            || !matches!(
-                receipt.outcome,
-                ToolContinuationOutcome::FrontendClaimed { .. }
-            )
-            || receipt.semantic_digest != request.claim(&run)?.fingerprint()?
+            || !matches!(&receipt.outcome, ToolContinuationOutcome::FrontendClaimed { continuation, .. } if *continuation == scope.continuation)
+        {
+            return Err(Error::SemanticConflict.into());
+        }
+        let original_plan = self
+            .store
+            .original_tool_continuation_plan(&scope.session_id, &scope.run_id, &scope.continuation)
+            .await?;
+        let native = scope.claim_with_plan(original_plan);
+
+        if receipt.semantic_digest
+            != FrontendContinuationClaim::fingerprint_parts(
+                &native,
+                &request.resolver,
+                &request.results,
+            )?
         {
             return Err(Error::SemanticConflict.into());
         }
@@ -140,6 +151,9 @@ impl Orchestrator {
         request: ContinueFrontend,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_frontend_continuation(&request).await? {
+            return Ok(ToolContinuation::Replayed(receipt));
+        }
         let runtime = self.with_context(context);
         self.own_preparation(request.continuation.session_id.clone(), async move {
             if let Some(receipt) = runtime.lookup_frontend_continuation(&request).await? {
@@ -164,6 +178,14 @@ impl Orchestrator {
         request: &RecoverFrontend,
         run: &Run,
     ) -> Result<FrontendContinuationRecovery, RuntimeError> {
+        self.frontend_recovery_for_claim(request, request.original.claim(run)?)
+            .await
+    }
+    async fn frontend_recovery_for_claim(
+        &self,
+        request: &RecoverFrontend,
+        claim: FrontendContinuationClaim,
+    ) -> Result<FrontendContinuationRecovery, RuntimeError> {
         let original = self
             .lookup_frontend_continuation(&request.original)
             .await?
@@ -174,7 +196,7 @@ impl Orchestrator {
         Ok(FrontendContinuationRecovery {
             id: request.id.clone(),
             expected_revision: request.expected_revision,
-            original: request.original.claim(run)?,
+            original: claim,
             attempt: attempt.target,
             owner: crabber_core::RunId::new().to_string(),
             lease_ms: 30000,
@@ -195,12 +217,19 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        let run = self
+        if receipt.run_id != scope.run_id
+            || !matches!(&receipt.outcome, ToolContinuationOutcome::FrontendReclaimedUnstarted { continuation, .. } if *continuation == scope.continuation)
+        {
+            return Err(Error::SemanticConflict.into());
+        }
+        let original_plan = self
             .store
-            .get_run(&scope.run_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        self.frontend_recovery_request(request, &run)
+            .original_tool_continuation_plan(&scope.session_id, &scope.run_id, &scope.continuation)
+            .await?;
+        let claim = request
+            .original
+            .claim_from_native(scope.claim_with_plan(original_plan))?;
+        self.frontend_recovery_for_claim(request, claim)
             .await?
             .verify_receipt(&receipt)?;
         Ok(Some(receipt))
@@ -212,6 +241,9 @@ impl Orchestrator {
         &self,
         request: RecoverFrontend,
     ) -> Result<ToolContinuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_frontend_recovery(&request).await? {
+            return Ok(ToolContinuation::Replayed(receipt));
+        }
         let runtime = self.clone();
         self.own_preparation(
             request.original.continuation.session_id.clone(),

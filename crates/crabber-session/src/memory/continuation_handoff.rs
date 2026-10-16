@@ -29,15 +29,13 @@ pub(super) fn prepare(
             {
                 return Err(Error::InvalidTransition);
             }
-            let id = record
-                .recovery
-                .as_ref()
-                .map(|r| &r.id)
-                .or(record.claim.as_ref().map(|c| &c.id))
-                .ok_or(Error::UnknownStoreOutcome)?;
-            let receipt = super::tool_continuation::receipt(state, &run.session_id, id)
+            let (id, digest) = record.latest_claim_source().map_err(unknown)?;
+            let receipt = super::tool_continuation::receipt(state, &run.session_id, &id)
                 .map_err(unknown)?
                 .ok_or(Error::UnknownStoreOutcome)?;
+            if receipt.semantic_digest != digest {
+                return Err(Error::UnknownStoreOutcome);
+            }
             Source {
                 domain: Domain::Tool,
                 continuation: record.batch.continuation,
@@ -249,7 +247,8 @@ pub(super) fn preflight(
                         .filter_map(|q| q.answer.as_ref().map(|a| &a.id)),
                 )
                 .chain(record.claim.iter().map(|c| &c.id))
-                .chain(record.recovery.iter().map(|c| &c.id));
+                .chain(record.recovery.iter().map(|c| &c.id))
+                .chain(record.frontend_recovery.iter().map(|c| &c.id));
             for id in ids {
                 crate::attempt::validate_identifier(&id.0).map_err(unknown)?;
                 let saved = state

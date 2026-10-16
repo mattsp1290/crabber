@@ -1,5 +1,7 @@
 #[path = "frontend_continuation/allocation.rs"]
 mod allocation;
+#[path = "frontend_continuation/handoff.rs"]
+mod handoff;
 #[cfg(feature = "sqlite")]
 #[path = "frontend_continuation/process.rs"]
 mod process;

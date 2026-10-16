@@ -82,16 +82,14 @@ pub(super) async fn tool_source(
     tx: &mut Transaction<'_, Postgres>,
     record: &crate::tool_continuation::ToolContinuationRecord,
 ) -> Result<Source, Error> {
-    let id = record
-        .recovery
-        .as_ref()
-        .map(|r| &r.id)
-        .or(record.claim.as_ref().map(|c| &c.id))
-        .ok_or(Error::UnknownStoreOutcome)?;
-    let (receipt, _) = tool_continuation::read::receipt(tx, &record.session_id, id)
+    let (id, digest) = record.latest_claim_source().map_err(unknown)?;
+    let (receipt, _) = tool_continuation::read::receipt(tx, &record.session_id, &id)
         .await
         .map_err(unknown)?
         .ok_or(Error::UnknownStoreOutcome)?;
+    if receipt.semantic_digest != digest {
+        return Err(Error::UnknownStoreOutcome);
+    }
     Ok(Source {
         domain: Domain::Tool,
         continuation: record.batch.continuation.clone(),
@@ -433,7 +431,8 @@ async fn tool_cost(
                 .filter_map(|q| q.answer.as_ref().map(|a| &a.id)),
         )
         .chain(next.claim.iter().map(|c| &c.id))
-        .chain(next.recovery.iter().map(|c| &c.id));
+        .chain(next.recovery.iter().map(|c| &c.id))
+        .chain(next.frontend_recovery.iter().map(|c| &c.id));
     for id in ids {
         crate::attempt::validate_identifier(&id.0).map_err(fail)?;
         approval::public_header::receipt_cost(tx, &record.session_id, id, proof).await?;
