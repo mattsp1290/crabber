@@ -129,7 +129,8 @@ async fn incomplete_worker_retains_noncooperative_resource_join_after_timeout() 
     drop(retained);
     fixture.release.notify_one();
     let report = agent.drain_execution_tasks(BOUND).await;
-    assert_eq!(report.resources[0].resources.joined, 1);
+    // The phase callback observer and the tool resource both actually joined.
+    assert_eq!(report.resources[0].resources.joined, 2);
     assert_eq!(report.resources[0].resources.pending, 0);
     assert_eq!(report.resources[0].resources.failures, []);
     assert_eq!(
@@ -149,7 +150,8 @@ async fn interrupted_tool_seals_scope_and_joins_cooperative_resources() {
     let report = agent.drain_execution_tasks(BOUND).await;
     assert_eq!(report.resources.len(), 1);
     assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
-    assert_eq!(report.resources[0].resources.joined, 1);
+    // The phase callback observer and the tool resource both actually joined.
+    assert_eq!(report.resources[0].resources.joined, 2);
     assert_eq!(report.resources[0].resources.pending, 0);
     assert_eq!(report.resources[0].resources.failures, []);
 }
@@ -196,7 +198,8 @@ async fn snapshot_drain_does_not_seal_an_active_tool_scope() {
     let phase = assert_uncertain(handle, &fixture, PhaseQuiescence::Complete).await;
     let report = agent.drain_execution_tasks(BOUND).await;
     assert_eq!(report.resources[0].phase.as_ref(), Some(&phase));
-    assert_eq!(report.resources[0].resources.joined, 2);
+    // Callback observer plus both explicitly registered tool resources.
+    assert_eq!(report.resources[0].resources.joined, 3);
     assert_eq!(report.resources[0].resources.pending, 0);
     assert_eq!(report.resources[0].resources.failures, []);
 }
