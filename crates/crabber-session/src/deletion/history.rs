@@ -56,6 +56,16 @@ pub(crate) struct ClaimHistory {
     pub(crate) retained_sources: Fact,
     pub(crate) complete: Fact,
 }
+impl ClaimHistory {
+    pub(crate) fn with_membership(mut self, protected: bool) -> Self {
+        self.complete = if protected {
+            self.retained_sources
+        } else {
+            Fact::Unproven
+        };
+        self
+    }
+}
 /// Streaming retained-source fold, keeping only the last authenticated cursor.
 /// Present rows cannot prove that the tail or an entire claim was never erased.
 #[derive(Debug, Clone, Copy)]

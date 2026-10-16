@@ -6,28 +6,41 @@ pub(super) async fn latest(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
 ) -> Result<Option<RunIssuance>, Error> {
-    if crate::POSTGRES_SCHEMA_VERSION < 13 {
-        return Ok(None);
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    let latest = super::source_protocol::current(tx, &run.session_id, &run.id, &mut proof)
+        .await
+        .map_err(|_| Error)?;
+    if let Some(latest) = latest.as_ref() {
+        latest.verify(run)?;
     }
-    let row=sqlx::query("SELECT sequence,CASE WHEN octet_length(data_json)<=2048 THEN data_json END AS data FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 1")
-        .bind(&run.session_id.0).bind(&run.id.0).fetch_optional(&mut **tx).await.map_err(|_|Error)?;
-    row.map(|row| {
-        let text = row
-            .try_get::<Option<String>, _>("data")
-            .map_err(|_| Error)?
-            .ok_or(Error)?;
-        let value: RunIssuance = serde_json::from_str(&text).map_err(|_| Error)?;
-        value.validate()?;
-        if i64::try_from(value.sequence).map_err(|_| Error)?
-            != row.try_get::<i64, _>("sequence").map_err(|_| Error)?
-            || value.state.session_id != run.session_id
-            || value.state.run_id != run.id
-        {
-            return Err(Error);
-        }
-        Ok(value)
-    })
-    .transpose()
+    Ok(latest)
+}
+async fn latest_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<RunIssuance>, Error> {
+    proof.charge(8).map_err(|_| Error)?;
+    let sequence: Option<i64> = sqlx::query_scalar(
+        "SELECT MAX(sequence) FROM native_run_issuances WHERE session_id=$1 AND run_id=$2",
+    )
+    .bind(&run.session_id.0)
+    .bind(&run.id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| Error)?;
+    match sequence {
+        None => Ok(None),
+        Some(sequence) => super::source_protocol::original(
+            tx,
+            &run.session_id,
+            &run.id,
+            u64::try_from(sequence).map_err(|_| Error)?,
+            proof,
+        )
+        .await
+        .map_err(|_| Error),
+    }
 }
 /// Called before the actual Run UPDATE, or immediately after an actual INSERT.
 pub(in super::super) async fn change(
@@ -48,9 +61,11 @@ async fn change_inner(
     creation: bool,
     completion: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<(), Error> {
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
     let previous = if creation {
         None
     } else {
+        super::super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(claim_token)+octet_length(status) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2").bind(&run.session_id.0).bind(&run.id.0),&mut proof).await.map_err(|_|Error)?;
         let row=sqlx::query("SELECT CASE WHEN octet_length(claim_token)<=512 THEN claim_token END AS token,CASE WHEN octet_length(status)<=32 THEN status END AS status FROM runs WHERE session_id=$1 AND id=$2")
             .bind(&run.session_id.0).bind(&run.id.0).fetch_one(&mut **tx).await.map_err(|_|Error)?;
         let token = row
@@ -65,7 +80,12 @@ async fn change_inner(
             serde_json::from_value(serde_json::Value::String(status)).map_err(|_| Error)?;
         Some(RunState::new(&run.session_id, &run.id, status, &token)?)
     };
-    let latest = latest(tx, run).await?;
+    let latest = latest_with_proof(tx, run, &mut proof).await?;
+    if let Some(previous) = previous.as_ref() {
+        super::source_protocol::verify_previous(tx, previous, latest.as_ref(), &mut proof)
+            .await
+            .map_err(|_| Error)?;
+    }
     if let Some(mut value) =
         crate::native_parent::advance(previous.as_ref(), RunState::from_run(run)?, latest.as_ref())?
     {
@@ -76,6 +96,9 @@ async fn change_inner(
             value = value.completed(previous.as_ref().ok_or(Error)?, source.clone())?;
         }
         value.validate()?;
+        super::source_protocol::append(tx, &value, creation, &mut proof)
+            .await
+            .map_err(|_| Error)?;
         sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,$3,$4)")
             .bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(value.sequence).map_err(|_|Error)?)
             .bind(serde_json::to_string(&value).map_err(|_|Error)?)

@@ -378,3 +378,72 @@ async fn scoped_purge_removes_only_owned_admission_witness() {
     );
     assert!(store.get_run(&survivor.run_id).await.unwrap().is_some());
 }
+
+#[tokio::test]
+async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_run() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let session = SessionId::new();
+    let keyed =
+        crate::admission_execution_contract::keyed(&session, time::OffsetDateTime::now_utc());
+    let crate::KeyedAdmitOutcome::Started { receipt, .. } =
+        store.admit_keyed_run(keyed).await.unwrap()
+    else {
+        panic!()
+    };
+    let raw = crabber_core::RunId::new();
+    sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) SELECT $1,session_id,'completed',claim_token,lease_until,data,1 FROM runs WHERE id=$2").bind(&raw.0).bind(&receipt.run_id.0).execute(&store.pool).await.unwrap();
+    assert!(
+        sqlx::query("DELETE FROM runs WHERE id=$1")
+            .bind(&raw.0)
+            .execute(&store.pool)
+            .await
+            .is_err()
+    );
+    let revision = store.session_revision(&session).await.unwrap();
+    let request = DeleteSession {
+        id: ControlId::new(),
+        session_id: session.clone(),
+        expected_revision: revision,
+    };
+    let scope = VerifiedScope::fixture(session.clone(), revision);
+    let mut tx = store.pool.begin().await.unwrap();
+    tombstone(&mut tx, &request).await;
+    super::purge(&mut tx, &scope).await.unwrap();
+    tx.rollback().await.unwrap();
+    let sources: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM native_run_sources WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(sources, 1);
+    let mut tx = store.pool.begin().await.unwrap();
+    tombstone(&mut tx, &request).await;
+    super::purge(&mut tx, &scope).await.unwrap();
+    tx.commit().await.unwrap();
+    for table in [
+        "native_run_source_heads",
+        "native_run_sources",
+        "native_run_issuances",
+        "runs",
+        "sessions",
+    ] {
+        let key = if table == "sessions" {
+            "id"
+        } else {
+            "session_id"
+        };
+        let query = format!("SELECT count(*) FROM {table} WHERE {key}=$1");
+        let count: i64 = sqlx::query_scalar(&query)
+            .bind(&session.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+}

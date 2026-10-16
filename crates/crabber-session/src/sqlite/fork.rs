@@ -147,7 +147,7 @@ async fn publish(
     };
     audit.validate()?;
     sqlx::query(
-        "INSERT INTO sessions(id,data,public_revision,ownership_protocol,owner_scope_protocol) VALUES($1,$2,$3,1,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),1))",
+        "INSERT INTO sessions(id,data,public_revision,ownership_protocol,owner_scope_protocol,native_run_protocol) VALUES($1,$2,$3,1,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),1),COALESCE((SELECT native_run_protocol FROM session_owner_contexts WHERE session_id=$1),1))",
     )
     .bind(&session.id.0)
     .bind(serde_json::to_string(&session).map_err(unknown)?)

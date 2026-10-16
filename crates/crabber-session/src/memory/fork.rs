@@ -174,6 +174,8 @@ fn publish(
         return Err(Error::UnknownStoreOutcome);
     }
     let target = &session.id;
+    super::native_parent::source_protocol::session_birth(state, target)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state.ownership_protocol_sessions.insert(target.clone());
     state.ownership_origins.insert(target.clone(), origin);
     for message in history.messages {

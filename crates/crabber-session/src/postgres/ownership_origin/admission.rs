@@ -36,6 +36,10 @@ pub(in super::super) async fn record_admission(
     let encoded = witness.encoded().map_err(invalid)?;
     let join = witness.join_id().map_err(invalid)?;
     let initial = serde_json::to_string(&issuance).map_err(invalid)?;
+    let mut source_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    super::super::native_parent::source_protocol::append(tx, &issuance, true, &mut source_proof)
+        .await
+        .map_err(invalid)?;
     sqlx::query(
         "INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,1,$3)",
     )

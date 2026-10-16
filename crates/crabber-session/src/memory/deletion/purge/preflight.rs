@@ -145,6 +145,11 @@ pub(super) fn continuations(
             }
         }
     }
+    proof.measure(&state.native_session_protocols.contains(session))?;
+    super::super::super::native_parent::source_protocol::routes(state, session, proof)?;
+    for run in runs {
+        super::super::super::native_parent::source_protocol::history(state, session, run, proof)?;
+    }
     for ((scope, id, sequence), record) in &state.native_run_issuances {
         if scope == session || runs.contains(id) || &record.state.session_id == session {
             proof.measure(&(scope, id, sequence, record))?;

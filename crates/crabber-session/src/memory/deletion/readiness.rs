@@ -48,6 +48,9 @@ fn verify(
     {
         return Err(unknown("coverage scope/revision"));
     }
+    let legacy_native_scope = !state.native_session_protocols.contains(session);
+    proof.measure(&legacy_native_scope)?;
+    super::super::native_parent::source_protocol::routes(state, session, proof)?;
     let mut has_runs = false;
     for (id, run) in &state.runs {
         if &run.session_id != session {
@@ -61,12 +64,7 @@ fn verify(
             return Ok(Some(Blocker::Runtime));
         }
         has_runs = true;
-        for ((scope, run_id, sequence), issuance) in &state.native_run_issuances {
-            if scope == session && run_id == id {
-                proof.measure(&(scope, run_id, sequence, issuance))?;
-            }
-        }
-        super::super::native_parent::verify_run(state, run).map_err(unknown)?;
+        super::super::native_parent::source_protocol::retained_current(state, session, id, proof)?;
     }
     super::owned::verify(state, session, proof)?;
     let unproven_run_sources = super::run_history::verify(state, session, proof)?;
@@ -116,11 +114,13 @@ fn verify(
     // A creation/fork marker does not cover later bare native admissions or
     // generic Joined owner history. Sealed native preparation associations and
     // typed positive resource/dispatch join proofs are still required.
-    Ok(if has_runs || unproven_run_sources || owners.unclassified {
-        Some(Blocker::OwnershipUnknown)
-    } else {
-        None
-    })
+    Ok(
+        if legacy_native_scope || has_runs || unproven_run_sources || owners.unclassified {
+            Some(Blocker::OwnershipUnknown)
+        } else {
+            None
+        },
+    )
 }
 fn native_attempts(state: &State, session: &SessionId, proof: &mut Proof) -> Result<bool, Failure> {
     super::native::membership(

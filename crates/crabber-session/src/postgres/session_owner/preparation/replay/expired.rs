@@ -167,27 +167,14 @@ async fn issuer(
     run: &RunId,
     sequence: u64,
 ) -> Result<Option<crate::native_parent::RunIssuance>, Error> {
-    let row: Option<Option<String>> = sqlx::query_scalar(ISSUER)
-        .bind(&session.0)
-        .bind(&run.0)
-        .bind(i64::try_from(sequence).map_err(unknown)?)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(unknown)?;
-    row.map(|text| {
-        let issuer: crate::native_parent::RunIssuance =
-            serde_json::from_str(&text.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?;
-        issuer.validate().map_err(unknown)?;
-        if issuer.sequence != sequence
-            || issuer.state.session_id != *session
-            || issuer.state.run_id != *run
-        {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        Ok(issuer)
-    })
-    .transpose()
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    super::super::super::super::native_parent::source_protocol::original(
+        tx, session, run, sequence, &mut proof,
+    )
+    .await
+    .map_err(unknown)
 }
+
 async fn source_record(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -208,7 +195,6 @@ async fn source_record(
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
-const ISSUER: &str = "SELECT CASE WHEN octet_length(data_json)<=2048 THEN data_json END FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 AND sequence=$3";
 const EVENT: &str =
     "SELECT CASE WHEN octet_length(data::text)<=65536 THEN data::text END FROM events WHERE seq=$1";
 const RECEIPT: &str = "SELECT CASE WHEN octet_length(data::text)<=8192 THEN data::text END FROM admission_receipts WHERE session_id=$1 AND admission_key=$2";

@@ -94,6 +94,10 @@ pub(super) fn admit_transaction_guarded(
     }
     let new_session = !state.sessions.contains_key(&session_id);
     record_ownership(state, &session, &run, new_session, guard)?;
+    if new_session {
+        super::native_parent::source_protocol::session_birth(state, &session_id)
+            .map_err(|_| StoreError::Conflict)?;
+    }
     state.sessions.insert(session_id.clone(), session.clone());
     state.runs.insert(run_id.clone(), run.clone());
     state.run_order.push(run_id.clone());

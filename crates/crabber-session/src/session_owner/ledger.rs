@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use time::OffsetDateTime;
 #[derive(Clone, serde::Serialize)]
 struct Context {
+    native_run_protocol: bool,
     workspace: String,
     directory: String,
     origin: SessionOwnerOperationId,
@@ -36,6 +37,7 @@ pub(crate) struct Ledger {
     records: BTreeMap<(SessionId, SessionOwnerId), Record>,
     audits: BTreeMap<(SessionId, SessionOwnerOperationId), Audit>,
     contexts: BTreeMap<SessionId, Context>,
+    native_sessions: BTreeMap<SessionId, bool>,
     // Independent append-only public publication routing; never a current-row pointer.
     publications: BTreeMap<(SessionId, SessionOwnerOperationId), (u64, SessionOwnerId)>,
     next_publication: u64,
@@ -80,6 +82,7 @@ impl Ledger {
                 }
             }
         }
+        proof.measure(&self.native_sessions.get(session))?;
         if let Some(context) = self.contexts.get(session) {
             proof.measure(context)?;
         }
@@ -92,16 +95,43 @@ impl Ledger {
         self.records.retain(|(scope, _), _| scope != session);
         self.audits.retain(|(scope, _), _| scope != session);
         self.contexts.remove(session);
+        self.native_sessions.remove(session);
         self.publications.retain(|(scope, _), _| scope != session);
         Ok(())
     }
     /// A fork target must be a fresh identity, including pre-session ownership.
     /// This is a collision check, never a quiescence or deletion-readiness proof.
     pub(crate) fn contains_scope(&self, session: &SessionId) -> bool {
-        self.contexts.contains_key(session)
+        self.native_sessions.contains_key(session)
+            || self.contexts.contains_key(session)
             || self.records.keys().any(|(scope, _)| scope == session)
             || self.audits.keys().any(|(scope, _)| scope == session)
             || self.publications.keys().any(|(scope, _)| scope == session)
+    }
+    #[cfg(test)]
+    pub(crate) fn legacy_native_session_for_test(&mut self, session: &SessionId) {
+        self.native_sessions.remove(session);
+        if let Some(context) = self.contexts.get_mut(session) {
+            context.native_run_protocol = false;
+        }
+    }
+    /// Called only at the actual new native Session birth, never a rename.
+    pub(crate) fn record_native_session_birth(
+        &mut self,
+        session: &SessionId,
+    ) -> Result<bool, Error> {
+        if self.native_sessions.contains_key(session) {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        let protocol = self.native_context_protocol(session).unwrap_or(true);
+        self.native_sessions.insert(session.clone(), protocol);
+        Ok(protocol)
+    }
+    /// Immutable original context era; retained contexts never gain this marker.
+    pub(crate) fn native_context_protocol(&self, session: &SessionId) -> Option<bool> {
+        self.contexts
+            .get(session)
+            .map(|context| context.native_run_protocol)
     }
     pub fn context(
         &self,
@@ -329,6 +359,11 @@ impl Ledger {
             }
             return Ok(SessionOwnerOutcome::Replayed(saved));
         }
+        if matches!(revision, RevisionState::Absent(_))
+            && self.native_sessions.contains_key(session)
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
         self.check_fresh_operation(session, &request.id)?;
         self.validate_scope(session)?;
         self.context(
@@ -373,9 +408,18 @@ impl Ledger {
         }
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);
+        if matches!(revision, RevisionState::Present(_)) {
+            self.native_sessions.entry(session.clone()).or_insert(false);
+        }
+        let native_context = self
+            .native_sessions
+            .get(session)
+            .copied()
+            .unwrap_or(matches!(revision, RevisionState::Absent(_)));
         self.contexts
             .entry(session.clone())
             .or_insert_with(|| Context {
+                native_run_protocol: native_context,
                 workspace: request.binding.workspace_id.clone(),
                 directory: request.binding.directory.clone(),
                 origin: request.id.clone(),

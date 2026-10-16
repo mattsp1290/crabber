@@ -36,6 +36,11 @@ pub(super) async fn verify(
         &token.ok_or_else(|| unknown("current Run token"))?,
     )
     .map_err(unknown)?;
+    let protected = super::super::super::super::native_parent::source_protocol::history(
+        tx, session, run, proof,
+    )
+    .await
+    .map_err(crate::public_session::v2::proof::ReadError::public)?;
     let (initial, latest, claims) = journal(tx, session, run, proof).await?;
     if let Some(latest) = latest
         && latest != expected
@@ -48,7 +53,7 @@ pub(super) async fn verify(
         super::super::super::super::abandon_history::verify(tx, session, run, proof).await?;
     Ok(RunHistoryReport::sources(
         admitted,
-        claims,
+        claims.with_membership(protected),
         terminal || abandoned,
     ))
 }

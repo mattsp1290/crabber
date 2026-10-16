@@ -497,7 +497,7 @@ async fn real_run_only_claim_cannot_be_hidden_by_restoring_live_private_tokens()
 }
 
 #[tokio::test]
-async fn legacy_run_without_issuance_executes_begin_but_cannot_issue_parent_proof() {
+async fn legacy_run_without_source_membership_refuses_fresh_begin() {
     let (store, _clock) = store();
     let admitted = crate::public_state_contract::admit(&store, OffsetDateTime::UNIX_EPOCH).await;
     let execution = store.execution(admitted.fence).await.unwrap();
@@ -513,7 +513,17 @@ async fn legacy_run_without_issuance_executes_begin_but_cannot_issue_parent_proo
     else {
         panic!("reserve")
     };
-    store.state.lock().unwrap().native_run_issuances.clear();
+    {
+        let mut state = store.state.lock().unwrap();
+        state.native_run_issuances.clear();
+        state.native_run_sources.clear();
+        state.native_run_source_heads.clear();
+        state.native_run_protocols.clear();
+        state.native_session_protocols.clear();
+        state
+            .session_owners
+            .legacy_native_session_for_test(&admitted.session.id);
+    }
     let begin = AttemptMutation {
         id: ControlId::new(),
         expected_revision: receipt.revision,
@@ -522,15 +532,8 @@ async fn legacy_run_without_issuance_executes_begin_but_cannot_issue_parent_proo
         },
     };
     assert!(matches!(
-        execution
-            .mutate_attempt(begin.clone(), authority)
-            .await
-            .unwrap(),
-        AttemptMutationOutcome::Applied { .. }
-    ));
-    assert!(matches!(
-        execution.mutate_attempt(begin, None).await.unwrap(),
-        AttemptMutationOutcome::Replayed(_)
+        execution.mutate_attempt(begin, authority).await,
+        Err(crate::AttemptError::UnknownStoreOutcome)
     ));
     let state = store.state.lock().unwrap();
     assert!(state.native_run_issuances.is_empty());

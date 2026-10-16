@@ -807,7 +807,7 @@ impl PostgresStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0))")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol,native_run_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0),COALESCE((SELECT native_run_protocol FROM session_owner_contexts WHERE session_id=$1),1))")
                 .bind(&session.id.0)
                 .bind(json(&session)?)
                 .bind(i32::from(guard.has_owned_resources()))
@@ -815,7 +815,7 @@ impl PostgresStore {
                 .await
                 .map_err(db)?;
         }
-        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES($1,$2,$3,$4,$5,$6)")
+        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) VALUES($1,$2,$3,$4,$5,$6,1)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
         if !guard.has_owned_resources() {
             native_parent::record_run(tx, &run, true).await?;

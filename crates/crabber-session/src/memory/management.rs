@@ -94,6 +94,8 @@ impl MemoryStore {
             };
             let key = (session.id.clone(), request.id.clone());
             if matches!(request.change, crate::SessionChange::Create { .. }) {
+                super::native_parent::source_protocol::session_birth(state, &session.id)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
                 state.ownership_protocol_sessions.insert(session.id.clone());
                 state.ownership_origins.insert(
                     session.id.clone(),

@@ -364,3 +364,88 @@ async fn scoped_purge_removes_only_owned_admission_witness() {
     );
     assert!(store.get_run(&survivor.run_id).await.unwrap().is_some());
 }
+
+#[tokio::test]
+async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("native-source-purge.db");
+    SqliteStore::migrate(&path).await.unwrap();
+    let store = SqliteStore::connect(&path).await.unwrap();
+    let session = SessionId::new();
+    let keyed =
+        crate::admission_execution_contract::keyed(&session, time::OffsetDateTime::now_utc());
+    let crate::KeyedAdmitOutcome::Started { receipt, .. } =
+        store.admit_keyed_run(keyed).await.unwrap()
+    else {
+        panic!()
+    };
+    let raw = crabber_core::RunId::new();
+    sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) SELECT $1,session_id,'completed',claim_token,lease_until,data,1 FROM runs WHERE id=$2").bind(&raw.0).bind(&receipt.run_id.0).execute(&store.writer).await.unwrap();
+    assert!(
+        sqlx::query("DELETE FROM runs WHERE id=$1")
+            .bind(&raw.0)
+            .execute(&store.writer)
+            .await
+            .is_err()
+    );
+    let recursive: i64 = sqlx::query_scalar("PRAGMA recursive_triggers")
+        .fetch_one(&store.writer)
+        .await
+        .unwrap();
+    assert_eq!(recursive, 0);
+    for algorithm in ["REPLACE", "IGNORE"] {
+        let query = format!(
+            "INSERT OR {algorithm} INTO runs(seq,id,session_id,status,claim_token,lease_until,data,native_source_protocol) SELECT seq,$2,session_id,status,claim_token,lease_until,data,1 FROM runs WHERE id=$1"
+        );
+        assert!(
+            sqlx::query(&query)
+                .bind(&raw.0)
+                .bind(crabber_core::RunId::new().0)
+                .execute(&store.writer)
+                .await
+                .is_err()
+        );
+    }
+    let revision = store.session_revision(&session).await.unwrap();
+    let request = DeleteSession {
+        id: ControlId::new(),
+        session_id: session.clone(),
+        expected_revision: revision,
+    };
+    let scope = VerifiedScope::fixture(session.clone(), revision);
+    let mut tx = store.writer.begin().await.unwrap();
+    tombstone(&mut tx, &request).await;
+    super::purge(&mut tx, &scope).await.unwrap();
+    tx.rollback().await.unwrap();
+    let sources: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM native_run_sources WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&store.writer)
+            .await
+            .unwrap();
+    assert_eq!(sources, 1);
+    let mut tx = store.writer.begin().await.unwrap();
+    tombstone(&mut tx, &request).await;
+    super::purge(&mut tx, &scope).await.unwrap();
+    tx.commit().await.unwrap();
+    for table in [
+        "native_run_source_heads",
+        "native_run_sources",
+        "native_run_issuances",
+        "runs",
+        "sessions",
+    ] {
+        let key = if table == "sessions" {
+            "id"
+        } else {
+            "session_id"
+        };
+        let query = format!("SELECT count(*) FROM {table} WHERE {key}=$1");
+        let count: i64 = sqlx::query_scalar(&query)
+            .bind(&session.0)
+            .fetch_one(&store.writer)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+}

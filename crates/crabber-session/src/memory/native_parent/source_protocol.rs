@@ -3,6 +3,17 @@ use crate::memory::State;
 use crate::native_parent::source_protocol::{JournalHead, JournalSource};
 use crate::native_parent::{Error, RunIssuance};
 
+/// Immutable Session identity era is installed with the actual first row.
+pub(in crate::memory) fn session_birth(
+    state: &mut State,
+    session: &crabber_core::SessionId,
+) -> Result<(), crate::session_owner::SessionOwnerError> {
+    if state.session_owners.record_native_session_birth(session)? {
+        state.native_session_protocols.insert(session.clone());
+    }
+    Ok(())
+}
+
 /// A protected Run cannot fall back to legacy behavior when its mutable latest
 /// projection disappears, including writes that would emit no new issuance.
 pub(super) fn verify_previous(
@@ -13,6 +24,12 @@ pub(super) fn verify_previous(
     crate::native_parent::source_protocol::validate_scope(&previous.session_id, &previous.run_id)?;
     let scope = (previous.session_id.clone(), previous.run_id.clone());
     if !state.native_run_protocols.contains(&scope) {
+        if state
+            .native_session_protocols
+            .contains(&previous.session_id)
+        {
+            return Err(Error);
+        }
         return if state
             .native_run_source_heads
             .keys()
@@ -27,6 +44,8 @@ pub(super) fn verify_previous(
             Ok(())
         };
     }
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    history(state, &previous.session_id, &previous.run_id, &mut proof).map_err(|_| Error)?;
     let head = state.native_run_source_heads.get(&scope).ok_or(Error)?;
     head.validate()?;
     let latest = latest.ok_or(Error)?;
@@ -131,16 +150,16 @@ pub(super) fn append(state: &mut State, issuer: &RunIssuance, creation: bool) ->
     Ok(())
 }
 
-#[cfg(test)]
 #[path = "source_protocol/original.rs"]
 mod original;
-#[cfg(test)]
 #[path = "source_protocol/read.rs"]
 mod read;
-#[cfg(test)]
-pub(in crate::memory) use read::{current, history, routes};
+pub(in crate::memory) use read::{current, history, retained_current, routes};
 #[cfg(test)]
 #[path = "source_protocol/tests.rs"]
 mod tests;
-#[cfg(test)]
 pub(in crate::memory) use original::read as original;
+
+#[cfg(test)]
+#[path = "source_protocol/begin_tests.rs"]
+mod begin_tests;

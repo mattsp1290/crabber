@@ -105,7 +105,14 @@ async fn corrupt(
                 .unwrap();
         }
         3 => {
-            sqlx::query("DELETE FROM session_owner_contexts WHERE session_id=$1")
+            assert!(
+                sqlx::query("DELETE FROM session_owner_contexts WHERE session_id=$1")
+                    .bind(&request.binding.session_id.0)
+                    .execute(&mut *tx)
+                    .await
+                    .is_err()
+            );
+            sqlx::query("UPDATE session_owner_contexts SET data_json='{}' WHERE session_id=$1")
                 .bind(&request.binding.session_id.0)
                 .execute(&mut *tx)
                 .await

@@ -1,6 +1,8 @@
 //! Native Begin witnesses bound to independent Run fence issuance.
 #[path = "native_parent/run.rs"]
 mod run;
+#[path = "native_parent/source_protocol.rs"]
+pub(super) mod source_protocol;
 use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
 pub(super) use run::{change as record_run, change_completed as record_completed};

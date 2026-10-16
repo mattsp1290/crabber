@@ -22,7 +22,7 @@ async fn original_input_and_owned_sources_remain_independent_of_current_rows() {
         );
         assert_eq!(
             report.every_noninitial_claim,
-            crate::deletion::history::Fact::Unproven
+            crate::deletion::history::Fact::Authenticated
         );
         assert_eq!(
             report.terminal_source,
@@ -123,6 +123,19 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
     let mut state = store.state.lock().unwrap();
+    state.native_session_protocols.remove(&receipt.session_id);
+    state
+        .session_owners
+        .legacy_native_session_for_test(&receipt.session_id);
+    state
+        .native_run_protocols
+        .remove(&(receipt.session_id.clone(), receipt.run_id.clone()));
+    state
+        .native_run_sources
+        .retain(|(scope, _, _), _| scope != &receipt.session_id);
+    state
+        .native_run_source_heads
+        .remove(&(receipt.session_id.clone(), receipt.run_id.clone()));
     let key = (receipt.session_id.clone(), receipt.run_id.clone(), 1);
     let mut issuer = state.native_run_issuances.get(&key).unwrap().clone();
     issuer.version = 1;

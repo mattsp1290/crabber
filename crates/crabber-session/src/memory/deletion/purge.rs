@@ -42,6 +42,16 @@ fn erase(
     state.imported_calls.remove_session(session);
     state.imported_provenance.remove_session(session);
     state.runs.retain(|id, _| !runs.contains(id));
+    state.native_session_protocols.remove(session);
+    state
+        .native_run_protocols
+        .retain(|(scope, _)| scope != session);
+    state
+        .native_run_sources
+        .retain(|(scope, _, _), _| scope != session);
+    state
+        .native_run_source_heads
+        .retain(|(scope, _), _| scope != session);
     state.run_order.retain(|id| !runs.contains(id));
     state.calls.retain(|id, _| !calls.contains(id));
     state

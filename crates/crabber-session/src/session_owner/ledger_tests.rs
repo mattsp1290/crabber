@@ -564,3 +564,51 @@ fn aggregate_cancellation_failure(ledger: &Ledger, session: &SessionId, case: u8
         ));
     }
 }
+
+#[test]
+fn native_context_era_inherits_known_session_and_never_promotes_retained_context() {
+    let session = SessionId::new();
+    let request = crate::session_owner_contract::reservation(session.clone());
+    let mut ledger = Ledger::default();
+    assert!(ledger.record_native_session_birth(&session).unwrap());
+    ledger
+        .reserve_authenticated(
+            &request,
+            None,
+            OffsetDateTime::UNIX_EPOCH,
+            RevisionState::Present(crabber_core::SessionRevision::INITIAL),
+        )
+        .unwrap();
+    assert_eq!(ledger.native_context_protocol(&session), Some(true));
+    assert!(ledger.record_native_session_birth(&session).is_err());
+    let legacy = SessionId::new();
+    let request = crate::session_owner_contract::reservation(legacy.clone());
+    ledger
+        .reserve(&request, OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    ledger.legacy_native_session_for_test(&legacy);
+    assert_eq!(ledger.native_context_protocol(&legacy), Some(false));
+    assert!(!ledger.record_native_session_birth(&legacy).unwrap());
+    assert_eq!(ledger.native_context_protocol(&legacy), Some(false));
+    let fresh = SessionId::new();
+    let request = crate::session_owner_contract::reservation(fresh.clone());
+    ledger
+        .reserve(&request, OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    assert_eq!(ledger.native_context_protocol(&fresh), Some(true));
+    assert!(ledger.record_native_session_birth(&fresh).unwrap());
+}
+
+#[test]
+fn erased_session_projection_cannot_reserve_before_factory_effects() {
+    let session = SessionId::new();
+    let mut ledger = Ledger::default();
+    assert!(ledger.record_native_session_birth(&session).unwrap());
+    let request = crate::session_owner_contract::reservation(session);
+    assert!(matches!(
+        ledger.reserve(&request, OffsetDateTime::UNIX_EPOCH),
+        Err(Error::UnknownStoreOutcome)
+    ));
+    assert!(ledger.records.is_empty());
+    assert!(ledger.audits.is_empty());
+}

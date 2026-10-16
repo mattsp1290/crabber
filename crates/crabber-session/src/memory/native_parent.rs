@@ -241,15 +241,9 @@ pub(super) fn latest_run<'a>(
     state: &'a State,
     run: &Run,
 ) -> Result<Option<&'a RunIssuance>, Error> {
-    let scope = RunState::from_run(run)?;
-    let latest = state
-        .native_run_issuances
-        .range(
-            (scope.session_id.clone(), scope.run_id.clone(), 0)
-                ..=(scope.session_id, scope.run_id, i64::MAX as u64),
-        )
-        .next_back()
-        .map(|(_, value)| value);
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    let latest =
+        source_protocol::current(state, &run.session_id, &run.id, &mut proof).map_err(|_| Error)?;
     if let Some(latest) = latest {
         latest.verify(run)?;
     }

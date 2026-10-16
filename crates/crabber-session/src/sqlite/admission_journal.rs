@@ -199,7 +199,25 @@ pub(super) async fn issuance_with_proof(
     sequence: Option<u64>,
     proof: &mut Proof,
 ) -> Result<RunIssuance, ReadError<StoreError>> {
-    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(data_json AS BLOB)) AS BIGINT) FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 AND ($3 IS NULL OR sequence=$3) ORDER BY sequence DESC LIMIT 1")
-        .bind(&session.0).bind(&run.0).bind(sequence.map(i64::try_from).transpose().map_err(|_|invalid())?),proof).await.map_err(ReadError::Budget)?;
-    Ok(issuer(tx, session, run, sequence).await?)
+    let sequence = if let Some(sequence) = sequence {
+        sequence
+    } else {
+        super::native_parent::source_protocol::history(tx, session, run, proof)
+            .await
+            .map_err(|e| e.map_domain(|_| invalid()))?;
+        proof.charge(8).map_err(ReadError::Budget)?;
+        let value: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(sequence) FROM native_run_issuances WHERE session_id=$1 AND run_id=$2",
+        )
+        .bind(&session.0)
+        .bind(&run.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        u64::try_from(value.ok_or_else(invalid)?).map_err(|_| invalid())?
+    };
+    super::native_parent::source_protocol::original(tx, session, run, sequence, proof)
+        .await
+        .map_err(|e| e.map_domain(|_| invalid()))?
+        .ok_or_else(|| invalid().into())
 }

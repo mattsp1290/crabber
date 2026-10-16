@@ -279,7 +279,15 @@ pub(super) async fn publish_with_proof(
         if crate::snapshot::encoded_bytes(&context, 32768).is_none() {
             return Err(Error::InvalidRequest);
         }
-        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json,scope_protocol) VALUES($1,$2,$3) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).bind(birth.protocol).execute(&mut **tx).await.map_err(unknown)?;
+        let native_protocol = super::super::native_parent::source_protocol::context_birth(
+            tx,
+            &binding.session_id,
+            birth.absent,
+            proof,
+        )
+        .await
+        .map_err(unknown)?;
+        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json,scope_protocol,native_run_protocol) VALUES($1,$2,$3,$4) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).bind(birth.protocol).bind(native_protocol).execute(&mut **tx).await.map_err(unknown)?;
     }
     sqlx::query("INSERT INTO session_owner_audits(session_id,operation_id,owner_id,sequence,operation,state,data_json) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&binding.session_id.0).bind(&audit.receipt.operation_id.0).bind(&binding.id.0).bind(i64::try_from(record.sequence).map_err(unknown)?).bind(operation(audit.receipt.operation)).bind(state(record.snapshot.state)).bind(&text).execute(&mut **tx).await.map_err(unknown)?;
     sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json,source_protocol) VALUES($1,$2,$3,CASE WHEN $4 THEN 1 ELSE COALESCE((SELECT source_protocol FROM session_owner_current WHERE session_id=$1 AND owner_id=$2),0) END) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).bind(fresh).execute(&mut **tx).await.map_err(unknown)?;

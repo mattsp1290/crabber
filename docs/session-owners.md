@@ -430,3 +430,19 @@ the caller's proof allowance. A coherent rewrite of the current binding and Run
 hashes fails this check. A missing keyed journal never establishes an unkeyed
 source, and a missing required binding remains unknown. Original input evidence
 is separate from main joins, terminal outcome and whole-run resource policy.
+
+Fresh native Runs retain a protected first-source marker, immutable issuance
+hashes and a monotonic source head. A bounded history fold checks every slot
+against that head before fresh execution. Erasing a later issuance and its
+control receipt, then restoring an older Run or attempt, cannot restore dispatch
+authority. Legacy Runs without this independent membership proof remain
+unproven for fresh execution and complete historical coverage.
+
+Original metadata lookup checks the exact protected slot and its original chain
+links. Damage to later history does not prevent replay of an authentic original
+receipt. Session and retained pre-session context era markers preserve legacy
+identity boundaries; public revisions cannot move backwards, and live identities
+cannot be deleted or moved to create a new source era. Permanent tombstone purge
+removes dependent source heads and slots in the same transaction. Complete native
+source history supplies one history fact; main-task joins and whole-run resource
+policy still require their own evidence.

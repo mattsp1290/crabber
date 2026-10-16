@@ -320,9 +320,13 @@ async fn migration_preserves_legacy_owner_bytes_without_positive_backfill() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    crate::postgres::migration::apply_sources(&mut tx)
-        .await
-        .unwrap();
+    // This fixture deliberately models only the tables consumed by migration 18.
+    sqlx::raw_sql(include_str!(
+        "../../../../migrations/0018_owner_publications.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     let saved: String = sqlx::query_scalar("SELECT data_json FROM session_owner_current")
         .fetch_one(&mut *tx)
         .await

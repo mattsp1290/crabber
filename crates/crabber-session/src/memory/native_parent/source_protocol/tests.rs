@@ -174,6 +174,10 @@ async fn later_native_write_preserves_legacy_without_promoting_source_membership
     {
         // Retained pre-protocol state has ordinary issuances but no new cohort.
         let mut state = store.state.lock().unwrap();
+        state.native_session_protocols.remove(&receipt.session_id);
+        state
+            .session_owners
+            .legacy_native_session_for_test(&receipt.session_id);
         state
             .native_run_protocols
             .remove(&(receipt.session_id.clone(), receipt.run_id.clone()));

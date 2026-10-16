@@ -147,9 +147,7 @@ impl JournalHead {
 /// A complete reader compares the final folded head with the independent head.
 /// Counting present rows or selecting their maximum sequence is insufficient.
 #[derive(Default)]
-#[cfg(test)]
 pub(crate) struct Stream(Option<JournalHead>);
-#[cfg(test)]
 impl Stream {
     pub fn observe(&mut self, source: &JournalSource, issuer: &RunIssuance) -> Result<(), Error> {
         source.verify(issuer)?;

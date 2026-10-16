@@ -39,6 +39,13 @@ async fn check(
     if u64::try_from(revision).map_err(unknown)? != coverage.revision().get() {
         return Err(Failure::Error(DeletionError::RevisionConflict));
     }
+    proof.charge(8)?;
+    let native_protocol: i32 =
+        sqlx::query_scalar("SELECT CAST(native_run_protocol AS INTEGER) FROM sessions WHERE id=$1")
+            .bind(&session.0)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(unknown)?;
     let cross_scope: bool = sqlx::query_scalar(crate::sql_deletion::CROSS_SCOPE)
         .bind(&session.0)
         .fetch_one(&mut **tx)
@@ -59,7 +66,12 @@ async fn check(
     let unknown_owner = domains::owners(tx, session, &mut proof).await?;
     // Authenticated native history still requires a fixed known whole-Run
     // Runtime resource policy. The retained-Run gate remains conservative.
-    if unproven_run_sources || unknown_native || unknown_calls || unknown_owner {
+    if native_protocol != 1
+        || unproven_run_sources
+        || unknown_native
+        || unknown_calls
+        || unknown_owner
+    {
         return Err(Failure::Blocked(DeletionBlocker::OwnershipUnknown));
     }
     Ok(VerifiedScope::from_coverage(coverage))

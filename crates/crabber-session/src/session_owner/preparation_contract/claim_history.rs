@@ -11,8 +11,20 @@ pub(crate) struct Fixture {
     pub(crate) before_tail: Run,
     pub(crate) first: ToolContinuationReceipt,
     pub(crate) tail: ToolContinuationReceipt,
+    pub(crate) first_grant: Box<crate::ToolContinuationGrant>,
 }
 pub(crate) async fn fixture(store: &impl Store, clock: &ManualClock) -> Fixture {
+    fixture_checkpoint(store, clock, |_, _, _| async {}).await.0
+}
+pub(crate) async fn fixture_checkpoint<F, Fut, T>(
+    store: &impl Store,
+    clock: &ManualClock,
+    checkpoint: F,
+) -> (Fixture, T)
+where
+    F: FnOnce(Run, crate::AttemptTarget, crabber_core::ContinuationId) -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
     use crate::tool_continuation_contract::fixture::{answer, claim, fixture};
     let f = fixture(store).await;
     f.execution
@@ -57,26 +69,14 @@ pub(crate) async fn fixture(store: &impl Store, clock: &ManualClock) -> Fixture 
         owner: "first-recovery".into(),
         lease_ms: 1,
     };
-    let reserve = request(
-        store,
-        &f.admitted.run,
-        PreparationSource::ToolRecovery(first.clone()),
-        PreparationKey::ToolContinuation(first.id.clone()),
-        ExistingWorkTarget::ToolRecovery {
-            continuation: original.continuation.clone(),
-            attempt: first.attempt.clone(),
-        },
-        first.fingerprint().unwrap(),
+    let (first, first_grant) = recover(store, &f.admitted.run, first).await;
+    let before_tail = store.get_run(&f.admitted.run.id).await.unwrap().unwrap();
+    let captured = checkpoint(
+        before_tail.clone(),
+        f.suspension.next_attempt.clone(),
+        original.continuation.id.clone(),
     )
     .await;
-    let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
-        receipt: first,
-        ..
-    }) = complete(store, &reserve, PreparedOperation::ToolRecovery(first)).await
-    else {
-        panic!("first recovery");
-    };
-    let before_tail = store.get_run(&f.admitted.run.id).await.unwrap().unwrap();
     clock.set(clock.now() + time::Duration::milliseconds(2));
     let tail = ToolContinuationRecovery {
         id: ControlId::new(),
@@ -86,29 +86,42 @@ pub(crate) async fn fixture(store: &impl Store, clock: &ManualClock) -> Fixture 
         owner: "second-recovery".into(),
         lease_ms: 30000,
     };
+    let (tail, _) = recover(store, &f.admitted.run, tail).await;
+    assert!(tail.event_cursor > first.event_cursor);
+    (
+        Fixture {
+            before_tail,
+            first,
+            tail,
+            first_grant,
+        },
+        captured,
+    )
+}
+
+async fn recover(
+    store: &impl Store,
+    run: &Run,
+    recovery: ToolContinuationRecovery,
+) -> (ToolContinuationReceipt, Box<crate::ToolContinuationGrant>) {
     let reserve = request(
         store,
-        &f.admitted.run,
-        PreparationSource::ToolRecovery(tail.clone()),
-        PreparationKey::ToolContinuation(tail.id.clone()),
+        run,
+        PreparationSource::ToolRecovery(recovery.clone()),
+        PreparationKey::ToolContinuation(recovery.id.clone()),
         ExistingWorkTarget::ToolRecovery {
-            continuation: original.continuation,
-            attempt: tail.attempt.clone(),
+            continuation: recovery.original.continuation.clone(),
+            attempt: recovery.attempt.clone(),
         },
-        tail.fingerprint().unwrap(),
+        recovery.fingerprint().unwrap(),
     )
     .await;
     let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
-        receipt: tail,
-        ..
-    }) = complete(store, &reserve, PreparedOperation::ToolRecovery(tail)).await
+        receipt,
+        grant,
+    }) = complete(store, &reserve, PreparedOperation::ToolRecovery(recovery)).await
     else {
-        panic!("second recovery");
+        panic!("fresh genuine recovery")
     };
-    assert!(tail.event_cursor > first.event_cursor);
-    Fixture {
-        before_tail,
-        first,
-        tail,
-    }
+    (receipt, grant)
 }

@@ -42,6 +42,10 @@ pub(in crate::memory) fn read<'a>(
         issuer.validate().map_err(unknown)?;
     }
     if !protocol {
+        if state.native_session_protocols.contains(session) {
+            return Err(unknown("missing fresh Run protocol"));
+        }
+
         if state.native_run_source_heads.contains_key(&scope)
             || state.native_run_sources.keys().any(|(_, id, _)| id == run)
         {

@@ -24,7 +24,7 @@ impl Graph {
     }
     pub fn run_sql(&self) -> String {
         format!(
-            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES('{}','{}','completed','fixture-token',0,'{{}}')",
+            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) VALUES('{}','{}','completed','fixture-token',0,'{{}}',1)",
             self.run, self.session.0
         )
     }

@@ -35,6 +35,10 @@ pub(in crate::memory) fn history(
     }
     let head = state.native_run_source_heads.get(&scope);
     if !protocol {
+        if state.native_session_protocols.contains(session) {
+            return Err(unknown("missing fresh Run protocol"));
+        }
+
         if state
             .native_run_source_heads
             .keys()
@@ -85,7 +89,7 @@ pub(in crate::memory) fn history(
 
 /// Fresh current-state checks consume full protected membership. The exact
 /// original metadata reader intentionally has the weaker historical contract.
-pub(in crate::memory) fn current<'a>(
+pub(in crate::memory) fn retained_current<'a>(
     state: &'a State,
     session: &SessionId,
     run: &RunId,
@@ -126,6 +130,22 @@ pub(in crate::memory) fn current<'a>(
         .ok_or_else(|| unknown("current native issuer"))?;
     issuer.verify(actual).map_err(unknown)?;
     Ok(Some(issuer))
+}
+
+/// Fresh effects require independently protected membership, including on legacy stores.
+pub(in crate::memory) fn current<'a>(
+    state: &'a State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<&'a RunIssuance>, Failure> {
+    if !state
+        .native_run_protocols
+        .contains(&(session.clone(), run.clone()))
+    {
+        return Err(unknown("unprotected fresh Run"));
+    }
+    retained_current(state, session, run, proof)
 }
 
 /// Session inventory must check orphaned protected rows before considering an

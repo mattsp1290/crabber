@@ -29,6 +29,12 @@ pub(super) fn verify(
     Ok(unproven)
 }
 fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
+    let protected = super::super::native_parent::source_protocol::history(
+        state,
+        &run.session_id,
+        &run.id,
+        proof,
+    )?;
     let unkeyed_input = input(state, run, proof)?;
     let (initial_present, claims) = claims::read(state, &run.session_id, &run.id, proof)?;
     let terminal = terminal(state, run, proof)?;
@@ -39,7 +45,7 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
         initial_present
             && state.preparation_admissions.contains_key(&run.id)
             && (state.admission_execution_protocols.contains(&run.id) || unkeyed_input),
-        claims,
+        claims.with_membership(protected),
         terminal || approved || abandoned || cancelled,
     ))
 }
