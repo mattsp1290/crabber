@@ -2,15 +2,33 @@
 use super::*;
 
 async fn journey(store: Arc<dyn Store>) {
-    for unkeyed in [false, true] {
-        journey_for(store.clone(), unkeyed).await;
+    for (unkeyed, existing) in [(false, false), (true, false), (true, true)] {
+        journey_for(store.clone(), unkeyed, existing).await;
     }
 }
-async fn journey_for(store: Arc<dyn Store>, unkeyed: bool) {
+async fn journey_for(store: Arc<dyn Store>, unkeyed: bool, existing: bool) {
     let h = Harness::on_store(store.clone(), store, Arc::new(SettlementGate::default()));
+    if existing {
+        h.memory
+            .manage_session(crabber_session::ManageSession {
+                id: crabber_core::ControlId::new(),
+                session_id: h.input.session_id.clone().unwrap(),
+                expected_revision: crabber_core::SessionRevision::INITIAL,
+                change: crabber_session::SessionChange::Create {
+                    workspace_id: h.input.workspace_id.clone(),
+                    directory: h.input.directory.clone(),
+                    title: "existing ordinary owned driver".into(),
+                    defaults: crabber_session::SessionDefaults::default(),
+                },
+            })
+            .await
+            .unwrap();
+    }
     let (handle, receipt) = if unkeyed {
         let mut input = h.input.clone();
-        input.session_id = None;
+        if !existing {
+            input.session_id = None;
+        }
         (h.runtime.start(input).await.unwrap(), None)
     } else {
         let crate::Admission::Started { handle, receipt } = h
