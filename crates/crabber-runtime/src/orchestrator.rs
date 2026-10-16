@@ -2036,6 +2036,11 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        // Original receipts must remain readable before a fresh preparation
+        // can register ownership or initialize contextual resources.
+        if let Some(receipt) = self.replay_admission(&request, &options).await? {
+            return Ok(Admission::Replayed(receipt));
+        }
         let runtime = self.clone();
         let session_id = request.session_id.clone().ok_or_else(|| {
             StoreError::Validation("keyed admission requires a stable session ID".into())
@@ -2121,6 +2126,9 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        if let Some(receipt) = self.replay_started_admission(&request, &options).await? {
+            return Ok(Admission::Replayed(receipt));
+        }
         let runtime = self.clone();
         let session_id = request.session_id.clone().ok_or(StoreError::NotFound)?;
         self.own_preparation(session_id, async move {

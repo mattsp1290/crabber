@@ -144,6 +144,9 @@ impl Orchestrator {
         request: ContinueApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_approval_continuation(&request).await? {
+            return Ok(Continuation::Replayed(receipt));
+        }
         let runtime = self.with_context(context);
         self.own_preparation(request.session_id.clone(), async move {
             runtime.prepare_continuation(request).await

@@ -78,6 +78,9 @@ impl Orchestrator {
         request: RecoverApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_approval_recovery(&request).await? {
+            return Ok(Continuation::Replayed(receipt));
+        }
         let runtime = self.with_context(context);
         self.own_preparation(request.original.session_id.clone(), async move {
             runtime.prepare_approval_recovery(request).await

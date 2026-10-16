@@ -112,6 +112,9 @@ impl Orchestrator {
         request: ContinueTool,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_tool_continuation(&request).await? {
+            return Ok(ToolContinuation::Replayed(receipt));
+        }
         let runtime = self.with_context(context);
         self.own_preparation(request.session_id.clone(), async move {
             runtime.prepare_tool_continuation(request).await

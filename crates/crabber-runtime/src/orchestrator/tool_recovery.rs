@@ -66,6 +66,9 @@ impl Orchestrator {
         &self,
         request: RecoverTool,
     ) -> Result<ToolContinuation, RuntimeError> {
+        if let Some(receipt) = self.lookup_tool_recovery(&request).await? {
+            return Ok(ToolContinuation::Replayed(receipt));
+        }
         let runtime = self.clone();
         self.own_preparation(request.original.session_id.clone(), async move {
             runtime.prepare_tool_recovery(request).await
