@@ -98,7 +98,7 @@ async fn released(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<bool, ToolReadError> {
-    let native = select(tx, record, "{event}#>>'{payload,attempt,target,id}'=$3 AND {event}#>>'{payload,version}' IN ('2','3') AND {event}#>>'{payload,attempt,state}' IN ('Completed','Failed','Interrupted')", &record.batch.next_attempt.id.0, false, 2, proof).await?;
+    let native = select(tx, record, "{event}#>>'{payload,attempt,target,id}'=$3 AND {event}#>>'{payload,version}' IN ('2','3','4') AND {event}#>>'{payload,attempt,state}' IN ('Completed','Failed','Interrupted')", &record.batch.next_attempt.id.0, false, 2, proof).await?;
     if native.len() > 1 {
         return Err(Error::UnknownStoreOutcome.into());
     }

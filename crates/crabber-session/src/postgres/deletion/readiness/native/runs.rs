@@ -1,5 +1,6 @@
 //! Narrow current fence and the independent immutable issuance chain.
 //! Missing legacy issuance never becomes positive ownership coverage.
+mod terminal;
 use crate::native_parent::{RunIssuance, RunState};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
@@ -36,6 +37,7 @@ pub(super) async fn verify(
     {
         return Err(unknown("current Run issuance"));
     }
+    terminal::verify(tx, session, run, status, proof).await?;
     Ok(())
 }
 async fn journal(

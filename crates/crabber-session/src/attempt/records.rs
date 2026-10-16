@@ -74,6 +74,14 @@ pub(crate) fn verify_receipt(
         .payload
         .get("version")
         .and_then(serde_json::Value::as_u64)
+        == Some(4)
+    {
+        return crate::attempt_conclusion::terminal::verify_event(receipt, event);
+    }
+    if event
+        .payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
         == Some(2)
     {
         return crate::attempt_conclusion::verify_event(receipt, event);

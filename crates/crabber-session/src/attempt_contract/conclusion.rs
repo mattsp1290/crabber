@@ -10,7 +10,7 @@ use crate::{
 use crabber_core::{Clock, ControlId, EventKind, ManualClock, RunStatus, Usage};
 use serde_json::json;
 
-async fn started(
+pub(crate) async fn started(
     store: &impl Store,
     clock: &ManualClock,
     boundary: RunBoundary,
@@ -79,7 +79,7 @@ async fn started(
     };
     (admitted, execution, owner, conclusion)
 }
-fn terminal(status: RunStatus) -> RunBoundary {
+pub(crate) fn terminal(status: RunStatus) -> RunBoundary {
     RunBoundary::Terminal {
         status,
         error: if status == RunStatus::Failed {
@@ -166,7 +166,13 @@ async fn lifecycle(store: &impl Store, clock: &ManualClock, boundary: RunBoundar
         .find(|event| event.cursor == Some(receipt.event_cursor))
         .unwrap();
     assert_eq!(audit.kind, EventKind::ExecutionAttemptChanged);
-    assert_eq!(audit.payload["version"], 2);
+    assert_eq!(
+        audit.payload["version"],
+        if run.status.is_terminal() { 4 } else { 2 }
+    );
+    if run.status.is_terminal() {
+        original_terminal(&run, &receipt, audit, &events, &conclusion);
+    }
     if let Some(source) = events
         .iter()
         .find(|event| event.kind == EventKind::RunSettled)
@@ -198,6 +204,64 @@ async fn lifecycle(store: &impl Store, clock: &ManualClock, boundary: RunBoundar
         events
     );
     conflicting_choices(execution.as_ref(), conclusion).await;
+}
+fn original_terminal(
+    run: &crabber_core::Run,
+    receipt: &crate::AttemptReceipt,
+    audit: &crabber_core::EventRecord,
+    events: &[crabber_core::EventRecord],
+    conclusion: &AttemptConclusion,
+) {
+    use crate::attempt_conclusion::terminal::{self, TerminalFacts};
+    let source = terminal::settlement(receipt, audit).unwrap();
+    assert_eq!(
+        audit.payload["finish"],
+        serde_json::to_value(&conclusion.finish).unwrap()
+    );
+    let original = events
+        .iter()
+        .find(|event| event.cursor == source.cursor)
+        .unwrap();
+    let verify = |status, event: &crabber_core::EventRecord| {
+        terminal::verify_scope(
+            TerminalFacts {
+                session: &run.session_id,
+                run: &run.id,
+                status,
+                error: run.error.as_deref(),
+                usage: &run.usage,
+            },
+            receipt,
+            event,
+            original,
+        )
+    };
+    verify(run.status, audit).unwrap();
+    assert_eq!(
+        verify(RunStatus::Running, audit).unwrap_err(),
+        Error::UnknownStoreOutcome
+    );
+    let changed = if run.status == RunStatus::Failed {
+        RunStatus::Completed
+    } else {
+        RunStatus::Failed
+    };
+    assert_eq!(
+        verify(changed, audit).unwrap_err(),
+        Error::UnknownStoreOutcome
+    );
+    let mut changed = audit.clone();
+    changed.payload["finish"]["expected_revision"] = serde_json::json!(receipt.revision);
+    assert_eq!(
+        verify(run.status, &changed).unwrap_err(),
+        Error::UnknownStoreOutcome
+    );
+    let mut elapsed_changed = audit.clone();
+    elapsed_changed.payload["elapsed"] = serde_json::json!({"secs":u64::MAX,"nanos":0});
+    assert_eq!(
+        verify(run.status, &elapsed_changed).unwrap_err(),
+        Error::UnknownStoreOutcome
+    );
 }
 async fn conflicting_choices(execution: &dyn ExecutionStore, conclusion: AttemptConclusion) {
     let mut changed = conclusion.clone();
@@ -336,6 +400,8 @@ pub(super) async fn faults(
 ) {
     for boundary in [
         terminal(RunStatus::Completed),
+        terminal(RunStatus::Failed),
+        terminal(RunStatus::Interrupted),
         RunBoundary::Suspended {
             checkpoint: json!({"private":"PRIVATE_CHECKPOINT"}),
             usage: Usage::default(),

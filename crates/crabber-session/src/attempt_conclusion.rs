@@ -1,11 +1,12 @@
 //! Atomic logical run boundary plus owned-attempt outcome and cleanup.
 mod materialize;
+pub(crate) mod terminal;
 pub(crate) use materialize::scoped as materialize_scope;
 mod audit;
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptFinish, AttemptMutation, AttemptReceipt,
 };
-pub(crate) use audit::{event, verify_event};
+pub(crate) use audit::{publication, verify_event};
 use crabber_core::{
     EventRecord, InputFingerprint, Run, RunId, RunStatus, SessionId, TurnId, Usage,
 };

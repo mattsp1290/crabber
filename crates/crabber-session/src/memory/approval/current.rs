@@ -145,7 +145,7 @@ fn native<'a>(state: &'a State, record: &ApprovalRecord) -> Result<&'a EventReco
                 && e.kind == EventKind::ExecutionAttemptChanged
                 && matches!(
                     e.payload.get("version").and_then(serde_json::Value::as_u64),
-                    Some(2 | 3)
+                    Some(2..=4)
                 )
                 && e.payload
                     .pointer("/attempt/target/id")

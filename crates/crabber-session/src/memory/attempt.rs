@@ -11,14 +11,53 @@ use crate::{
 use crabber_core::{AttemptId, ControlId, RunId, SessionId, SessionRevision, ToolCallStatus};
 
 pub(super) fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Error> {
-    attempt::verify_receipt(
-        receipt,
-        state
+    let event = state
+        .events
+        .get(receipt.event_cursor)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    attempt::verify_receipt(receipt, event)?;
+    if event
+        .payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(4)
+    {
+        let run = state
+            .runs
+            .get(&receipt.attempt.run_id)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let source = crate::attempt_conclusion::terminal::settlement(receipt, event)?;
+        let original = state
             .events
-            .get(receipt.event_cursor)
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
+            .get(source.cursor.ok_or(Error::UnknownStoreOutcome)?)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let latest = state.events.iter().rev().find(|event| {
+            event.session_id == run.session_id
+                && event.run_id == run.id
+                && event.kind == crabber_core::EventKind::RunSettled
+                && event
+                    .cursor
+                    .is_some_and(|cursor| cursor < receipt.event_cursor)
+        });
+        if latest != Some(original) {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        crate::attempt_conclusion::terminal::verify_scope(
+            crate::attempt_conclusion::terminal::TerminalFacts {
+                session: &run.session_id,
+                run: &run.id,
+                status: run.status,
+                error: run.error.as_deref(),
+                usage: &run.usage,
+            },
+            receipt,
+            event,
+            original,
+        )?;
+    }
+    Ok(())
 }
+
 impl MemoryStore {
     pub(super) fn read_attempt(
         &self,
@@ -200,7 +239,7 @@ impl MemoryExecution {
         let id = &request.command.target().id;
         let (record, grant) =
             prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
-        apply_run_transition(state, &run, &request, conclusion, now)?;
+        let settlement = apply_run_transition(state, &run, &request, conclusion, now)?;
         if conclusion.is_some_and(|c| matches!(c.boundary, crate::RunBoundary::Terminal { .. })) {
             super::approval::release_terminal(state, &run, &request)?;
             super::tool_continuation::release_terminal(state, &run)?;
@@ -210,18 +249,15 @@ impl MemoryExecution {
             .next()
             .map_err(|_| Error::RevisionExhausted)?;
         let authority = grant.then(|| record.authority()).transpose()?;
-        let mut event = if let Some(conclusion) = conclusion {
-            crate::attempt_conclusion::event(
-                &run,
-                conclusion.validate()?,
-                &record.snapshot,
-                &request.id,
-                digest.clone(),
-                now,
-            )?
-        } else {
-            attempt::event(&run, &request, &record.snapshot, now)?
-        };
+        let mut event = crate::attempt_conclusion::publication(
+            &run,
+            &request,
+            conclusion,
+            &record.snapshot,
+            digest.clone(),
+            settlement,
+            now,
+        )?;
         let cursor = state
             .events
             .next_cursor()
@@ -291,9 +327,9 @@ fn apply_run_transition(
     request: &AttemptMutation,
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
-) -> Result<(), Error> {
+) -> Result<Option<crabber_core::EventRecord>, Error> {
     if let Some(conclusion) = conclusion {
-        apply_boundary(state, run, conclusion, now)?;
+        return apply_boundary(state, run, conclusion, now);
     } else if matches!(
         request.command,
         AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
@@ -306,7 +342,7 @@ fn apply_run_transition(
             .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);
     }
-    Ok(())
+    Ok(None)
 }
 
 fn apply_boundary(
@@ -314,16 +350,21 @@ fn apply_boundary(
     run: &crabber_core::Run,
     conclusion: &crate::AttemptConclusion,
     now: time::OffsetDateTime,
-) -> Result<(), Error> {
+) -> Result<Option<crabber_core::EventRecord>, Error> {
     super::insert_event(state, run, conclusion.materialize(run)?)
         .map_err(|_| Error::UnknownStoreOutcome)?;
+    let settlement = state
+        .events
+        .last()
+        .cloned()
+        .ok_or(Error::UnknownStoreOutcome)?;
     let mut updated = run.clone();
     conclusion.apply_run(&mut updated, now)?;
     super::native_parent::record_run(state, Some(run), &updated)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     super::run_control::finalize(state, &updated, now).map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), updated);
-    Ok(())
+    Ok(Some(settlement))
 }
 
 fn check_boundary(
@@ -451,3 +492,7 @@ mod tests {
         .await;
     }
 }
+
+#[cfg(test)]
+#[path = "attempt/terminal_tests.rs"]
+mod terminal_tests;

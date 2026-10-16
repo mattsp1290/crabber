@@ -244,23 +244,20 @@ impl PostgresExecution {
             (record, grant)
         };
         let authority = grant.then(|| record.authority()).transpose()?;
-        apply_run_transition(tx, run, request, conclusion, now).await?;
+        let settlement = apply_run_transition(tx, run, request, conclusion, now).await?;
         let revision = records::revision(tx, &run.session_id)
             .await?
             .next()
             .map_err(|_| Error::RevisionExhausted)?;
-        let event = if let Some(conclusion) = conclusion {
-            crate::attempt_conclusion::event(
-                run,
-                conclusion.validate()?,
-                &record.snapshot,
-                &request.id,
-                digest.clone(),
-                now,
-            )?
-        } else {
-            attempt::event(run, request, &record.snapshot, now)?
-        };
+        let event = crate::attempt_conclusion::publication(
+            run,
+            request,
+            conclusion,
+            &record.snapshot,
+            digest.clone(),
+            settlement,
+            now,
+        )?;
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
@@ -346,12 +343,26 @@ async fn apply_run_transition(
     request: &AttemptMutation,
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
-) -> Result<(), Error> {
+) -> Result<Option<crabber_core::EventRecord>, Error> {
+    let mut settlement = None;
     if let Some(conclusion) = conclusion {
-        let source = conclusion.materialize(run)?;
+        let mut source = conclusion.materialize(run)?;
         super::insert_event(tx, run, &source)
             .await
             .map_err(sql::unknown)?;
+        let seq: i64 = sqlx::query_scalar(
+            "SELECT seq FROM events WHERE session_id=$1 AND run_id=$2 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&run.session_id.0)
+        .bind(&run.id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)
+        .map_err(sql::unknown)?;
+        source.cursor = Some(crabber_core::EventCursor(
+            u64::try_from(seq).map_err(|_| Error::UnknownStoreOutcome)?,
+        ));
+        settlement = Some(source);
         let mut updated = run.clone();
         conclusion.apply_run(&mut updated, now)?;
         super::run_control::finalize(tx, &updated, now)
@@ -376,5 +387,5 @@ async fn apply_run_transition(
             .await
             .map_err(sql::unknown)?;
     }
-    Ok(())
+    Ok(settlement)
 }

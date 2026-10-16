@@ -4,7 +4,7 @@ mod bound;
 #[path = "attempt_contract/cleanup.rs"]
 mod cleanup;
 #[path = "attempt_contract/conclusion.rs"]
-mod conclusion;
+pub(crate) mod conclusion;
 #[path = "attempt_contract/faults.rs"]
 mod faults;
 pub use faults::{FaultPoint, run_fault_contract};

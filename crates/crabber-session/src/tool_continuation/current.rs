@@ -220,21 +220,19 @@ pub(crate) fn terminal_candidate(event: &EventRecord, record: &ToolContinuationR
         && event.run_id == record.run_id
         && event.kind == EventKind::ExecutionAttemptChanged
         && !event.live_only
-        && (event
-            .payload
-            .get("version")
-            .and_then(serde_json::Value::as_u64)
-            == Some(2)
-            && event
-                .payload
-                .get("operation")
-                .and_then(serde_json::Value::as_str)
-                == Some("conclude_run")
-            || event
-                .payload
-                .get("version")
-                .and_then(serde_json::Value::as_u64)
-                == Some(3))
+        && matches!(
+            (
+                event
+                    .payload
+                    .get("version")
+                    .and_then(serde_json::Value::as_u64),
+                event
+                    .payload
+                    .get("operation")
+                    .and_then(serde_json::Value::as_str)
+            ),
+            (Some(2), Some("conclude_run")) | (Some(4), Some("conclude_terminal")) | (Some(3), _)
+        )
         && serde_json::from_value::<crate::AttemptSnapshot>(
             event.payload.get("attempt").cloned().unwrap_or_default(),
         )

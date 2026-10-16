@@ -408,9 +408,13 @@ mod attempt;
 mod attempt_conclusion_audit;
 #[path = "../../crabber-session/src/attempt_conclusion/materialize.rs"]
 mod attempt_conclusion_materialize;
+#[path = "../../crabber-session/src/attempt_conclusion/terminal.rs"]
+#[allow(dead_code)]
+pub(crate) mod attempt_conclusion_terminal;
 mod attempt_conclusion {
     pub(crate) use crate::attempt_conclusion_audit::*;
     pub(crate) use crate::attempt_conclusion_materialize::scoped as materialize_scope;
+    pub(crate) use crate::attempt_conclusion_terminal as terminal;
 }
 
 #[path = "../../crabber-session/src/attempt_contract.rs"]

@@ -95,7 +95,7 @@ async fn released(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<bool, ToolReadError> {
-    let native = select(tx, record, "CAST(json_extract({event},'$.payload.attempt.target.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.version') AS TEXT) IN ('2','3') AND CAST(json_extract({event},'$.payload.attempt.state') AS TEXT) IN ('Completed','Failed','Interrupted')", &record.batch.next_attempt.id.0, false, 2, proof).await?;
+    let native = select(tx, record, "CAST(json_extract({event},'$.payload.attempt.target.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.version') AS TEXT) IN ('2','3','4') AND CAST(json_extract({event},'$.payload.attempt.state') AS TEXT) IN ('Completed','Failed','Interrupted')", &record.batch.next_attempt.id.0, false, 2, proof).await?;
     if native.len() > 1 {
         return Err(Error::UnknownStoreOutcome.into());
     }

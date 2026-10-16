@@ -65,3 +65,37 @@ pub(crate) fn verify_event(
     }
     Ok(())
 }
+
+/// Preserve suspension v2 while terminal boundaries retain their exact source.
+pub(crate) fn publication(
+    run: &Run,
+    request: &crate::AttemptMutation,
+    conclusion: Option<&crate::AttemptConclusion>,
+    snapshot: &AttemptSnapshot,
+    digest: InputFingerprint,
+    settlement: Option<EventRecord>,
+    now: OffsetDateTime,
+) -> Result<EventRecord, AttemptError> {
+    let Some(conclusion) = conclusion else {
+        return crate::attempt::event(run, request, snapshot, now);
+    };
+    if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
+        crate::attempt_conclusion::terminal::event(
+            run,
+            conclusion,
+            snapshot,
+            digest,
+            settlement.ok_or(AttemptError::UnknownStoreOutcome)?,
+            now,
+        )
+    } else {
+        event(
+            run,
+            conclusion.validate()?,
+            snapshot,
+            &request.id,
+            digest,
+            now,
+        )
+    }
+}
