@@ -13,8 +13,9 @@ pub(super) async fn poll(
     authority: &SessionOwnerAuthority,
     resources: &ToolResourceOwner,
     retained: &mut Option<ObserveSessionOwnerCancel>,
+    stop: &tokio_util::sync::CancellationToken,
 ) {
-    if !store.supports_session_owner_cancellation() {
+    if stop.is_cancelled() || !store.supports_session_owner_cancellation() {
         return;
     }
     let Ok(Some(intent)) = store.pending_session_owner_cancel(authority).await else {
@@ -36,6 +37,9 @@ pub(super) async fn poll(
         return;
     };
     for _ in 0..2 {
+        if stop.is_cancelled() {
+            return;
+        }
         let receipt = match store
             .observe_session_owner_cancel(request.clone(), authority.clone())
             .await

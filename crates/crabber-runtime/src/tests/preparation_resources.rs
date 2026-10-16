@@ -5,6 +5,8 @@ mod cleanup_failure;
 mod driver;
 #[path = "preparation_resources/faults.rs"]
 mod faults;
+#[path = "preparation_resources/heartbeat.rs"]
+pub(super) mod heartbeat;
 #[path = "preparation_resources/provider_binding.rs"]
 mod provider_binding;
 #[path = "preparation_resources/recovery.rs"]

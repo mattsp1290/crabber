@@ -37,8 +37,8 @@ pub(super) struct Entry {
     pub committed: bool,
     pub disposing: bool,
     pub heartbeat_stop: CancellationToken,
-    pub heartbeat: Option<tokio::task::JoinHandle<()>>,
-    pub cleanup_supervisor: Option<tokio::task::JoinHandle<()>>,
+    pub heartbeat: heartbeat::RetainedTask,
+    pub cleanup_supervisor: heartbeat::RetainedTask,
     _capacity: tokio::sync::OwnedSemaphorePermit,
 }
 pub(super) struct OwnedEntry {
@@ -88,8 +88,8 @@ impl RetainedPreparations {
             committed: false,
             disposing: false,
             heartbeat_stop: CancellationToken::new(),
-            heartbeat: None,
-            cleanup_supervisor: None,
+            heartbeat: heartbeat::RetainedTask::default(),
+            cleanup_supervisor: heartbeat::RetainedTask::default(),
             _capacity: capacity,
         }));
         entries.insert(key(&descriptor), (descriptor, entry.clone()));
@@ -131,11 +131,7 @@ impl RetainedPreparations {
                 let status = entry
                     .try_lock()
                     .map_or(Status::ObservationInProgress, |current| {
-                        if current
-                            .cleanup_supervisor
-                            .as_ref()
-                            .is_some_and(tokio::task::JoinHandle::is_finished)
-                        {
+                        if current.heartbeat.failed() || current.cleanup_supervisor.is_finished() {
                             Status::CleanupUncertain
                         } else if current.disposing {
                             Status::CleanupRequested

@@ -84,7 +84,7 @@ impl Orchestrator {
         drop(held.value.take());
         let legacy = held.owned.is_none();
         if legacy {
-            stop_legacy(&mut held).await;
+            stop_legacy(&mut held).await?;
             self.retained_preparations.remove(descriptor, &entry);
         }
         drop(held);
@@ -137,9 +137,20 @@ impl Orchestrator {
         Ok(())
     }
 }
-pub(super) async fn stop_legacy(held: &mut retained::Entry) {
-    held.heartbeat_stop.cancel();
-    if let Some(task) = held.heartbeat.take() {
-        let _ = task.await;
+pub(super) async fn stop_legacy(held: &mut retained::Entry) -> Result<(), RuntimeError> {
+    retained::heartbeat::stop(held)
+        .await
+        .map_err(|()| super::incomplete(held.descriptor.clone(), RuntimeError::TaskStopped))
+}
+
+#[cfg(test)]
+impl Orchestrator {
+    pub(crate) fn retained_preparation_heartbeat_stop(
+        &self,
+        descriptor: &PreparationReconciliation,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        let entry = self.retained_preparations.lookup(descriptor)?;
+        let held = entry.try_lock().ok()?;
+        Some(held.heartbeat_stop.clone())
     }
 }

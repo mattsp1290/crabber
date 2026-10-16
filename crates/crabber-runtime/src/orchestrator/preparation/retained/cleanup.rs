@@ -18,18 +18,16 @@ pub(in crate::orchestrator::preparation) async fn start(
     store: Arc<dyn Store>,
 ) {
     let mut held = entry.lock().await;
-    if let Some(supervisor) = &held.cleanup_supervisor {
-        if !supervisor.is_finished() {
-            return;
-        }
-        if let Some(supervisor) = held.cleanup_supervisor.take() {
-            let _ = supervisor.await;
-        }
+    if held.cleanup_supervisor.is_running() {
+        return;
+    }
+    if held.cleanup_supervisor.join().await.is_err() {
+        return;
     }
     let Some(owned) = &held.owned else { return };
     let disposed = owned.disposed.clone();
     let retained = entry.clone();
-    held.cleanup_supervisor = Some(tokio::spawn(async move {
+    held.cleanup_supervisor = super::heartbeat::RetainedTask::running(tokio::spawn(async move {
         disposed.cancelled().await;
         if joined_resources(&retained, store.as_ref()).await.is_err() {
             return;
@@ -76,9 +74,8 @@ pub(in crate::orchestrator::preparation) async fn start(
                 return;
             }
         }
-        current.heartbeat_stop.cancel();
-        if let Some(heartbeat) = current.heartbeat.take() {
-            let _ = heartbeat.await;
+        if super::heartbeat::stop(&mut current).await.is_err() {
+            return;
         }
         registry.remove(&current.descriptor, &retained);
     }));
@@ -97,10 +94,7 @@ async fn joined_resources(entry: &SharedEntry, store: &dyn Store) -> Result<(), 
     };
     // The renewal/cancellation observer is retained service work too. Stop and
     // observe its actual join before publishing the resource owner's Join.
-    current.heartbeat_stop.cancel();
-    if let Some(heartbeat) = current.heartbeat.take() {
-        heartbeat.await.map_err(|_| ())?;
-    }
+    super::heartbeat::stop(&mut current).await?;
     publish_join(&current, store, proof).await
 }
 

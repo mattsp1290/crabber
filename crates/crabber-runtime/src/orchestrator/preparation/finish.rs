@@ -68,7 +68,7 @@ impl Orchestrator {
         };
         let legacy = held.owned.is_none();
         if legacy {
-            stop_legacy(&mut held).await;
+            stop_legacy(&mut held).await?;
             self.retained_preparations.remove(&descriptor, &entry);
         }
         drop(held);
@@ -95,7 +95,7 @@ impl Orchestrator {
         W: Future<Output = Result<(T, PreparedOperation), RuntimeError>> + Send + 'static,
     {
         let mut held = entry.lock().await;
-        held.heartbeat = Some(retained::heartbeat::start(
+        held.heartbeat = retained::heartbeat::RetainedTask::running(retained::heartbeat::start(
             self.store.clone(),
             vec![grant.owner_authority().clone()],
             held.heartbeat_stop.clone(),
@@ -216,7 +216,7 @@ impl Orchestrator {
         let activation = task.activation().clone();
         let mut held = entry.lock().await;
         held.grant = grant.clone();
-        held.heartbeat = Some(retained::heartbeat::start(
+        held.heartbeat = retained::heartbeat::RetainedTask::running(retained::heartbeat::start(
             self.store.clone(),
             vec![
                 grant.owner_authority().clone(),

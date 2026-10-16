@@ -1773,6 +1773,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 
 #[derive(Default)]
 struct SettlementGate {
+    preparation_heartbeat: Option<Arc<preparation_resources::heartbeat::Gate>>,
     service_register_fault: AtomicUsize,
     service_register_calls: AtomicUsize,
     service_register_hold: std::sync::atomic::AtomicBool,
@@ -2240,6 +2241,11 @@ impl Store for DelayedTerminalStore {
                 .driver_poll_completed
                 .fetch_add(1, Ordering::SeqCst);
         }
+        if !authority.target().id.0.starts_with("driver-owner-")
+            && let Some(gate) = &self.gate.preparation_heartbeat
+        {
+            gate.pending().await;
+        }
         self.inner.pending_session_owner_cancel(authority).await
     }
     async fn observe_session_owner_cancel(
@@ -2304,6 +2310,17 @@ impl Store for DelayedTerminalStore {
             .await?
             .binding
             .kind;
+        if matches!(
+            request.command,
+            crabber_session::session_owner::SessionOwnerCommand::Renew { .. }
+        ) && matches!(
+            kind,
+            crabber_session::session_owner::SessionOwnerKind::Preparation
+                | crabber_session::session_owner::SessionOwnerKind::RetainedCapacity
+        ) && let Some(gate) = &self.gate.preparation_heartbeat
+        {
+            gate.renew().await;
+        }
         let uncertain = matches!(
             request.command,
             crabber_session::session_owner::SessionOwnerCommand::MarkUncertain { .. }
