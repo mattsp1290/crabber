@@ -254,6 +254,9 @@ impl SqliteStore {
         validate_scope(session, "preparation")?;
         let ids = crate::session_owner::preparation::identity::ids(key, session)?;
         let mut tx = self.readers.begin().await.map_err(unknown)?;
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::audit(&mut tx, session, &ids.reserve)
             .await?
             .map(|audit| {
@@ -270,6 +273,9 @@ impl SqliteStore {
         validate_scope(session, &id.0)?;
         let mut tx = self.readers.begin().await.map_err(unknown)?;
 
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::current(&mut tx, session, id)
             .await
             .map(|record| record.snapshot);
@@ -283,6 +289,9 @@ impl SqliteStore {
         validate_scope(session, &id.0)?;
         let mut tx = self.readers.begin().await.map_err(unknown)?;
 
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::audit(&mut tx, session, id)
             .await
             .map(|audit| audit.map(|audit| audit.receipt));

@@ -254,6 +254,13 @@ impl PostgresStore {
         validate_scope(session, "preparation")?;
         let ids = crate::session_owner::preparation::identity::ids(key, session)?;
         let mut tx = self.pool.begin().await.map_err(unknown)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(unknown)?;
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::audit(&mut tx, session, &ids.reserve)
             .await?
             .map(|audit| {
@@ -273,6 +280,9 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(unknown)?;
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::current(&mut tx, session, id)
             .await
             .map(|record| record.snapshot);
@@ -289,6 +299,9 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(unknown)?;
+        super::deletion::ensure_live(&mut tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
         let result = reads::audit(&mut tx, session, id)
             .await
             .map(|audit| audit.map(|audit| audit.receipt));

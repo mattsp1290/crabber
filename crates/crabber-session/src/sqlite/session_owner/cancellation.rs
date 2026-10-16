@@ -14,6 +14,9 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = async {
+            super::super::deletion::ensure_live(&mut tx, &request.session_id)
+                .await
+                .map_err(crate::deletion::owner_error)?;
             if let Some(audit) = reads::audit(&mut tx, &request.session_id, &request.id).await? {
                 if audit.receipt.semantic_digest != digest {
                     return Err(Error::SemanticConflict);
@@ -60,6 +63,9 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = async {
+            super::super::deletion::ensure_live(&mut tx, &request.session_id)
+                .await
+                .map_err(crate::deletion::owner_error)?;
             if let Some(audit) = reads::audit(&mut tx, &request.session_id, &request.id).await? {
                 if audit.receipt.semantic_digest != digest {
                     return Err(Error::SemanticConflict);
@@ -105,6 +111,9 @@ impl SqliteStore {
         let mut tx = self.readers.begin().await.map_err(unknown)?;
 
         let result = async {
+            super::super::deletion::ensure_live(&mut tx, &authority.session_id)
+                .await
+                .map_err(crate::deletion::owner_error)?;
             let record =
                 reads::current(&mut tx, &authority.session_id, &authority.target.id).await?;
             record.pending_cancel(authority)

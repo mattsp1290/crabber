@@ -74,6 +74,20 @@ async fn permanent_identity_guards() {
     let cold = PostgresStore::connect(&url).await.unwrap();
     let tombstone = crate::deletion::contract::deleted();
     let receipt = &tombstone.receipt;
+    let crate::session_owner::SessionOwnerOutcome::Applied {
+        authority: Some(authority),
+        ..
+    } = store
+        .reserve_session_owner(
+            crate::session_owner_contract::reservation(receipt.session_id.clone()),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("reserved fixture owner")
+    };
+
     sqlx::query("INSERT INTO session_tombstones(session_id,operation_id,expected_revision,final_revision,semantic_digest,deleted_at_seconds,deleted_at_nanos,format_version) VALUES($1,$2,$3,$4,$5,$6,$7,1)")
         .bind(&receipt.session_id.0).bind(&receipt.operation_id.0)
         .bind(i64::try_from(tombstone.expected_revision.get()).unwrap())
@@ -82,7 +96,33 @@ async fn permanent_identity_guards() {
         .bind(i32::try_from(receipt.deleted_at.nanosecond()).unwrap())
         .execute(&store.pool).await.unwrap();
     crate::deletion::contract::metadata(&cold, &tombstone).await;
+    assert_eq!(
+        cold.get_session_owner(&receipt.session_id, &crabber_core::SessionOwnerId::new())
+            .await
+            .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
+    );
+    assert_eq!(
+        cold.lookup_session_owner(
+            &receipt.session_id,
+            &crabber_core::SessionOwnerOperationId::new()
+        )
+        .await
+        .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
+    );
+    let key =
+        crate::session_owner::preparation::PreparationKey::Unkeyed(crabber_core::ControlId::new());
+    assert_eq!(
+        cold.lookup_preparation(&receipt.session_id, &key)
+            .await
+            .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
+    );
+
     crate::deletion::contract::creation_guards(&store, &tombstone).await;
+    cancelled_after_erasure(&cold, authority).await;
+
     let error = sqlx::query("INSERT INTO sessions(id,data) VALUES($1,'{}'::jsonb)")
         .bind(&receipt.session_id.0)
         .execute(&store.pool)
@@ -113,5 +153,48 @@ async fn permanent_identity_guards() {
             .await
             .unwrap(),
         Some(receipt.clone())
+    );
+}
+
+async fn cancelled_after_erasure(
+    store: &dyn Store,
+    authority: crate::session_owner::SessionOwnerAuthority,
+) {
+    let request = crate::session_owner::RequestSessionOwnerCancel {
+        id: crabber_core::SessionOwnerOperationId::new(),
+        session_id: authority.session_id().clone(),
+        target: authority.target().clone(),
+        expected_revision: None,
+        claim: crate::session_owner::SessionOwnerResolver {
+            resolver_id: "host".into(),
+            authority_claim: "authenticated host".into(),
+        },
+    };
+    assert_eq!(
+        store
+            .request_session_owner_cancel(request.clone())
+            .await
+            .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
+    );
+    let observed = crate::session_owner::ObserveSessionOwnerCancel {
+        id: crabber_core::SessionOwnerOperationId::new(),
+        session_id: request.session_id,
+        target: request.target,
+        request_id: request.id,
+    };
+    assert_eq!(
+        store
+            .observe_session_owner_cancel(observed, authority.clone())
+            .await
+            .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
+    );
+    assert_eq!(
+        store
+            .pending_session_owner_cancel(&authority)
+            .await
+            .unwrap_err(),
+        crate::session_owner::SessionOwnerError::Deleted
     );
 }

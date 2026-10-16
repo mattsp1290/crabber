@@ -74,6 +74,7 @@ impl SqliteStore {
                 "user message has wrong session".into(),
             ));
         }
+        super::deletion::ensure_live(tx, &session_id).await?;
         super::session_owner::context(tx, &session_id, &request.workspace_id, &request.directory)
             .await
             .map_err(|error| {
