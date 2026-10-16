@@ -6,6 +6,25 @@ use crabber_session::{
     SessionSummary,
 };
 impl Orchestrator {
+    /// Copy one closed committed history prefix without acquiring a worker.
+    /// # Errors
+    /// Rejects unsupported stores, changed source scope/revision or corrupt provenance.
+    pub async fn fork_session(
+        &self,
+        request: crabber_session::ForkSession,
+    ) -> Result<crabber_session::ForkOutcome, crabber_session::ForkError> {
+        self.store.fork_session(request).await
+    }
+    /// Original metadata reconciliation, independent of mutable source state.
+    /// # Errors
+    /// Returns typed unsupported or integrity failures.
+    pub async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<crabber_session::ForkReceipt>, crabber_session::ForkError> {
+        self.store.lookup_session_fork(target, id).await
+    }
     /// Mutate bounded session display metadata, without acquiring a worker.
     /// # Errors
     /// Returns typed scope, replay, revision or storage failures.

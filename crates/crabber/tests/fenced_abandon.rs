@@ -8,6 +8,20 @@ mod continuation_origin;
 mod frontend_contract;
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;
+pub use crabber::session::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
+#[path = "../../crabber-session/src/fork/history.rs"]
+#[allow(dead_code)]
+pub(crate) mod fork_history;
+#[path = "../../crabber-session/src/fork/records.rs"]
+#[allow(dead_code)]
+mod fork_records;
+mod fork {
+    pub(crate) use crate::fork_history as history;
+    pub(crate) use crate::fork_records::Audit;
+}
+#[path = "../../crabber-session/src/public_history/redaction.rs"]
+#[allow(dead_code)]
+mod public_history;
 pub use crabber::session::{
     FrontendCallOrigin, FrontendCallStaging, FrontendCallView, FrontendContinuationClaim,
     FrontendContinuationRecovery, FrontendPhaseResume, FrontendResolverClaim,

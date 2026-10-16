@@ -18,7 +18,7 @@ pub(crate) struct Audit {
     pub receipt: ManagementReceipt,
     pub created_at: OffsetDateTime,
 }
-pub(super) fn bounded(value: &str, max: usize, empty: bool) -> Result<(), ManagementError> {
+pub(crate) fn bounded(value: &str, max: usize, empty: bool) -> Result<(), ManagementError> {
     if (!empty && value.is_empty()) || value.len() > max || value.chars().any(char::is_control) {
         return Err(ManagementError::InvalidRequest);
     }

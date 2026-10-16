@@ -23,6 +23,13 @@ pub(crate) struct Ledger {
     contexts: BTreeMap<SessionId, Context>,
 }
 impl Ledger {
+    /// A fork target must be a fresh identity, including pre-session ownership.
+    /// This is a collision check, never a quiescence or deletion-readiness proof.
+    pub(crate) fn contains_scope(&self, session: &SessionId) -> bool {
+        self.contexts.contains_key(session)
+            || self.records.keys().any(|(scope, _)| scope == session)
+            || self.audits.keys().any(|(scope, _)| scope == session)
+    }
     pub fn context(
         &self,
         session: &SessionId,

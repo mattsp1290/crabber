@@ -1,6 +1,6 @@
 use super::*;
 use crate::{SnapshotLimits, SnapshotRequest, Store};
-use crabber_core::{MessageId, Part, PartId, Role, SessionId, ToolCallId};
+use crabber_core::{ContentBlock, MessageId, Part, PartId, PartKind, Role, SessionId, ToolCallId};
 
 fn secret() -> ContentBlock {
     ContentBlock::ProviderState {

@@ -76,7 +76,9 @@ pub use run_control::{
     RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus,
     RunControlSummary, RunControlTarget, WaitingCancellation,
 };
+mod fork;
 mod management;
+pub use fork::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
 pub mod management_contract;
 pub mod session_owner;
 pub mod session_owner_contract;

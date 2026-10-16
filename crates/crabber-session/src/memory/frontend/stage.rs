@@ -56,6 +56,7 @@ impl MemoryExecution {
                 return Err(Error::StaleOwner);
             }
             if state.calls.contains_key(&request.call.id)
+                || state.imported_call_ids.contains(&request.call.id)
                 || state.frontend_origins.contains_key(&request.call.id)
                 || state
                     .phases
