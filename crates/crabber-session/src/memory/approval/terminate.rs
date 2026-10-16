@@ -162,7 +162,11 @@ fn validate_native(
             .calls
             .get(&phase.snapshot.target.call_id)
             .ok_or(Error::UnknownStoreOutcome)?;
-        approval::validate_termination_phase(run, phase, call)?;
+        if phase.snapshot.state == crate::PhaseState::Suspended {
+            super::terminal_history::validate(state, run, phase, call)?;
+        } else {
+            approval::validate_termination_phase(run, phase, call)?;
+        }
     }
     Ok(())
 }

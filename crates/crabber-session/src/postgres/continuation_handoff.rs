@@ -151,7 +151,19 @@ pub(super) async fn release(
     }
     Ok(())
 }
+// Keep this bounded compound proof off callers' inline async state.
 pub(super) async fn verify(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    domain: Domain,
+    target: &crate::ContinuationTarget,
+    parent: &crate::AttemptTarget,
+    plan: &InputFingerprint,
+) -> Result<Option<Handoff>, Error> {
+    Box::pin(verify_inner(tx, session, run, domain, target, parent, plan)).await
+}
+async fn verify_inner(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
@@ -348,7 +360,7 @@ async fn successor(
         Domain::Approval => {
             let next = approval::current::exact_scoped(tx, session, run, &proof.successor).await?;
             approval::origin::verify(tx, &next).await?;
-            if next.handoff.as_ref() != Some(proof)
+            if next.handoff.as_deref() != Some(proof)
                 || next.batch.attempt != *parent
                 || next.batch.id != proof.suspension_id
                 || next.batch.expected_plan != *plan
@@ -370,7 +382,7 @@ async fn successor(
                 .await
                 .map_err(unknown)?
                 .ok_or(Error::UnknownStoreOutcome)?;
-            if next.handoff.as_ref() != Some(proof)
+            if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
                 || next.batch.id != proof.suspension_id

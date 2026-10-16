@@ -29,7 +29,7 @@ pub(crate) struct ApprovalRecord {
     #[serde(default)]
     pub termination: Option<ApprovalTerminationRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handoff: Option<crate::continuation_handoff::Handoff>,
+    pub handoff: Option<Box<crate::continuation_handoff::Handoff>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

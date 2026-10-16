@@ -51,7 +51,8 @@ impl super::super::MemoryExecution {
                 &batch.id,
                 &digest,
                 &batch.attempt,
-            )?;
+            )?
+            .map(Box::new);
             record.validate(&run.session_id, &run.id)?;
             for question in &record.questions {
                 if state
@@ -101,7 +102,7 @@ impl super::super::MemoryExecution {
                     continuation: batch.continuation,
                 },
                 now,
-                handoff.as_ref(),
+                handoff.as_deref(),
             )?;
             super::before_commit(fault)?;
             Ok((receipt, true))

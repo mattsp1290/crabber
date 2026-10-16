@@ -85,3 +85,54 @@ impl MemoryStore {
         self.read_tools(session, run).unwrap();
     }
 }
+
+impl MemoryStore {
+    #[allow(dead_code)] // Source-compiled public fixture.
+    pub(crate) fn test_terminal_history_corruption(&self, request: &crate::RunControlRequest) {
+        let (phase, call) = {
+            let mut state = self.state.lock().unwrap();
+            let phase = state
+                .phases
+                .values()
+                .filter(|p| {
+                    p.snapshot.run_id == request.target.run_id
+                        && p.snapshot.state == crate::PhaseState::Completed
+                })
+                .max_by_key(|p| p.snapshot.target.generation)
+                .unwrap()
+                .clone();
+            let call = state.calls[&phase.snapshot.target.call_id].clone();
+            let output =
+                crabber_core::ToolOutput::from_json(&serde_json::json!("forged protected output"))
+                    .unwrap();
+            state
+                .phases
+                .get_mut(&phase.snapshot.target.id)
+                .unwrap()
+                .output = Some(output.clone());
+            state
+                .calls
+                .get_mut(&call.id)
+                .unwrap()
+                .result
+                .as_mut()
+                .unwrap()
+                .content = output.to_content_blocks();
+            (phase, call)
+        };
+        let revision = self.state.lock().unwrap().public_revisions[&request.target.session_id];
+        let result = self.control_accept(request.clone());
+        let receipt = self.control_lookup(&request.target.session_id, &request.id);
+        let after = self.state.lock().unwrap().public_revisions[&request.target.session_id];
+        let mut state = self.state.lock().unwrap();
+        state.phases.insert(phase.snapshot.target.id.clone(), phase);
+        state.calls.insert(call.id.clone(), call);
+        drop(state);
+        assert!(
+            result.is_err(),
+            "coherent private output replacement became terminal authority"
+        );
+        assert_eq!(receipt.unwrap(), None);
+        assert_eq!(after, revision);
+    }
+}

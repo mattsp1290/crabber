@@ -48,7 +48,8 @@ impl MemoryExecution {
                 &digest,
                 &batch.attempt,
             )
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+            .map_err(|_| Error::UnknownStoreOutcome)?
+            .map(Box::new);
             suspend_phases(state, &run, &parent, batch, authority, now)?;
             let conclusion = batch.conclusion(&run)?;
             if !matches!(
@@ -90,7 +91,7 @@ impl MemoryExecution {
                     continuation: batch.continuation.clone(),
                 },
                 now,
-                handoff.as_ref(),
+                handoff.as_deref(),
             )?;
             before(fault)?;
             Ok((receipt, true))

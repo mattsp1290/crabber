@@ -31,7 +31,7 @@ pub(crate) struct ToolContinuationRecord {
     #[serde(default)]
     pub termination: Option<crate::tool_continuation::ToolContinuationTermination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handoff: Option<crate::continuation_handoff::Handoff>,
+    pub handoff: Option<Box<crate::continuation_handoff::Handoff>>,
 }
 impl ToolContinuationRecord {
     pub(crate) fn new(

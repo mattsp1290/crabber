@@ -137,8 +137,10 @@ async fn verify(
             != (ToolContinuationOutcome::Suspended {
                 continuation: record.batch.continuation.clone(),
             })
-        || record.handoff
-            != crate::continuation_handoff::Handoff::from_event(&event).map_err(unknown)?
+        || record.handoff.as_deref()
+            != crate::continuation_handoff::Handoff::from_event(&event)
+                .map_err(unknown)?
+                .as_ref()
         || event.created_at != record.created_at
     {
         return Err(Error::UnknownStoreOutcome);

@@ -5,6 +5,7 @@ pub(crate) mod current;
 mod origin;
 mod records;
 mod recovery;
+pub(crate) mod terminal_history;
 pub use recovery::ApprovalContinuationRecovery;
 mod recovery_provenance;
 pub(crate) use recovery_provenance::{activate_recovery, verify_recovery_answer};

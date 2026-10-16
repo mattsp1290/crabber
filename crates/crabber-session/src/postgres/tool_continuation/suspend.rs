@@ -27,7 +27,7 @@ impl PostgresExecution {
 
         let fault = fault(&self.store);
 
-        let result = async {
+        let result = Box::pin(async {
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
 
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? {
@@ -70,7 +70,8 @@ impl PostgresExecution {
                 &batch.attempt,
             )
             .await
-            .map_err(unknown)?;
+            .map_err(unknown)?
+            .map(Box::new);
 
             super::phases::suspend(&mut tx, &run, &parent, &batch, &authority, now).await?;
 
@@ -121,13 +122,13 @@ impl PostgresExecution {
                     continuation: batch.continuation.clone(),
                 },
                 now,
-                record.handoff.as_ref(),
+                record.handoff.as_deref(),
             )
             .await?;
 
             before(fault)?;
             Ok((receipt, true))
-        }
+        })
         .await;
 
         after(finish(tx, result).await, fault)

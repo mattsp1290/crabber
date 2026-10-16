@@ -84,33 +84,12 @@ pub(crate) async fn journey(store: Arc<dyn Store>) -> (SessionId, crabber::core:
         done(),
     ]);
     let make = || {
-        Agent::builder()
-            .behavior_version("mixed-handoff.v1")
-            .store(store.clone())
-            .provider(Arc::new(provider.clone()))
-            .config(AgentConfig::new(Selection {
-                provider_id: "fake".into(),
-                model_id: "scripted".into(),
-            }))
-            .shared_tool(Arc::new(
-                ToolDefinition::resumable(
-                    ToolInfo {
-                        name: "identity".into(),
-                        description: "mixed handoff".into(),
-                        parameters: json!({"type":"object"}),
-                        retry_safe: false,
-                        required_permissions: vec![],
-                    },
-                    Arc::new(OncePaused {
-                        starts: starts.clone(),
-                        resumes: resumes.clone(),
-                    }),
-                )
-                .unwrap(),
-            ))
-            .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
-            .build()
-            .unwrap()
+        worker(
+            store.clone(),
+            provider.clone(),
+            starts.clone(),
+            resumes.clone(),
+        )
     };
     let mut agent = make();
     let handle = agent.prompt(None, "mixed work").await.unwrap();
@@ -317,4 +296,258 @@ fn call(id: &str) -> Vec<StreamDelta> {
         },
         StreamDelta::Completed,
     ]
+}
+
+fn worker(
+    store: Arc<dyn Store>,
+    provider: FakeProvider,
+    starts: Arc<AtomicUsize>,
+    resumes: Arc<AtomicUsize>,
+) -> Agent {
+    Agent::builder()
+        .behavior_version("mixed-handoff.v1")
+        .store(store)
+        .provider(Arc::new(provider))
+        .config(AgentConfig::new(Selection {
+            provider_id: "fake".into(),
+            model_id: "scripted".into(),
+        }))
+        .shared_tool(Arc::new(
+            ToolDefinition::resumable(
+                ToolInfo {
+                    name: "identity".into(),
+                    description: "mixed handoff".into(),
+                    parameters: json!({"type":"object"}),
+                    retry_safe: false,
+                    required_permissions: vec![],
+                },
+                Arc::new(OncePaused { starts, resumes }),
+            )
+            .unwrap(),
+        ))
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Ask)))
+        .build()
+        .unwrap()
+}
+
+pub(crate) async fn cancel_handoffs(store: Arc<dyn Store>) {
+    for after_resume in [false, true] {
+        cancel_handoff(store.clone(), after_resume, |_| async {}).await;
+    }
+}
+pub(crate) async fn cancel_with_probe<F: std::future::Future<Output = ()>>(
+    store: Arc<dyn Store>,
+    probe: impl FnOnce(crabber::session::RunControlRequest) -> F,
+) {
+    cancel_handoff(store, true, probe).await;
+}
+async fn cancel_handoff<F: std::future::Future<Output = ()>>(
+    store: Arc<dyn Store>,
+    after_resume: bool,
+    probe: impl FnOnce(crabber::session::RunControlRequest) -> F,
+) {
+    use crabber::session::{AttemptCleanup, AttemptState, RunControlOutcome};
+    let starts = Arc::new(AtomicUsize::new(0));
+    let resumes = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::scripted(vec![
+        call(&format!("cancel-first-{}", ControlId::new())),
+        call(&format!("cancel-second-{}", ControlId::new())),
+        done(),
+    ]);
+    let agent = worker(
+        store.clone(),
+        provider.clone(),
+        starts.clone(),
+        resumes.clone(),
+    );
+    let handle = agent.prompt(None, "cancel mixed waiting").await.unwrap();
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
+    approve(&agent, &session, &run, 1).await;
+    if after_resume {
+        let snapshot = agent
+            .tool_continuation_snapshot(&session, &run)
+            .await
+            .unwrap()
+            .unwrap();
+        resume(&agent, &session, &run, snapshot, 1).await;
+    }
+    let parent = store
+        .latest_execution_attempt(&run)
+        .await
+        .unwrap()
+        .unwrap()
+        .attempt;
+    assert_eq!(
+        (parent.state, parent.cleanup),
+        (AttemptState::Suspended, AttemptCleanup::Complete)
+    );
+    let phases = store
+        .list_tool_phases(crabber::session::PhasePageRequest {
+            session_id: session.clone(),
+            run_id: run.clone(),
+            limit: 64,
+            after: None,
+            expected_revision: None,
+        })
+        .await
+        .unwrap()
+        .phases;
+    let prior_events = store.list_events(&session, None, 1000).await.unwrap();
+    let source_turn = prior_events
+        .iter()
+        .rev()
+        .find(|e| e.kind == crabber::core::EventKind::RunPaused)
+        .unwrap()
+        .turn_id
+        .clone();
+    let completed_before = prior_events
+        .iter()
+        .filter(|e| e.kind == crabber::core::EventKind::TurnCompleted)
+        .count();
+    assert!(
+        !prior_events
+            .iter()
+            .any(|e| e.kind == crabber::core::EventKind::TurnCompleted && e.turn_id == source_turn)
+    );
+    let binding = agent.run_control_binding(&session, &run).await.unwrap();
+    let cancel = waiting_cancel(&binding);
+    agent.close_extensions().await.unwrap();
+    probe(cancel.clone()).await;
+    assert!(matches!(
+        agent
+            .control_run(cancel.clone())
+            .await
+            .unwrap_or_else(|error| panic!("after_resume={after_resume}: {error:?}")),
+        RunControlOutcome::Applied(_)
+    ));
+    assert!(matches!(
+        agent.control_run(cancel.clone()).await.unwrap(),
+        RunControlOutcome::Replayed(_)
+    ));
+    assert_cancelled(
+        store.as_ref(),
+        &agent,
+        &binding.target,
+        &CancelEvidence {
+            parent,
+            phases,
+            source_turn,
+            completed_before,
+        },
+    )
+    .await;
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(resumes.load(Ordering::SeqCst), usize::from(after_resume));
+    assert_eq!(provider.requests().len(), if after_resume { 2 } else { 1 });
+}
+
+struct CancelEvidence {
+    parent: crabber::session::AttemptSnapshot,
+    phases: Vec<crabber::session::PhaseSnapshot>,
+    source_turn: Option<crabber::core::TurnId>,
+    completed_before: usize,
+}
+async fn assert_cancelled(
+    store: &dyn Store,
+    agent: &Agent,
+    target: &crabber::session::RunControlTarget,
+    evidence: &CancelEvidence,
+) {
+    use crabber::session::RunControlStatus;
+    let (session, run) = (&target.session_id, &target.run_id);
+    assert_eq!(
+        store.get_run(run).await.unwrap().unwrap().status,
+        RunStatus::Interrupted
+    );
+    assert_eq!(
+        store
+            .latest_execution_attempt(run)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt,
+        evidence.parent
+    );
+    assert_eq!(
+        store
+            .list_tool_phases(crabber::session::PhasePageRequest {
+                session_id: session.clone(),
+                run_id: run.clone(),
+                limit: 64,
+                after: None,
+                expected_revision: None
+            })
+            .await
+            .unwrap()
+            .phases,
+        evidence.phases
+    );
+    assert_eq!(
+        agent.run_controls(target).await.unwrap().controls[0].status,
+        RunControlStatus::TerminalCommitted {
+            status: RunStatus::Interrupted
+        }
+    );
+    assert_eq!(
+        agent
+            .approval_snapshot(session, run)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        crabber::session::ApprovalContinuationState::Released
+    );
+    assert_eq!(
+        agent
+            .tool_continuation_snapshot(session, run)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        crabber::session::ToolContinuationState::Released
+    );
+    header(store, session, run).await;
+    let events = store.list_events(session, None, 1000).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == crabber::core::EventKind::RunSettled)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == crabber::core::EventKind::TurnCompleted)
+            .count(),
+        evidence.completed_before + 1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == crabber::core::EventKind::TurnCompleted
+                && e.turn_id == evidence.source_turn)
+            .count(),
+        1
+    );
+}
+
+fn waiting_cancel(
+    binding: &crabber::session::RunControlBinding,
+) -> crabber::session::RunControlRequest {
+    use crabber::session::{RunControlAction, RunControlRequest};
+    RunControlRequest {
+        id: ControlId::new(),
+        target: binding.target.clone(),
+        expected_revision: binding.revision,
+        action: RunControlAction::Cancel {
+            resolver: ApprovalResolverClaim {
+                resolver_id: "mixed-controller".into(),
+                authority: AuthorityRequirement::new("host-cancel", "1").unwrap(),
+                authority_claim: "authorized".into(),
+            },
+        },
+    }
 }

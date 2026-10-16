@@ -69,7 +69,8 @@ impl SqliteExecution {
                 &batch.attempt,
             )
             .await
-            .map_err(unknown)?;
+            .map_err(unknown)?
+            .map(Box::new);
 
             super::phases::suspend(&mut tx, &run, &parent, &batch, &authority, now).await?;
 
@@ -120,7 +121,7 @@ impl SqliteExecution {
                     continuation: batch.continuation.clone(),
                 },
                 now,
-                record.handoff.as_ref(),
+                record.handoff.as_deref(),
             )
             .await?;
 

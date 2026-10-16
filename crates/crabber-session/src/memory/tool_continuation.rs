@@ -174,9 +174,10 @@ pub(super) fn origin_record(
     }
     let event = event_at(state, original.event_cursor)?;
     if event.created_at != record.created_at
-        || record.handoff
+        || record.handoff.as_deref()
             != crate::continuation_handoff::Handoff::from_event(event)
                 .map_err(|()| Error::UnknownStoreOutcome)?
+                .as_ref()
     {
         return Err(Error::UnknownStoreOutcome);
     }

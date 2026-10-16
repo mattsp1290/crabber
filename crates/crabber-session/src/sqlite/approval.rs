@@ -8,6 +8,7 @@ pub(super) mod public_header;
 pub(super) use public_header::read as public_header;
 mod recover;
 mod suspend;
+mod terminal_history;
 mod terminate;
 pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
 pub(super) mod write;

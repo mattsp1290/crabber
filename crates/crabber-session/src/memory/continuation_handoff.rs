@@ -313,7 +313,7 @@ fn successor<'a>(
                 .get(&proof.successor.id)
                 .ok_or(Error::UnknownStoreOutcome)?;
             super::approval::origin::verify(state, run, next)?;
-            if next.handoff.as_ref() != Some(proof)
+            if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
                 || next.batch.id != proof.suspension_id
@@ -332,7 +332,7 @@ fn successor<'a>(
         Domain::Tool => {
             let next = super::tool_continuation::origin_record(state, &proof.successor.id)
                 .map_err(unknown)?;
-            if next.handoff.as_ref() != Some(proof)
+            if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
                 || next.batch.id != proof.suspension_id

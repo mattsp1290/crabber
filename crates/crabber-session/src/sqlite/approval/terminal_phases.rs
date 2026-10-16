@@ -21,8 +21,10 @@ pub(super) async fn validate(
             .await
             .map_err(|_| Error::UnknownStoreOutcome)?;
         for snapshot in &page.phases {
-            if !matches!(snapshot.state, PhaseState::Completed | PhaseState::Failed)
-                || snapshot.quiescence != PhaseQuiescence::Complete
+            if !matches!(
+                snapshot.state,
+                PhaseState::Completed | PhaseState::Failed | PhaseState::Suspended
+            ) || snapshot.quiescence != PhaseQuiescence::Complete
             {
                 return Err(Error::CleanupBlocked);
             }
@@ -36,7 +38,11 @@ pub(super) async fn validate(
             if phase.snapshot != *snapshot {
                 return Err(Error::UnknownStoreOutcome);
             }
-            crate::approval::validate_termination_phase(run, &phase, &call)?;
+            if phase.snapshot.state == PhaseState::Suspended {
+                super::super::terminal_history::validate(tx, run, &phase, &call).await?;
+            } else {
+                crate::approval::validate_termination_phase(run, &phase, &call)?;
+            }
         }
         let Some(after) = page.next_after else {
             return Ok(());

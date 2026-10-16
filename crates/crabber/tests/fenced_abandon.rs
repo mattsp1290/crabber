@@ -1,7 +1,7 @@
-#[path = "../../crabber-session/src/native_parent.rs"]
-mod native_parent;
 #[path = "../../crabber-session/src/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "../../crabber-session/src/native_parent.rs"]
+mod native_parent;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_rounds;
@@ -259,6 +259,9 @@ mod approval_records;
 #[path = "../../crabber-session/src/approval/recovery_provenance.rs"]
 #[allow(dead_code)]
 mod approval_recovery_provenance;
+#[path = "../../crabber-session/src/approval/terminal_history.rs"]
+#[allow(dead_code)]
+pub(crate) mod approval_terminal_history;
 mod approval {
     pub(crate) use crate::approval_audit::{event, verify_receipt};
     pub(crate) use crate::approval_current as current;
@@ -266,6 +269,7 @@ mod approval {
     pub(crate) use crate::approval_recovery_provenance::{
         activate_recovery, verify_recovery_answer,
     };
+    pub(crate) use crate::approval_terminal_history as terminal_history;
 }
 #[path = "../../crabber-session/src/approval_contract.rs"]
 #[allow(dead_code)]
@@ -976,4 +980,14 @@ async fn memory_cross_kind_handoff_private_source_corruption_and_budget() {
     let store = Arc::new(MemoryStore::new());
     let (session, run) = handoff_journey::journey(store.clone()).await;
     store.test_handoff_corruption(&session, &run);
+}
+
+#[tokio::test]
+async fn memory_mixed_cancel_rejects_coherent_private_output_replacement() {
+    let store = Arc::new(MemoryStore::new());
+    handoff_journey::cancel_handoffs(store.clone()).await;
+    handoff_journey::cancel_with_probe(store.clone(), |request| async move {
+        store.test_terminal_history_corruption(&request);
+    })
+    .await;
 }

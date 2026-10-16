@@ -11,6 +11,8 @@ pub(super) mod origin;
 mod recover;
 #[path = "approval/suspend.rs"]
 mod suspend;
+#[path = "approval/terminal_history.rs"]
+mod terminal_history;
 #[path = "approval/terminate.rs"]
 mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};

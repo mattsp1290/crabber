@@ -41,7 +41,7 @@ impl SqliteExecution {
                 .bind(&run.session_id.0).fetch_one(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
             let mut record = approval::ApprovalRecord::new(batch.clone(), run.session_id.clone(), run.id.clone(),
                 workspace.ok_or(Error::UnknownStoreOutcome)?, now)?;
-            record.handoff=super::super::continuation_handoff::prepare(&mut tx,&run,crate::continuation_handoff::Domain::Approval,&batch.continuation,&batch.id,&digest,&batch.attempt).await?;
+            record.handoff=super::super::continuation_handoff::prepare(&mut tx,&run,crate::continuation_handoff::Domain::Approval,&batch.continuation,&batch.id,&digest,&batch.attempt).await?.map(Box::new);
             let conclusion = batch.conclusion(&run, now)?;
             let applied = self.apply_attempt(&mut tx, &run, &conclusion.finish, Some(authority), Some(&conclusion))
                 .await.map_err(approval::attempt_error)?;
@@ -56,7 +56,7 @@ impl SqliteExecution {
                 .bind(&run.session_id.0).bind(&run.id.0).bind(&batch.continuation.id.0)
                 .execute(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
             let receipt = write::publish_handoff(&mut tx, &run, batch.id.clone(), digest,
-                crate::ApprovalOutcome::Suspended { continuation: batch.continuation }, now, record.handoff.as_ref()).await?;
+                crate::ApprovalOutcome::Suspended { continuation: batch.continuation }, now, record.handoff.as_deref()).await?;
             sql::before_commit(fault)?;
             Ok((receipt, true))
         }.await;
