@@ -2,7 +2,7 @@
 use super::{
     ControlId, Decision, Error, ForkSession, ImportedHistory, OperationReceipt, State, receipt,
 };
-use crate::fork::history::{Selection, SourceCall};
+use crate::fork::history::{AdmittedCall, AdmittedResult, Selection, SourceCall};
 use crabber_core::{
     ContentBlock, EventKind, Message, MessageId, Role, ToolCallRecord, ToolCallStatus,
 };
@@ -43,6 +43,7 @@ pub(super) fn prepare(
     }
     let mut proof = Proof(request.max_proof_bytes);
     let mut committed = BTreeSet::new();
+    let mut admitted = BTreeSet::new();
     if messages.iter().any(|message| message.run_id.is_none()) {
         imported(state, request, &mut proof, &mut committed)?;
     }
@@ -53,7 +54,14 @@ pub(super) fn prepare(
         if let Some(run) = &message.run_id {
             crate::attempt::validate_identifier(&run.0).map_err(unknown)?;
             if checked_runs.insert(run) {
-                original_input(state, request, run, &mut proof, &mut committed)?;
+                original_input(
+                    state,
+                    request,
+                    run,
+                    &mut proof,
+                    &mut committed,
+                    &mut admitted,
+                )?;
             }
             if !committed.contains(&message.id)
                 && committed_event(state, request, message, &mut proof)?
@@ -67,7 +75,9 @@ pub(super) fn prepare(
                 if calls.len() >= request.limits.tool_calls {
                     return Ok(Decision::Limited(crate::SnapshotLimit::ToolCalls));
                 }
-                if let Some(call) = state.calls.get(call_id) {
+                if admitted.contains(&message.id) {
+                    calls.push(admitted_call(message, &part.content, messages, &admitted)?);
+                } else if let Some(call) = state.calls.get(call_id) {
                     calls.push(SourceCall::Native(call));
                 } else if let Some(call) = state
                     .imported_calls
@@ -102,6 +112,7 @@ fn original_input(
     run_id: &crabber_core::RunId,
     proof: &mut Proof,
     committed: &mut BTreeSet<MessageId>,
+    admitted: &mut BTreeSet<MessageId>,
 ) -> Result<(), Failure> {
     let run = state
         .runs
@@ -155,6 +166,7 @@ fn original_input(
         return Err(unknown("source context"));
     }
     committed.extend(original.iter().map(|message| message.id.clone()));
+    admitted.extend(original.iter().map(|message| message.id.clone()));
     Ok(())
 }
 
@@ -359,4 +371,56 @@ fn raw_preflight(request: &ForkSession, messages: &[Message]) -> Option<crate::S
         }
     }
     None
+}
+
+/// Only exact, independently authenticated original input messages can supply
+/// these facts. Absence of a native call alone never creates admitted provenance.
+fn admitted_call<'a>(
+    message: &'a Message,
+    block: &'a ContentBlock,
+    messages: &'a [Message],
+    admitted: &BTreeSet<MessageId>,
+) -> Result<SourceCall<'a>, Failure> {
+    let ContentBlock::ToolCall {
+        call_id,
+        name,
+        arguments,
+    } = block
+    else {
+        return Err(unknown("admitted source kind"));
+    };
+    let run_id = message
+        .run_id
+        .as_ref()
+        .ok_or_else(|| unknown("admitted run"))?;
+    let mut results = messages
+        .iter()
+        .filter(|candidate| {
+            candidate.role == Role::Tool
+                && candidate.run_id.as_ref() == Some(run_id)
+                && admitted.contains(&candidate.id)
+        })
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match &part.content {
+            ContentBlock::ToolResult {
+                call_id: id,
+                content,
+                is_error,
+            } if id == call_id => Some(AdmittedResult {
+                content,
+                is_error: *is_error,
+            }),
+            _ => None,
+        });
+    let result = results.next();
+    if results.next().is_some() {
+        return Err(unknown("duplicate admitted result"));
+    }
+    Ok(SourceCall::AdmittedInput(AdmittedCall {
+        id: call_id,
+        name,
+        arguments,
+        run_id,
+        result,
+    }))
 }

@@ -60,7 +60,11 @@ pub(super) fn copy(
     }
     for (id, pair) in pairs {
         let (_, name, arguments, output, run) = pair.source.fields();
-        let mut output = output.ok_or(Error::UnknownStoreOutcome)?.clone();
+        let output = output.ok_or(Error::UnknownStoreOutcome)?;
+        let mut output = crabber_core::ToolResult {
+            status: output.status,
+            content: output.content.to_vec(),
+        };
         crate::public_history::redact_result(&mut output);
         for block in &mut output.content {
             rewrite(block, &call_ids)?;
@@ -82,6 +86,7 @@ pub(super) fn copy(
             source_session_id: request.source_session_id.clone(),
             source_revision: request.expected_source_revision,
             source_call_id: (*id).clone(),
+            source_kind: pair.source.source_kind(),
             source_run_id: run.cloned(),
         });
     }

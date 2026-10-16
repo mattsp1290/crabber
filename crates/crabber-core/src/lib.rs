@@ -23,7 +23,7 @@ mod frontend_result;
 pub use frontend_result::{FrontendResultStatus, FrontendToolResult};
 
 mod imported_history;
-pub use imported_history::{ImportedMessageProvenance, ImportedToolCall};
+pub use imported_history::{ImportedCallSource, ImportedMessageProvenance, ImportedToolCall};
 
 mod tool_output;
 pub use tool_output::{TOOL_OUTPUT_ENVELOPE_VERSION, ToolOutput};

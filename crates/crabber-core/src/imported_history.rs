@@ -18,6 +18,16 @@ pub struct ImportedMessageProvenance {
     pub parts: Vec<(PartId, PartId)>,
 }
 
+/// Why a source message contains a closed call/result pair. Supplied admitted
+/// input is historical content, not evidence of execution by this runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportedCallSource {
+    NativeExecution,
+    AdmittedInput,
+    ImportedHistory,
+}
+
 /// A closed call/result relationship for history display and provider context.
 /// It has no target Run, execution status, retry flag, attempt or phase. Native
 /// unfinished-call queries must never enumerate these records.
@@ -34,5 +44,6 @@ pub struct ImportedToolCall {
     pub source_session_id: SessionId,
     pub source_revision: SessionRevision,
     pub source_call_id: ToolCallId,
+    pub source_kind: ImportedCallSource,
     pub source_run_id: Option<RunId>,
 }

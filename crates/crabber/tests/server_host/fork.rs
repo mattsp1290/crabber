@@ -1,4 +1,6 @@
-//! Copied native results become presentation history, never executable calls.
+#[path = "fork/admitted.rs"]
+mod admitted;
+// Copied native results become presentation history, never executable calls.
 use super::*;
 use crabber::core::{ContentBlock, ControlId, InputEnvelope, SessionRevision};
 use crabber::session::{

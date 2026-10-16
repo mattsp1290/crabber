@@ -12,85 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "history/rewrite.rs"]
 mod rewrite;
 
-pub(crate) enum SourceCall<'a> {
-    Native(&'a ToolCallRecord),
-    Imported(&'a ImportedToolCall),
-}
-impl SourceCall<'_> {
-    fn encoded_bytes(&self, cap: usize) -> Option<usize> {
-        match self {
-            Self::Native(call) => crate::snapshot::encoded_bytes(call, cap),
-            Self::Imported(call) => crate::snapshot::encoded_bytes(call, cap),
-        }
-    }
-    fn validate_shape(&self) -> Result<(), Error> {
-        let valid = match self {
-            Self::Native(call) => matches!(
-                (
-                    call.status,
-                    call.result.as_ref().map(|result| result.status)
-                ),
-                (
-                    ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting,
-                    None
-                ) | (ToolCallStatus::Completed, Some(ToolResultStatus::Completed))
-                    | (ToolCallStatus::Failed, Some(ToolResultStatus::Failed))
-                    | (
-                        ToolCallStatus::Interrupted,
-                        Some(ToolResultStatus::Interrupted)
-                    )
-            ),
-            Self::Imported(call) => matches!(
-                call.result.status,
-                ToolResultStatus::Completed | ToolResultStatus::Failed
-            ),
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(Error::UnknownStoreOutcome)
-        }
-    }
-    fn fields(
-        &self,
-    ) -> (
-        &ToolCallId,
-        &str,
-        &serde_json::Value,
-        Option<&ToolResult>,
-        Option<&RunId>,
-    ) {
-        match self {
-            Self::Native(call) => (
-                &call.id,
-                &call.name,
-                &call.arguments,
-                call.result.as_ref(),
-                Some(&call.run_id),
-            ),
-            Self::Imported(call) => (
-                &call.id,
-                &call.name,
-                &call.arguments,
-                Some(&call.result),
-                None,
-            ),
-        }
-    }
-    fn closed(&self) -> bool {
-        match self {
-            Self::Native(call) => matches!(
-                (call.status, call.result.as_ref().map(|r| r.status)),
-                (ToolCallStatus::Completed, Some(ToolResultStatus::Completed))
-                    | (ToolCallStatus::Failed, Some(ToolResultStatus::Failed))
-            ),
-            Self::Imported(call) => matches!(
-                call.result.status,
-                ToolResultStatus::Completed | ToolResultStatus::Failed
-            ),
-        }
-    }
-}
+#[path = "history/source.rs"]
+mod source;
+pub(crate) use source::{AdmittedCall, AdmittedResult, SourceCall};
 
 #[derive(Default, serde::Serialize)]
 pub(crate) struct ImportedHistory {
@@ -399,7 +323,7 @@ fn inspect_blocks<'a>(
                     let (_, _, _, result, run) = pair.source.fields();
                     let result = result.ok_or(Error::UnknownStoreOutcome)?;
                     if pair.result.replace(&message.id).is_some()
-                        || &result.content != content
+                        || result.content != content
                         || *is_error != (result.status != ToolResultStatus::Completed)
                         || run != message.run_id.as_ref()
                     {
