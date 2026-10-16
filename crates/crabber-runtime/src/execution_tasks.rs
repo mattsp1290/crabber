@@ -1,8 +1,10 @@
 //! Local task ownership. These joins say nothing about durable outcome or
 //! extension-owned resources; those must be reconciled independently.
 mod background;
+mod correlation;
 use background::OwnedBackgroundResources;
 pub use background::{WorkerResourceDrain, WorkerResourceKind};
+use correlation::TaskCorrelation;
 use crabber_core::{RunId, SessionId, ToolCallId};
 use futures::{StreamExt, stream::FuturesUnordered};
 use std::{
@@ -136,7 +138,7 @@ impl WorkerResources {
 pub(crate) struct ExecutionTask {
     session_id: SessionId,
     local_id: RunId,
-    run_id: Option<RunId>,
+    correlation: Mutex<TaskCorrelation>,
     join: tokio::sync::Mutex<JoinState>,
 }
 enum JoinState {
@@ -165,6 +167,7 @@ impl ExecutionTask {
             },
         };
         *state = JoinState::Joined(termination);
+        self.correlation.lock().unwrap().joined = true;
         termination
     }
 }
@@ -367,7 +370,10 @@ impl ExecutionTasks {
         let task = Arc::new(ExecutionTask {
             session_id,
             local_id: RunId::new(),
-            run_id,
+            correlation: Mutex::new(TaskCorrelation {
+                run_id,
+                joined: false,
+            }),
             join: tokio::sync::Mutex::new(JoinState::Running(tokio::spawn(work))),
         });
         owners.tasks.insert(task.local_id.clone(), task.clone());
@@ -415,7 +421,7 @@ impl ExecutionTasks {
             .values()
             .filter(|task| session.is_none_or(|id| task.session_id == *id))
         {
-            if let Some(run) = &task.run_id {
+            if let Some(run) = &task.correlation.lock().unwrap().run_id {
                 runs.push(run.clone());
             } else {
                 preparations.push(PreparationTaskId(task.local_id.0.clone()));
@@ -469,9 +475,10 @@ impl ExecutionTasks {
             .into_iter()
             .map(|task| async move {
                 let termination = self.join(&task).await;
+                let run_id = task.correlation.lock().unwrap().run_id.clone();
                 (
                     task.session_id.clone(),
-                    task.run_id.clone(),
+                    run_id,
                     PreparationTaskId(task.local_id.0.clone()),
                     termination,
                 )

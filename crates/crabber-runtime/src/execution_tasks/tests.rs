@@ -1,5 +1,6 @@
 use super::*;
 use tokio::sync::{Notify, oneshot};
+mod correlation;
 
 #[tokio::test]
 async fn cancelled_drain_retains_join_handle_and_concurrent_joiners_reconcile() {
