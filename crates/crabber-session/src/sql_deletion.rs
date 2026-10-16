@@ -9,9 +9,12 @@ pub(crate) struct VerifiedScope {
     revision: SessionRevision,
 }
 impl VerifiedScope {
-    #[expect(
-        dead_code,
-        reason = "guarded readiness integration constructs this scope"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "guarded readiness integration constructs this scope"
+        )
     )]
     pub(crate) fn from_coverage(coverage: &VerifiedDeletionCoverage) -> Self {
         Self {
@@ -27,7 +30,7 @@ impl VerifiedScope {
     }
     #[cfg(test)]
     pub(crate) fn fixture(session: SessionId, revision: SessionRevision) -> Self {
-        Self { session, revision }
+        Self::from_coverage(&VerifiedDeletionCoverage::fixture(session, revision))
     }
 }
 
@@ -85,6 +88,7 @@ pub(crate) const PURGE: &[&str] = &[
     "DELETE FROM session_owner_audits WHERE session_id=$1",
     "DELETE FROM session_owner_current WHERE session_id=$1",
     "DELETE FROM session_owner_contexts WHERE session_id=$1",
+    "DELETE FROM session_ownership_origins WHERE session_id=$1",
 ];
 
 #[cfg(test)]

@@ -54,7 +54,6 @@ impl VerifiedDeletionCoverage {
     /// Only isolated storage-purge tests can assert this fixture scope. There
     /// is no production constructor from caller claims or public summaries.
     #[cfg(test)]
-    #[expect(dead_code, reason = "SQL purge fixture integration is pending")]
     pub(crate) fn fixture(session_id: SessionId, revision: SessionRevision) -> Self {
         Self {
             session_id,
