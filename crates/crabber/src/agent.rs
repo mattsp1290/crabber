@@ -539,6 +539,19 @@ impl Agent {
         self.runtime.drain_execution_tasks(bound).await
     }
 
+    /// Join retained local work for one session within a shared deadline.
+    /// Stop that session's ingress first. This does not cancel work, close
+    /// extensions, or certify durable cleanup across other controllers.
+    pub async fn drain_session_execution_tasks(
+        &self,
+        session: &SessionId,
+        bound: Duration,
+    ) -> crabber_runtime::ExecutionTaskDrain {
+        self.runtime
+            .drain_session_execution_tasks(session, bound)
+            .await
+    }
+
     /// Terminally closes the extension registry without interrupting live runs.
     /// Hosts should interrupt runs first. On timeout, extension-owned cleanup and
     /// retained plan leases keep the detached close task waiting until completion.

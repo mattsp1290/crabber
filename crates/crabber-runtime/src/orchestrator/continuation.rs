@@ -140,8 +140,10 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
         let runtime = self.with_context(context);
-        self.own_preparation(async move { runtime.prepare_continuation(request).await })
-            .await
+        self.own_preparation(request.session_id.clone(), async move {
+            runtime.prepare_continuation(request).await
+        })
+        .await
     }
     async fn prepare_continuation(
         &self,

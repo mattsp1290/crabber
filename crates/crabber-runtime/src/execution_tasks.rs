@@ -1,6 +1,6 @@
 //! Local task ownership. These joins say nothing about durable outcome or
 //! extension-owned resources; those must be reconciled independently.
-use crabber_core::{RunId, ToolCallId};
+use crabber_core::{RunId, SessionId, ToolCallId};
 use futures::{StreamExt, stream::FuturesUnordered};
 use std::{
     collections::BTreeMap,
@@ -21,6 +21,7 @@ pub enum TaskTermination {
 /// A local execution task joined during this drain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinedExecutionTask {
+    pub session_id: SessionId,
     pub run_id: RunId,
     pub termination: TaskTermination,
 }
@@ -36,6 +37,7 @@ impl PreparationTaskId {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinedPreparationTask {
+    pub session_id: SessionId,
     pub task_id: PreparationTaskId,
     pub termination: TaskTermination,
 }
@@ -56,12 +58,14 @@ pub struct ExecutionTaskDrain {
 /// Local resource ownership for a tool call; never durable phase authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResourceDrain {
+    pub session_id: SessionId,
     pub run_id: RunId,
     pub call_id: ToolCallId,
     pub phase: Option<crabber_session::PhaseTarget>,
     pub resources: crabber_extension::ResourceDrain,
 }
 struct OwnedToolResources {
+    session_id: SessionId,
     run_id: RunId,
     call_id: ToolCallId,
     phase: Option<crabber_session::PhaseTarget>,
@@ -78,6 +82,7 @@ struct ExecutionOwners {
 }
 
 pub(crate) struct ExecutionTask {
+    session_id: SessionId,
     local_id: RunId,
     run_id: Option<RunId>,
     join: tokio::sync::Mutex<JoinState>,
@@ -114,6 +119,7 @@ impl ExecutionTask {
 impl ExecutionTasks {
     pub(crate) fn tool_resources(
         &self,
+        session_id: SessionId,
         run_id: RunId,
         call_id: ToolCallId,
         phase: Option<crabber_session::PhaseTarget>,
@@ -124,6 +130,7 @@ impl ExecutionTasks {
             .unwrap()
             .resources
             .push(Arc::new(OwnedToolResources {
+                session_id,
                 run_id,
                 call_id,
                 phase,
@@ -131,8 +138,16 @@ impl ExecutionTasks {
             }));
         owner
     }
-    async fn drain_resources(&self, deadline: tokio::time::Instant) {
-        let scopes = self.owners.lock().unwrap().resources.clone();
+    async fn drain_resources(&self, session: Option<&SessionId>, deadline: tokio::time::Instant) {
+        let scopes = self
+            .owners
+            .lock()
+            .unwrap()
+            .resources
+            .iter()
+            .filter(|scope| session.is_none_or(|id| scope.session_id == *id))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut joins = FuturesUnordered::new();
         for scope in scopes {
             joins.push(async move {
@@ -182,24 +197,28 @@ impl ExecutionTasks {
     }
     pub(crate) fn spawn(
         &self,
+        session_id: SessionId,
         run_id: RunId,
         work: impl Future<Output = ()> + Send + 'static,
     ) -> Arc<ExecutionTask> {
-        self.spawn_scoped(Some(run_id), work)
+        self.spawn_scoped(session_id, Some(run_id), work)
     }
     pub(crate) fn spawn_preparation(
         &self,
+        session_id: SessionId,
         work: impl Future<Output = ()> + Send + 'static,
     ) -> Arc<ExecutionTask> {
-        self.spawn_scoped(None, work)
+        self.spawn_scoped(session_id, None, work)
     }
     fn spawn_scoped(
         &self,
+        session_id: SessionId,
         run_id: Option<RunId>,
         work: impl Future<Output = ()> + Send + 'static,
     ) -> Arc<ExecutionTask> {
         let mut owners = self.owners.lock().unwrap();
         let task = Arc::new(ExecutionTask {
+            session_id,
             // Local bookkeeping only; never persisted or used as authority.
             local_id: RunId::new(),
             run_id,
@@ -220,13 +239,20 @@ impl ExecutionTasks {
         }
         termination
     }
-    fn pending(&self) -> (Vec<RunId>, Vec<PreparationTaskId>, Vec<ToolResourceDrain>) {
+    fn pending(
+        &self,
+        session: Option<&SessionId>,
+    ) -> (Vec<RunId>, Vec<PreparationTaskId>, Vec<ToolResourceDrain>) {
         // Preparation -> worker -> tool-resource handoffs are observed under
         // one lock, so a deadline cannot miss both the former and new owner.
         let mut owners = self.owners.lock().unwrap();
         let mut runs = Vec::new();
         let mut preparations = Vec::new();
-        for task in owners.tasks.values() {
+        for task in owners
+            .tasks
+            .values()
+            .filter(|task| session.is_none_or(|id| task.session_id == *id))
+        {
             if let Some(run) = &task.run_id {
                 runs.push(run.clone());
             } else {
@@ -236,27 +262,36 @@ impl ExecutionTasks {
         let resources = owners
             .resources
             .iter()
+            .filter(|scope| session.is_none_or(|id| scope.session_id == *id))
             .map(|scope| ToolResourceDrain {
+                session_id: scope.session_id.clone(),
                 run_id: scope.run_id.clone(),
                 call_id: scope.call_id.clone(),
                 phase: scope.phase.clone(),
                 resources: scope.owner.snapshot(),
             })
             .collect::<Vec<_>>();
-        owners.resources = owners
-            .resources
-            .iter()
-            .zip(&resources)
-            .filter(|(_, report)| {
-                !report.resources.sealed
-                    || report.resources.pending != 0
-                    || !report.resources.failures.is_empty()
-            })
-            .map(|(owner, _)| owner.clone())
-            .collect();
+        owners.resources.retain(|scope| {
+            let report = scope.owner.snapshot();
+            !report.sealed || report.pending != 0 || !report.failures.is_empty()
+        });
         (runs, preparations, resources)
     }
     pub(crate) async fn drain(&self, bound: Duration) -> ExecutionTaskDrain {
+        self.drain_scoped(None, bound).await
+    }
+    pub(crate) async fn drain_session(
+        &self,
+        session: &SessionId,
+        bound: Duration,
+    ) -> ExecutionTaskDrain {
+        self.drain_scoped(Some(session), bound).await
+    }
+    async fn drain_scoped(
+        &self,
+        session: Option<&SessionId>,
+        bound: Duration,
+    ) -> ExecutionTaskDrain {
         let deadline = tokio::time::Instant::now() + bound;
         let tasks = self
             .owners
@@ -264,6 +299,7 @@ impl ExecutionTasks {
             .unwrap()
             .tasks
             .values()
+            .filter(|task| session.is_none_or(|id| task.session_id == *id))
             .cloned()
             .collect::<Vec<_>>();
         let mut joins = tasks
@@ -271,6 +307,7 @@ impl ExecutionTasks {
             .map(|task| async move {
                 let termination = self.join(&task).await;
                 (
+                    task.session_id.clone(),
                     task.run_id.clone(),
                     PreparationTaskId(task.local_id.0.clone()),
                     termination,
@@ -279,14 +316,16 @@ impl ExecutionTasks {
             .collect::<FuturesUnordered<_>>();
         let mut report = ExecutionTaskDrain::default();
         let _ = tokio::time::timeout(bound, async {
-            while let Some((run_id, task_id, termination)) = joins.next().await {
+            while let Some((session_id, run_id, task_id, termination)) = joins.next().await {
                 if let Some(run_id) = run_id {
                     report.joined.push(JoinedExecutionTask {
+                        session_id,
                         run_id,
                         termination,
                     });
                 } else {
                     report.joined_preparations.push(JoinedPreparationTask {
+                        session_id,
                         task_id,
                         termination,
                     });
@@ -298,12 +337,12 @@ impl ExecutionTasks {
         report
             .joined_preparations
             .sort_by(|a, b| a.task_id.cmp(&b.task_id));
-        self.drain_resources(deadline).await;
+        self.drain_resources(session, deadline).await;
         (
             report.pending,
             report.pending_preparations,
             report.resources,
-        ) = self.pending();
+        ) = self.pending(session);
         report
     }
 }

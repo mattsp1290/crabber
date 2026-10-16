@@ -79,8 +79,10 @@ impl Orchestrator {
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
         let runtime = self.with_context(context);
-        self.own_preparation(async move { runtime.prepare_approval_recovery(request).await })
-            .await
+        self.own_preparation(request.original.session_id.clone(), async move {
+            runtime.prepare_approval_recovery(request).await
+        })
+        .await
     }
     async fn prepare_approval_recovery(
         &self,

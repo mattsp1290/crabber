@@ -72,9 +72,15 @@ impl Harness {
         assert_eq!(self.fake.requests().len(), 0);
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            self.runtime
+                .drain_session_execution_tasks(&SessionId::new(), Duration::from_secs(1))
+                .await,
+            crate::ExecutionTaskDrain::default()
+        );
         let held = self
             .runtime
-            .drain_execution_tasks(Duration::from_millis(1))
+            .drain_session_execution_tasks(session, Duration::from_millis(1))
             .await;
         assert_eq!(held.pending, [] as [RunId; 0]);
         assert_eq!(held.pending_preparations.len(), 1);
@@ -82,11 +88,11 @@ impl Harness {
         self.gate.release.notify_one();
         let first = self
             .runtime
-            .drain_execution_tasks(Duration::from_secs(2))
+            .drain_session_execution_tasks(session, Duration::from_secs(2))
             .await;
         let second = self
             .runtime
-            .drain_execution_tasks(Duration::from_secs(2))
+            .drain_session_execution_tasks(session, Duration::from_secs(2))
             .await;
         let joined = first
             .joined
@@ -101,6 +107,7 @@ impl Harness {
         assert_eq!(
             joined,
             vec![crate::JoinedExecutionTask {
+                session_id: session.clone(),
                 run_id: run.clone(),
                 termination: crate::TaskTermination::Returned
             }]
@@ -108,6 +115,7 @@ impl Harness {
         assert_eq!(
             preparations,
             vec![crate::JoinedPreparationTask {
+                session_id: session.clone(),
                 task_id,
                 termination: crate::TaskTermination::Returned
             }]

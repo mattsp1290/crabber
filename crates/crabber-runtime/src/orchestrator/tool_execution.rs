@@ -48,6 +48,7 @@ impl Orchestrator {
             )
             .await?;
         let resources = self.execution_tasks.tool_resources(
+            scope.session.id.clone(),
             scope.run.clone(),
             record.id.clone(),
             Some(owner.target.clone()),

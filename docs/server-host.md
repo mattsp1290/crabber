@@ -53,7 +53,16 @@ drain. Inspect both `pending` (admitted run IDs) and `pending_preparations`
 (local `PreparationTaskId`s). A preparation can create a worker after the drain's
 initial snapshot; drain again while either list has entries. The pending owner
 snapshot observes both categories under one lock. `joined_preparations` reports
-actual preparation task joins separately from execution joins. These local IDs
+actual preparation task joins separately from execution joins. Each retained
+preparation, worker and tool resource has its exact session identity, including
+ordinary admission before a run exists. `drain_session_execution_tasks(session_id,
+bound)` joins only that session's local owners and reports its remaining work;
+it does not join or cancel another session. Stop the selected session's ingress
+first and repeat the drain for preparation-to-worker handoffs. This does not
+certify ownership on another controller, release session services, or establish
+durable deletion readiness. The initial read that routes a resumed run has no
+side effects; its subsequent validation, plan preparation and claim stay owned.
+These local IDs
 are neither run identities nor durable authority. Multiple pending entries for one run represent
 distinct retained local tasks. Dropping the configured host does not request
 cancellation; retain it and drain to establish joins. Runtime shutdown may still

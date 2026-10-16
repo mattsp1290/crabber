@@ -255,8 +255,10 @@ impl Orchestrator {
             return Ok(saved);
         }
         let runtime = self.clone();
-        self.own_preparation(async move { runtime.prepare_queue_owned(request, control).await })
-            .await
+        self.own_preparation(control.authority.session_id.clone(), async move {
+            runtime.prepare_queue_owned(request, control).await
+        })
+        .await
     }
     async fn prepare_queue_owned(
         &self,
@@ -366,8 +368,10 @@ impl Orchestrator {
             return Ok(Admission::Replayed(receipt));
         }
         let runtime = self.with_context(context);
-        self.own_preparation(async move { runtime.admit_queue_owned(request, control).await })
-            .await
+        self.own_preparation(control.authority.session_id.clone(), async move {
+            runtime.admit_queue_owned(request, control).await
+        })
+        .await
     }
     async fn admit_queue_owned(
         &self,

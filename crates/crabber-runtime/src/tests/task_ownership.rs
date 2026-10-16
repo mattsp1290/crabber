@@ -22,6 +22,7 @@ async fn dropped_run_handle_keeps_worker_owned_until_real_join() {
     );
     let handle = runtime.start(request()).await.unwrap();
     let run_id = handle.run_id().clone();
+    let session_id = handle.session_id().clone();
     tokio::time::timeout(Duration::from_secs(2), entering)
         .await
         .unwrap()
@@ -43,6 +44,7 @@ async fn dropped_run_handle_keeps_worker_owned_until_real_join() {
     assert_eq!(
         report.joined,
         vec![crate::JoinedExecutionTask {
+            session_id,
             run_id: run_id.clone(),
             termination: crate::TaskTermination::Returned
         }]
@@ -107,6 +109,7 @@ async fn abandoned_resume_waiter_leaves_claim_and_work_owned() {
         .unwrap();
     let handle = runtime.start(request()).await.unwrap();
     let run_id = handle.run_id().clone();
+    let session_id = handle.session_id().clone();
     assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     let waiter = tokio::spawn({
         let runtime = runtime.clone();
@@ -120,11 +123,13 @@ async fn abandoned_resume_waiter_leaves_claim_and_work_owned() {
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     let report = runtime
-        .drain_execution_tasks(Duration::from_millis(1))
+        .drain_session_execution_tasks(&session_id, Duration::from_millis(1))
         .await;
     assert_eq!(report.pending, vec![run_id.clone()]);
     release.notify_one();
-    let report = runtime.drain_execution_tasks(Duration::from_secs(2)).await;
+    let report = runtime
+        .drain_session_execution_tasks(&session_id, Duration::from_secs(2))
+        .await;
     assert_eq!(report.pending, [] as [RunId; 0]);
     assert_eq!(report.joined.len(), 1);
     assert_eq!(
@@ -159,11 +164,13 @@ async fn panicked_worker_join_does_not_invent_durable_terminal_outcome() {
         .unwrap();
     let handle = runtime.start(request()).await.unwrap();
     let run_id = handle.run_id().clone();
+    let session_id = handle.session_id().clone();
     let report = runtime.drain_execution_tasks(Duration::from_secs(2)).await;
     assert_eq!(report.pending, [] as [RunId; 0]);
     assert_eq!(
         report.joined,
         vec![crate::JoinedExecutionTask {
+            session_id,
             run_id: run_id.clone(),
             termination: crate::TaskTermination::Panicked
         }]
