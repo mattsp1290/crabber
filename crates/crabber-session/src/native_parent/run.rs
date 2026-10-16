@@ -17,6 +17,10 @@ pub(crate) struct RunIssuance {
     pub version: u32,
     pub sequence: u64,
     pub state: RunState,
+    /// Present only on the actual first issuance of an owned admission. It
+    /// anchors a separate bounded preparation-to-Run witness, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership_handoff: Option<InputFingerprint>,
 }
 impl RunState {
     pub fn from_run(run: &Run) -> Result<Self, Error> {
@@ -58,7 +62,9 @@ fn scope(session: &SessionId, run: &RunId) -> Result<(), Error> {
 impl RunIssuance {
     pub fn validate(&self) -> Result<(), Error> {
         self.state.validate()?;
-        if self.version != 1
+        let format = matches!((self.version, &self.ownership_handoff), (1, None))
+            || (self.version == 2 && self.sequence == 1 && self.ownership_handoff.is_some());
+        if !format
             || self.sequence == 0
             || self.sequence > i64::MAX as u64
             || crate::snapshot::encoded_bytes(self, 2048).is_none()
@@ -113,5 +119,38 @@ pub(crate) fn advance(
         version: 1,
         sequence,
         state: next,
+        ownership_handoff: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_admission_anchor_is_explicit_and_only_valid_on_first_issuance() {
+        let state = RunState::new(
+            &SessionId::new(),
+            &RunId::new(),
+            RunStatus::Running,
+            "original-admission-token",
+        )
+        .unwrap();
+        let mut issuance = advance(None, state, None).unwrap().unwrap();
+        issuance.validate().unwrap();
+        let legacy = serde_json::to_value(&issuance).unwrap();
+        assert!(legacy.get("ownership_handoff").is_none());
+        let decoded: RunIssuance = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.ownership_handoff.is_none());
+
+        issuance.ownership_handoff = Some(InputFingerprint::new("a".repeat(64)).unwrap());
+        assert!(issuance.validate().is_err());
+        issuance.version = 2;
+        issuance.validate().unwrap();
+        issuance.sequence = 2;
+        assert!(issuance.validate().is_err());
+        issuance.sequence = 1;
+        issuance.ownership_handoff = None;
+        assert!(issuance.validate().is_err());
+    }
 }
