@@ -1,7 +1,5 @@
 //! Borrow and authenticate exact source facts while the transaction lock is held.
-use super::{
-    ControlId, Decision, Error, ForkSession, ImportedHistory, OperationReceipt, State, receipt,
-};
+use super::{ControlId, Decision, Error, ForkSession, OperationReceipt, State, receipt};
 use crate::fork::history::{AdmittedCall, AdmittedResult, Selection, SourceCall};
 use crabber_core::{
     ContentBlock, EventKind, Message, MessageId, Role, ToolCallRecord, ToolCallStatus,
@@ -350,12 +348,9 @@ fn imported(
     for origin in provenance {
         proof.measure(origin)?;
     }
-    let history = ImportedHistory {
-        messages: messages.to_vec(),
-        calls: calls.to_vec(),
-        provenance: provenance.to_vec(),
-    };
-    if history.digest()? != audit.receipt.history_digest {
+    if crate::fork::history::imported_digest(messages, calls, provenance)?
+        != audit.receipt.history_digest
+    {
         return Err(unknown("imported history digest"));
     }
     committed.extend(messages.iter().map(|message| message.id.clone()));

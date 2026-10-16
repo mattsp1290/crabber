@@ -24,15 +24,34 @@ pub(crate) struct ImportedHistory {
 }
 impl ImportedHistory {
     pub(crate) fn digest(&self) -> Result<crabber_core::InputFingerprint, Error> {
-        // Canonicalize only after the entire bounded prefix passed every read
-        // allowance. SQL JSON object ordering must not affect source identity.
-        let mut value = serde_json::to_value(self).map_err(|_| Error::UnknownStoreOutcome)?;
-        value.sort_all_objects();
-        crate::admission_config_hash(&serde_json::json!(["crabber.imported-history.v1", value]))
-            .try_into()
-            .map_err(|_| Error::UnknownStoreOutcome)
+        imported_digest(&self.messages, &self.calls, &self.provenance)
     }
 }
+/// Borrowed copied carriers must all pass the caller's shared proof allowance
+/// before canonicalization allocates its comparison value.
+pub(crate) fn imported_digest(
+    messages: &[Message],
+    calls: &[ImportedToolCall],
+    provenance: &[ImportedMessageProvenance],
+) -> Result<crabber_core::InputFingerprint, Error> {
+    #[derive(serde::Serialize)]
+    struct Borrowed<'a> {
+        messages: &'a [Message],
+        calls: &'a [ImportedToolCall],
+        provenance: &'a [ImportedMessageProvenance],
+    }
+    let mut value = serde_json::to_value(Borrowed {
+        messages,
+        calls,
+        provenance,
+    })
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    value.sort_all_objects();
+    crate::admission_config_hash(&serde_json::json!(["crabber.imported-history.v1", value]))
+        .try_into()
+        .map_err(|_| Error::UnknownStoreOutcome)
+}
+
 pub(crate) enum Decision {
     Ready(ImportedHistory),
     Unsafe(ForkBoundary),
