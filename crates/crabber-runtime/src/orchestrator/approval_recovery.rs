@@ -119,6 +119,7 @@ impl Orchestrator {
         let validated = self.validated_session(&run).await?;
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let control = ApprovalResume {
+            prepared: None,
             control: ApprovalControl::Recover(recovery),
             sender,
         };

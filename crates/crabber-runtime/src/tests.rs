@@ -1537,10 +1537,12 @@ async fn steering_and_follow_up_reach_later_requests_and_busy_is_rejected() {
         .unwrap();
     let mut busy = request();
     busy.session_id = Some(handle.session_id().clone());
-    assert!(matches!(
-        runtime.start(busy).await,
-        Err(RuntimeError::SessionBusy)
-    ));
+    let busy_result = runtime.start(busy).await;
+    assert!(
+        matches!(busy_result, Err(RuntimeError::SessionBusy)),
+        "{:?}",
+        busy_result.as_ref().err()
+    );
     handle.steer("steer now").await.unwrap();
     handle.follow_up("follow later").await.unwrap();
     release.notify_one();
@@ -2025,6 +2027,74 @@ impl Store for DelayedTerminalStore {
     ) -> Result<crabber_session::RunControlPage, crabber_session::RunControlError> {
         self.inner.run_controls(target).await
     }
+    fn supports_preparation_protocol(&self) -> bool {
+        true
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.reserve_preparation(request).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        if joined.operation_kind() == crabber_session::session_owner::preparation::PreparationOperationKind::ApprovalRecovery
+            && self.gate.approval_recovery_gate.load(Ordering::SeqCst)
+        {
+            self.gate.approval_recovery_entered.notify_one();
+            self.gate.approval_recovery_release.notified().await;
+        }
+        let completed = self.inner.complete_preparation(joined).await?;
+        if let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
+            crabber_session::ApprovalClaimOutcome::Applied { receipt, .. },
+        ) = &completed
+        {
+            let lost = match receipt.outcome {
+                crabber_session::ApprovalOutcome::Claimed { .. } => {
+                    self.gate.approval_claim_ack_lost.load(Ordering::SeqCst)
+                }
+                crabber_session::ApprovalOutcome::ReclaimedUnstarted { .. } => {
+                    self.gate.approval_recovery_ack_lost.load(Ordering::SeqCst)
+                }
+                _ => false,
+            };
+            if lost {
+                return Err(crabber_session::ApprovalError::UnknownStoreOutcome.into());
+            }
+        }
+        if let Some(gate) = &self.gate.admission {
+            use crabber_session::session_owner::preparation::PreparationCompletion;
+            match &completed {
+                PreparationCompletion::Admitted(admitted) => {
+                    gate.hold(&admitted.session.id, &admitted.run.id).await;
+                }
+                PreparationCompletion::Keyed(crabber_session::KeyedAdmitOutcome::Started {
+                    admitted,
+                    ..
+                }) => gate.hold(&admitted.session.id, &admitted.run.id).await,
+                _ => (),
+            }
+        }
+        Ok(completed)
+    }
 
     fn supports_session_owners(&self) -> bool {
         true
@@ -2056,13 +2126,21 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::SessionOwnerOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        let detached = self
+            .inner
+            .get_session_owner(&request.session_id, &request.target.id)
+            .await?
+            .binding
+            .kind
+            == crabber_session::session_owner::SessionOwnerKind::DetachedInvocation;
         let fault = match request.command {
             crabber_session::session_owner::SessionOwnerCommand::Begin => 2,
             crabber_session::session_owner::SessionOwnerCommand::Join { .. } => 3,
             _ => 0,
         };
         let result = self.inner.mutate_session_owner(request, authority).await?;
-        if fault != 0
+        if detached
+            && fault != 0
             && self
                 .gate
                 .session_owner_ack_lost

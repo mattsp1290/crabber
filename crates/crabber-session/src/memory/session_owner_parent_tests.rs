@@ -77,6 +77,8 @@ async fn detached_session_owner_requires_actual_parent_begin_source() {
         .await
         .unwrap();
     reject_wrong_parent_route(&store, &request, &parent, &admitted.run).await;
+    reject_missing_session(&store, &request, &parent).await;
+
     let SessionOwnerOutcome::Applied {
         receipt: reserved,
         authority,
@@ -227,4 +229,37 @@ async fn detached_owner_refuses_restored_parent_after_real_run_only_takeover() {
             .unwrap(),
         None
     );
+}
+
+async fn reject_missing_session(
+    store: &MemoryStore,
+    request: &ReserveSessionOwner,
+    parent: &SessionOwnerParentAuthority,
+) {
+    let missing = store
+        .state
+        .lock()
+        .unwrap()
+        .sessions
+        .remove(&request.binding.session_id)
+        .unwrap();
+    assert!(matches!(
+        store
+            .reserve_session_owner(request.clone(), Some(parent.clone()))
+            .await,
+        Err(Error::UnknownStoreOutcome)
+    ));
+    assert_eq!(
+        store
+            .lookup_session_owner(&request.binding.session_id, &request.id)
+            .await
+            .unwrap(),
+        None
+    );
+    store
+        .state
+        .lock()
+        .unwrap()
+        .sessions
+        .insert(missing.id.clone(), missing);
 }

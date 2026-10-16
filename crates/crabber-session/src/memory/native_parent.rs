@@ -192,3 +192,7 @@ fn latest_run<'a>(state: &'a State, run: &Run) -> Result<Option<&'a RunIssuance>
 #[cfg(test)]
 #[path = "native_parent/tests.rs"]
 mod tests;
+
+pub(super) fn verify_run(state: &State, run: &Run) -> Result<(), Error> {
+    latest_run(state, run)?.ok_or(Error).map(|_| ())
+}

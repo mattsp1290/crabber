@@ -192,3 +192,51 @@ fn session_owner_context_preserves_opaque_newlines_and_refuses_nul() {
     request.binding.directory.push('\0');
     assert_eq!(request.fingerprint(), Err(Error::InvalidRequest));
 }
+
+#[test]
+fn session_owner_deleted_audit_cannot_reuse_independent_publication_key() {
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let request = crate::session_owner_contract::reservation(SessionId::new());
+    let mut ledger = Ledger::default();
+    let SessionOwnerOutcome::Applied {
+        receipt, authority, ..
+    } = ledger.reserve(&request, now).unwrap()
+    else {
+        panic!("fresh owner")
+    };
+    let begin = MutateSessionOwner {
+        id: SessionOwnerOperationId::new(),
+        session_id: request.binding.session_id.clone(),
+        target: receipt.owner.target.clone(),
+        command: SessionOwnerCommand::Begin,
+    };
+    ledger.mutate(&begin, authority.as_ref(), now).unwrap();
+    ledger
+        .mutate(
+            &MutateSessionOwner {
+                id: SessionOwnerOperationId::new(),
+                session_id: begin.session_id.clone(),
+                target: begin.target.clone(),
+                command: SessionOwnerCommand::Join {
+                    termination: SessionOwnerTermination::Returned,
+                },
+            },
+            authority.as_ref(),
+            now,
+        )
+        .unwrap();
+    ledger.erase_historical_audit_for_test(&begin.session_id, &begin.id);
+    let original_roster = ledger.publications.clone();
+    let mut foreign = crate::session_owner_contract::reservation(begin.session_id.clone());
+    foreign.id = begin.id;
+    assert!(matches!(
+        ledger.reserve(&foreign, now),
+        Err(Error::SemanticConflict)
+    ));
+    assert_eq!(ledger.publications, original_roster);
+    assert!(
+        !ledger
+            .records
+            .contains_key(&(begin.session_id, foreign.binding.id))
+    );
+}

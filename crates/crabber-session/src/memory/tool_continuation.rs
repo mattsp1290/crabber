@@ -83,7 +83,7 @@ pub(super) fn receipt(
     domain::verify_receipt(saved, event)?;
     Ok(Some(saved.clone()))
 }
-fn replay(
+pub(super) fn replay(
     state: &State,
     session: &SessionId,
     run: &RunId,
@@ -296,6 +296,10 @@ pub(super) fn release_terminal(state: &mut State, run: &Run) -> Result<(), Attem
     state.tool_barriers.remove(&run.session_id);
     Ok(())
 }
+
+pub(super) use claim::preparation_context;
+
+pub(super) use recover::preparation_context as preparation_recovery_context;
 
 #[cfg(test)]
 mod tests {

@@ -265,6 +265,13 @@ impl RunPlan {
 
 #[async_trait]
 pub trait RunPlanProvider: Send + Sync {
+    /// Pure fresh-work ingress check. This must not initialize resources or
+    /// grant a plan; metadata declaration/replay remains independently readable.
+    /// # Errors
+    /// Refuses a locally closed or incompatible context before preparation.
+    fn check_preparation_context(&self, _context: &SessionContext) -> Result<(), ExtensionError> {
+        Ok(())
+    }
     /// Inspect frozen registration declarations without acquiring a plan,
     /// initializing components or obtaining execution authority. Frozen providers
     /// retain these declarations after close. Actual instance schemas still

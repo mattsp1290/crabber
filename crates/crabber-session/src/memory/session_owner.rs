@@ -1,5 +1,8 @@
 //! Session owner controls under the ordinary Memory mutation gate.
+#[path = "session_owner/preparation.rs"]
+mod preparation;
 use super::{MemoryStore, State, bump_public_revision};
+use crate::session_owner::audit::RevisionState;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerError as Error,
     SessionOwnerOutcome, SessionOwnerParentAuthority,
@@ -13,7 +16,25 @@ impl MemoryStore {
         request: &ReserveSessionOwner,
         parent: Option<&SessionOwnerParentAuthority>,
     ) -> Result<SessionOwnerOutcome, Error> {
-        let digest = request.fingerprint()?;
+        self.reserve_owner_inner(request, parent, None)
+    }
+    pub(super) fn reserve_preparation(
+        &self,
+        request: &crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        request.fingerprint()?;
+        self.reserve_owner_inner(&request.owner, None, Some(request))
+    }
+    fn reserve_owner_inner(
+        &self,
+        request: &ReserveSessionOwner,
+        parent: Option<&SessionOwnerParentAuthority>,
+        preparation: Option<&crate::session_owner::preparation::ReservePreparation>,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        let digest = preparation.map_or_else(
+            || request.fingerprint(),
+            super::super::session_owner::preparation::ReservePreparation::fingerprint,
+        )?;
         let fault = fault(self);
         let outcome = self.transact(|state| {
             if let Some(saved) = state
@@ -25,24 +46,39 @@ impl MemoryStore {
                 }
                 return Ok(SessionOwnerOutcome::Replayed(saved));
             }
+            if request.binding.parent.is_some()
+                && !state.sessions.contains_key(&request.binding.session_id)
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
             if let Some(session) = state.sessions.get(&request.binding.session_id) {
                 session
                     .ensure_identity(&request.binding.workspace_id, &request.binding.directory)
                     .map_err(|_| Error::IdentityMismatch)?;
-                if request.binding.parent.is_none()
-                    && state
-                        .management
-                        .get(&session.id)
-                        .is_some_and(|metadata| metadata.archived)
+                if state
+                    .management
+                    .get(&session.id)
+                    .is_some_and(|metadata| metadata.archived)
+                    && request.binding.parent.is_none()
+                    && !preparation.is_some_and(|value| matches!(value.purpose,
+                        crate::session_owner::preparation::PreparationPurpose::ExistingRun { .. }))
                 {
                     return Err(Error::InvalidTransition);
                 }
             }
             let now = self.clock.now();
             let parent = parent_proof(state, request, parent, now)?;
-            let outcome = state
-                .session_owners
-                .reserve_authenticated(request, parent, now)?;
+            let revision = revision(state, &request.binding.session_id);
+            if let Some(preparation) = preparation {
+                validate_preparation(state, preparation, revision, now)?;
+            }
+            let outcome = state.session_owners.reserve_with_origin(
+                request,
+                parent,
+                now,
+                revision,
+                preparation.map(super::super::session_owner::preparation::origin),
+            )?;
             if state.sessions.contains_key(&request.binding.session_id) {
                 bump_public_revision(state, &request.binding.session_id)
                     .map_err(|_| Error::UnknownStoreOutcome)?;
@@ -60,10 +96,13 @@ impl MemoryStore {
         request.fingerprint()?;
         let fault = fault(self);
         let outcome = self.transact(|state| {
-            let (outcome, public_change) =
-                state
-                    .session_owners
-                    .mutate(request, authority, self.clock.now())?;
+            let revision = revision(state, &request.session_id);
+            let (outcome, public_change) = state.session_owners.mutate_at_revision(
+                request,
+                authority,
+                self.clock.now(),
+                revision,
+            )?;
             if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
                 if public_change && state.sessions.contains_key(&request.session_id) {
                     bump_public_revision(state, &request.session_id)
@@ -74,6 +113,19 @@ impl MemoryStore {
             Ok(outcome)
         })?;
         after(outcome, fault)
+    }
+}
+pub(super) fn revision(state: &State, session: &crabber_core::SessionId) -> RevisionState {
+    if state.sessions.contains_key(session) {
+        RevisionState::Present(
+            state
+                .public_revisions
+                .get(session)
+                .copied()
+                .unwrap_or(crabber_core::SessionRevision::INITIAL),
+        )
+    } else {
+        RevisionState::Absent(state.session_owners.publication_count(session))
     }
 }
 fn parent_proof(
@@ -212,3 +264,71 @@ mod tests;
 #[cfg(test)]
 #[path = "session_owner_parent_tests.rs"]
 mod parent_tests;
+
+fn validate_preparation(
+    state: &State,
+    request: &crate::session_owner::preparation::ReservePreparation,
+    revision: RevisionState,
+    now: OffsetDateTime,
+) -> Result<(), Error> {
+    use crate::session_owner::preparation::PreparationPurpose;
+    if matches!(request.purpose, PreparationPurpose::OrdinaryAdmission)
+        && (state.runs.values().any(|run| {
+            run.session_id == request.owner.binding.session_id && !run.status.is_terminal()
+        }) || state
+            .session_owners
+            .has_preparation(&request.owner.binding.session_id))
+    {
+        return Err(Error::Busy);
+    }
+    let actual = match revision {
+        RevisionState::Absent(_) => crabber_core::SessionRevision::INITIAL,
+        RevisionState::Present(value) => value,
+    };
+    if actual != request.expected_revision {
+        return Err(Error::RevisionConflict);
+    }
+    match &request.purpose {
+        PreparationPurpose::OrdinaryAdmission => Ok(()),
+        PreparationPurpose::ExistingRun { run_id, .. } => {
+            let run = state
+                .runs
+                .get(run_id)
+                .filter(|run| run.session_id == request.owner.binding.session_id)
+                .ok_or(Error::NotFound)?;
+            super::execution_binding::read(state, &run.session_id, run_id)
+                .map_err(|_| Error::UnknownStoreOutcome)?
+                .ok_or(Error::UnknownStoreOutcome)?;
+            super::native_parent::verify_run(state, run).map_err(|_| Error::UnknownStoreOutcome)?;
+            let source = request.source.as_ref().ok_or(Error::Unsupported)?;
+            crate::session_owner::preparation::source_validation::validate(source, request)?;
+            match source {
+                crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
+                    super::approval::preparation_context(state, run, claim)
+                        .map_err(Error::ApprovalSource)?;
+                }
+                crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
+                    super::tool_continuation::preparation_context(state, run, claim)
+                        .map_err(Error::ToolSource)?;
+                }
+                crate::session_owner::preparation::PreparationSource::ApprovalRecovery(
+                    recovery,
+                ) => {
+                    super::approval::preparation_recovery_context(state, run, recovery, now)
+                        .map_err(Error::ApprovalSource)?;
+                }
+                crate::session_owner::preparation::PreparationSource::ToolRecovery(recovery) => {
+                    super::tool_continuation::preparation_recovery_context(
+                        state, run, recovery, now,
+                    )
+                    .map_err(Error::ToolSource)?;
+                }
+            }
+            Ok(())
+        }
+        PreparationPurpose::Queue { authority } => {
+            super::queue::preparation_context(state, authority, &request.intent, now)
+                .map_err(|_| Error::StaleOwner)
+        }
+    }
+}

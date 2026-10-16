@@ -33,10 +33,40 @@ pub(super) async fn run(native: Arc<dyn Store>) {
         )
         .await;
         wrapped.release.notify_one();
-        assert!(matches!(
-            task.await.unwrap(),
-            Err(RuntimeError::Store(StoreError::AdmissionRevisionConflict))
-        ));
+        let result = task.await.unwrap();
+        assert!(
+            matches!(&result, Err(error) if matches!(error.operation_error(),
+            RuntimeError::Store(StoreError::AdmissionRevisionConflict)))
+        );
+        if after_preparation {
+            let descriptor = result
+                .err()
+                .unwrap()
+                .preparation_reconciliation()
+                .unwrap()
+                .clone();
+            assert_eq!(descriptor.session_id, session);
+            assert_eq!(
+                native
+                    .lookup_preparation(
+                        &session,
+                        &crabber::session::session_owner::preparation::PreparationKey::Admission(
+                            key.key.clone()
+                        )
+                    )
+                    .await
+                    .unwrap(),
+                Some(descriptor.clone())
+            );
+            assert_eq!(
+                native
+                    .get_session_owner(&session, &descriptor.owner.id)
+                    .await
+                    .unwrap()
+                    .state,
+                crabber::session::session_owner::SessionOwnerState::Active
+            );
+        }
         assert!(
             native
                 .lookup_admission(&session, &key.key)

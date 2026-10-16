@@ -55,7 +55,7 @@ fn receipt(
     crate::approval::verify_receipt(saved, event)?;
     Ok(Some(saved.clone()))
 }
-fn replay(
+pub(super) fn replay(
     state: &State,
     session: &SessionId,
     run: &crabber_core::RunId,
@@ -302,3 +302,20 @@ pub(super) fn guard_claiming(
 #[cfg(test)]
 #[path = "approval/original_plan_tests.rs"]
 mod original_plan_tests;
+pub(super) use claim::ready as preparation_context;
+
+pub(super) use recover::preparation_context as preparation_recovery_context;
+
+fn fault(store: &super::MemoryStore) -> u8 {
+    #[cfg(test)]
+    {
+        store
+            .approval_fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = store;
+        0
+    }
+}

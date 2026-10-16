@@ -11,6 +11,10 @@ use time::OffsetDateTime;
 pub enum SessionOwnerError {
     #[error("durable session ownership unsupported")]
     Unsupported,
+    #[error("approval preparation source: {0}")]
+    ApprovalSource(crate::ApprovalError),
+    #[error("tool continuation preparation source: {0}")]
+    ToolSource(crate::ToolContinuationError),
     #[error("session owner not found")]
     NotFound,
     #[error("invalid session ownership request")]
@@ -19,6 +23,10 @@ pub enum SessionOwnerError {
     SemanticConflict,
     #[error("session owner context changed")]
     IdentityMismatch,
+    #[error("another run or preparation owns the session")]
+    Busy,
+    #[error("session revision changed before preparation")]
+    RevisionConflict,
     #[error("session ownership generation changed")]
     GenerationConflict,
     #[error("session ownership authority is stale")]
@@ -218,19 +226,6 @@ pub enum SessionOwnerOutcome {
     Replayed(SessionOwnerReceipt),
 }
 
-fn digest(value: &impl Serialize) -> Result<InputFingerprint, SessionOwnerError> {
-    use sha2::{Digest, Sha256};
-    if crate::snapshot::encoded_bytes(value, 32768).is_none() {
-        return Err(SessionOwnerError::InvalidRequest);
-    }
-    let mut value = serde_json::to_value(value).map_err(|_| SessionOwnerError::InvalidRequest)?;
-    value.sort_all_objects();
-    InputFingerprint::new(format!(
-        "{:x}",
-        Sha256::digest(value.to_string().as_bytes())
-    ))
-    .map_err(|_| SessionOwnerError::InvalidRequest)
-}
 impl SessionOwnerBinding {
     /// # Errors
     /// Rejects unbounded identity or internally inconsistent parent provenance.
@@ -322,7 +317,7 @@ redacted_debug!(
 );
 
 pub(crate) mod validation;
-use validation::{identifier, lease, resolver};
+use validation::{digest, identifier, lease, resolver};
 pub(crate) mod audit;
 mod ledger;
 pub(crate) mod record;
@@ -334,3 +329,8 @@ pub enum SessionOwnerParentAuthority {
     Attempt(crate::AttemptAuthority),
     Phase(crate::PhaseAuthority),
 }
+
+pub mod preparation;
+
+#[cfg(test)]
+pub(crate) mod preparation_contract;

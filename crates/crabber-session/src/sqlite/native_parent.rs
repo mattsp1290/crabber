@@ -135,3 +135,10 @@ fn event(row: &sqlx::sqlite::SqliteRow) -> Result<EventRecord, Error> {
     event.cursor = Some(cursor);
     Ok(event)
 }
+
+pub(super) async fn verify_run(
+    tx: &mut Transaction<'_, Sqlite>,
+    native: &Run,
+) -> Result<(), Error> {
+    run::latest(tx, native).await?.ok_or(Error)?.verify(native)
+}

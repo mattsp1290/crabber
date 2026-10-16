@@ -252,24 +252,33 @@ async fn sqlite_public_facade_fault_restart_journey() {
 }
 
 async fn fault_restart_journey(kind: BackendKind) {
-    // Failed before admission: no session/receipt, exact retry can start once.
+    // A failed native commit preserves the original preparation blocker. A cold
+    // retry gets correlation metadata and cannot run factories a second time.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     finish(spawn(&backend, &dir.0, "precommit")).await;
     finish(spawn(&backend, &dir.0, "absent")).await;
-    finish(spawn(&backend, &dir.0, "normal")).await;
-    finish(spawn(&backend, &dir.0, "reconcile")).await;
-    evidence(&backend, &dir.0, &session, 2, 1).await;
+    finish(spawn(&backend, &dir.0, "preparation-blocked")).await;
+    assert!(
+        backend
+            .connect()
+            .await
+            .lookup_admission(&session, &options().key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count(&dir.0.join("ledger"), "factory"), 1);
     // Lookup can be absent while the original call is still about to commit.
     let (dir, session) = handoff();
     let backend = kind.prepare(&dir.0).await;
     let delayed = spawn(&backend, &dir.0, "delayed");
     wait(&dir.0.join("waiting")).await;
     finish(spawn(&backend, &dir.0, "absent")).await;
+    finish(spawn(&backend, &dir.0, "preparation-inflight")).await;
     fs::write(dir.0.join("release"), "go").unwrap();
-    let retry = spawn(&backend, &dir.0, "normal");
     finish(delayed).await;
-    finish(retry).await;
+    finish(spawn(&backend, &dir.0, "normal")).await;
     evidence(&backend, &dir.0, &session, 2, 1).await;
     // Simultaneous fresh independent-process starts, with the same retained key.
     let (dir, session) = handoff();

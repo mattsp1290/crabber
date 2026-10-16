@@ -51,7 +51,7 @@ impl Agent {
         if let Some(receipt) = self.runtime.lookup_tool_continuation(&request).await? {
             return Ok(ToolContinuation::Replayed(receipt));
         }
-        self.initialize_extensions().await?;
+        self.check_ingress()?;
         Ok(
             match self
                 .runtime
@@ -87,7 +87,7 @@ impl Agent {
         if let Some(receipt) = self.runtime.lookup_tool_recovery(&request).await? {
             return Ok(ToolContinuation::Replayed(receipt));
         }
-        self.initialize_extensions().await?;
+        self.check_ingress()?;
         Ok(
             match self.runtime.recover_tool_continuation(request).await? {
                 crabber_runtime::ToolContinuation::Started {

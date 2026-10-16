@@ -126,3 +126,9 @@ pub(super) fn after<T>(result: Result<(T, bool), Error>, fault: u8) -> Result<T,
 
 #[cfg(test)]
 mod tests;
+
+pub(super) use write::replay_scope as replay_prepared;
+
+pub(super) use claim::preparation_context;
+
+pub(super) use recover::preparation_context as preparation_recovery_context;

@@ -147,3 +147,50 @@ async fn session_owner_shared_capacity() {
     let (request, authority) = crate::session_owner_contract::capacity::fill(&store).await;
     crate::session_owner_contract::capacity::joined_slot(&store, request, authority).await;
 }
+
+#[tokio::test]
+async fn preparation_protocol_contract() {
+    Box::pin(crate::session_owner::preparation_contract::run(
+        &super::MemoryStore::new(),
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn preparation_protocol_commit_faults() {
+    let store = super::MemoryStore::new();
+    crate::session_owner::preparation_contract::faults::run(
+        &store,
+        |point| store.session_owner_fault.store(point, Ordering::SeqCst),
+        |point| store.binding_fault.store(point, Ordering::SeqCst),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn preparation_absent_order_rejects_deleted_history_plus_foreign_publication() {
+    let store = super::MemoryStore::new();
+    let (grant, bound, old) =
+        crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
+    store
+        .state
+        .lock()
+        .unwrap()
+        .session_owners
+        .erase_historical_audit_for_test(&bound.binding.request.session_id, &old);
+    crate::session_owner::preparation_contract::absent::foreign_refuses(&store, grant, bound).await;
+}
+
+#[tokio::test]
+async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
+    let store = super::MemoryStore::new();
+    let (grant, bound, join) =
+        crate::session_owner::preparation_contract::absent::fixture_for_relabel(&store).await;
+    store
+        .state
+        .lock()
+        .unwrap()
+        .session_owners
+        .relabel_renew_for_test(&bound.binding.request.session_id, &join);
+    crate::session_owner::preparation_contract::absent::relabel_refuses(&store, grant, bound).await;
+}

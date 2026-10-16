@@ -19,6 +19,23 @@ pub(in super::super) async fn replay(
     }
     Ok(saved)
 }
+pub(in crate::postgres) async fn replay_scope(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    id: &ControlId,
+    digest: &InputFingerprint,
+) -> Result<Option<ApprovalReceipt>, Error> {
+    let saved = receipt(tx, session, id).await?;
+    if saved
+        .as_ref()
+        .is_some_and(|r| r.run_id != *run_id || r.semantic_digest != *digest)
+    {
+        return Err(Error::SemanticConflict);
+    }
+    Ok(saved)
+}
+
 pub(in super::super) async fn active(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,

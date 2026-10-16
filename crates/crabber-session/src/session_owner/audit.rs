@@ -3,27 +3,80 @@ use crate::session_owner::{
     ReserveSessionOwner, SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerReceipt,
     SessionOwnerState, record::Record,
 };
+use crabber_core::SessionRevision;
 use serde::{Deserialize, Serialize};
+
+/// Session presence is part of revision provenance: an absent session must not
+/// silently become an existing session at the same numeric revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RevisionState {
+    Absent(u64),
+    Present(SessionRevision),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Publication {
+    pub before: RevisionState,
+    pub after: RevisionState,
+    pub public_change: bool,
+}
+impl Publication {
+    pub fn new(before: RevisionState, public_change: bool) -> Result<Self, Error> {
+        let after = match (before, public_change) {
+            (RevisionState::Absent(clock), true) => {
+                RevisionState::Absent(clock.checked_add(1).ok_or(Error::UnknownStoreOutcome)?)
+            }
+            (RevisionState::Present(revision), true) => {
+                RevisionState::Present(revision.next().map_err(|_| Error::UnknownStoreOutcome)?)
+            }
+            _ => before,
+        };
+        Ok(Self {
+            before,
+            after,
+            public_change,
+        })
+    }
+    fn validate(self) -> Result<(), Error> {
+        if Self::new(self.before, self.public_change)? != self {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Audit {
     pub version: u32,
     pub receipt: SessionOwnerReceipt,
     pub record: Record,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<Publication>,
 }
 impl Audit {
     pub fn validate(&self) -> Result<(), Error> {
         self.record.validate()?;
         crate::session_owner::identifier(&self.receipt.operation_id.0, 128, false)
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        if self.version != 1
-            || self.receipt.owner != self.record.snapshot
+        if !matches!(
+            (self.version, self.record.version, self.publication),
+            (1, 1, None) | (2, 2, Some(_))
+        ) || self.receipt.owner != self.record.snapshot
             || self.receipt.session_id != self.record.snapshot.binding.session_id
             || (self.receipt.operation != SessionOwnerOperation::Reserve
                 && self.record.sequence < 2)
             || crate::snapshot::encoded_bytes(self, 32768).is_none()
         {
             return Err(Error::UnknownStoreOutcome);
+        }
+        if let Some(publication) = self.publication {
+            publication.validate()?;
+            if publication.public_change != (self.receipt.operation != SessionOwnerOperation::Renew)
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
         }
         let valid = match self.receipt.operation {
             SessionOwnerOperation::Reserve => {
@@ -65,6 +118,7 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
         || origin.receipt.operation != SessionOwnerOperation::Reserve
         || origin.receipt.operation_id != record.origin
         || origin.record.parent != record.parent
+        || origin.record.preparation != record.preparation
         || origin.record.snapshot.binding != record.snapshot.binding
         || origin.record.snapshot.created_at != record.snapshot.created_at
     {
@@ -76,7 +130,12 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
         owner: origin.record.owner.clone(),
         lease_ms: 1,
     };
-    if request.fingerprint()? != origin.receipt.semantic_digest {
+    let digest = if let Some(preparation) = &record.preparation {
+        preparation.fingerprint(&request)?
+    } else {
+        request.fingerprint()?
+    };
+    if digest != origin.receipt.semantic_digest {
         return Err(Error::UnknownStoreOutcome);
     }
     Ok(())

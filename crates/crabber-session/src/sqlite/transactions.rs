@@ -109,7 +109,7 @@ impl SqliteStore {
             }
         };
         if guard.is_ordinary()
-            && let Some(expected) = request.expected_revision
+            && let Some(expected) = guard.expected_revision(request.expected_revision)
         {
             let current = u64::try_from(current_revision)
                 .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;

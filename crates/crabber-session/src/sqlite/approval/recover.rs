@@ -12,7 +12,6 @@ impl SqliteStore {
         &self,
         request: &ApprovalContinuationRecovery,
     ) -> Result<ApprovalClaimOutcome, Error> {
-        let digest = request.fingerprint()?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -23,87 +22,117 @@ impl SqliteStore {
         let (mut tx, run) = self
             .approval_transaction(&original.session_id, &original.run_id)
             .await?;
-        let result = async {
-            if let Some(saved) = write::replay(&mut tx, &run, &request.id, &digest).await? {
-                request.verify_receipt(&saved)?;
-                return Ok((ApprovalClaimOutcome::Replayed(saved), false));
-            }
-            if write::revision(&mut tx, &run.session_id).await? != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let (record, _) = load(&mut tx, &run.session_id, &run.id)
-                .await?
-                .ok_or(Error::InvalidTransition)?;
-            write::active(&mut tx, &record).await?;
-            let parent = receipt(&mut tx, &run.session_id, &original.id)
-                .await?
-                .ok_or(Error::NotFound)?;
-            let now = self.clock.now();
-            let calls = record.recovery_grants(&run, request, &parent, now)?;
-            validate_provenance(&mut tx, &record).await?;
-            validate_native(&mut tx, &run, request, &record, now).await?;
-            super::suspend::validate_calls(&mut tx, &run, &record.batch).await?;
-            let activated = approval::activate_recovery(request, &run, now)?;
-            let fence = RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token.clone(),
-            };
-            super::super::records::save_run(&mut tx, &activated)
-                .await
-                .map_err(sql::unknown)?;
-            let execution = SqliteExecution {
-                store: self.clone(),
-                fence: fence.clone(),
-            };
-            let mutation = AttemptMutation {
-                id: approval::derived_id("reclaim-attempt", &request.id),
-                expected_revision: request.expected_revision,
-                command: AttemptCommand::ReclaimUnstarted {
-                    target: request.attempt.clone(),
-                },
-            };
-            let AttemptMutationOutcome::Applied {
-                receipt: native,
-                authority: Some(authority),
-            } = execution
-                .apply_attempt(&mut tx, &activated, &mutation, None, None)
-                .await
-                .map_err(approval::attempt_error)?
-            else {
-                return Err(Error::UnknownStoreOutcome);
-            };
-            let saved = write::publish(
-                &mut tx,
-                &run,
-                request.id.clone(),
-                digest,
-                ApprovalOutcome::ReclaimedUnstarted {
-                    continuation: original.continuation.clone(),
-                    original_claim_id: original.id.clone(),
-                    attempt: native.attempt,
-                },
-                now,
-            )
-            .await?;
-            request.verify_receipt(&saved)?;
-            sql::before_commit(fault)?;
-            Ok((
-                ApprovalClaimOutcome::Applied {
-                    receipt: saved,
-                    grant: Box::new(ApprovalGrant {
-                        fence,
-                        authority,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id,
-                        usage: record.batch.usage,
-                        turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                    }),
-                },
-                true,
-            ))
-        }
-        .await;
+        let result = self
+            .recover_approval_guarded(&mut tx, &run, request, None)
+            .await;
         sql::after_commit(finish(tx, result).await, fault)
+    }
+
+    pub(in crate::sqlite) async fn recover_approval_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &Run,
+        request: &ApprovalContinuationRecovery,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ApprovalClaimOutcome, bool), Error> {
+        let digest = request.fingerprint()?;
+        #[cfg(test)]
+        let fault = self
+            .approval_fault
+            .load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fault = 0;
+
+        let original = &request.original;
+        if let Some(saved) = write::replay(tx, run, &request.id, &digest).await? {
+            request.verify_receipt(&saved)?;
+            return Ok((ApprovalClaimOutcome::Replayed(saved), false));
+        }
+        let expected_revision = preparation
+            .map_or(Ok(request.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::Approval(
+                        request.id.clone(),
+                    ),
+                    &original.session_id,
+                    &original.run_id,
+                    request.expected_revision,
+                )
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if write::revision(tx, &run.session_id).await? != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let (record, _) = load(tx, &run.session_id, &run.id)
+            .await?
+            .ok_or(Error::InvalidTransition)?;
+        write::active(tx, &record).await?;
+        let parent = receipt(tx, &run.session_id, &original.id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let now = self.clock.now();
+        let calls = record.recovery_grants(run, request, &parent, now)?;
+        validate_provenance(tx, &record).await?;
+        validate_native(tx, run, request, &record, now).await?;
+        super::suspend::validate_calls(tx, run, &record.batch).await?;
+        let activated = approval::activate_recovery(request, run, now)?;
+        let fence = RunFence {
+            run_id: run.id.clone(),
+            claim_token: activated.claim_token.clone(),
+        };
+        super::super::records::save_run(tx, &activated)
+            .await
+            .map_err(sql::unknown)?;
+        let execution = SqliteExecution {
+            store: self.clone(),
+            fence: fence.clone(),
+        };
+        let mutation = AttemptMutation {
+            id: approval::derived_id("reclaim-attempt", &request.id),
+            expected_revision,
+            command: AttemptCommand::ReclaimUnstarted {
+                target: request.attempt.clone(),
+            },
+        };
+        let AttemptMutationOutcome::Applied {
+            receipt: native,
+            authority: Some(authority),
+        } = execution
+            .apply_attempt(tx, &activated, &mutation, None, None)
+            .await
+            .map_err(approval::attempt_error)?
+        else {
+            return Err(Error::UnknownStoreOutcome);
+        };
+        let saved = write::publish(
+            tx,
+            run,
+            request.id.clone(),
+            digest,
+            ApprovalOutcome::ReclaimedUnstarted {
+                continuation: original.continuation.clone(),
+                original_claim_id: original.id.clone(),
+                attempt: native.attempt,
+            },
+            now,
+        )
+        .await?;
+        request.verify_receipt(&saved)?;
+        sql::before_commit(fault)?;
+        Ok((
+            ApprovalClaimOutcome::Applied {
+                receipt: saved,
+                grant: Box::new(ApprovalGrant {
+                    fence,
+                    authority,
+                    calls,
+                    source_turn_id: record.batch.source_turn_id,
+                    usage: record.batch.usage,
+                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
+                }),
+            },
+            true,
+        ))
     }
 }
 async fn validate_native(
@@ -180,5 +209,28 @@ pub(super) async fn validate_provenance(
             .ok_or(Error::UnknownStoreOutcome)?;
         approval::verify_recovery_answer(answer, &saved)?;
     }
+    Ok(())
+}
+
+pub(in crate::sqlite) async fn preparation_context(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &ApprovalContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    let original = &request.original;
+    let (record, _) = load(tx, &run.session_id, &run.id)
+        .await?
+        .ok_or(Error::InvalidTransition)?;
+    write::active(tx, &record).await?;
+    let parent = receipt(tx, &run.session_id, &original.id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let _calls = record.recovery_grants(run, request, &parent, now)?;
+    validate_provenance(tx, &record).await?;
+    validate_native(tx, run, request, &record, now).await?;
+    super::suspend::validate_calls(tx, run, &record.batch).await?;
+
     Ok(())
 }

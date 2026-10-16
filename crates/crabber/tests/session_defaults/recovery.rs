@@ -72,7 +72,11 @@ pub(super) async fn run(native: Arc<dyn Store>, typed: bool) {
     wrapped.lose_ack.store(true, Ordering::SeqCst);
     let probe = Probe::new(1);
     let host = agent(wrapped.clone(), &probe);
-    assert!(pending.admit(&host).await.is_err());
+    let Err(error) = pending.admit(&host).await else {
+        panic!("lost admission acknowledgment");
+    };
+    let preparation = error.preparation_reconciliation().unwrap().clone();
+    assert_eq!(preparation.session_id, pending.session);
     let receipt = native
         .lookup_admission(&pending.session, &pending.key.key)
         .await
@@ -89,6 +93,17 @@ pub(super) async fn run(native: Arc<dyn Store>, typed: bool) {
     host.close_extensions().await.unwrap();
     let factories = probe.factories.load(Ordering::SeqCst);
     let reads = wrapped.summary_reads.load(Ordering::SeqCst);
+    assert_eq!(
+        host.lookup_preparation_operation(
+            &pending.session,
+            &crabber::session::session_owner::preparation::PreparationKey::Admission(
+                pending.key.key.clone()
+            )
+        )
+        .await
+        .unwrap(),
+        Some(preparation)
+    );
     assert!(
         matches!(pending.admit(&host).await.unwrap(),Admission::Replayed(saved) if saved==receipt)
     );

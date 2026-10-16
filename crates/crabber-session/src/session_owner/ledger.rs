@@ -1,6 +1,6 @@
 //! In-memory ledger used by the native Memory adapter. Audit entries are the
 //! immutable source; current rows never select their own alleged latest proof.
-use crate::session_owner::audit::{Audit, verify_current};
+use crate::session_owner::audit::{Audit, Publication, RevisionState, verify_current};
 use crate::session_owner::record::Record;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
@@ -21,6 +21,9 @@ pub(crate) struct Ledger {
     records: BTreeMap<(SessionId, SessionOwnerId), Record>,
     audits: BTreeMap<(SessionId, SessionOwnerOperationId), Audit>,
     contexts: BTreeMap<SessionId, Context>,
+    // Independent append-only public publication routing; never a current-row pointer.
+    publications: BTreeMap<(SessionId, SessionOwnerOperationId), (u64, SessionOwnerId)>,
+    next_publication: u64,
 }
 impl Ledger {
     pub fn context(
@@ -155,15 +158,35 @@ impl Ledger {
         request: &ReserveSessionOwner,
         now: OffsetDateTime,
     ) -> Result<SessionOwnerOutcome, Error> {
-        self.reserve_authenticated(request, None, now)
+        self.reserve_authenticated(
+            request,
+            None,
+            now,
+            RevisionState::Absent(self.publication_count(&request.binding.session_id)),
+        )
     }
+    #[cfg(test)]
     pub fn reserve_authenticated(
         &mut self,
         request: &ReserveSessionOwner,
         parent: Option<crate::native_parent::Witness>,
         now: OffsetDateTime,
+        revision: RevisionState,
     ) -> Result<SessionOwnerOutcome, Error> {
-        let digest = request.fingerprint()?;
+        self.reserve_with_origin(request, parent, now, revision, None)
+    }
+    pub fn reserve_with_origin(
+        &mut self,
+        request: &ReserveSessionOwner,
+        parent: Option<crate::native_parent::Witness>,
+        now: OffsetDateTime,
+        revision: RevisionState,
+        preparation: Option<super::preparation::Origin>,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        let digest = preparation.as_ref().map_or_else(
+            || request.fingerprint(),
+            |origin| origin.fingerprint(request),
+        )?;
         let session = &request.binding.session_id;
         if let Some(saved) = self.receipt(session, &request.id)? {
             if saved.semantic_digest != digest {
@@ -204,7 +227,8 @@ impl Ledger {
         {
             return Err(Error::Capacity);
         }
-        let record = Record::reserve(request, parent, now)?;
+        let mut record = Record::reserve(request, parent, now)?;
+        record.preparation = preparation;
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);
         self.contexts
@@ -214,17 +238,32 @@ impl Ledger {
                 directory: request.binding.directory.clone(),
                 origin: request.id.clone(),
             });
-        self.publish(record, receipt.clone())?;
+        self.publish(record, receipt.clone(), Publication::new(revision, true)?)?;
         Ok(SessionOwnerOutcome::Applied {
             receipt,
             authority: Some(authority),
         })
     }
+    #[cfg(test)]
     pub fn mutate(
         &mut self,
         request: &MutateSessionOwner,
         authority: Option<&SessionOwnerAuthority>,
         now: OffsetDateTime,
+    ) -> Result<(SessionOwnerOutcome, bool), Error> {
+        self.mutate_at_revision(
+            request,
+            authority,
+            now,
+            RevisionState::Absent(self.publication_count(&request.session_id)),
+        )
+    }
+    pub fn mutate_at_revision(
+        &mut self,
+        request: &MutateSessionOwner,
+        authority: Option<&SessionOwnerAuthority>,
+        now: OffsetDateTime,
+        revision: RevisionState,
     ) -> Result<(SessionOwnerOutcome, bool), Error> {
         let digest = request.fingerprint()?;
         if let Some(saved) = self.receipt(&request.session_id, &request.id)? {
@@ -252,7 +291,11 @@ impl Ledger {
             None
         };
         let receipt = record.receipt(request.id.clone(), digest, operation);
-        self.publish(record, receipt.clone())?;
+        self.publish(
+            record,
+            receipt.clone(),
+            Publication::new(revision, public_change)?,
+        )?;
         Ok((
             SessionOwnerOutcome::Applied {
                 receipt,
@@ -261,19 +304,155 @@ impl Ledger {
             public_change,
         ))
     }
-    fn publish(&mut self, record: Record, receipt: SessionOwnerReceipt) -> Result<(), Error> {
+    pub fn verify_preparation_join(
+        &self,
+        grant: &super::preparation::PreparationGrant,
+    ) -> Result<(), Error> {
+        let join = super::preparation::proof::join_request(grant)?;
+        let source = self.audits.get(&(join.session_id, join.id));
+        super::preparation::proof::verify_join_audit(grant, source)
+    }
+    pub fn preparation_metadata(
+        &self,
+        session: &SessionId,
+        key: &super::preparation::PreparationKey,
+    ) -> Result<Option<super::preparation::PreparationReconciliation>, Error> {
+        let ids = crate::session_owner::preparation::identity::ids(key, session)?;
+        self.audits
+            .get(&(session.clone(), ids.reserve))
+            .map(|audit| super::preparation::identity::metadata(audit, session, key))
+            .transpose()
+    }
+    /// Immutable audit routing is the independent clock before a Session exists.
+    /// No historical private record body is decoded or cloned.
+    pub fn publication_count(&self, session: &SessionId) -> u64 {
+        self.publications
+            .keys()
+            .filter(|(scope, _)| scope == session)
+            .fold(0u64, |count, _| count.saturating_add(1))
+    }
+    #[cfg(test)]
+    pub(crate) fn erase_historical_audit_for_test(
+        &mut self,
+        session: &SessionId,
+        id: &SessionOwnerOperationId,
+    ) {
+        assert!(self.audits.remove(&(session.clone(), id.clone())).is_some());
+    }
+    fn check_preparation_order(
+        &self,
+        grant: &super::preparation::PreparationGrant,
+    ) -> Result<(), Error> {
+        let request = grant.original_reservation();
+        let session = &request.owner.binding.session_id;
+        let (origin, owner) = self
+            .publications
+            .get(&(session.clone(), request.owner.id.clone()))
+            .ok_or(Error::UnknownStoreOutcome)?;
+        if owner != &request.owner.binding.id {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if self
+            .publications
+            .iter()
+            .any(|((scope, _), (ordinal, owner))| {
+                scope == session && ordinal > origin && owner != &request.owner.binding.id
+            })
+        {
+            return Err(Error::RevisionConflict);
+        }
+        Ok(())
+    }
+    pub fn has_preparation(&self, session: &SessionId) -> bool {
+        let mut latest = BTreeMap::new();
+        for ((scope, _), audit) in &self.audits {
+            if scope == session {
+                let entry = latest
+                    .entry(&audit.receipt.owner.target.id)
+                    .or_insert(audit);
+                if audit.record.sequence > entry.record.sequence {
+                    *entry = audit;
+                }
+            }
+        }
+        latest.values().any(|audit| {
+            audit.record.preparation.is_some()
+                && audit.receipt.owner.state != SessionOwnerState::Joined
+        })
+    }
+    pub fn verify_preparation<'a>(
+        &self,
+        grant: &'a super::preparation::PreparationGrant,
+        revision: RevisionState,
+        now: OffsetDateTime,
+    ) -> Result<super::preparation::proof::VerifiedPreparation<'a>, Error> {
+        let session = &grant.original_reservation().owner.binding.session_id;
+        let id = &grant.original_reservation().owner.binding.id;
+        let record = self.checked(session, id)?;
+        self.check_preparation_order(grant)?;
+        let mut selected: Vec<_> = self
+            .audits
+            .iter()
+            .filter(|((scope, _), audit)| {
+                scope == session
+                    && audit.receipt.owner.target.id == *id
+                    && audit.receipt.operation != SessionOwnerOperation::Renew
+            })
+            .map(|(_, audit)| audit)
+            .take(super::preparation::proof::MAX_PUBLICATIONS + 1)
+            .collect();
+        if selected.len() > super::preparation::proof::MAX_PUBLICATIONS {
+            return Err(Error::Capacity);
+        }
+        selected.sort_by_key(|audit| audit.record.sequence);
+        for audit in &selected {
+            audit.validate()?;
+        }
+        let audits: Vec<_> = selected.into_iter().cloned().collect();
+        super::preparation::proof::verify(grant, record, &audits, revision, now)
+    }
+    #[cfg(test)]
+    pub(crate) fn relabel_renew_for_test(
+        &mut self,
+        session: &SessionId,
+        id: &SessionOwnerOperationId,
+    ) {
+        self.audits
+            .get_mut(&(session.clone(), id.clone()))
+            .unwrap()
+            .receipt
+            .operation = SessionOwnerOperation::Renew;
+    }
+    fn publish(
+        &mut self,
+        record: Record,
+        receipt: SessionOwnerReceipt,
+        publication: Publication,
+    ) -> Result<(), Error> {
         let audit = Audit {
-            version: 1,
+            version: 2,
             receipt,
             record,
+            publication: Some(publication),
         };
         audit.validate()?;
         let operation = (
             audit.receipt.session_id.clone(),
             audit.receipt.operation_id.clone(),
         );
-        if self.audits.contains_key(&operation) {
+        if self.audits.contains_key(&operation) || self.publications.contains_key(&operation) {
             return Err(Error::SemanticConflict);
+        }
+        if publication.public_change {
+            let ordinal = self
+                .next_publication
+                .checked_add(1)
+                .ok_or(Error::UnknownStoreOutcome)?;
+            self.publications.insert(
+                operation.clone(),
+                (ordinal, audit.record.snapshot.target.id.clone()),
+            );
+            self.next_publication = ordinal;
         }
         self.records.insert(
             (

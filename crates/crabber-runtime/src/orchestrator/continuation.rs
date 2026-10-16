@@ -29,6 +29,7 @@ pub enum Continuation {
     Replayed(ApprovalReceipt),
 }
 pub(super) struct ApprovalResume {
+    pub(super) prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
     pub(super) control: ApprovalControl,
     pub(super) sender: oneshot::Sender<Claimed>,
 }
@@ -177,6 +178,7 @@ impl Orchestrator {
         let validated = self.validated_session(&run).await?;
         let (sender, receiver) = oneshot::channel();
         let control = ApprovalResume {
+            prepared: None,
             control: ApprovalControl::Claim(claim),
             sender,
         };
@@ -198,30 +200,45 @@ impl Orchestrator {
             let control = match control {
                 ApprovalResume {
                     control: ApprovalControl::Tool { control, sender },
+                    prepared,
                     ..
-                } => return self.acquire_tool_resume(run, control, sender).await,
+                } => {
+                    return self
+                        .acquire_tool_resume(run, control, sender, prepared)
+                        .await;
+                }
                 control => control,
             };
-            let outcome = match &control.control {
-                ApprovalControl::Tool { .. } => {
-                    unreachable!("tool claim handled before approval dispatch")
-                }
-                ApprovalControl::Claim(claim) => {
-                    self.store
-                        .claim_approval_continuation(claim.clone())
-                        .await?
-                }
-                ApprovalControl::Recover(request) => {
-                    let outcome = self
-                        .store
-                        .reclaim_approval_continuation(request.clone())
-                        .await?;
-                    let receipt = match &outcome {
-                        ApprovalClaimOutcome::Applied { receipt, .. }
-                        | ApprovalClaimOutcome::Replayed(receipt) => receipt,
-                    };
-                    request.verify_receipt(receipt)?;
-                    outcome
+            let outcome = if let Some(prepared) = control.prepared {
+                let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
+                    outcome,
+                ) = prepared
+                else {
+                    return Err(StoreError::AdmissionConflict.into());
+                };
+                outcome
+            } else {
+                match &control.control {
+                    ApprovalControl::Tool { .. } => {
+                        unreachable!("tool claim handled before approval dispatch")
+                    }
+                    ApprovalControl::Claim(claim) => {
+                        self.store
+                            .claim_approval_continuation(claim.clone())
+                            .await?
+                    }
+                    ApprovalControl::Recover(request) => {
+                        let outcome = self
+                            .store
+                            .reclaim_approval_continuation(request.clone())
+                            .await?;
+                        let receipt = match &outcome {
+                            ApprovalClaimOutcome::Applied { receipt, .. }
+                            | ApprovalClaimOutcome::Replayed(receipt) => receipt,
+                        };
+                        request.verify_receipt(receipt)?;
+                        outcome
+                    }
                 }
             };
             return match outcome {

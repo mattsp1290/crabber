@@ -23,3 +23,19 @@ pub(crate) fn context_text(text: &str, max: usize) -> Result<(), SessionOwnerErr
     }
     crate::ensure_storable_text(text).map_err(|_| SessionOwnerError::InvalidRequest)
 }
+
+pub(crate) fn digest(
+    value: &impl serde::Serialize,
+) -> Result<crabber_core::InputFingerprint, SessionOwnerError> {
+    use sha2::{Digest, Sha256};
+    if crate::snapshot::encoded_bytes(value, 32768).is_none() {
+        return Err(SessionOwnerError::InvalidRequest);
+    }
+    let mut value = serde_json::to_value(value).map_err(|_| SessionOwnerError::InvalidRequest)?;
+    value.sort_all_objects();
+    crabber_core::InputFingerprint::new(format!(
+        "{:x}",
+        Sha256::digest(value.to_string().as_bytes())
+    ))
+    .map_err(|_| SessionOwnerError::InvalidRequest)
+}

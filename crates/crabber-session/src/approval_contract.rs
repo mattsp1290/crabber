@@ -42,6 +42,8 @@ use std::sync::Arc;
 pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
+    #[cfg(test)]
+    crate::session_owner::preparation_contract::continuations::approval(&store, &clock).await;
     lifecycle(&store, &clock).await;
     integrity::run(&store, &clock).await;
     changed_batch::run(&store, &clock).await;

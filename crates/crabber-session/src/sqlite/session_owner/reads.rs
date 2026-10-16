@@ -178,3 +178,35 @@ pub(super) async fn publish(
     sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json) VALUES($1,$2,$3) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
     Ok(())
 }
+
+/// Only the exact owner's public publications are selected, bounded before transfer.
+pub(super) async fn preparation_audits(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    owner: &SessionOwnerId,
+) -> Result<Vec<Audit>, Error> {
+    let rows=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS owner_id,sequence,CASE WHEN length(CAST(operation AS BLOB))<=32 THEN operation END AS operation,CASE WHEN length(CAST(state AS BLOB))<=32 THEN state END AS state,CASE WHEN length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id FROM session_owner_audits WHERE session_id=$1 AND owner_id=$2 AND operation<>'Renew' ORDER BY sequence LIMIT 65").bind(&session.0).bind(&owner.0).fetch_all(&mut **tx).await.map_err(unknown)?;
+    if rows.len() > crate::session_owner::preparation::proof::MAX_PUBLICATIONS {
+        return Err(Error::Capacity);
+    }
+    rows.into_iter()
+        .map(|row| {
+            let audit = checked_audit(&row, session, None)?;
+            if audit.record.snapshot.target.id != *owner {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            Ok(audit)
+        })
+        .collect()
+}
+
+pub(super) async fn has_preparation(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits a WHERE a.session_id=$1 AND a.state<>'Joined' AND NOT EXISTS(SELECT 1 FROM session_owner_audits later WHERE later.session_id=a.session_id AND later.owner_id=a.owner_id AND later.sequence>a.sequence) AND CASE WHEN length(CAST(a.data_json AS BLOB))>32768 THEN true ELSE json_type(a.data_json,'$.record.preparation') IS NOT NULL END)")
+        .bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)
+}
+
+pub(super) use publications::{preparation_order, publication_count};
+mod publications;

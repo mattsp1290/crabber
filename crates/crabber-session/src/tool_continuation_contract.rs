@@ -29,6 +29,8 @@ use time::OffsetDateTime;
 pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
+    #[cfg(test)]
+    crate::session_owner::preparation_contract::continuations::tools(&store, &clock).await;
     lifecycle(&store).await;
     race::run(&store).await;
     recovery::run(&store, &clock).await;
