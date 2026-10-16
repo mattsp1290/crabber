@@ -118,9 +118,12 @@ pub(crate) fn select<'a>(
         unsafe_prefix |= !committed.contains(&message.id);
         let mut ordinal = None;
         for part in &message.parts {
-            crate::attempt::validate_identifier(&part.id.0)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            if part.message_id != message.id
+            validate_id(&part.id.0).map_err(|_| Error::UnknownStoreOutcome)?;
+            if (matches!(part.content, ContentBlock::ToolCall { .. })
+                && part.kind != PartKind::FunctionToolCall)
+                || (matches!(part.content, ContentBlock::ToolResult { .. })
+                    && part.kind != PartKind::FunctionToolResult)
+                || part.message_id != message.id
                 || !parts.insert(&part.id)
                 || ordinal.is_some_and(|previous| previous >= part.ordinal)
             {
@@ -209,7 +212,7 @@ fn message_identity<'a>(
     session: &crabber_core::SessionId,
     seen: &mut BTreeSet<&'a MessageId>,
 ) -> Result<(), Error> {
-    crate::attempt::validate_identifier(&message.id.0).map_err(|_| Error::UnknownStoreOutcome)?;
+    validate_id(&message.id.0).map_err(|_| Error::UnknownStoreOutcome)?;
     if let Some(run) = &message.run_id {
         crate::attempt::validate_identifier(&run.0).map_err(|_| Error::UnknownStoreOutcome)?;
     }
@@ -280,8 +283,7 @@ fn inspect_blocks<'a>(
                 name,
                 arguments,
             } => {
-                crate::attempt::validate_identifier(&call_id.0)
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
+                validate_id(&call_id.0).map_err(|_| Error::UnknownStoreOutcome)?;
                 if !structured.insert(call_id) || !open.insert(call_id) {
                     return Err(Error::UnknownStoreOutcome);
                 }
@@ -334,6 +336,15 @@ fn inspect_blocks<'a>(
             }
             _ => (),
         }
+    }
+    Ok(())
+}
+
+/// Presentation identities follow the admitted input contract, not the native
+/// authority-key grammar. Provider IDs may include Unicode and punctuation.
+pub(crate) fn validate_id(id: &str) -> Result<(), Error> {
+    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
+        return Err(Error::UnknownStoreOutcome);
     }
     Ok(())
 }

@@ -17,7 +17,7 @@ fn supplied_pair() -> InputEnvelope {
         (
             Role::Assistant,
             InputContent::ToolCall {
-                call_id: "supplied-call".into(),
+                call_id: "supplied:原本/call".into(),
                 name: "identity".into(),
                 arguments: json!({"supplied":true}),
             },
@@ -25,7 +25,7 @@ fn supplied_pair() -> InputEnvelope {
         (
             Role::Tool,
             InputContent::ToolResult {
-                call_id: "supplied-call".into(),
+                call_id: "supplied:原本/call".into(),
                 content: vec![MessageContent::Text {
                     text: "supplied result".into(),
                 }],
@@ -36,11 +36,15 @@ fn supplied_pair() -> InputEnvelope {
     InputEnvelope::new(
         entries
             .into_iter()
-            .map(|(role, content)| InputMessage {
-                id: None,
+            .enumerate()
+            .map(|(index, (role, content))| InputMessage {
+                id: Some(format!("supplied:原本/message-{index}")),
                 parent_id: None,
                 role,
-                parts: vec![InputPart { id: None, content }],
+                parts: vec![InputPart {
+                    id: Some(format!("supplied:原本/part-{index}")),
+                    content,
+                }],
             })
             .collect(),
         vec![],

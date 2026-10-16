@@ -223,3 +223,48 @@ fn missing_commit_and_unresolved_interrupt_require_an_explicit_earlier_cut() {
         Decision::Unsafe(ForkBoundary::Empty)
     ));
 }
+
+#[test]
+fn presentation_ids_are_opaque_and_redaction_cannot_drop_a_paired_call() {
+    assert!(validate_id(&"原".repeat(170)).is_ok());
+    for bad in [
+        "".into(),
+        "原".repeat(171),
+        "provider\ncall".into(),
+        "provider\0call".into(),
+    ] {
+        assert!(validate_id(&bad).is_err());
+    }
+    let call = logical("provider:原本/call");
+    let mut messages = vec![
+        message(
+            "assistant:原本/message",
+            Role::Assistant,
+            vec![start(&call)],
+        ),
+        message("result:原本/message", Role::Tool, vec![settle(&call)]),
+    ];
+    messages[0].parts[0].id = "provider:原本/part".into();
+    let calls = [SourceCall::Native(&call)];
+    let committed = messages.iter().map(|message| message.id.clone()).collect();
+    assert!(matches!(
+        prepare(
+            &request("result:原本/message"),
+            &messages,
+            &calls,
+            &committed
+        )
+        .unwrap(),
+        Decision::Ready(_)
+    ));
+    messages[0].parts[0].kind = PartKind::Reasoning;
+    assert!(matches!(
+        prepare(
+            &request("result:原本/message"),
+            &messages,
+            &calls,
+            &committed
+        ),
+        Err(Error::UnknownStoreOutcome)
+    ));
+}

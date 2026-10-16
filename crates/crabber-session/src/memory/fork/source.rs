@@ -50,7 +50,7 @@ pub(super) fn prepare(
     let mut checked_runs = BTreeSet::new();
     let mut calls = Vec::new();
     for message in messages {
-        crate::attempt::validate_identifier(&message.id.0).map_err(unknown)?;
+        crate::fork::history::validate_id(&message.id.0).map_err(unknown)?;
         if let Some(run) = &message.run_id {
             crate::attempt::validate_identifier(&run.0).map_err(unknown)?;
             if checked_runs.insert(run) {
@@ -71,7 +71,7 @@ pub(super) fn prepare(
         }
         for part in &message.parts {
             if let ContentBlock::ToolCall { call_id, .. } = &part.content {
-                crate::attempt::validate_identifier(&call_id.0).map_err(unknown)?;
+                crate::fork::history::validate_id(&call_id.0).map_err(unknown)?;
                 if calls.len() >= request.limits.tool_calls {
                     return Ok(Decision::Limited(crate::SnapshotLimit::ToolCalls));
                 }

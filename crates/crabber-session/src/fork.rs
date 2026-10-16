@@ -106,8 +106,7 @@ impl ForkSession {
             return Err(ForkError::InvalidRequest);
         }
         if let ForkBoundary::AfterMessage { message_id } = &self.boundary {
-            crate::attempt::validate_identifier(&message_id.0)
-                .map_err(|_| ForkError::InvalidRequest)?;
+            history::validate_id(&message_id.0).map_err(|_| ForkError::InvalidRequest)?;
         }
         crate::management::bounded(&self.title, 1024, true)
             .map_err(|_| ForkError::InvalidRequest)?;
