@@ -4,8 +4,7 @@ use crabber_extension::SessionInvocationTask;
 use crabber_session::Store;
 use crabber_session::session_owner::{
     MutateSessionOwner, SessionOwnerAuthority, SessionOwnerCommand as Command,
-    SessionOwnerOperation, SessionOwnerOutcome as Outcome, SessionOwnerState,
-    SessionOwnerTermination,
+    SessionOwnerOutcome as Outcome, SessionOwnerTermination,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::oneshot;
@@ -44,7 +43,16 @@ pub(super) async fn run(
         super::scoped::run(store, parent, invocation, task, sender, started).await;
         return;
     }
-    run_legacy(store, parent, invocation, task, sender, started.authority).await;
+    run_legacy(
+        store,
+        parent,
+        invocation,
+        task,
+        sender,
+        started.authority,
+        started.original,
+    )
+    .await;
 }
 async fn run_legacy(
     store: Arc<dyn Store>,
@@ -53,6 +61,7 @@ async fn run_legacy(
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
     authority: SessionOwnerAuthority,
+    original: crabber_session::session_owner::SessionOwnerSnapshot,
 ) {
     invocation.status(SessionInvocationStatus::Active);
     super::cancellation::poll(&*store, &invocation, &authority).await;
@@ -98,7 +107,15 @@ async fn run_legacy(
         return;
     }
     let termination = SessionOwnerTermination::Returned;
-    publish_join(&*store, parent, &invocation, authority, termination).await;
+    publish_join(
+        &*store,
+        parent,
+        &invocation,
+        authority,
+        termination,
+        &original,
+    )
+    .await;
 }
 
 pub(super) async fn mark_uncertain(
@@ -129,6 +146,7 @@ async fn publish_join(
     invocation: &Invocation,
     authority: SessionOwnerAuthority,
     termination: SessionOwnerTermination,
+    original: &crabber_session::session_owner::SessionOwnerSnapshot,
 ) {
     let join = MutateSessionOwner {
         id: invocation.request.join_id.clone(),
@@ -158,13 +176,7 @@ async fn publish_join(
             _ => None,
         };
         if receipt.is_some_and(|receipt| {
-            receipt.session_id == join.session_id
-                && receipt.operation_id == join.id
-                && receipt.semantic_digest == digest
-                && receipt.operation == SessionOwnerOperation::Join
-                && receipt.owner.target == join.target
-                && receipt.owner.state == SessionOwnerState::Joined
-                && receipt.owner.termination == Some(termination)
+            super::registration::valid_join(&receipt, &join, &digest, original)
         }) {
             invocation.status(SessionInvocationStatus::Joined);
             return;

@@ -4,8 +4,7 @@ use crabber_extension::SessionInvocationTask;
 use crabber_session::{
     Store,
     session_owner::{
-        SessionOwnerAuthority, SessionOwnerError, SessionOwnerOperation, SessionOwnerOutcome,
-        SessionOwnerState,
+        SessionOwnerAuthority, SessionOwnerError, SessionOwnerOutcome,
         owned_scope::{
             JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask, OwnedMainDisposition,
             OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedTaskRegistration,
@@ -24,6 +23,7 @@ pub(super) async fn run(
     started: Started,
 ) {
     let authority = started.authority;
+    let original = started.original;
     let context = crabber_extension::SessionInvocationContext {
         cancel: invocation.cancel.clone(),
         cleanup: invocation.resources.cleanup_tracker(),
@@ -104,7 +104,9 @@ pub(super) async fn run(
         }
     };
     match proof {
-        Ok(proof) if successful => publish_join(&*store, &invocation, authority, proof).await,
+        Ok(proof) if successful => {
+            publish_join(&*store, &invocation, authority, proof, &original).await;
+        }
         _ => super::worker::mark_uncertain(&*store, &invocation, authority).await,
     }
 }
@@ -161,6 +163,7 @@ async fn publish_join(
     invocation: &Invocation,
     authority: SessionOwnerAuthority,
     proof: JoinedOwnedScope,
+    original: &crabber_session::session_owner::SessionOwnerSnapshot,
 ) {
     let (Ok(request), Ok(digest)) = (proof.request(), proof.fingerprint()) else {
         invocation.status(SessionInvocationStatus::Uncertain);
@@ -184,12 +187,7 @@ async fn publish_join(
             _ => None,
         };
         if receipt.is_some_and(|receipt| {
-            receipt.session_id == request.session_id
-                && receipt.operation_id == request.id
-                && receipt.semantic_digest == digest
-                && receipt.operation == SessionOwnerOperation::Join
-                && receipt.owner.target == request.target
-                && receipt.owner.state == SessionOwnerState::Joined
+            super::registration::valid_join(&receipt, &request, &digest, original)
         }) {
             invocation.status(SessionInvocationStatus::Joined);
             return;

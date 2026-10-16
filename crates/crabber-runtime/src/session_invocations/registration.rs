@@ -10,6 +10,7 @@ use crabber_session::session_owner::{
 use sha2::{Digest, Sha256};
 pub(super) struct Started {
     pub scoped: bool,
+    pub original: crabber_session::session_owner::SessionOwnerSnapshot,
     pub authority: SessionOwnerAuthority,
     pub source: crabber_session::session_owner::owned_scope::OwnedScopeSource,
 }
@@ -182,6 +183,7 @@ pub(super) async fn start(
             && receipt.operation == SessionOwnerOperation::Begin
             && receipt.owner.binding == request.binding
             && receipt.owner.target == begin.target
+            && receipt.owner.created_at == reserved.owner.created_at
             && receipt.owner.state == SessionOwnerState::Active =>
         {
             Ok(Some(Started {
@@ -192,6 +194,7 @@ pub(super) async fn start(
                         &reserved, &receipt,
                     )
                     .map_err(|_| Error::UnknownOutcome)?,
+                original: receipt.owner,
             }))
         }
         // Replayed Begin is never permission to invoke the supplied task factory.
@@ -204,4 +207,25 @@ fn classify(error: SessionOwnerError) -> Error {
         SessionOwnerError::Unsupported => Error::Unsupported,
         _ => Error::Rejected,
     }
+}
+
+pub(super) fn valid_join(
+    receipt: &SessionOwnerReceipt,
+    request: &MutateSessionOwner,
+    digest: &crabber_core::InputFingerprint,
+    original: &crabber_session::session_owner::SessionOwnerSnapshot,
+) -> bool {
+    let Command::Join { termination } = &request.command else {
+        return false;
+    };
+    receipt.session_id == request.session_id
+        && receipt.operation_id == request.id
+        && &receipt.semantic_digest == digest
+        && receipt.operation == SessionOwnerOperation::Join
+        && receipt.owner.target == request.target
+        && receipt.owner.target == original.target
+        && receipt.owner.binding == original.binding
+        && receipt.owner.created_at == original.created_at
+        && receipt.owner.state == SessionOwnerState::Joined
+        && receipt.owner.termination == Some(*termination)
 }

@@ -2181,6 +2181,7 @@ impl Store for DelayedTerminalStore {
                 2 => receipt.operation_id = crabber_core::SessionOwnerOperationId::new(),
                 3 => receipt.owner.termination = Some(SessionOwnerTermination::Panicked),
                 5 => receipt.owner.binding.workspace_id = "different".into(),
+                6 => receipt.owner.created_at += time::Duration::seconds(1),
                 _ => (),
             }
             return Ok(SessionOwnerOutcome::Applied {
