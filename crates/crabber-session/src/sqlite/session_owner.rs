@@ -101,7 +101,9 @@ impl SqliteStore {
             session
                 .ensure_identity(&binding.workspace_id, &binding.directory)
                 .map_err(|_| Error::IdentityMismatch)?;
-            if metadata.archived {
+            // An independently authenticated native parent may finish an
+            // existing-work handoff while its session is archived.
+            if metadata.archived && binding.parent.is_none() {
                 return Err(Error::InvalidTransition);
             }
         }

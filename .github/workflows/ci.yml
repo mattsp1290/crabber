@@ -78,3 +78,18 @@ jobs:
         run: cargo test -p crabber --features postgres --test storable_records -- --nocapture
       - name: Public workspace context probe and fresh-process resume
         run: cargo test -p workspace-context-probe --features postgres -- --nocapture
+
+      - name: Public configured host and durable continuation journeys
+        run: cargo test -p crabber --features postgres --test server_host -- --nocapture
+      - name: Public typed tool output persistence and next-provider request
+        run: cargo test -p crabber --features postgres --test typed_output -- --nocapture
+      - name: Public future queue claim, preparation and process recovery
+        run: cargo test -p crabber --features postgres --test future_queue -- --nocapture
+      - name: Public session defaults and cold selection binding
+        run: cargo test -p crabber --features postgres --test session_defaults -- --nocapture
+      - name: Public exact-run cancellation and ordered steer controls
+        run: cargo test -p crabber --features postgres --test run_controls -- --nocapture
+      - name: Public original admission replay without replacement factories
+        run: cargo test -p crabber --features postgres --test admission_replay -- --nocapture
+      - name: Public pre-session ownership and independent session resources
+        run: cargo test -p crabber --features postgres --test session_owners -- --nocapture

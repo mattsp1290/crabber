@@ -26,6 +26,7 @@ struct Fixture {
     capability: Mutex<Option<crabber::extension::SessionInvocations>>,
     mode: Mode,
     resource_release: Arc<Notify>,
+    archive_store: Option<Arc<dyn Store>>,
 }
 struct Tool(Arc<Fixture>);
 #[async_trait]
@@ -38,6 +39,17 @@ impl JsonToolExecutor for Tool {
         context: ToolContext,
         _: Value,
     ) -> Result<Value, ExtensionError> {
+        if let Some(store) = &self.0.archive_store {
+            store
+                .manage_session(crabber::session::ManageSession {
+                    id: crabber::core::ControlId::new(),
+                    session_id: context.session_id.clone(),
+                    expected_revision: store.session_revision(&context.session_id).await.unwrap(),
+                    change: crabber::session::SessionChange::SetArchived { archived: true },
+                })
+                .await
+                .unwrap();
+        }
         let request = SessionInvocationRequest::new(
             "background.fixture".into(),
             InputFingerprint::new("a".repeat(64)).unwrap(),
@@ -120,7 +132,13 @@ fn make_agent(store: Arc<dyn Store>, fixture: Arc<Fixture>, provider: FakeProvid
         .unwrap()
 }
 async fn journey(store: Arc<dyn Store>) {
-    let fixture = Arc::new(Fixture::default());
+    journey_archived(store, false).await;
+}
+async fn journey_archived(store: Arc<dyn Store>, archived: bool) {
+    let fixture = Arc::new(Fixture {
+        archive_store: archived.then(|| store.clone()),
+        ..Fixture::default()
+    });
     let id = ToolCallId::new();
     let provider = FakeProvider::scripted(vec![
         vec![
@@ -211,6 +229,20 @@ async fn journey(store: Arc<dyn Store>) {
         RunStatus::Completed
     );
     assert_eq!(provider.requests().len(), 2);
+    if archived {
+        assert_archived_rejects_new_work(store, session).await;
+    }
+}
+async fn assert_archived_rejects_new_work(store: Arc<dyn Store>, session: SessionId) {
+    assert!(store.session_summary(&session).await.unwrap().archived);
+    let provider = FakeProvider::scripted(vec![done()]);
+    let open_agent = make_agent(store, Arc::new(Fixture::default()), provider.clone());
+    assert!(matches!(
+        open_agent.prompt(Some(session), "new ordinary work").await,
+        Err(RuntimeError::Store(crabber::session::StoreError::Conflict))
+    ));
+    assert_eq!(provider.requests().len(), 0);
+    open_agent.close_extensions().await.unwrap();
 }
 #[tokio::test]
 async fn memory_detached_job_outlives_parent() {
@@ -469,5 +501,38 @@ async fn assert_retired_parent(
                 .await,
             Err(crabber::extension::SessionInvocationError::Rejected)
         );
+    }
+}
+
+#[tokio::test]
+async fn archived_memory_parent_can_transfer_existing_work() {
+    journey_archived(Arc::new(MemoryStore::new()), true).await;
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_detached_job_outlives_parent_and_archival() {
+    for archived in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("jobs.db");
+        crabber::session::SqliteStore::migrate(&path).await.unwrap();
+        let store = crabber::session::SqliteStore::connect(&path).await.unwrap();
+        journey_archived(Arc::new(store), archived).await;
+    }
+}
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_detached_job_outlives_parent_and_archival() {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
+        return;
+    };
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    let store = crabber::session::PostgresStore::connect(&url)
+        .await
+        .unwrap();
+    for archived in [false, true] {
+        journey_archived(Arc::new(store.clone()), archived).await;
     }
 }

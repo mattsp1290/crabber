@@ -29,10 +29,11 @@ impl MemoryStore {
                 session
                     .ensure_identity(&request.binding.workspace_id, &request.binding.directory)
                     .map_err(|_| Error::IdentityMismatch)?;
-                if state
-                    .management
-                    .get(&session.id)
-                    .is_some_and(|metadata| metadata.archived)
+                if request.binding.parent.is_none()
+                    && state
+                        .management
+                        .get(&session.id)
+                        .is_some_and(|metadata| metadata.archived)
                 {
                     return Err(Error::InvalidTransition);
                 }
