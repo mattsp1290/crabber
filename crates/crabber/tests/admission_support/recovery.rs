@@ -226,7 +226,11 @@ async fn project(store: &dyn Store, receipt: &AdmissionReceipt) {
             presentation.payload = serde_json::json!({"message_id": id, "outcome": "completed"});
             output.extend(projector.push(&presentation).unwrap());
         }
-        output.extend(projector.push(&record).unwrap());
+        output.extend(
+            projector
+                .push(&record)
+                .unwrap_or_else(|error| panic!("projection rejected {:?}: {error:?}", record.kind)),
+        );
     }
     output.extend(projector.finish(Completion::Completed).unwrap());
     let wire: Vec<_> = output
