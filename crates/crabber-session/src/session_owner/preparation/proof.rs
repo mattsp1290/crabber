@@ -12,12 +12,36 @@ use time::OffsetDateTime;
 pub(crate) const MAX_PUBLICATIONS: usize = 64;
 
 /// This proof never escapes the transaction that authenticated it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct VerifiedPreparation<'a> {
     pub grant: &'a PreparationGrant,
     pub effective_revision: SessionRevision,
+    pub(super) resource_handoff: Option<VerifiedResourceHandoff>,
 }
+
+/// Transaction-local source evidence, minted only after current root and child
+/// authority, immutable origins and the exact publication chain all agree.
+/// This establishes retained capacity, not physical cleanup or whole-session coverage.
+#[derive(Clone)]
+pub(crate) struct VerifiedResourceHandoff {
+    pub(super) link: super::PreparationResourceLink,
+    pub(super) child: crate::session_owner::SessionOwnerTarget,
+}
+impl VerifiedResourceHandoff {
+    pub(crate) fn source(&self) -> &super::PreparationResourceLink {
+        &self.link
+    }
+    pub(crate) fn child(&self) -> &crate::session_owner::SessionOwnerTarget {
+        &self.child
+    }
+}
+
 impl VerifiedPreparation<'_> {
+    /// Native transaction consumers may pair this exact proof with their actual
+    /// newly admitted `RunID`. Legacy preparation has no positive handoff proof.
+    pub(crate) fn resource_handoff(&self) -> Option<&VerifiedResourceHandoff> {
+        self.resource_handoff.as_ref()
+    }
     pub fn control_revision(
         &self,
         key: &super::PreparationKey,
@@ -58,6 +82,16 @@ impl VerifiedPreparation<'_> {
         Ok(())
     }
     pub fn verify_admission(&self, request: &crate::AdmitRequest) -> Result<(), crate::StoreError> {
+        if let Some(proof) = self.resource_handoff()
+            && (proof.source().root != *self.grant.owner_authority().target()
+                || self
+                    .grant
+                    .retained_resources_authority()
+                    .map(crate::session_owner::SessionOwnerAuthority::target)
+                    != Some(proof.child()))
+        {
+            return Err(crate::StoreError::AdmissionConflict);
+        }
         if request
             .session_id
             .as_ref()
@@ -74,13 +108,11 @@ impl VerifiedPreparation<'_> {
     }
 }
 
-pub(crate) fn verify<'a>(
-    grant: &'a PreparationGrant,
+pub(crate) fn authenticate_root(
+    grant: &PreparationGrant,
     record: &Record,
-    audits: &[Audit],
-    revision: RevisionState,
     now: OffsetDateTime,
-) -> Result<VerifiedPreparation<'a>, Error> {
+) -> Result<(), Error> {
     let request = &grant.original_reservation();
     if record.snapshot.state != SessionOwnerState::Active
         || record.lease_until <= now
@@ -94,6 +126,65 @@ pub(crate) fn verify<'a>(
     {
         return Err(Error::StaleOwner);
     }
+    Ok(())
+}
+pub(crate) fn verify_with_resources<'a>(
+    grant: &'a PreparationGrant,
+    record: &Record,
+    child: Option<&Record>,
+    audits: &[Audit],
+    revision: RevisionState,
+    now: OffsetDateTime,
+) -> Result<VerifiedPreparation<'a>, Error> {
+    if let Some(child) = child {
+        return super::resource_proof::verify(grant, record, child, audits, revision, now);
+    }
+    if grant.retained_resources_authority().is_some()
+        || record.snapshot.binding.component_id == super::OWNED_PREPARATION_COMPONENT
+    {
+        return Err(Error::StaleOwner);
+    }
+    verify_root_for_link(grant, record, audits, revision, now)?;
+    let effective_revision = match revision {
+        RevisionState::Absent(_) => SessionRevision::INITIAL,
+        RevisionState::Present(value) => value.next().map_err(|_| Error::UnknownStoreOutcome)?,
+    };
+    Ok(VerifiedPreparation {
+        grant,
+        effective_revision,
+        resource_handoff: None,
+    })
+}
+pub(crate) fn join_fingerprint(
+    proof: &VerifiedPreparation<'_>,
+    command: &MutateSessionOwner,
+) -> Result<crabber_core::InputFingerprint, Error> {
+    match proof.resource_handoff() {
+        Some(handoff) => super::handoff::fingerprint(command, handoff.source(), handoff.child()),
+        None => command.fingerprint(),
+    }
+}
+pub(crate) fn record_handoff(
+    record: &mut Record,
+    proof: &VerifiedPreparation<'_>,
+) -> Result<(), Error> {
+    if let Some(handoff) = proof.resource_handoff() {
+        record.retained_resources = Some(handoff.child().clone());
+    } else if record.snapshot.binding.component_id == super::OWNED_PREPARATION_COMPONENT {
+        return Err(Error::StaleOwner);
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_root_for_link(
+    grant: &PreparationGrant,
+    record: &Record,
+    audits: &[Audit],
+    revision: RevisionState,
+    now: OffsetDateTime,
+) -> Result<(), Error> {
+    authenticate_root(grant, record, now)?;
+    let request = &grant.original_reservation();
     if audits.is_empty() || audits.len() > MAX_PUBLICATIONS {
         return Err(Error::Capacity);
     }
@@ -153,14 +244,7 @@ pub(crate) fn verify<'a>(
     if !saw_begin || expected != Some(revision) {
         return Err(Error::RevisionConflict);
     }
-    let effective_revision = match revision {
-        RevisionState::Absent(_) => SessionRevision::INITIAL,
-        RevisionState::Present(value) => value.next().map_err(|_| Error::UnknownStoreOutcome)?,
-    };
-    Ok(VerifiedPreparation {
-        grant,
-        effective_revision,
-    })
+    Ok(())
 }
 
 pub(crate) fn join_request(grant: &PreparationGrant) -> Result<MutateSessionOwner, Error> {
@@ -194,7 +278,15 @@ fn verify_join_receipt(
     let expected = join_request(grant)?;
     if receipt.session_id != expected.session_id
         || receipt.operation_id != expected.id
-        || receipt.semantic_digest != expected.fingerprint()?
+        || receipt.semantic_digest
+            != match grant.retained_resources_authority() {
+                Some(child) => super::handoff::fingerprint(
+                    &expected,
+                    &super::PreparationResourceLink::for_grant(grant)?,
+                    child.target(),
+                )?,
+                None => expected.fingerprint()?,
+            }
         || receipt.operation != SessionOwnerOperation::Join
         || receipt.owner.binding != grant.original_reservation().owner.binding
         || receipt.owner.target != expected.target
@@ -218,6 +310,19 @@ pub(crate) fn verify_join_audit(
         || audit.record.origin != grant.original_reservation().owner.id
     {
         return Err(Error::SemanticConflict);
+    }
+    if grant.original_reservation().owner.binding.component_id == super::OWNED_PREPARATION_COMPONENT
+        && audit.record.retained_resources.as_ref()
+            != grant
+                .retained_resources_authority()
+                .map(crate::session_owner::SessionOwnerAuthority::target)
+    {
+        return Err(Error::InvalidTransition);
+    }
+    if grant.original_reservation().owner.binding.component_id == super::OWNED_PREPARATION_COMPONENT
+        && audit.record.retained_resources.is_none()
+    {
+        return Err(Error::InvalidTransition);
     }
     verify_join_receipt(grant, Some(&audit.receipt))
 }

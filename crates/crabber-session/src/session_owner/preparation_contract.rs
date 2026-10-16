@@ -254,3 +254,6 @@ pub(crate) mod absent;
 
 #[path = "preparation_contract/cancellation.rs"]
 pub(crate) mod cancellation;
+
+#[path = "preparation_contract/resources.rs"]
+pub(crate) mod resources;

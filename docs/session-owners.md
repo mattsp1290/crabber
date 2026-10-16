@@ -165,3 +165,37 @@ observation nor a Join. Cancellation of already running preparation factories,
 retained preparation resources, and linked services requires the later resource
 ownership integration. This checkpoint establishes no complete coverage or
 deletion readiness.
+
+`Store::supports_preparation_resources()` and
+`retain_preparation_resources(original_grant)` provide a separate, independently
+owned capacity record before a factory dispatch. The Store derives its child
+identity from the original preparation generation, then atomically publishes
+its Reserve and Begin. Its immutable source includes the original root
+Reserve digest and Begin audit; matching component labels or caller-supplied
+child authority alone cannot establish that link. Exact registration replay
+returns original metadata only, including after root completion. Unknown
+registration acknowledgements never grant replacement authority.
+
+A root using `OWNED_PREPARATION_COMPONENT` requires that authenticated Active
+child for native completion. Only the original root lifecycle and that exact
+child's Reserve and Begin may contribute to the original caller revision.
+Unrelated changes, child cancellation and observation remain conflicts. The
+child's private Renew changes no public revision. The atomic native transaction
+records the root's exact child handoff in its Join audit. Its distinct native
+handoff digest binds the original Join command, source link, and child. Both
+adding that private marker to a cleanup Join and removing it from a native Join
+invalidate the original receipt proof. Generic cleanup and legacy Join digests
+remain unchanged. The child remains
+Active after native success, unknown acknowledgement, and metadata replay;
+root Joined does not mean resource cleanup. Native receipt replay requires the
+original handoff Join rather than a later generic cleanup Join.
+
+A host that really joined failure cleanup may still Join the root without a
+native handoff. Such cleanup is not positive resource coverage and cannot
+substitute for a native completion handoff. The separate child must itself be
+retired through authenticated actual cleanup or an explicit resource transfer;
+plan disposal, lease expiry, and missing local tasks establish neither. Strict
+optional fields preserve legacy records when absent and refuse incompatible
+new records in older readers. This Store protocol does not yet change Runtime
+factory ownership or implement its retained completion registry, shared service
+leases, or complete session coverage.

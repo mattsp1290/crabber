@@ -410,6 +410,21 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Whether independently linked preparation resource capacity is durable.
+    fn supports_preparation_resources(&self) -> bool {
+        false
+    }
+    /// Atomically authenticate the exact root and reserve/begin its independent
+    /// resource owner before factory dispatch. An identical retry grants nothing.
+    async fn retain_preparation_resources(
+        &self,
+        _grant: crate::session_owner::preparation::PreparationGrant,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationResourceOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Commit a joined preparation and its native successor atomically. The
     /// original operation input, digest and revision remain unchanged.
     async fn complete_preparation(

@@ -33,17 +33,9 @@ impl MemoryStore {
                     .session_owners
                     .verify_preparation(joined.observed_grant(), before, now)
                     .map_err(storage_error)?;
-                let request =
-                    crate::session_owner::preparation::proof::join_request(joined.observed_grant())
-                        .map_err(storage_error)?;
                 state
                     .session_owners
-                    .mutate_at_revision(
-                        &request,
-                        Some(joined.observed_grant().owner_authority()),
-                        now,
-                        before,
-                    )
+                    .mutate_preparation_join(&proof, now, before)
                     .map_err(storage_error)?;
                 if state.sessions.contains_key(&session) {
                     super::super::bump_public_revision(state, &session)?;

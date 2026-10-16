@@ -9,6 +9,7 @@ use crate::{AdmitOutcome, BoundAdmitRequest, BoundKeyedAdmitRequest, KeyedAdmitO
 pub struct PreparationGrant {
     pub(crate) reservation: ReservePreparation,
     pub(crate) authority: SessionOwnerAuthority,
+    pub(crate) resources: Option<SessionOwnerAuthority>,
 }
 impl PreparationGrant {
     /// Original immutable reservation for trusted adapter verification. This
@@ -31,6 +32,30 @@ impl PreparationGrant {
     pub fn owner_authority(&self) -> &SessionOwnerAuthority {
         &self.authority
     }
+    /// The independent resource authority, available only from a fresh linked
+    /// Store commit. Receipt replay cannot reconstruct it.
+    #[must_use]
+    pub fn retained_resources_authority(&self) -> Option<&SessionOwnerAuthority> {
+        self.resources.as_ref()
+    }
+    /// Trusted adapter bridge after the fresh linked child Reserve/Begin commit.
+    /// This does not authenticate storage and cannot manufacture replay authority.
+    /// # Errors
+    /// Refuses a child for another preparation generation or session.
+    pub fn with_retained_resources(
+        mut self,
+        authority: SessionOwnerAuthority,
+    ) -> Result<Self, SessionOwnerError> {
+        let link = super::PreparationResourceLink::for_grant(&self)?;
+        if authority.session_id() != &link.session_id
+            || authority.target().id != link.identities()?.owner
+            || authority.target().generation != crabber_core::SessionOwnerGeneration::INITIAL
+        {
+            return Err(SessionOwnerError::InvalidRequest);
+        }
+        self.resources = Some(authority);
+        Ok(self)
+    }
     /// Trusted runtime bridge, used only after fresh Reserve and fresh Begin.
     /// Metadata replay must never be passed here as a fresh dispatch grant.
     /// This constructor does not authorize storage or execution by itself.
@@ -49,6 +74,7 @@ impl PreparationGrant {
         Ok(Self {
             reservation,
             authority,
+            resources: None,
         })
     }
 }

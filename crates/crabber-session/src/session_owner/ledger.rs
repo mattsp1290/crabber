@@ -123,6 +123,17 @@ impl Ledger {
             .get(&(session.clone(), record.origin.clone()))
             .ok_or(Error::UnknownStoreOutcome)?;
         verify_current(record, origin, latest)?;
+        if let Some(link) = &record.resource {
+            let reserve = self
+                .audits
+                .get(&(session.clone(), link.root_reserve.clone()))
+                .ok_or(Error::UnknownStoreOutcome)?;
+            let begin = self
+                .audits
+                .get(&(session.clone(), link.root_begin.clone()))
+                .ok_or(Error::UnknownStoreOutcome)?;
+            super::preparation::resource_source::verify(record, reserve, begin)?;
+        }
         let request = record.cancellation.as_ref().map(|value| &value.request.id);
         let observation = record
             .cancellation
@@ -279,10 +290,25 @@ impl Ledger {
         revision: RevisionState,
         preparation: Option<super::preparation::Origin>,
     ) -> Result<SessionOwnerOutcome, Error> {
-        let digest = preparation.as_ref().map_or_else(
-            || request.fingerprint(),
-            |origin| origin.fingerprint(request),
-        )?;
+        self.reserve_with_source(request, parent, now, revision, preparation, None)
+    }
+    fn reserve_with_source(
+        &mut self,
+        request: &ReserveSessionOwner,
+        parent: Option<crate::native_parent::Witness>,
+        now: OffsetDateTime,
+        revision: RevisionState,
+        preparation: Option<super::preparation::Origin>,
+        resource: Option<super::preparation::PreparationResourceLink>,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        let digest = if let Some(resource) = &resource {
+            resource.fingerprint(request)?
+        } else {
+            preparation.as_ref().map_or_else(
+                || request.fingerprint(),
+                |origin| origin.fingerprint(request),
+            )?
+        };
         let session = &request.binding.session_id;
         if let Some(saved) = self.receipt(session, &request.id)? {
             if saved.semantic_digest != digest {
@@ -325,6 +351,7 @@ impl Ledger {
         }
         let mut record = Record::reserve(request, parent, now)?;
         record.preparation = preparation;
+        record.resource = resource;
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);
         self.contexts
@@ -361,7 +388,20 @@ impl Ledger {
         now: OffsetDateTime,
         revision: RevisionState,
     ) -> Result<(SessionOwnerOutcome, bool), Error> {
-        let digest = request.fingerprint()?;
+        self.mutate_with_handoff(request, authority, now, revision, None)
+    }
+    fn mutate_with_handoff(
+        &mut self,
+        request: &MutateSessionOwner,
+        authority: Option<&SessionOwnerAuthority>,
+        now: OffsetDateTime,
+        revision: RevisionState,
+        handoff: Option<&super::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(SessionOwnerOutcome, bool), Error> {
+        let digest = match handoff {
+            Some(proof) => super::preparation::proof::join_fingerprint(proof, request)?,
+            None => request.fingerprint()?,
+        };
         if let Some(saved) = self.receipt(&request.session_id, &request.id)? {
             if saved.semantic_digest != digest {
                 return Err(Error::SemanticConflict);
@@ -373,6 +413,9 @@ impl Ledger {
             .checked(&request.session_id, &request.target.id)?
             .clone();
         let public_change = record.mutate(request, authority, now)?;
+        if let Some(grant) = handoff {
+            super::preparation::proof::record_handoff(&mut record, grant)?;
+        }
         let operation = match request.command {
             SessionOwnerCommand::Begin => SessionOwnerOperation::Begin,
             SessionOwnerCommand::Renew { .. } => SessionOwnerOperation::Renew,
@@ -399,113 +442,6 @@ impl Ledger {
             },
             public_change,
         ))
-    }
-    pub fn verify_preparation_join(
-        &self,
-        grant: &super::preparation::PreparationGrant,
-    ) -> Result<(), Error> {
-        let join = super::preparation::proof::join_request(grant)?;
-        let source = self.audits.get(&(join.session_id, join.id));
-        super::preparation::proof::verify_join_audit(grant, source)
-    }
-    pub fn preparation_metadata(
-        &self,
-        session: &SessionId,
-        key: &super::preparation::PreparationKey,
-    ) -> Result<Option<super::preparation::PreparationReconciliation>, Error> {
-        let ids = crate::session_owner::preparation::identity::ids(key, session)?;
-        self.audits
-            .get(&(session.clone(), ids.reserve))
-            .map(|audit| super::preparation::identity::metadata(audit, session, key))
-            .transpose()
-    }
-    /// Immutable audit routing is the independent clock before a Session exists.
-    /// No historical private record body is decoded or cloned.
-    pub fn publication_count(&self, session: &SessionId) -> u64 {
-        self.publications
-            .keys()
-            .filter(|(scope, _)| scope == session)
-            .fold(0u64, |count, _| count.saturating_add(1))
-    }
-    #[cfg(test)]
-    pub(crate) fn erase_historical_audit_for_test(
-        &mut self,
-        session: &SessionId,
-        id: &SessionOwnerOperationId,
-    ) {
-        assert!(self.audits.remove(&(session.clone(), id.clone())).is_some());
-    }
-    fn check_preparation_order(
-        &self,
-        grant: &super::preparation::PreparationGrant,
-    ) -> Result<(), Error> {
-        let request = grant.original_reservation();
-        let session = &request.owner.binding.session_id;
-        let (origin, owner) = self
-            .publications
-            .get(&(session.clone(), request.owner.id.clone()))
-            .ok_or(Error::UnknownStoreOutcome)?;
-        if owner != &request.owner.binding.id {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        if self
-            .publications
-            .iter()
-            .any(|((scope, _), (ordinal, owner))| {
-                scope == session && ordinal > origin && owner != &request.owner.binding.id
-            })
-        {
-            return Err(Error::RevisionConflict);
-        }
-        Ok(())
-    }
-    pub fn has_preparation(&self, session: &SessionId) -> bool {
-        let mut latest = BTreeMap::new();
-        for ((scope, _), audit) in &self.audits {
-            if scope == session {
-                let entry = latest
-                    .entry(&audit.receipt.owner.target.id)
-                    .or_insert(audit);
-                if audit.record.sequence > entry.record.sequence {
-                    *entry = audit;
-                }
-            }
-        }
-        latest.values().any(|audit| {
-            audit.record.preparation.is_some()
-                && audit.receipt.owner.state != SessionOwnerState::Joined
-        })
-    }
-    pub fn verify_preparation<'a>(
-        &self,
-        grant: &'a super::preparation::PreparationGrant,
-        revision: RevisionState,
-        now: OffsetDateTime,
-    ) -> Result<super::preparation::proof::VerifiedPreparation<'a>, Error> {
-        let session = &grant.original_reservation().owner.binding.session_id;
-        let id = &grant.original_reservation().owner.binding.id;
-        let record = self.checked(session, id)?;
-        self.check_preparation_order(grant)?;
-        let mut selected: Vec<_> = self
-            .audits
-            .iter()
-            .filter(|((scope, _), audit)| {
-                scope == session
-                    && audit.receipt.owner.target.id == *id
-                    && audit.receipt.operation != SessionOwnerOperation::Renew
-            })
-            .map(|(_, audit)| audit)
-            .take(super::preparation::proof::MAX_PUBLICATIONS + 1)
-            .collect();
-        if selected.len() > super::preparation::proof::MAX_PUBLICATIONS {
-            return Err(Error::Capacity);
-        }
-        selected.sort_by_key(|audit| audit.record.sequence);
-        for audit in &selected {
-            audit.validate()?;
-        }
-        let audits: Vec<_> = selected.into_iter().cloned().collect();
-        super::preparation::proof::verify(grant, record, &audits, revision, now)
     }
     #[cfg(test)]
     pub(crate) fn relabel_renew_for_test(
@@ -565,3 +501,9 @@ impl Ledger {
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
 mod tests;
+
+#[path = "ledger/resources.rs"]
+mod resources;
+
+#[path = "ledger/preparation.rs"]
+mod preparation;

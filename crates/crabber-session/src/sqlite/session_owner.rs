@@ -5,6 +5,7 @@ mod preflight;
 mod preparation;
 pub(super) mod public;
 mod reads;
+mod resources;
 mod run;
 use super::SqliteStore;
 use crate::session_owner::{

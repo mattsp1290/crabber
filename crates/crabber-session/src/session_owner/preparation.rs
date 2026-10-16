@@ -61,6 +61,7 @@ pub use completion::{
     PreparedOperation,
 };
 
+pub(crate) mod handoff;
 pub(crate) mod proof;
 
 pub(crate) mod identity;
@@ -137,3 +138,14 @@ impl ReservePreparation {
 }
 
 pub(crate) mod source_validation;
+
+mod resources;
+pub use resources::{
+    OWNED_PREPARATION_COMPONENT, PreparationResourceIds, PreparationResourceLink,
+    PreparationResourceOutcome, PreparationResourceReceipt,
+};
+
+#[path = "preparation/resources/proof.rs"]
+pub(crate) mod resource_proof;
+#[path = "preparation/resources/source.rs"]
+pub(crate) mod resource_source;

@@ -668,6 +668,18 @@ impl Store for MemoryStore {
         deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
         state.session_owners.preparation_metadata(session, key)
     }
+    fn supports_preparation_resources(&self) -> bool {
+        true
+    }
+    async fn retain_preparation_resources(
+        &self,
+        grant: crate::session_owner::preparation::PreparationGrant,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationResourceOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.retain_preparation_resources(&grant)
+    }
     async fn complete_preparation(
         &self,
         joined: crate::session_owner::preparation::JoinedPreparation,

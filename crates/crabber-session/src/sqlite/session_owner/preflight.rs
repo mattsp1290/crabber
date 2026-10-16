@@ -23,6 +23,14 @@ impl super::SqliteStore {
         if actual != preparation.expected_revision {
             return Err(Error::RevisionConflict);
         }
+        self.preparation_source_context(tx, preparation).await
+    }
+    pub(super) async fn preparation_source_context(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        preparation: &ReservePreparation,
+    ) -> Result<(), Error> {
+        let binding = &preparation.owner.binding;
         match &preparation.purpose {
             crate::session_owner::preparation::PreparationPurpose::OrdinaryAdmission => (),
             crate::session_owner::preparation::PreparationPurpose::Queue { authority } => {

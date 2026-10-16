@@ -10,3 +10,11 @@ pub(crate) mod identity;
 pub(crate) mod proof;
 #[path = "../../../crabber-session/src/session_owner/preparation/source_validation.rs"]
 pub(crate) mod source_validation;
+
+#[path = "../../../crabber-session/src/session_owner/preparation/resources/proof.rs"]
+pub(crate) mod resource_proof;
+#[path = "../../../crabber-session/src/session_owner/preparation/resources/source.rs"]
+pub(crate) mod resource_source;
+
+#[path = "../../../crabber-session/src/session_owner/preparation/handoff.rs"]
+pub(crate) mod handoff;

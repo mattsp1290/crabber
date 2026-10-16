@@ -1,5 +1,7 @@
 //! Physical controller death before commit and after commit, then cold replay.
 use super::*;
+#[path = "process/resources.rs"]
+mod resources;
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -8,6 +10,11 @@ use std::{
 };
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Operation {
+    Resources(crate::session_owner::preparation::ReservePreparation),
+    VerifyResources {
+        request: crate::session_owner::preparation::ReservePreparation,
+        committed: bool,
+    },
     RequestCancel(crate::session_owner::RequestSessionOwnerCancel),
     ActiveUntilKilled(ReserveSessionOwner),
     VerifyCancel {
@@ -42,6 +49,10 @@ pub(crate) fn pause(point: &str) {
 }
 pub(crate) async fn execute(store: &impl Store, command: Operation) {
     match command {
+        Operation::Resources(request) => resources::retain(store, request).await,
+        Operation::VerifyResources { request, committed } => {
+            resources::verify(store, request, committed).await;
+        }
         Operation::RequestCancel(request) => {
             store.request_session_owner_cancel(request).await.unwrap();
         }
@@ -193,6 +204,7 @@ async fn joined(child: &mut Guard) {
 }
 pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
     run_preparation(store, helper, path).await;
+    resources::run(helper, path).await;
     for mutate in [false, true] {
         for committed in [false, true] {
             let reserve = reservation(SessionId::new());

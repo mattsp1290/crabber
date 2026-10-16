@@ -95,7 +95,14 @@ impl Audit {
                 self.record.snapshot.state,
                 SessionOwnerState::Active | SessionOwnerState::ReservedUnstarted
             ),
-            SessionOwnerOperation::Join | SessionOwnerOperation::ResolveJoined => {
+            SessionOwnerOperation::Join => {
+                self.record.snapshot.state == SessionOwnerState::Joined
+                    && super::preparation::handoff::record_fingerprint(
+                        &self.record,
+                        &self.receipt.operation_id,
+                    )? == self.receipt.semantic_digest
+            }
+            SessionOwnerOperation::ResolveJoined => {
                 self.record.snapshot.state == SessionOwnerState::Joined
             }
             SessionOwnerOperation::MarkUncertain => {
@@ -107,6 +114,11 @@ impl Audit {
                         > crabber_core::SessionOwnerGeneration::INITIAL
             }
         };
+        if self.record.retained_resources.is_some()
+            && self.receipt.operation != SessionOwnerOperation::Join
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
         if !valid {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -123,6 +135,7 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
         || origin.receipt.operation_id != record.origin
         || origin.record.parent != record.parent
         || origin.record.preparation != record.preparation
+        || origin.record.resource != record.resource
         || origin.record.snapshot.binding != record.snapshot.binding
         || origin.record.snapshot.created_at != record.snapshot.created_at
     {
@@ -136,6 +149,8 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
     };
     let digest = if let Some(preparation) = &record.preparation {
         preparation.fingerprint(&request)?
+    } else if let Some(resource) = &record.resource {
+        resource.fingerprint(&request)?
     } else {
         request.fingerprint()?
     };

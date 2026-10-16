@@ -45,15 +45,23 @@ pub(in super::super) async fn publication_count(
 /// historical audit was erased and a scalar publication count happens to match.
 pub(in super::super) async fn preparation_order(
     tx: &mut Transaction<'_, Sqlite>,
-    request: &crate::session_owner::preparation::ReservePreparation,
+    grant: &crate::session_owner::preparation::PreparationGrant,
 ) -> Result<(), Error> {
+    let request = grant.original_reservation();
     let query = format!(
-        "{SOURCES} SELECT EXISTS(SELECT 1 FROM sources WHERE ordinal>(SELECT ordinal FROM sources WHERE operation_id=$2) AND NOT private AND owner_id<>$3)"
+        "{SOURCES} SELECT EXISTS(SELECT 1 FROM sources WHERE ordinal>(SELECT ordinal FROM sources WHERE operation_id=$2) AND NOT private AND owner_id<>$3 AND owner_id<>$4)"
     );
     let foreign: bool = sqlx::query_scalar(&query)
         .bind(&request.owner.binding.session_id.0)
         .bind(&request.owner.id.0)
         .bind(&request.owner.binding.id.0)
+        .bind(
+            grant
+                .retained_resources_authority()
+                .map_or(request.owner.binding.id.0.as_str(), |authority| {
+                    authority.target().id.0.as_str()
+                }),
+        )
         .fetch_one(&mut **tx)
         .await
         .map_err(unknown)?;

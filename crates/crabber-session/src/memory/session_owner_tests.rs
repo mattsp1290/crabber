@@ -205,3 +205,63 @@ async fn owner_cancellation_contract() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn preparation_resource_contract() {
+    use crate::session_owner::preparation_contract::resources::guards;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::session_owner::preparation_contract::resources::run(&store).await;
+    crate::session_owner::preparation_contract::resources::faults(
+        &store,
+        |point| {
+            store
+                .session_owner_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        },
+        |point| {
+            store
+                .binding_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        },
+    )
+    .await;
+    guards::run(&store, &clock).await;
+    let (grant, bound, original_begin) = guards::source_fixture(&store).await;
+    store
+        .state
+        .lock()
+        .unwrap()
+        .session_owners
+        .erase_historical_audit_for_test(&bound.binding.request.session_id, &original_begin);
+    guards::source_refuses(&store, grant, bound).await;
+}
+
+#[tokio::test]
+async fn preparation_handoff_marker_is_bound_to_original_join_digest() {
+    use crate::session_owner::preparation_contract::resources::guards;
+    let store = super::MemoryStore::new();
+    for native in [false, true] {
+        let (grant, bound) = guards::handoff_fixture(&store, native).await;
+        let target = if native {
+            None
+        } else {
+            Some(
+                grant
+                    .retained_resources_authority()
+                    .unwrap()
+                    .target()
+                    .clone(),
+            )
+        };
+        store
+            .state
+            .lock()
+            .unwrap()
+            .session_owners
+            .replace_handoff_for_test(&grant.reconciliation().unwrap(), target);
+        guards::handoff_refuses(&store, grant, bound).await;
+    }
+}

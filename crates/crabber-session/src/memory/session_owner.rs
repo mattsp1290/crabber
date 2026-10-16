@@ -3,6 +3,8 @@
 mod cancellation;
 #[path = "session_owner/preparation.rs"]
 mod preparation;
+#[path = "session_owner/resources.rs"]
+mod resources;
 use super::{MemoryStore, State, bump_public_revision};
 use crate::session_owner::audit::RevisionState;
 use crate::session_owner::{
@@ -294,6 +296,14 @@ fn validate_preparation(
     if actual != request.expected_revision {
         return Err(Error::RevisionConflict);
     }
+    validate_preparation_source(state, request, now)
+}
+fn validate_preparation_source(
+    state: &State,
+    request: &crate::session_owner::preparation::ReservePreparation,
+    now: OffsetDateTime,
+) -> Result<(), Error> {
+    use crate::session_owner::preparation::PreparationPurpose;
     match &request.purpose {
         PreparationPurpose::OrdinaryAdmission => Ok(()),
         PreparationPurpose::ExistingRun { run_id, .. } => {

@@ -38,16 +38,25 @@ impl super::PostgresStore {
             )
             .await
             .map_err(storage_error)?;
-            reads::preparation_order(&mut tx, joined.observed_grant().original_reservation())
+            let child = resource_child(&mut tx, joined.observed_grant())
                 .await
                 .map_err(storage_error)?;
-            let audits = reads::preparation_audits(&mut tx, &session, &record.snapshot.target.id)
+            reads::preparation_order(&mut tx, joined.observed_grant())
                 .await
                 .map_err(storage_error)?;
+            let audits = reads::preparation_audits(
+                &mut tx,
+                &session,
+                &record.snapshot.target.id,
+                child.as_ref().map(|record| &record.snapshot.target.id),
+            )
+            .await
+            .map_err(storage_error)?;
             let before = revision(&mut tx, &session).await.map_err(storage_error)?;
-            let proof = crate::session_owner::preparation::proof::verify(
+            let proof = crate::session_owner::preparation::proof::verify_with_resources(
                 joined.observed_grant(),
                 &record,
+                child.as_ref(),
                 &audits,
                 before,
                 self.clock.now(),
@@ -62,6 +71,8 @@ impl super::PostgresStore {
                     Some(joined.observed_grant().owner_authority()),
                     self.clock.now(),
                 )
+                .map_err(storage_error)?;
+            crate::session_owner::preparation::proof::record_handoff(&mut record, &proof)
                 .map_err(storage_error)?;
             publish_join(&mut tx, &session, record, &join)
                 .await
@@ -144,7 +155,7 @@ async fn publish_join(
 ) -> Result<(), Error> {
     let receipt = record.receipt(
         join.id.clone(),
-        join.fingerprint()?,
+        crate::session_owner::preparation::handoff::record_fingerprint(&record, &join.id)?,
         SessionOwnerOperation::Join,
     );
     let publication = publish_revision(tx, session, true).await?;
@@ -161,4 +172,16 @@ async fn publish_join(
     .await?;
 
     Ok(())
+}
+
+async fn resource_child(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    grant: &crate::session_owner::preparation::PreparationGrant,
+) -> Result<Option<crate::session_owner::record::Record>, Error> {
+    let Some(authority) = grant.retained_resources_authority() else {
+        return Ok(None);
+    };
+    reads::current(tx, authority.session_id(), &authority.target().id)
+        .await
+        .map(Some)
 }

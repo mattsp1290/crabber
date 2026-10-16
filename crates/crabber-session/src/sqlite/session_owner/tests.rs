@@ -121,3 +121,88 @@ async fn owner_cancellation_contract() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn preparation_resource_contract() {
+    use crate::session_owner::preparation_contract::resources::guards;
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    crate::session_owner::preparation_contract::resources::run(&store).await;
+    crate::session_owner::preparation_contract::resources::faults(
+        &store,
+        |point| {
+            store
+                .session_owner_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        },
+        |point| {
+            store
+                .binding_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        },
+    )
+    .await;
+    guards::run(&store, &clock).await;
+    let (grant, bound, original_begin) = guards::source_fixture(&store).await;
+    assert_eq!(
+        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=? AND operation_id=?")
+            .bind(&bound.binding.request.session_id.0)
+            .bind(&original_begin.0)
+            .execute(&store.writer)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    guards::source_refuses(&store, grant, bound).await;
+}
+
+#[tokio::test]
+async fn preparation_handoff_marker_is_bound_to_original_join_digest() {
+    use crate::session_owner::preparation_contract::resources::guards;
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    for native in [false, true] {
+        let (grant, bound) = guards::handoff_fixture(&store, native).await;
+        let metadata = grant.reconciliation().unwrap();
+        let target = if native {
+            serde_json::Value::Null
+        } else {
+            serde_json::to_value(grant.retained_resources_authority().unwrap().target()).unwrap()
+        };
+        for (table, field, id) in [
+            ("session_owner_current", "owner_id", &metadata.owner.id.0),
+            ("session_owner_audits", "operation_id", &metadata.join_id.0),
+        ] {
+            let query = format!("SELECT data_json FROM {table} WHERE session_id=? AND {field}=?");
+            let data: String = sqlx::query_scalar(&query)
+                .bind(&metadata.session_id.0)
+                .bind(id)
+                .fetch_one(&store.writer)
+                .await
+                .unwrap();
+            let mut data: serde_json::Value = serde_json::from_str(&data).unwrap();
+            let record = if table == "session_owner_current" {
+                &mut data
+            } else {
+                &mut data["record"]
+            };
+            if native {
+                record.as_object_mut().unwrap().remove("retained_resources");
+            } else {
+                record["retained_resources"] = target.clone();
+            }
+            let query = format!("UPDATE {table} SET data_json=? WHERE session_id=? AND {field}=?");
+            sqlx::query(&query)
+                .bind(serde_json::to_string(&data).unwrap())
+                .bind(&metadata.session_id.0)
+                .bind(id)
+                .execute(&store.writer)
+                .await
+                .unwrap();
+        }
+        guards::handoff_refuses(&store, grant, bound).await;
+    }
+}

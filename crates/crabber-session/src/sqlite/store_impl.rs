@@ -89,6 +89,18 @@ impl Store for SqliteStore {
     > {
         self.preparation_metadata(session, key).await
     }
+    fn supports_preparation_resources(&self) -> bool {
+        true
+    }
+    async fn retain_preparation_resources(
+        &self,
+        grant: crate::session_owner::preparation::PreparationGrant,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationResourceOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Box::pin(self.retain_preparation_resources(grant)).await
+    }
     async fn complete_preparation(
         &self,
         joined: crate::session_owner::preparation::JoinedPreparation,

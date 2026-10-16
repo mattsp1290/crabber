@@ -1,5 +1,7 @@
 //! Pure transitions. Adapters authenticate the independent latest audit before
 //! calling these methods, then publish record, receipt and revision atomically.
+#[path = "record/resources.rs"]
+mod resources;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
     SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerReceipt, SessionOwnerResolver,
@@ -17,6 +19,10 @@ pub(crate) struct Record {
     pub origin: SessionOwnerOperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<super::preparation::Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<super::preparation::PreparationResourceLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
     pub parent: Option<crate::native_parent::Witness>,
@@ -50,6 +56,8 @@ impl Record {
             },
             origin: request.id.clone(),
             preparation: None,
+            resource: None,
+            retained_resources: None,
             cancellation: None,
             parent,
             sequence: 1,
@@ -86,6 +94,7 @@ impl Record {
         {
             return Err(Error::UnknownStoreOutcome);
         }
+        resources::validate(self)?;
         if let Some(cancellation) = &self.cancellation {
             cancellation
                 .validate(self)
