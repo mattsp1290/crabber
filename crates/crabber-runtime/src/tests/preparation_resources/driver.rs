@@ -23,7 +23,7 @@ async fn driver_state(h: &Harness, run: &RunId) -> Option<SessionOwnerState> {
         .unwrap()
         .map(|receipt| receipt.owner.state)
 }
-async fn current_driver_state(h: &Harness, run: &RunId) -> SessionOwnerState {
+pub(super) async fn current_driver_state(h: &Harness, run: &RunId) -> SessionOwnerState {
     let persisted = h.memory.get_run(run).await.unwrap().unwrap();
     let request = RegisterExecutionDriver {
         context: SessionContext::new(
@@ -42,74 +42,75 @@ async fn current_driver_state(h: &Harness, run: &RunId) -> SessionOwnerState {
         .unwrap()
         .state
 }
+async fn start_initial(h: &Harness, unkeyed: bool) -> crate::RunHandle {
+    if unkeyed {
+        let mut input = h.input.clone();
+        input.session_id = None;
+        return h.runtime.start(input).await.unwrap();
+    }
+    let crate::Admission::Started { handle, .. } = h
+        .runtime
+        .start_keyed(h.input.clone(), options())
+        .await
+        .unwrap()
+    else {
+        panic!("fresh keyed admission");
+    };
+    handle
+}
 #[tokio::test]
 async fn unknown_driver_registration_never_dispatches_the_model() {
-    for point in [1, 2] {
-        let h = Harness::new();
-        h.gate.driver_register_fault.store(point, Ordering::SeqCst);
-        let crate::Admission::Started { handle, .. } = h
-            .runtime
-            .start_keyed(h.input.clone(), options())
-            .await
-            .unwrap()
-        else {
-            panic!("fresh")
-        };
-        let run = handle.run_id().clone();
-        assert!(handle.done().await.is_err());
-        assert_eq!(h.fake.requests().len(), 0);
-        assert_eq!(driver_state(&h, &run).await.is_some(), point == 2);
-        assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
-        h.provider.cleanup_release.notify_one();
+    for unkeyed in [false, true] {
+        for point in [1, 2] {
+            let h = Harness::new();
+            h.gate.driver_register_fault.store(point, Ordering::SeqCst);
+            let handle = start_initial(&h, unkeyed).await;
+            let run = handle.run_id().clone();
+            assert!(handle.done().await.is_err());
+            assert_eq!(h.fake.requests().len(), 0);
+            assert_eq!(driver_state(&h, &run).await.is_some(), point == 2);
+            assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
+            h.provider.cleanup_release.notify_one();
+        }
     }
 }
 #[tokio::test]
 async fn unknown_driver_activation_joins_actual_no_dispatch_without_model_effects() {
-    for point in [1, 2] {
-        let h = Harness::new();
-        h.gate
-            .driver_activation_fault
-            .store(point, Ordering::SeqCst);
-        let crate::Admission::Started { handle, .. } = h
-            .runtime
-            .start_keyed(h.input.clone(), options())
-            .await
-            .unwrap()
-        else {
-            panic!("fresh")
-        };
-        let run = handle.run_id().clone();
-        assert!(handle.done().await.is_err());
-        assert_eq!(h.fake.requests().len(), 0);
-        assert_eq!(
-            current_driver_state(&h, &run).await,
-            SessionOwnerState::Joined
-        );
-        h.provider.cleanup_release.notify_one();
+    for unkeyed in [false, true] {
+        for point in [1, 2] {
+            let h = Harness::new();
+            h.gate
+                .driver_activation_fault
+                .store(point, Ordering::SeqCst);
+            let handle = start_initial(&h, unkeyed).await;
+            let run = handle.run_id().clone();
+            assert!(handle.done().await.is_err());
+            assert_eq!(h.fake.requests().len(), 0);
+            assert_eq!(
+                current_driver_state(&h, &run).await,
+                SessionOwnerState::Joined
+            );
+            h.provider.cleanup_release.notify_one();
+        }
     }
 }
 #[tokio::test]
 async fn unknown_driver_join_retries_only_original_observation() {
-    for point in [1, 2] {
-        let h = Harness::new();
-        h.gate.driver_join_fault.store(point, Ordering::SeqCst);
-        let crate::Admission::Started { handle, .. } = h
-            .runtime
-            .start_keyed(h.input.clone(), options())
-            .await
-            .unwrap()
-        else {
-            panic!("fresh")
-        };
-        let run = handle.run_id().clone();
-        handle.done().await.unwrap();
-        assert_eq!(h.fake.requests().len(), 1);
-        assert_eq!(
-            current_driver_state(&h, &run).await,
-            SessionOwnerState::Joined
-        );
-        assert_eq!(h.gate.driver_join_calls.load(Ordering::SeqCst), 2);
-        h.provider.cleanup_release.notify_one();
+    for unkeyed in [false, true] {
+        for point in [1, 2] {
+            let h = Harness::new();
+            h.gate.driver_join_fault.store(point, Ordering::SeqCst);
+            let handle = start_initial(&h, unkeyed).await;
+            let run = handle.run_id().clone();
+            handle.done().await.unwrap();
+            assert_eq!(h.fake.requests().len(), 1);
+            assert_eq!(
+                current_driver_state(&h, &run).await,
+                SessionOwnerState::Joined
+            );
+            assert_eq!(h.gate.driver_join_calls.load(Ordering::SeqCst), 2);
+            h.provider.cleanup_release.notify_one();
+        }
     }
 }
 

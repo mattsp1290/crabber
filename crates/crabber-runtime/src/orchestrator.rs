@@ -2600,17 +2600,18 @@ impl Orchestrator {
         bound: Option<crabber_providers::BoundProvider>,
     ) -> RunHandle {
         let work_session = RunSession::from(session);
-        let driver = (matches!(entry, InitialEntry::Keyed) && plan.retains_preparation_resources())
-            .then(
-                || crabber_session::session_owner::driver::RegisterExecutionDriver {
-                    context: crabber_core::SessionContext::new(
-                        session.id.clone(),
-                        session.workspace_id.clone(),
-                        session.directory.clone(),
-                    ),
-                    fence: fence.clone(),
-                },
-            );
+        let driver = (matches!(entry, InitialEntry::Keyed | InitialEntry::Unkeyed)
+            && plan.retains_preparation_resources())
+        .then(
+            || crabber_session::session_owner::driver::RegisterExecutionDriver {
+                context: crabber_core::SessionContext::new(
+                    session.id.clone(),
+                    session.workspace_id.clone(),
+                    session.directory.clone(),
+                ),
+                fence: fence.clone(),
+            },
+        );
         self.spawn_worker_inner(
             session.id.clone(),
             fence.run_id.clone(),

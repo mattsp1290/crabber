@@ -2,19 +2,39 @@
 use super::*;
 
 async fn journey(store: Arc<dyn Store>) {
+    for unkeyed in [false, true] {
+        journey_for(store.clone(), unkeyed).await;
+    }
+}
+async fn journey_for(store: Arc<dyn Store>, unkeyed: bool) {
     let h = Harness::on_store(store.clone(), store, Arc::new(SettlementGate::default()));
-    let crate::Admission::Started { handle, receipt } = h
-        .runtime
-        .start_keyed(h.input.clone(), options())
-        .await
-        .unwrap()
-    else {
-        panic!("fresh scoped SQL admission")
+    let (handle, receipt) = if unkeyed {
+        let mut input = h.input.clone();
+        input.session_id = None;
+        (h.runtime.start(input).await.unwrap(), None)
+    } else {
+        let crate::Admission::Started { handle, receipt } = h
+            .runtime
+            .start_keyed(h.input.clone(), options())
+            .await
+            .unwrap()
+        else {
+            panic!("fresh scoped SQL admission");
+        };
+        (handle, Some(receipt))
     };
-    let descriptor = h.descriptor().await;
+    let session = handle.session_id().clone();
+    let run = handle.run_id().clone();
+    let descriptor = if unkeyed {
+        h.runtime.retained_preparation_status(&session)[0]
+            .preparation
+            .clone()
+    } else {
+        h.descriptor().await
+    };
     let original = h
         .memory
-        .execution_binding(&receipt.session_id, &receipt.run_id)
+        .execution_binding(&session, &run)
         .await
         .unwrap()
         .unwrap();
@@ -28,9 +48,15 @@ async fn journey(store: Arc<dyn Store>) {
     handle.done().await.unwrap();
     h.finish_cleanup(&descriptor).await;
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
-    assert!(
-        matches!(h.runtime.start_keyed(h.input.clone(), options()).await.unwrap(), crate::Admission::Replayed(saved) if saved == receipt)
+    assert_eq!(
+        driver::current_driver_state(&h, &run).await,
+        SessionOwnerState::Joined
     );
+    if let Some(receipt) = receipt {
+        assert!(
+            matches!(h.runtime.start_keyed(h.input.clone(), options()).await.unwrap(), crate::Admission::Replayed(saved) if saved == receipt)
+        );
+    }
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.fake.requests().len(), 1);
     cleanup_failure::contract(h.memory.clone()).await;

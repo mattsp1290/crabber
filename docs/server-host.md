@@ -78,9 +78,9 @@ signal, not a durable cancellation acknowledgement. `resume()` remains a conveni
 that awaits the resumed handle. Eligibility and binding errors can arrive through
 its result after preparation returns a handle.
 
-Fresh keyed workers whose plans retain an owned preparation lease also register
+Fresh ordinary and keyed workers whose plans retain an owned preparation lease also register
 an independent native `crabber.runtime.outer-worker.v1` owner. The Store must
-support execution drivers. Direct keyed admission checks that capability before
+support execution drivers. Direct ordinary and keyed admission check that capability before
 preparation factory acquisition. Registration and activation replay return metadata only. Only a fresh
 activation opens the exact registered worker gate. The retained supervisor observes
 the actual outer worker join, including final measurements, observers, completion
@@ -90,13 +90,13 @@ Cleanup signals every captured scope before awaiting any one join. A worker pani
 remains visible even if its supervisor returns normally. Pending control I/O can
 delay retirement; bounded drains continue to report that supervisor as pending.
 
-The Runtime bridge currently covers initial keyed admission. Native adapters also support
+The Runtime bridge covers initial ordinary and keyed admission. Native adapters support
 an initial unkeyed native driver from the complete frozen binding anchored in the
 original preparation Join. Fresh unkeyed registration requires the original admission
 revision; activation requires the exact original driver Begin revision. Any intervening
 publication conservatively refuses fresh dispatch. Original metadata retries require
-no current binding, keyed receipt, or fabricated journal. Unkeyed Runtime adoption and
-recovered workers still require their own authenticated driver paths. The driver does not
+no current binding, keyed receipt, or fabricated journal. Recovered workers still require
+their own authenticated driver paths. The driver does not
 certify provider, shared-service, callback or whole-run resource coverage. A failed
 cleanup leaves native retirement unresolved, and retained resource failures remain
 visible through drains. Durable deletion readiness remains conservative.
