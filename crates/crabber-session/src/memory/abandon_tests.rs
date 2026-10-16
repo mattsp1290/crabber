@@ -131,18 +131,16 @@ async fn pending_atomic_rollback_preserves_calls_usage_history_fence_and_inbox()
         )
         .await
         .unwrap();
-    {
-        let mut state = store.state.lock().unwrap();
-        let run = state.runs.get_mut(&admitted.run.id).unwrap();
-        // Pending is a persisted state supported by the domain; fresh admission
-        // currently produces Running, so seed it without inventing a public API.
-        run.status = RunStatus::Pending;
-        run.usage = Usage {
-            input_tokens: 123,
-            output_tokens: 45,
-        };
-        state.abandon_fail_after_tools = true;
-    }
+    let mut pending = store.get_run(&admitted.run.id).await.unwrap().unwrap();
+    // Pending is an intentional legacy fixture state, not a private corruption
+    // probe. Seed its fence journal just as the SQL fixture adapters do.
+    pending.status = RunStatus::Pending;
+    pending.usage = Usage {
+        input_tokens: 123,
+        output_tokens: 45,
+    };
+    crate::abandonment_contract::FixtureStore::seed_run(&store, pending).await;
+    store.state.lock().unwrap().abandon_fail_after_tools = true;
     clock.set(now + time::Duration::seconds(30));
     let original_run = store.get_run(&admitted.run.id).await.unwrap().unwrap();
     let original_events = store

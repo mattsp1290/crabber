@@ -1545,7 +1545,12 @@ mod snapshot_impl;
 #[async_trait]
 impl crate::abandonment_contract::FixtureStore for MemoryStore {
     async fn seed_run(&self, run: Run) {
-        self.state.lock().unwrap().runs.insert(run.id.clone(), run);
+        let mut state = self.state.lock().unwrap();
+        let previous = state.runs.get(&run.id).cloned();
+        // This helper establishes an intentional fixture state, unlike the
+        // direct private-row corruption probes that must leave audits intact.
+        native_parent::record_run(&mut state, previous.as_ref(), &run).unwrap();
+        state.runs.insert(run.id.clone(), run);
     }
     async fn calls(&self, run: &RunId) -> Vec<ToolCallRecord> {
         self.state
