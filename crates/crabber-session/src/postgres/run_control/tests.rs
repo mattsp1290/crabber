@@ -3,6 +3,25 @@ use crabber_core::ManualClock;
 use std::sync::{Arc, atomic::Ordering};
 use time::OffsetDateTime;
 #[tokio::test]
+async fn control_read_failure_is_not_stale_owner() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
+    let (_, _, execution) = run_control_contract::corruption_fixture(&store).await;
+    store.pool.close().await;
+    assert_eq!(
+        execution.observe_run_controls(None).await.unwrap_err(),
+        RunControlError::UnknownStoreOutcome
+    );
+}
+
+#[tokio::test]
 async fn durable_run_control_contract() {
     let Some(url) = crate::postgres::tests::test_url() else {
         return;

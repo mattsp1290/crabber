@@ -270,7 +270,7 @@ impl PostgresExecution {
             .store
             .fenced(&self.fence)
             .await
-            .map_err(|_| Error::StaleOwner)?;
+            .map_err(|error| crate::run_control::fenced_error(&error))?;
         let result = async {
             let mut pending = reads::records(&mut tx, &RunControlTarget::of(&run)).await?;
             let cancel = pending.iter().any(|r| {

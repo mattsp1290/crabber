@@ -3,6 +3,24 @@ use crabber_core::ManualClock;
 use std::sync::{Arc, atomic::Ordering};
 use time::OffsetDateTime;
 #[tokio::test]
+async fn control_read_failure_is_not_stale_owner() {
+    let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
+    let store = store.with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));
+    let (request, _, execution) = run_control_contract::corruption_fixture(&store).await;
+    // Corrupt only a non-identity field: the live fence still belongs to this
+    // worker, while decoding its retained Run must fail closed.
+    sqlx::query("UPDATE runs SET data=json_set(data,'$.usage',json('\"bad\"')) WHERE id=$1")
+        .bind(&request.target.run_id.0)
+        .execute(&store.writer)
+        .await
+        .unwrap();
+    assert_eq!(
+        execution.observe_run_controls(None).await.unwrap_err(),
+        RunControlError::UnknownStoreOutcome
+    );
+}
+
+#[tokio::test]
 async fn durable_run_control_contract() {
     let (store, path, _directory) = crate::sqlite::tests::temp_store().await;
     let store = store.with_clock(Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH)));

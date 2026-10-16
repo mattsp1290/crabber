@@ -34,6 +34,18 @@ pub enum RunControlError {
     #[error("run control storage outcome is unknown")]
     UnknownStoreOutcome,
 }
+
+/// Native fence rejection is distinct from a failed read of its evidence.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) fn fenced_error(error: &crate::StoreError) -> RunControlError {
+    match error {
+        crate::StoreError::Conflict
+        | crate::StoreError::AdmissionRecoveryRequired
+        | crate::StoreError::NotFound => RunControlError::StaleOwner,
+        _ => RunControlError::UnknownStoreOutcome,
+    }
+}
+
 /// Immutable run binding, excluding renewable lease and worker credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
