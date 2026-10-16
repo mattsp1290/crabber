@@ -425,3 +425,35 @@ The public run summary omits the mutable `Run.updated_at` timestamp: lease
 renewals and ownership updates can change it without a public revision. A private
 heartbeat therefore cannot change a revision-captured public run summary or
 invalidate history pagination.
+
+`Store::public_session_snapshot(PublicSessionRequest)` combines the native latest
+run, session management, attempt, pre-effect approval/barrier, explicit public UI
+state and redacted history at one authenticated public revision. It returns
+`Invalidated` if a constituent read or a continuation observes another revision;
+assemble all history pages before treating the view as complete. Metadata changes
+invalidate continuations even when history has not changed. No execution authority,
+private approval prompt, raw checkpoint, resolver claim or owner token is returned.
+Version 1 explicitly covers these native records; durable queue and later frontend
+or checkpoint continuation summaries require their integration checkpoints.
+
+The caller separately bounds safe header bytes (maximum 2 MiB), private approval
+proof bytes (maximum 32 MiB), interactions (maximum 64) and the existing history
+counts/bytes. Native readers preflight proof carriers before fetching or decoding
+them; a small public header with a large private proof may return `ProofBytes`.
+SQL adapters conservatively charge duplicate proof reads and formatting overhead.
+`header.read_usage` includes the run and control reads; history retains its raw
+pre-redaction accounting. The outer response envelope and continuation token are
+outside those byte counters. A limit returns no partial aggregate header. Custom
+stores must implement or forward the native bounded header/run/history and revision
+contracts; the default fails closed when any constituent is unsupported.
+
+`PublicSessionSubscription` is host-owned polling state, with no task or channel.
+Call `poll` (or Agent/Runtime `poll_public_session`) on a host timer or notification
+wake. It checks durable revisions even when no notification arrived. On revision
+change, invalidation or a reported notification overflow, discard previous pages
+and assemble the next `reset: true` page. Limits can be changed with `set_limits`,
+which also resets assembly. A completed unchanged view returns `Unchanged` with its
+revision/history cutoff; a terminal run is included on the first attachment.
+This is a current-state resynchronization primitive, not delivery of every
+intermediate mutation. Agent reads and polling remain available after extension
+close without acquiring factories, providers or tools.

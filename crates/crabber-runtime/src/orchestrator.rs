@@ -14,6 +14,7 @@ mod queue;
 pub use queue::QueueControl;
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
+mod public_session;
 pub use continuation::{Continuation, ContinueApproval};
 #[path = "orchestrator/attempt.rs"]
 mod attempt;

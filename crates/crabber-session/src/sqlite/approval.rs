@@ -3,6 +3,8 @@ mod answer;
 mod claim;
 mod guards;
 mod origin;
+mod public_header;
+pub(super) use public_header::read as public_header;
 mod recover;
 mod suspend;
 mod terminate;

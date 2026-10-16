@@ -105,7 +105,7 @@ pub(crate) async fn answer(
         reply,
     }
 }
-pub(super) async fn claim(store: &impl Store, f: &Fixture) -> ApprovalContinuationClaim {
+pub(crate) async fn claim(store: &impl Store, f: &Fixture) -> ApprovalContinuationClaim {
     ApprovalContinuationClaim {
         id: ControlId::new(),
         expected_revision: store.session_revision(&f.run.session_id).await.unwrap(),

@@ -1,3 +1,18 @@
+#[path = "../../crabber-session/src/public_session/allocation.rs"]
+#[allow(dead_code)]
+pub(crate) mod public_session_allocation;
+#[path = "../../crabber-session/src/public_session/budget.rs"]
+#[allow(dead_code)]
+pub(crate) mod public_session_budget;
+mod public_session {
+    pub(crate) use crate::public_session_allocation as allocation;
+    pub(crate) use crate::public_session_budget as budget;
+}
+pub use crabber::session::{
+    PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
+    PublicHeaderRequest, PublicHeaderUsage, PublicSessionError, PublicSessionLimit,
+    PublicSessionLimits, PublicSessionOutcome, PublicSessionRequest,
+};
 #[path = "../../crabber-session/src/public_run.rs"]
 #[allow(dead_code)]
 mod public_run;

@@ -36,7 +36,7 @@ fn nested(call: &ToolCallId) -> ContentBlock {
     }
 }
 
-async fn seed(store: &dyn Store) -> (SessionId, Message) {
+pub(crate) async fn seed(store: &dyn Store) -> (SessionId, Message) {
     let session = SessionId::new();
     let mut fixture = crate::execution_binding_contract::fixture(
         &session,

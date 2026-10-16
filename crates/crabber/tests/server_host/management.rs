@@ -88,6 +88,39 @@ async fn management_controls_work_without_factories_and_after_close() {
             .unwrap(),
         Some(created)
     );
+    let limits = crabber::PublicSessionLimits {
+        header_bytes: 65536,
+        proof_bytes: 1_048_576,
+        interactions: 64,
+        history: crabber::session::SnapshotLimits {
+            messages: 16,
+            tool_calls: 16,
+            parts: 128,
+            text_bytes: 65536,
+            encoded_bytes: 1_048_576,
+        },
+    };
+    let public = crabber::PublicSessionRequest {
+        session_id: request.session_id.clone(),
+        limits,
+        continuation: None,
+    };
+    let crabber::PublicSessionOutcome::Page(snapshot) =
+        agent.public_session_snapshot(public).await.unwrap()
+    else {
+        panic!("public after close")
+    };
+    assert_eq!(snapshot.header.session.title, "closed-control");
+    let mut subscription =
+        crabber::PublicSessionSubscription::new(request.session_id.clone(), limits);
+    assert!(matches!(
+        agent.poll_public_session(&mut subscription).await.unwrap(),
+        crabber::PublicSessionPoll::Page { reset: true, .. }
+    ));
+    assert!(matches!(
+        agent.poll_public_session(&mut subscription).await.unwrap(),
+        crabber::PublicSessionPoll::Unchanged { .. }
+    ));
     assert_eq!(factories.load(Ordering::SeqCst), 0);
     assert_eq!(provider.requests().len(), 0);
     assert_eq!(store.list_unfinished_runs().await.unwrap().len(), 0);

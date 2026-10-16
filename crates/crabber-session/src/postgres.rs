@@ -14,6 +14,7 @@ mod execution_binding;
 mod lock_order_tests;
 mod management;
 mod phase;
+mod public_header;
 mod public_run;
 mod public_state;
 mod tool_result;
@@ -738,6 +739,13 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn public_control_header(
+        &self,
+        request: crate::PublicHeaderRequest,
+    ) -> Result<crate::PublicHeaderOutcome, crate::PublicSessionError> {
+        self.read_public_header(request).await
+    }
+
     async fn terminate_approval(
         &self,
         request: crate::ApprovalTermination,

@@ -138,4 +138,32 @@ pub(crate) fn allocation_contract(runtime: &tokio::runtime::Runtime, store: &dyn
         measured.bytes_max < 131_072,
         "private Run decoded/cloned: {measured:?}"
     );
+    let measured = allocation_counter::measure(|| {
+        let request = crate::PublicSessionRequest {
+            session_id: session.clone(),
+            continuation: None,
+            limits: crate::PublicSessionLimits {
+                header_bytes: 65536,
+                proof_bytes: 1,
+                interactions: 64,
+                history: crate::SnapshotLimits {
+                    messages: 16,
+                    tool_calls: 16,
+                    parts: 128,
+                    text_bytes: 65536,
+                    encoded_bytes: 131_072,
+                },
+            },
+        };
+        assert!(matches!(
+            runtime
+                .block_on(store.public_session_snapshot(request))
+                .unwrap(),
+            crate::PublicSessionOutcome::Page(_)
+        ));
+    });
+    assert!(
+        measured.bytes_max < 262_144,
+        "aggregate decoded private Run: {measured:?}"
+    );
 }

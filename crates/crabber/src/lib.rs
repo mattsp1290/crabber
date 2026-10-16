@@ -50,6 +50,13 @@ pub use crabber_session::{
 #[cfg(feature = "datadog")]
 pub use crabber_obs as obs;
 
+pub use crabber_session::{
+    PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
+    PublicHeaderRequest, PublicHeaderUsage, PublicResyncReason, PublicSessionError,
+    PublicSessionLimit, PublicSessionLimits, PublicSessionOutcome, PublicSessionPage,
+    PublicSessionPoll, PublicSessionRequest, PublicSessionSubscription,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -39,6 +39,7 @@ where
             .unwrap();
         let run = store.get_run(&f.run.id).await.unwrap();
         let revision = store.session_revision(&f.run.session_id).await.unwrap();
+        aggregate_rejects(store, f.run.session_id.clone()).await;
         assert_eq!(
             store
                 .approval_snapshot(&f.run.session_id, &f.run.id)
@@ -191,4 +192,29 @@ pub(crate) async fn evidence(
         "messages":store.list_all_messages(&run.session_id).await.unwrap(),
         "events":store.list_events(&run.session_id,None,1000).await.unwrap(),
         "revision":store.session_revision(&run.session_id).await.unwrap()})
+}
+
+async fn aggregate_rejects(store: &impl Store, session: crabber_core::SessionId) {
+    assert_eq!(
+        store
+            .public_session_snapshot(crate::PublicSessionRequest {
+                session_id: session,
+                continuation: None,
+                limits: crate::PublicSessionLimits {
+                    header_bytes: 65536,
+                    proof_bytes: 2 * 1024 * 1024,
+                    interactions: 64,
+                    history: crate::SnapshotLimits {
+                        messages: 64,
+                        tool_calls: 64,
+                        parts: 1024,
+                        text_bytes: 1024 * 1024,
+                        encoded_bytes: 2 * 1024 * 1024
+                    }
+                }
+            })
+            .await
+            .unwrap_err(),
+        crate::PublicSessionError::UnknownStoreOutcome
+    );
 }

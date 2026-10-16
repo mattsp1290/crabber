@@ -21,6 +21,8 @@ mod execution_binding;
 mod management;
 #[path = "memory/phase.rs"]
 mod phase;
+#[path = "memory/public_header.rs"]
+mod public_header;
 #[path = "memory/public_run.rs"]
 mod public_run;
 #[path = "memory/public_state.rs"]
@@ -400,6 +402,13 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn public_control_header(
+        &self,
+        request: crate::PublicHeaderRequest,
+    ) -> Result<crate::PublicHeaderOutcome, crate::PublicSessionError> {
+        self.read_public_header(&request)
+    }
+
     async fn mark_attempt_uncertain(
         &self,
         request: crate::AttemptUncertainty,

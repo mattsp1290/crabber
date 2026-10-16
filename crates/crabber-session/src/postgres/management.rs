@@ -41,7 +41,7 @@ fn decode_current(
         .map_err(management::unknown)?;
     Ok((session, metadata, revision))
 }
-async fn current(
+pub(super) async fn current(
     tx: &mut Transaction<'_, Postgres>,
     id: &SessionId,
 ) -> Result<Option<(Session, management::Metadata, SessionRevision)>, Error> {
