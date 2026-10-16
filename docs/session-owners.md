@@ -334,3 +334,32 @@ cursors across rotating claims, rejecting duplicate or borrowed later sources.
 Status-only same-token publications are separate from rotating claims. Current
 historical reports keep noninitial claims unproven until that reader adopts the
 source verifier and its chronological checks.
+New PostgreSQL 18 and SQLite 14 owner reservations establish a publication cohort
+in the same transaction as the actual Reserve. Its original source and monotonic
+head anchor an independent transition roster, including private renewals. Existing
+owners remain legacy; later mutations cannot assign them this protocol. Service
+dependency exposure requires authenticated fresh cohorts for the relevant
+preparation and service owners, so missing history refuses exposure.
+
+The roster retains a second exact copy of each bounded private audit (at most
+32 KiB) and its digest. SQL compares all historical audit/roster slots and the
+monotonic head, while only selected original/head bodies are decoded by the
+client. These reads share the existing 32 MiB encoded-carrier proof allowance.
+That allowance does not bound database storage growth, server-side history scans,
+SQL equality work, or whole-operation memory and execution time. This protocol
+adds source integrity; it does not certify physical service or whole-Run cleanup.
+
+Service dependencies additionally require an independently retained scope origin.
+Actual new managed creation, fork creation, or the first preparation reservation
+in an absent scope records that origin atomically. The origin anchors the full
+canonical creation receipt and audit, or the original Reserve publication. A preparation origin survives
+when admission creates its Session. Existing session and owner-context rows retain
+a legacy marker; neither a new preparation root nor an empty current roster
+upgrades them. Any legacy owner prevents fresh service exposure. MemoryStore
+starts a fresh independent ledger and does not import persisted legacy state.
+
+Database upgrades require stopped hosts with no retained resources. This protocol
+does not establish continuity during a hot upgrade or prove the absence of
+resources after arbitrary erasure of all pre-protocol metadata and context.
+Legacy service scopes return Unsupported; hosts must not use that refusal to
+fall back to an unowned factory.

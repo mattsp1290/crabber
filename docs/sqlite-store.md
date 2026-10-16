@@ -26,7 +26,7 @@ wiring in the [session manifest](../crates/crabber-session/Cargo.toml).
 ## Lifecycle
 
 The host creates the parent directory, then calls `SqliteStore::migrate(path)`
-before `SqliteStore::connect(path)`. The current PostgreSQL counterpart is schema 17.
+before `SqliteStore::connect(path)`. The current PostgreSQL counterpart is schema 18.
 SQLite initialization is fresh-only: archive or export needed history with the
 matching old binary, then create a new current database. There is no in-place
 upgrade from earlier SQLite schemas. Keep an untouched backup and its matching

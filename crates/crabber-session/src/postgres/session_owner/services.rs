@@ -1,10 +1,8 @@
 //! Source-bound original registration and current dependency-only access.
 mod context;
 mod metadata;
-use super::{
-    Audit, Error, MutateSessionOwner, PostgresStore, Record, SessionOwnerCommand,
-    SessionOwnerOperation, before, fault, finish, publish_revision, reads,
-};
+mod write;
+use super::{Error, PostgresStore, before, fault, finish, reads};
 use crate::session_owner::service::{
     RegisterSessionServiceDependency, SessionServiceDependencyAccess,
     SessionServiceDependencyOutcome,
@@ -24,80 +22,64 @@ impl PostgresStore {
             super::super::deletion::ensure_live(&mut tx, session)
                 .await
                 .map_err(crate::deletion::owner_error)?;
-            if let Some(receipt) = metadata::receipt(&mut tx, &request).await? {
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
+            if let Some(receipt) =
+                metadata::receipt_with_proof(&mut tx, &request, &mut proof).await?
+            {
                 return Ok(SessionServiceDependencyOutcome::Replayed(Box::new(receipt)));
             }
-            if reads::audit(&mut tx, session, &source.identities()?.begin)
+            if reads::audit_with_proof(&mut tx, session, &source.identities()?.begin, &mut proof)
                 .await?
                 .is_some()
             {
                 return Err(Error::SemanticConflict);
             }
             reads::scope(&mut tx, session).await?;
+            Box::pin(super::scope_origin::require(
+                &mut tx,
+                session,
+                &request
+                    .grant
+                    .original_reservation()
+                    .owner
+                    .binding
+                    .workspace_id,
+                &request.grant.original_reservation().owner.binding.directory,
+                &mut proof,
+            ))
+            .await?;
             Box::pin(reads::ensure_generation_slot(
                 &mut tx,
                 &request.grant,
                 &source,
+                &mut proof,
             ))
             .await?;
-            Box::pin(self.verify_service_preparation(&mut tx, &request.grant, None))
-                .await?
-                .require_resource_activation()?;
-            let roster = Box::pin(reads::services(&mut tx, session, &source.root.root.id)).await?;
-            metadata::ensure_available(&roster, &source.generation.scope)?;
-            let reservation = source.reservation(&request.grant)?;
-            if super::services::metadata::exists(&mut tx, session, &reservation.binding.id).await? {
-                return Err(Error::SemanticConflict);
-            }
-            reads::capacity(&mut tx, session).await?;
-            let now = self.clock.now();
-            let mut record = Record::reserve(&reservation, None, now)?;
-            record.service = Some(Box::new(source.clone()));
-            let authority = record.grant()?;
-            let reserved = record.receipt(
-                reservation.id.clone(),
-                source.fingerprint(&reservation)?,
-                SessionOwnerOperation::Reserve,
-            );
-            let publication = publish_revision(&mut tx, session, true).await?;
-            reads::publish(
+            Box::pin(self.verify_service_preparation(
                 &mut tx,
-                &Audit {
-                    version: 2,
-                    receipt: reserved,
-                    record: record.clone(),
-                    publication: Some(publication),
-                },
+                &request.grant,
+                None,
                 true,
-            )
-            .await?;
-            let command = MutateSessionOwner {
-                id: source.identities()?.begin,
-                session_id: session.clone(),
-                target: authority.target().clone(),
-                command: SessionOwnerCommand::Begin,
-            };
-            record.mutate(&command, Some(&authority), now)?;
-            let began = record.receipt(
-                command.id.clone(),
-                command.fingerprint()?,
-                SessionOwnerOperation::Begin,
-            );
-            let publication = publish_revision(&mut tx, session, true).await?;
-            reads::publish(
+                &mut proof,
+            ))
+            .await?
+            .require_resource_activation()?;
+            let roster = Box::pin(reads::services_with_proof(
                 &mut tx,
-                &Audit {
-                    version: 2,
-                    receipt: began,
-                    record,
-                    publication: Some(publication),
-                },
-                false,
-            )
+                session,
+                &source.root.root.id,
+                &mut proof,
+            ))
             .await?;
-            let receipt = metadata::receipt(&mut tx, &request)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            metadata::ensure_available(&roster, &source.generation.scope)?;
+            let (receipt, authority) = Box::pin(write::register(
+                &mut tx,
+                &request,
+                &source,
+                self.clock.now(),
+                &mut proof,
+            ))
+            .await?;
             before(self)?;
             Ok(SessionServiceDependencyOutcome::Applied {
                 receipt: Box::new(receipt),
@@ -134,11 +116,37 @@ impl PostgresStore {
                 .await
                 .map_err(crate::deletion::owner_error)?;
             reads::scope(&mut tx, session).await?;
-            Box::pin(self.verify_service_preparation(&mut tx, &request.grant, None))
-                .await?
-                .require_resource_activation()?;
-            let record =
-                reads::current(&mut tx, session, &request.source.identities()?.owner).await?;
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
+            Box::pin(super::scope_origin::require(
+                &mut tx,
+                session,
+                &binding.workspace_id,
+                &binding.directory,
+                &mut proof,
+            ))
+            .await?;
+            Box::pin(self.verify_service_preparation(
+                &mut tx,
+                &request.grant,
+                None,
+                true,
+                &mut proof,
+            ))
+            .await?
+            .require_resource_activation()?;
+            let id = request.source.identities()?.owner;
+            super::public::preflight(&mut tx, session, &id.0, &mut proof)
+                .await
+                .map_err(|error| match error {
+                    crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+                    crate::public_session::v2::proof::Failure::Error(_) => {
+                        Error::UnknownStoreOutcome
+                    }
+                })?;
+            super::protocol::require(&mut tx, session, &id, &mut proof)
+                .await
+                .map_err(|error| error.into_domain_or(Error::Capacity))?;
+            let record = reads::current(&mut tx, session, &id).await?;
             if record.service.as_deref() != Some(&request.source) {
                 return Err(Error::SemanticConflict);
             }

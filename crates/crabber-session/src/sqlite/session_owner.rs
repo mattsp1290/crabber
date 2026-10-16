@@ -281,9 +281,14 @@ impl SqliteStore {
         super::deletion::ensure_live(&mut tx, session)
             .await
             .map_err(crate::deletion::owner_error)?;
-        let result = reads::current(&mut tx, session, id)
-            .await
-            .map(|record| record.snapshot);
+        let result = reads::current_with_proof(
+            &mut tx,
+            session,
+            id,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
+        )
+        .await
+        .map(|record| record.snapshot);
         finish(tx, result).await
     }
     pub(super) async fn owner_receipt(
@@ -417,3 +422,7 @@ pub(super) async fn guard_native_claim(
     }
     Ok(())
 }
+
+mod protocol;
+
+pub(in crate::sqlite) mod scope_origin;

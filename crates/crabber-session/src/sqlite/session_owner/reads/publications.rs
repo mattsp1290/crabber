@@ -20,7 +20,7 @@ const SOURCES: &str = r"WITH sources AS (
         AND json_extract(data_json, '$.receipt.owner.state')=state
         AND state IN ('Active','ReservedUnstarted')
         AND json_extract(data_json, '$.record.sequence')=sequence
-        AND ((json_extract(data_json, '$.version')=1 AND json_extract(data_json, '$.record.version')=1 AND json_extract(data_json, '$.publication') IS NULL) OR (json_extract(data_json, '$.version')=2 AND json_extract(data_json, '$.record.version')=2 AND json_extract(data_json, '$.publication.public_change')=0)), false) END AS private
+        AND ((json_extract(data_json, '$.version')=1 AND json_extract(data_json, '$.record.version')=1 AND json_extract(data_json, '$.publication') IS NULL) OR (json_extract(data_json, '$.version') IN (2,3) AND json_extract(data_json, '$.record.version')=2 AND json_extract(data_json, '$.publication.public_change')=0)), false) END AS private
     FROM session_owner_audits WHERE session_id=$1
 )";
 

@@ -30,12 +30,18 @@ impl VerifiedScope {
 // Independent session/run/message FKs must never make erasing one scope delete
 // another scope's row. Reject inconsistent routing before the first mutation.
 pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
- SELECT 1 FROM messages m JOIN runs r ON r.id=m.run_id WHERE m.session_id<>r.session_id AND (m.session_id=$1 OR r.session_id=$1)
+ SELECT 1 FROM sessions s WHERE s.id=$1 AND s.owner_scope_protocol=1 AND NOT EXISTS(SELECT 1 FROM session_owner_scope_origins o WHERE o.session_id=s.id)
+ UNION ALL SELECT 1 FROM session_owner_contexts c WHERE c.session_id=$1 AND c.scope_protocol=1 AND NOT EXISTS(SELECT 1 FROM session_owner_scope_origins o WHERE o.session_id=c.session_id)
+ UNION ALL SELECT 1 FROM session_owner_scope_origins o WHERE o.session_id=$1 AND NOT EXISTS(SELECT 1 FROM sessions s WHERE s.id=o.session_id AND s.owner_scope_protocol=1) AND NOT EXISTS(SELECT 1 FROM session_owner_contexts c WHERE c.session_id=o.session_id AND c.scope_protocol=1)
+ UNION ALL SELECT 1 FROM messages m JOIN runs r ON r.id=m.run_id WHERE m.session_id<>r.session_id AND (m.session_id=$1 OR r.session_id=$1)
  UNION ALL SELECT 1 FROM epochs e JOIN runs r ON r.id=e.run_id WHERE e.session_id<>r.session_id AND (e.session_id=$1 OR r.session_id=$1)
  UNION ALL SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE e.session_id<>r.session_id AND (e.session_id=$1 OR r.session_id=$1)
  UNION ALL SELECT 1 FROM admission_receipts a JOIN runs r ON r.id=a.run_id JOIN messages m ON m.id=a.user_message_id WHERE (a.session_id=$1 OR r.session_id=$1 OR m.session_id=$1) AND (a.session_id<>r.session_id OR a.session_id<>m.session_id OR m.run_id IS NULL OR m.run_id<>a.run_id)
  UNION ALL SELECT 1 FROM admission_executions a JOIN runs r ON r.id=a.run_id WHERE a.session_id<>r.session_id AND (a.session_id=$1 OR r.session_id=$1)
  UNION ALL SELECT 1 FROM admission_execution_sources a LEFT JOIN runs r ON r.id=a.run_id LEFT JOIN admission_executions x ON x.run_id=a.run_id WHERE (a.session_id=$1 OR r.session_id=$1 OR x.session_id=$1) AND (r.id IS NULL OR x.run_id IS NULL OR a.session_id<>r.session_id OR a.session_id<>x.session_id OR x.source_protocol<>1)
+ UNION ALL SELECT 1 FROM session_owner_current c WHERE c.session_id=$1 AND c.source_protocol=1 AND NOT EXISTS(SELECT 1 FROM session_owner_publication_cohorts h WHERE h.session_id=c.session_id AND h.owner_id=c.owner_id)
+ UNION ALL SELECT 1 FROM session_owner_publication_cohorts h LEFT JOIN session_owner_current c ON c.session_id=h.session_id AND c.owner_id=h.owner_id WHERE (h.session_id=$1 OR c.session_id=$1) AND (c.owner_id IS NULL OR c.source_protocol<>h.protocol_version)
+ UNION ALL SELECT 1 FROM session_owner_publications p LEFT JOIN session_owner_publication_cohorts h ON h.session_id=p.session_id AND h.owner_id=p.owner_id WHERE (p.session_id=$1 OR h.session_id=$1) AND h.owner_id IS NULL
  UNION ALL SELECT 1 FROM inbox i JOIN runs r ON r.id=i.consumed_by_run WHERE i.session_id<>r.session_id AND (i.session_id=$1 OR r.session_id=$1)
 )";
 
@@ -81,6 +87,9 @@ pub(crate) const PURGE: &[&str] = &[
     "DELETE FROM extension_state WHERE session_id=$1",
     "DELETE FROM session_public_state WHERE session_id=$1",
     "DELETE FROM session_management WHERE session_id=$1",
+    "DELETE FROM session_owner_scope_origins WHERE session_id=$1",
+    "DELETE FROM session_owner_publications WHERE session_id=$1",
+    "DELETE FROM session_owner_publication_cohorts WHERE session_id=$1",
     "DELETE FROM session_owner_audits WHERE session_id=$1",
     "DELETE FROM session_owner_current WHERE session_id=$1",
     "DELETE FROM session_owner_contexts WHERE session_id=$1",

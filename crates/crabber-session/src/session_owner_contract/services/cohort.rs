@@ -53,6 +53,24 @@ pub(crate) async fn run<S: Store + Clone + 'static>(store: Arc<S>) {
         }
         end_root(store.as_ref(), &original).await;
         let next = activated_in(store.as_ref(), session.clone()).await;
+        let access = store
+            .check_session_service_dependency_access(
+                crate::session_owner::service::SessionServiceDependencyAccess {
+                    grant: next.clone(),
+                    source: crate::session_owner::service::SessionServiceLink::for_grant(
+                        &original,
+                        generation(),
+                    )
+                    .unwrap(),
+                    authority: service.authority.clone(),
+                },
+            )
+            .await;
+        if uncertain {
+            assert!(access.is_err());
+        } else {
+            access.unwrap();
+        }
         let mut descriptor = generation();
         descriptor.id = "new-captured-generation".into();
         let request = RegisterSessionServiceDependency {
@@ -147,4 +165,59 @@ pub(crate) async fn source_refuses(
             .unwrap()
             .is_none()
     );
+}
+
+/// A later root captures the real session revision after a genuine service cancellation.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) async fn cancelled_across_roots(
+    store: &impl Store,
+) -> (
+    crate::session_owner::service::SessionServiceDependencyAccess,
+    super::handoff::Service,
+    SessionOwnerOperationId,
+) {
+    let session = SessionId::new();
+    let binding = crate::session_owner_contract::reservation(session.clone()).binding;
+    store
+        .manage_session(crate::ManageSession {
+            id: crabber_core::ControlId::new(),
+            session_id: session.clone(),
+            expected_revision: crabber_core::SessionRevision::INITIAL,
+            change: crate::SessionChange::Create {
+                workspace_id: binding.workspace_id,
+                directory: binding.directory,
+                title: "service cancellation provenance".into(),
+                defaults: crate::SessionDefaults::default(),
+            },
+        })
+        .await
+        .unwrap();
+    let original = super::activated_in(store, session.clone()).await;
+    let service = super::handoff::enable(store, original.clone()).await;
+    let cancel = SessionOwnerOperationId::new();
+    store
+        .request_session_owner_cancel(crate::session_owner::RequestSessionOwnerCancel {
+            id: cancel.clone(),
+            session_id: session.clone(),
+            target: service.authority.target().clone(),
+            expected_revision: Some(store.session_revision(&session).await.unwrap()),
+            claim: SessionOwnerResolver {
+                resolver_id: "host".into(),
+                authority_claim: "stop original dependency".into(),
+            },
+        })
+        .await
+        .unwrap();
+    end_root(store, &original).await;
+    let next = super::activated_in(store, session).await;
+    let access = crate::session_owner::service::SessionServiceDependencyAccess {
+        grant: next,
+        source: crate::session_owner::service::SessionServiceLink::for_grant(
+            &original,
+            generation(),
+        )
+        .unwrap(),
+        authority: service.authority.clone(),
+    };
+    (access, service, cancel)
 }

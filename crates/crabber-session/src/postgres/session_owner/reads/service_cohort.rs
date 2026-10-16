@@ -15,10 +15,10 @@ pub(in super::super) async fn ensure_generation_slot(
     tx: &mut Transaction<'_, Postgres>,
     grant: &PreparationGrant,
     source: &SessionServiceLink,
+    proof: &mut Proof,
 ) -> Result<(), Error> {
     let binding = &grant.original_reservation().owner.binding;
     let session: &SessionId = &binding.session_id;
-    let mut proof = Proof::bounded(32 * 1024 * 1024);
     let mut after = String::new();
     let mut live = 0;
     loop {
@@ -43,9 +43,17 @@ pub(in super::super) async fn ensure_generation_slot(
             if id <= after {
                 return Err(Error::UnknownStoreOutcome);
             }
-            super::super::public::preflight(tx, session, &id, &mut proof)
+            super::super::public::preflight(tx, session, &id, proof)
                 .await
                 .map_err(|error| failure(&error))?;
+            super::super::protocol::require(
+                tx,
+                session,
+                &crabber_core::SessionOwnerId(id.clone()),
+                proof,
+            )
+            .await
+            .map_err(|error| error.into_domain_or(Error::Capacity))?;
             let record =
                 super::current(tx, session, &crabber_core::SessionOwnerId(id.clone())).await?;
             let Some(link) = record.service.as_ref() else {
@@ -71,6 +79,7 @@ pub(in super::super) async fn ensure_generation_slot(
     Ok(())
 }
 const IDS: &str = r#"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM (
-SELECT owner_id FROM session_owner_current WHERE session_id=$1 AND CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #> '{service}' IS NOT NULL OR data_json::json #>> '{snapshot,binding,kind}'='SessionService' END
+SELECT owner_id FROM session_owner_current WHERE session_id=$1 AND (source_protocol=0 OR CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #> '{service}' IS NOT NULL OR data_json::json #>> '{snapshot,binding,kind}'='SessionService' END)
 UNION SELECT owner_id FROM session_owner_audits WHERE session_id=$1 AND operation='Reserve' AND CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #> '{record,service}' IS NOT NULL OR data_json::json #>> '{record,snapshot,binding,kind}'='SessionService' END
+UNION SELECT owner_id FROM session_owner_publications WHERE session_id=$1 AND sequence=1 AND (data_json::json #> '{record,service}' IS NOT NULL OR data_json::json #>> '{record,snapshot,binding,kind}'='SessionService')
 ) candidates WHERE owner_id COLLATE "C">$2 COLLATE "C" ORDER BY owner_id COLLATE "C" LIMIT 32"#;

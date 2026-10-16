@@ -18,14 +18,15 @@ pub(super) async fn exists(
     .await
     .map_err(unknown)
 }
-pub(super) async fn receipt(
+pub(super) async fn receipt_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     request: &RegisterSessionServiceDependency,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<SessionServiceDependencyReceipt>, Error> {
     let source = request.source()?;
     let ids = source.identities()?;
     let session = &source.root.session_id;
-    let Some(reserved) = reads::audit(tx, session, &ids.reserve).await? else {
+    let Some(reserved) = reads::audit_with_proof(tx, session, &ids.reserve, proof).await? else {
         return Ok(None);
     };
     if reserved.receipt.semantic_digest
@@ -34,13 +35,13 @@ pub(super) async fn receipt(
     {
         return Err(Error::SemanticConflict);
     }
-    let began = reads::audit(tx, session, &ids.begin)
+    let began = reads::audit_with_proof(tx, session, &ids.begin, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
-    let root_reserve = reads::audit(tx, session, &source.root.root_reserve)
+    let root_reserve = reads::audit_with_proof(tx, session, &source.root.root_reserve, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
-    let root_begin = reads::audit(tx, session, &source.root.root_begin)
+    let root_begin = reads::audit_with_proof(tx, session, &source.root.root_begin, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     crate::session_owner::audit::verify_current(&began.record, &reserved, &began)?;

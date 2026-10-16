@@ -168,7 +168,7 @@ impl SqliteStore {
             let now = self.clock.now();
             let (session, metadata, revision) = management::apply(&request, existing, now)?;
             let saved = ManagementReceipt { session_id: session.id.clone(), operation_id: request.id.clone(), semantic_digest: digest, revision, summary: management::summary(&session, metadata.clone(), revision) };
-            sqlx::query("INSERT INTO sessions(id,data,public_revision,ownership_protocol) VALUES($1,$2,$3,COALESCE((SELECT ownership_protocol FROM sessions WHERE id=$1),1)) ON CONFLICT(id) DO UPDATE SET data=excluded.data,public_revision=excluded.public_revision").bind(&session.id.0).bind(super::text(&session).map_err(management::unknown)?).bind(i64::try_from(revision.get()).map_err(management::unknown)?).execute(&mut *tx).await.map_err(db).map_err(management::unknown)?;
+            sqlx::query("INSERT INTO sessions(id,data,public_revision,ownership_protocol,owner_scope_protocol) VALUES($1,$2,$3,COALESCE((SELECT ownership_protocol FROM sessions WHERE id=$1),1),COALESCE((SELECT owner_scope_protocol FROM sessions WHERE id=$1),(SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),1)) ON CONFLICT(id) DO UPDATE SET data=excluded.data,public_revision=excluded.public_revision").bind(&session.id.0).bind(super::text(&session).map_err(management::unknown)?).bind(i64::try_from(revision.get()).map_err(management::unknown)?).execute(&mut *tx).await.map_err(db).map_err(management::unknown)?;
             sqlx::query("INSERT INTO session_management(session_id,workspace_id,archived,format_version,data_json) VALUES($1,$2,$3,1,$4) ON CONFLICT(session_id) DO UPDATE SET archived=excluded.archived,data_json=excluded.data_json").bind(&session.id.0).bind(&session.workspace_id).bind(metadata.archived).bind(serde_json::to_string(&metadata).map_err(management::unknown)?).execute(&mut *tx).await.map_err(db).map_err(management::unknown)?;
             sqlx::query("INSERT INTO session_management_audit(session_id,operation_id,data_json) VALUES($1,$2,$3)").bind(&session.id.0).bind(&request.id.0).bind(serde_json::to_string(&management::Audit { request: request.clone(), receipt: saved.clone(), created_at: now }).map_err(management::unknown)?).execute(&mut *tx).await.map_err(db).map_err(management::unknown)?;
             #[cfg(test)]
@@ -177,6 +177,7 @@ impl SqliteStore {
             if matches!(request.change, crate::SessionChange::Create { .. }) {
                 super::ownership_origin::record(&mut tx, &crate::deletion::origin::OwnershipOrigin::managed(&saved))
                     .await.map_err(crate::deletion::management_error)?;
+                super::session_owner::scope_origin::created(&mut tx, &session, &crate::deletion::origin::OwnershipOrigin::managed(&saved)).await.map_err(management::unknown)?;
             }
             Ok((saved, true))
         }.await;

@@ -156,6 +156,9 @@ pub(super) async fn preflight(
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
         }
     }
+    super::protocol::verify(tx, session, &crabber_core::SessionOwnerId(id.into()), proof)
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::public)?;
     Ok(())
 }
 const IDS: &str = r"SELECT length(CAST(owner_id AS BLOB)) AS bytes,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id>$2 ORDER BY owner_id LIMIT 32";

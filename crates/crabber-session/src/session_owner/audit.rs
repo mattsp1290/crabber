@@ -62,7 +62,7 @@ impl Audit {
             .map_err(|_| Error::UnknownStoreOutcome)?;
         if !matches!(
             (self.version, self.record.version, self.publication),
-            (1, 1, None) | (2, 2, Some(_))
+            (1, 1, None) | (2 | 3, 2, Some(_))
         ) || self.receipt.owner != self.record.snapshot
             || self.receipt.session_id != self.record.snapshot.binding.session_id
             || (self.receipt.operation != SessionOwnerOperation::Reserve

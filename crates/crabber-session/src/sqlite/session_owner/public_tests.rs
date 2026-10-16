@@ -95,13 +95,22 @@ async fn aggregate_owner_membership_and_shared_proof_budget() {
             .unwrap(),
         [] as [crate::PublicRegisteredOwner; 0]
     );
-    // An erased Joined row is not an empty ledger: the immutable identity remains.
+    // Cohort membership prevents erasing a Joined identity. A malformed
+    // mutable carrier must still refuse rather than becoming an empty ledger.
     sqlx::query("DELETE FROM session_owner_current WHERE session_id=$1 AND owner_id=$2")
         .bind(&request.binding.session_id.0)
         .bind(&request.binding.id.0)
         .execute(&store.writer)
         .await
-        .unwrap();
+        .unwrap_err();
+    sqlx::query(
+        "UPDATE session_owner_current SET data_json='{}' WHERE session_id=$1 AND owner_id=$2",
+    )
+    .bind(&request.binding.session_id.0)
+    .bind(&request.binding.id.0)
+    .execute(&store.writer)
+    .await
+    .unwrap();
     assert!(matches!(
         read(&store, &request.binding.session_id, 1, 65536).await.0,
         Err(Failure::Error(PublicSessionError::UnknownStoreOutcome))

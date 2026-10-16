@@ -14,12 +14,12 @@ use crate::{
     },
 };
 use std::sync::Arc;
-pub(super) struct Service {
+pub(crate) struct Service {
     task: OwnedTaskRegistration<()>,
     close: Arc<tokio::sync::Notify>,
-    pub(super) authority: SessionOwnerAuthority,
+    pub(crate) authority: SessionOwnerAuthority,
 }
-pub(super) async fn enable(store: &dyn Store, grant: PreparationGrant) -> Service {
+pub(crate) async fn enable(store: &dyn Store, grant: PreparationGrant) -> Service {
     let request = RegisterSessionServiceDependency {
         grant: grant.clone(),
         generation: super::generation(),
@@ -64,7 +64,7 @@ pub(super) async fn enable(store: &dyn Store, grant: PreparationGrant) -> Servic
         authority,
     }
 }
-pub(super) async fn close(store: &dyn Store, mut service: Service) {
+pub(crate) async fn close(store: &dyn Store, mut service: Service) {
     service.close.notify_one();
     if let Some(cancel) = store
         .pending_session_owner_cancel(&service.authority)
@@ -107,12 +107,7 @@ async fn cancel_service(store: &dyn Store, authority: &SessionOwnerAuthority) {
             id: crabber_core::SessionOwnerOperationId::new(),
             session_id: authority.session_id().clone(),
             target: authority.target().clone(),
-            expected_revision: Some(
-                store
-                    .session_revision(authority.session_id())
-                    .await
-                    .unwrap(),
-            ),
+            expected_revision: revision(store, authority.session_id()).await,
             claim: crate::session_owner::SessionOwnerResolver {
                 resolver_id: "host".into(),
                 authority_claim: "cancel this exact session dependency".into(),
@@ -122,10 +117,18 @@ async fn cancel_service(store: &dyn Store, authority: &SessionOwnerAuthority) {
         .unwrap();
 }
 pub(crate) async fn run<S: Store + Clone + 'static>(store: Arc<S>) {
+    let _ = run_sessions(store, true).await;
+}
+pub(crate) async fn run_sessions<S: Store + Clone + 'static>(
+    store: Arc<S>,
+    existing: bool,
+) -> Vec<crabber_core::SessionId> {
+    let mut completed_sessions = Vec::new();
     for cancel in [false, true] {
         let (original, bound) =
-            crate::session_owner::preparation_contract::resources::declaration::setup(
+            crate::session_owner::preparation_contract::resources::declaration::setup_session(
                 store.as_ref(),
+                existing,
             )
             .await;
         let session = bound.binding.request.session_id.clone();
@@ -164,11 +167,11 @@ pub(crate) async fn run<S: Store + Clone + 'static>(store: Arc<S>) {
             .await
             .unwrap()
             .unwrap();
-        let before = store.session_revision(&session).await.unwrap();
+        let before = revision(store.as_ref(), &session).await;
         let completed = store.complete_preparation(prepared.clone()).await;
         if cancel {
             assert!(completed.is_err());
-            assert_eq!(store.session_revision(&session).await.unwrap(), before);
+            assert_eq!(revision(store.as_ref(), &session).await, before);
             assert!(
                 store
                     .lookup_admission(&session, &key)
@@ -206,5 +209,20 @@ pub(crate) async fn run<S: Store + Clone + 'static>(store: Arc<S>) {
             .await
             .unwrap();
         store.join_owned_scope(proof, child).await.unwrap();
+        if !cancel {
+            completed_sessions.push(session);
+        }
+    }
+    completed_sessions
+}
+
+async fn revision(
+    store: &dyn Store,
+    session: &crabber_core::SessionId,
+) -> Option<crabber_core::SessionRevision> {
+    match store.session_revision(session).await {
+        Ok(revision) => Some(revision),
+        Err(crate::StoreError::NotFound) => None,
+        Err(error) => panic!("session revision source: {error:?}"),
     }
 }

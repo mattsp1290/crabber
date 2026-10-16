@@ -23,7 +23,7 @@ impl SqliteStore {
             reads::scope(&mut tx, &link.session_id).await?;
             let root = reads::current(&mut tx, &link.session_id, &link.root.id).await?;
             reads::preparation_order(&mut tx, &grant).await?;
-            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None).await?;
+            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None, &mut crate::public_session::v2::proof::Proof::bounded(32*1024*1024)).await?;
             self.preparation_source_context(&mut tx, grant.original_reservation()).await?;
             let current = revision(&mut tx, &link.session_id).await?;
             let now = self.clock.now();

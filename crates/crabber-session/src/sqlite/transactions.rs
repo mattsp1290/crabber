@@ -204,7 +204,7 @@ impl SqliteStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol) VALUES($1,$2,$3)")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0))")
                 .bind(&session.id.0)
                 .bind(text(&session)?)
                 .bind(i32::from(guard.has_owned_resources()))

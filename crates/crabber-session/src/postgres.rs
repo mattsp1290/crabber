@@ -602,12 +602,7 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        sqlx::raw_sql(include_str!(
-            "../migrations/0017_admission_execution_sources.sql"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
+        migration::apply_sources(&mut tx).await?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -810,7 +805,7 @@ impl PostgresStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol) VALUES($1,$2,$3)")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol,owner_scope_protocol) VALUES($1,$2,$3,COALESCE((SELECT scope_protocol FROM session_owner_contexts WHERE session_id=$1),0))")
                 .bind(&session.id.0)
                 .bind(json(&session)?)
                 .bind(i32::from(guard.has_owned_resources()))

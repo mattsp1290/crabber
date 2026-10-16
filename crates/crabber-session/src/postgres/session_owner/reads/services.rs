@@ -1,14 +1,24 @@
 //! Current and immutable original membership are independently selected.
 use super::super::{Error, Postgres, Record, SessionId, SessionOwnerId, Transaction, unknown};
 use sqlx::Row;
-pub(in super::super) async fn services(
+pub(in super::super) async fn services_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     root: &SessionOwnerId,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Vec<Record>, Error> {
     let ids = service_ids(tx, session, root).await?;
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
+        super::super::public::preflight(tx, session, &id.0, proof)
+            .await
+            .map_err(|error| match error {
+                crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+                crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
+            })?;
+        super::super::protocol::require(tx, session, &id, proof)
+            .await
+            .map_err(|error| error.into_domain_or(Error::Capacity))?;
         let record = super::current(tx, session, &id).await?;
         if record
             .service
@@ -47,4 +57,5 @@ pub(in super::super) async fn service_ids(
 const QUERY: &str = r"SELECT CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM (
 SELECT owner_id FROM session_owner_current WHERE session_id=$1 AND CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #>> '{service,root,root,id}'=$2 END
 UNION SELECT owner_id FROM session_owner_audits WHERE session_id=$1 AND operation='Reserve' AND CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #>> '{record,service,root,root,id}'=$2 END
+UNION SELECT owner_id FROM session_owner_publications WHERE session_id=$1 AND sequence=1 AND data_json::json #>> '{record,service,root,root,id}'=$2
 ) candidates ORDER BY owner_id LIMIT 4";

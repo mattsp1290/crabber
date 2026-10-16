@@ -29,8 +29,14 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let result = Box::pin(async {
-            if let Some(audit) =
-                reads::audit(&mut tx, request.session_id(), request.operation_id()).await?
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
+            if let Some(audit) = reads::audit_with_proof(
+                &mut tx,
+                request.session_id(),
+                request.operation_id(),
+                &mut proof,
+            )
+            .await?
             {
                 if audit.receipt.semantic_digest != digest
                     || audit.receipt.operation != SessionOwnerOperation::ActivateScope
@@ -42,16 +48,33 @@ impl SqliteStore {
                 ));
             }
             reads::scope(&mut tx, request.session_id()).await?;
+            context::preflight(&mut tx, &request, &mut proof).await?;
             let mut record =
                 reads::current(&mut tx, request.session_id(), &request.target().id).await?;
-            let reserve = reads::audit(&mut tx, request.session_id(), &request.source.reserve)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
-            let begin = reads::audit(&mut tx, request.session_id(), &request.source.begin)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let reserve = reads::audit_with_proof(
+                &mut tx,
+                request.session_id(),
+                &request.source.reserve,
+                &mut proof,
+            )
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+            let begin = reads::audit_with_proof(
+                &mut tx,
+                request.session_id(),
+                &request.source.begin,
+                &mut proof,
+            )
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
             source::verify(&request.source, &record, &reserve, &begin)?;
-            Box::pin(self.owned_scope_context(&mut tx, &record, parent_authority.as_ref())).await?;
+            Box::pin(self.owned_scope_context(
+                &mut tx,
+                &record,
+                parent_authority.as_ref(),
+                &mut proof,
+            ))
+            .await?;
             source::activate(&mut record, &request, &authority, self.clock.now())?;
             let receipt = record.receipt(
                 request.id.clone(),
@@ -59,7 +82,7 @@ impl SqliteStore {
                 SessionOwnerOperation::ActivateScope,
             );
             let publication = publish_revision(&mut tx, request.session_id(), true).await?;
-            reads::publish(
+            reads::publish_with_proof(
                 &mut tx,
                 &Audit {
                     version: 2,
@@ -68,6 +91,7 @@ impl SqliteStore {
                     publication: Some(publication),
                 },
                 false,
+                &mut proof,
             )
             .await?;
             #[cfg(test)]

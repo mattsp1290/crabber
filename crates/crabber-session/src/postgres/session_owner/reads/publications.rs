@@ -20,7 +20,7 @@ const SOURCES: &str = r"WITH sources AS (
         AND data_json::json #>> '{receipt,owner,state}'=state
         AND state IN ('Active','ReservedUnstarted')
         AND data_json::json #>> '{record,sequence}'=CAST(sequence AS TEXT)
-        AND ((data_json::json #>> '{version}'='1' AND data_json::json #>> '{record,version}'='1' AND data_json::json #>> '{publication}' IS NULL) OR (data_json::json #>> '{version}'='2' AND data_json::json #>> '{record,version}'='2' AND data_json::json #>> '{publication,public_change}'='false')), false) END AS private
+        AND ((data_json::json #>> '{version}'='1' AND data_json::json #>> '{record,version}'='1' AND data_json::json #>> '{publication}' IS NULL) OR (data_json::json #>> '{version}' IN ('2','3') AND data_json::json #>> '{record,version}'='2' AND data_json::json #>> '{publication,public_change}'='false')), false) END AS private
     FROM session_owner_audits WHERE session_id=$1
 )";
 

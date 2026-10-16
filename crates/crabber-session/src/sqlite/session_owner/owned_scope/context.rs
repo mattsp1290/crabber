@@ -7,6 +7,7 @@ impl crate::sqlite::SqliteStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         record: &Record,
         authority: Option<&OwnedScopeParentAuthority>,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
         if let Some(source) = &record.service {
             let Some(OwnedScopeParentAuthority::ServicePreparation(grant)) = authority else {
@@ -20,10 +21,21 @@ impl crate::sqlite::SqliteStore {
             if record.cancellation.is_some() {
                 return Err(Error::CancellationPending);
             }
+            let binding = &grant.original_reservation().owner.binding;
+            super::super::scope_origin::require(
+                tx,
+                &binding.session_id,
+                &binding.workspace_id,
+                &binding.directory,
+                proof,
+            )
+            .await?;
             return Box::pin(self.verify_service_preparation(
                 tx,
                 grant,
                 Some(&record.snapshot.target),
+                true,
+                proof,
             ))
             .await?
             .require_resource_activation();
@@ -42,7 +54,7 @@ impl crate::sqlite::SqliteStore {
             {
                 return Err(Error::InvalidRequest);
             }
-            Box::pin(self.verify_service_preparation(tx, grant, None)).await?;
+            Box::pin(self.verify_service_preparation(tx, grant, None, false, proof)).await?;
             return Ok(());
         }
         if record.preparation.is_some() {
@@ -64,4 +76,17 @@ impl crate::sqlite::SqliteStore {
         }
         Ok(())
     }
+}
+
+pub(super) async fn preflight(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request: &crate::session_owner::owned_scope::OwnedScopeActivation,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    super::super::public::preflight(tx, request.session_id(), &request.target().id.0, proof)
+        .await
+        .map_err(|error| match error {
+            crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+            crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
+        })
 }

@@ -23,3 +23,33 @@ pub(super) async fn is_current(tx: &mut Transaction<'_, Postgres>) -> Result<boo
         && row.try_get::<i32, _>("minimum").map_err(db)? == 1
         && row.try_get::<i64, _>("count").map_err(db)? == i64::from(maximum))
 }
+
+/// Later immutable source protocols are applied only once; old runtime tables
+/// are not rebuilt when advancing the current roster.
+pub(super) async fn apply_sources(tx: &mut Transaction<'_, Postgres>) -> Result<(), StoreError> {
+    let execution_sources: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=17)")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    if !execution_sources {
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0017_admission_execution_sources.sql"
+        ))
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    }
+    let owner_sources: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=18)")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    if !owner_sources {
+        sqlx::raw_sql(include_str!("../../migrations/0018_owner_publications.sql"))
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+    }
+    Ok(())
+}

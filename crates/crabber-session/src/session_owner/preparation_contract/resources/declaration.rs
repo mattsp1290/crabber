@@ -17,9 +17,19 @@ pub(super) fn bind(bound: &mut crate::BoundKeyedAdmitRequest, contract: &InputFi
 }
 
 pub(crate) async fn setup(store: &impl Store) -> (PreparationGrant, crate::BoundKeyedAdmitRequest) {
+    setup_session(store, true).await
+}
+pub(crate) async fn setup_session(
+    store: &impl Store,
+    existing: bool,
+) -> (PreparationGrant, crate::BoundKeyedAdmitRequest) {
     let session = SessionId::new();
     let initial = fixture(&session, SessionRevision::INITIAL);
-    let revision = create(store, &initial).await;
+    let revision = if existing {
+        create(store, &initial).await
+    } else {
+        SessionRevision::INITIAL
+    };
     let mut bound = fixture(&session, revision);
     let contract = InputFingerprint::new("d".repeat(64)).unwrap();
     bind(&mut bound, &contract);

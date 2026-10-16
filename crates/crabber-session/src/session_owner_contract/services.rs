@@ -43,12 +43,17 @@ pub(crate) async fn setup_in(
     owner.binding.component_id =
         crate::session_owner::preparation::OWNED_PREPARATION_COMPONENT.into();
     let key = PreparationKey::Unkeyed(ControlId::new());
+    let expected_revision = match store.session_revision(&owner.binding.session_id).await {
+        Ok(revision) => revision,
+        Err(crate::StoreError::NotFound) => SessionRevision::INITIAL,
+        Err(error) => panic!("session revision: {error:?}"),
+    };
     let request = ReservePreparation {
         owner,
         key: key.clone(),
         source: None,
         resource_contract: Some(InputFingerprint::new("a".repeat(64)).unwrap()),
-        expected_revision: SessionRevision::INITIAL,
+        expected_revision,
         purpose: PreparationPurpose::OrdinaryAdmission,
         intent: InputFingerprint::new("b".repeat(64)).unwrap(),
     }
@@ -268,7 +273,7 @@ pub(crate) async fn faults(store: &impl Store, set: impl Fn(u8)) {
 }
 
 #[path = "services/handoff.rs"]
-mod handoff;
+pub(crate) mod handoff;
 pub(crate) use handoff::run as handoff;
 
 #[path = "services/cohort.rs"]

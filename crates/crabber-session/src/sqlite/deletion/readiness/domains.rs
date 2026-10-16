@@ -106,6 +106,14 @@ pub(super) async fn owners(
     session: &SessionId,
     proof: &mut Proof,
 ) -> Result<bool> {
+    super::super::super::session_owner::scope_origin::verify_if_present(tx, session, proof)
+        .await
+        .map_err(|error| match error {
+            crate::session_owner::SessionOwnerError::Capacity => {
+                blocked(DeletionBlocker::ProofLimit)
+            }
+            _ => unknown("owner scope origin"),
+        })?;
     let orphan: bool = sqlx::query_scalar(OWNER_SCOPE)
         .bind(&session.0)
         .fetch_one(&mut **tx)

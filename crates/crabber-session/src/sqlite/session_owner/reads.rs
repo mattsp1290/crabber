@@ -28,6 +28,23 @@ pub(super) async fn audit(
     row.map(|row| checked_audit(&row, session, Some(id)))
         .transpose()
 }
+/// Charge the actual selected audit and routing before decoding it again.
+pub(super) async fn audit_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Audit>, Error> {
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT length(CAST(data_json AS BLOB))+length(CAST(owner_id AS BLOB))+length(CAST(operation_id AS BLOB))+length(CAST(operation AS BLOB))+length(CAST(state AS BLOB))+8 FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+        .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
+    proof.charge(8).map_err(|_| Error::Capacity)?;
+    if let Some(bytes) = bytes {
+        proof
+            .charge(usize::try_from(bytes).map_err(unknown)?)
+            .map_err(|_| Error::Capacity)?;
+    }
+    audit(tx, session, id).await
+}
 fn checked_audit(
     row: &sqlx::sqlite::SqliteRow,
     session: &SessionId,
@@ -101,7 +118,40 @@ pub(super) async fn scope(
     if corrupt {
         return Err(Error::UnknownStoreOutcome);
     }
+    let orphan: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_current c WHERE c.session_id=$1 AND c.source_protocol=1 AND NOT EXISTS(SELECT 1 FROM session_owner_publication_cohorts h WHERE h.session_id=c.session_id AND h.owner_id=c.owner_id) UNION ALL SELECT 1 FROM session_owner_publication_cohorts h WHERE h.session_id=$1 AND NOT EXISTS(SELECT 1 FROM session_owner_current c WHERE c.session_id=h.session_id AND c.owner_id=h.owner_id AND c.source_protocol=h.protocol_version) UNION ALL SELECT 1 FROM session_owner_publications p WHERE p.session_id=$1 AND NOT EXISTS(SELECT 1 FROM session_owner_publication_cohorts h WHERE h.session_id=p.session_id AND h.owner_id=p.owner_id))")
+        .bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    if orphan {
+        return Err(Error::UnknownStoreOutcome);
+    }
     Ok(())
+}
+/// A selected current record and its actual source materializations share one allowance.
+pub(super) async fn current_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Record, Error> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM session_owner_current WHERE session_id=$1 AND owner_id=$2)",
+    )
+    .bind(&session.0)
+    .bind(&id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(unknown)?;
+    proof.charge(1).map_err(|_| Error::Capacity)?;
+    if exists {
+        super::public::preflight(tx, session, &id.0, proof)
+            .await
+            .map_err(|error| match error {
+                crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+                crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
+            })?;
+    }
+    // Keep existing missing-current semantics: an original without current is
+    // corruption, while an identity never reserved remains NotFound.
+    current(tx, session, id).await
 }
 pub(super) async fn current(
     tx: &mut Transaction<'_, Sqlite>,
@@ -190,10 +240,37 @@ pub(super) async fn publish(
     audit: &Audit,
     fresh: bool,
 ) -> Result<(), Error> {
+    publish_with_proof(
+        tx,
+        audit,
+        fresh,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
+    )
+    .await
+}
+pub(super) async fn publish_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    audit: &Audit,
+    fresh: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
     audit.validate()?;
+    let protocol = Box::pin(super::protocol::prepare(tx, audit, fresh, proof)).await?;
+    let mut prepared = audit.clone();
+    if protocol {
+        prepared.version = 3;
+    }
+    let audit = &prepared;
+    audit.validate()?;
+    let text = serde_json::to_string(audit).map_err(unknown)?;
     let record = &audit.record;
     let binding = &record.snapshot.binding;
-    if fresh {
+    let birth = if fresh {
+        Some(super::scope_origin::context_protocol(tx, &binding.session_id, proof).await?)
+    } else {
+        None
+    };
+    if let Some(birth) = &birth {
         let context = Context {
             workspace: binding.workspace_id.clone(),
             directory: binding.directory.clone(),
@@ -202,10 +279,16 @@ pub(super) async fn publish(
         if crate::snapshot::encoded_bytes(&context, 32768).is_none() {
             return Err(Error::InvalidRequest);
         }
-        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json) VALUES($1,$2) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+        sqlx::query("INSERT INTO session_owner_contexts(session_id,data_json,scope_protocol) VALUES($1,$2,$3) ON CONFLICT(session_id) DO NOTHING").bind(&binding.session_id.0).bind(serde_json::to_string(&context).map_err(unknown)?).bind(birth.protocol).execute(&mut **tx).await.map_err(unknown)?;
     }
-    sqlx::query("INSERT INTO session_owner_audits(session_id,operation_id,owner_id,sequence,operation,state,data_json) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&binding.session_id.0).bind(&audit.receipt.operation_id.0).bind(&binding.id.0).bind(i64::try_from(record.sequence).map_err(unknown)?).bind(operation(audit.receipt.operation)).bind(state(record.snapshot.state)).bind(serde_json::to_string(audit).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
-    sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json) VALUES($1,$2,$3) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
+    sqlx::query("INSERT INTO session_owner_audits(session_id,operation_id,owner_id,sequence,operation,state,data_json) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(&binding.session_id.0).bind(&audit.receipt.operation_id.0).bind(&binding.id.0).bind(i64::try_from(record.sequence).map_err(unknown)?).bind(operation(audit.receipt.operation)).bind(state(record.snapshot.state)).bind(&text).execute(&mut **tx).await.map_err(unknown)?;
+    sqlx::query("INSERT INTO session_owner_current(session_id,owner_id,data_json,source_protocol) VALUES($1,$2,$3,CASE WHEN $4 THEN 1 ELSE COALESCE((SELECT source_protocol FROM session_owner_current WHERE session_id=$1 AND owner_id=$2),0) END) ON CONFLICT(session_id,owner_id) DO UPDATE SET data_json=excluded.data_json").bind(&binding.session_id.0).bind(&binding.id.0).bind(serde_json::to_string(record).map_err(unknown)?).bind(fresh).execute(&mut **tx).await.map_err(unknown)?;
+    if protocol {
+        Box::pin(super::protocol::publish(tx, audit, &text, fresh)).await?;
+    }
+    if let Some(birth) = &birth {
+        super::scope_origin::record_absent(tx, audit, birth).await?;
+    }
     Ok(())
 }
 
@@ -215,8 +298,23 @@ pub(super) async fn preparation_audits(
     session: &SessionId,
     owner: &SessionOwnerId,
     child: Option<&SessionOwnerId>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Vec<Audit>, Error> {
     let service_ids = services::service_ids(tx, session, owner).await?;
+    let costs: Vec<i64> = sqlx::query_scalar("SELECT CAST(bytes AS BIGINT) FROM (SELECT length(CAST(data_json AS BLOB))+length(CAST(owner_id AS BLOB))+length(CAST(operation_id AS BLOB))+length(CAST(operation AS BLOB))+length(CAST(state AS BLOB))+8 AS bytes FROM session_owner_audits WHERE session_id=$1 AND (owner_id=$2 OR owner_id=$3 OR owner_id=$4 OR owner_id=$5 OR owner_id=$6) AND operation<>'Renew' ORDER BY sequence LIMIT 65) projected").bind(&session.0).bind(&owner.0).bind(child.map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.first().map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.get(1).map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.get(2).map_or(owner.0.as_str(), |id| id.0.as_str())).fetch_all(&mut **tx).await.map_err(unknown)?;
+    for bytes in costs {
+        proof
+            .charge(8)
+            .and_then(|()| {
+                proof.charge(
+                    usize::try_from(bytes).map_err(crate::public_session::v2::proof::unknown)?,
+                )
+            })
+            .map_err(|error| match error {
+                crate::public_session::v2::proof::Failure::Limited(_) => Error::Capacity,
+                crate::public_session::v2::proof::Failure::Error(_) => Error::UnknownStoreOutcome,
+            })?;
+    }
     let rows=sqlx::query("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=32768 THEN data_json END AS data,CASE WHEN length(CAST(owner_id AS BLOB))<=128 THEN owner_id END AS owner_id,sequence,CASE WHEN length(CAST(operation AS BLOB))<=32 THEN operation END AS operation,CASE WHEN length(CAST(state AS BLOB))<=32 THEN state END AS state,CASE WHEN length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id FROM session_owner_audits WHERE session_id=$1 AND (owner_id=$2 OR owner_id=$3 OR owner_id=$4 OR owner_id=$5 OR owner_id=$6) AND operation<>'Renew' ORDER BY sequence LIMIT 65").bind(&session.0).bind(&owner.0).bind(child.map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.first().map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.get(1).map_or(owner.0.as_str(), |id| id.0.as_str())).bind(service_ids.get(2).map_or(owner.0.as_str(), |id| id.0.as_str())).fetch_all(&mut **tx).await.map_err(unknown)?;
     if rows.len() > crate::session_owner::preparation::proof::MAX_PUBLICATIONS {
         return Err(Error::Capacity);
@@ -270,7 +368,7 @@ async fn verify_cancellation(
 }
 
 mod services;
-pub(super) use services::services;
+pub(super) use services::services_with_proof;
 
 mod service_cohort;
 pub(super) use service_cohort::ensure_generation_slot;

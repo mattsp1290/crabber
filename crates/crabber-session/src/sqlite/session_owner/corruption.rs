@@ -41,12 +41,19 @@ pub(super) async fn run(store: &SqliteStore) {
             Error::UnknownStoreOutcome,
             "corruption {corruption}"
         );
-        if corruption != 4 {
+        if !matches!(corruption, 4 | 6) {
             assert!(
                 matches!(store.reserve_session_owner(request.clone(),None).await.unwrap(),SessionOwnerOutcome::Replayed(saved) if saved==receipt)
             );
         }
-        if matches!(corruption, 1 | 6) {
+        if corruption == 6 {
+            assert!(
+                matches!(
+                    store.reserve_session_owner(request.clone(), None).await,
+                    Err(Error::UnknownStoreOutcome)
+                ),
+                "an altered original audit cannot authenticate metadata replay"
+            );
             let mut fresh = request.clone();
             fresh.id = SessionOwnerOperationId::new();
             fresh.binding.id = SessionOwnerId::new();
@@ -82,7 +89,8 @@ async fn corrupt(
             .unwrap();
         }
         1 => {
-            sqlx::query("DELETE FROM session_owner_current WHERE session_id=$1")
+            assert_current_guard(&mut tx, request, false).await;
+            sqlx::query("UPDATE session_owner_current SET data_json='{}' WHERE session_id=$1")
                 .bind(&request.binding.session_id.0)
                 .execute(&mut *tx)
                 .await
@@ -120,9 +128,13 @@ async fn corrupt(
                 .unwrap();
         }
         6 => {
-            sqlx::query("UPDATE session_owner_current SET owner_id=$2 WHERE session_id=$1")
+            assert_current_guard(&mut tx, request, true).await;
+            // Original audit routing is still independently checked even
+            // when the current identity cannot be erased or moved.
+            sqlx::query("UPDATE session_owner_audits SET owner_id=$2 WHERE session_id=$1 AND operation_id=$3")
                 .bind(&request.binding.session_id.0)
                 .bind(SessionOwnerId::new().0)
+                .bind(&request.id.0)
                 .execute(&mut *tx)
                 .await
                 .unwrap();
@@ -133,6 +145,27 @@ async fn corrupt(
         _ => unreachable!(),
     }
     tx.commit().await.unwrap();
+}
+async fn assert_current_guard(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request: &ReserveSessionOwner,
+    moving: bool,
+) {
+    let query = if moving {
+        "UPDATE session_owner_current SET owner_id=$2 WHERE session_id=$1"
+    } else {
+        "DELETE FROM session_owner_current WHERE session_id=$1 AND owner_id=$2"
+    };
+    sqlx::query(query)
+        .bind(&request.binding.session_id.0)
+        .bind(if moving {
+            SessionOwnerId::new().0
+        } else {
+            request.binding.id.0.clone()
+        })
+        .execute(&mut **tx)
+        .await
+        .unwrap_err();
 }
 async fn unrelated_history(store: &SqliteStore) {
     let first = session_owner_contract::reservation(SessionId::new());
@@ -189,9 +222,9 @@ async fn unrelated_history(store: &SqliteStore) {
         store
             .get_session_owner(&request.binding.session_id, &request.binding.id)
             .await
-            .unwrap()
-            .state,
-        SessionOwnerState::Joined
+            .unwrap_err(),
+        Error::UnknownStoreOutcome,
+        "selected new-cohort snapshot authenticates every retained publication",
     );
 }
 async fn native_sources(store: &SqliteStore) {

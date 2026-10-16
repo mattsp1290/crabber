@@ -361,3 +361,6 @@ pub(crate) mod preparation_contract;
 
 #[cfg(test)]
 pub(crate) mod cancellation_contract;
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) mod publication;

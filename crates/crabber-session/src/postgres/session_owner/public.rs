@@ -156,6 +156,9 @@ pub(super) async fn preflight(
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
         }
     }
+    super::protocol::verify(tx, session, &crabber_core::SessionOwnerId(id.into()), proof)
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::public)?;
     Ok(())
 }
 const IDS: &str = r#"SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes,CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id FROM session_owner_current WHERE session_id=$1 AND owner_id COLLATE "C">$2 COLLATE "C" ORDER BY owner_id COLLATE "C" LIMIT 32"#;

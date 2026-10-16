@@ -492,7 +492,7 @@ before choosing a new key. A changed key/choice conflicts; replay is checked bef
 current CAS. This is minimal logical erasure, not cryptographic erasure of backups
 or proof that all arbitrary native resource types are joined.
 
-Current bundled storage versions are PostgreSQL 17 and SQLite 13. PostgreSQL uses
+Current bundled storage versions are PostgreSQL 18 and SQLite 14. PostgreSQL uses
 its versioned migration roster; SQLite accepts fresh current files and rejects
 older schemas rather than silently upgrading. Always run explicit migration
 before read-only `connect`; see [SQLite storage](sqlite-store.md).

@@ -111,19 +111,20 @@ async fn corrupt_all_owner_parent_copies(store: &SqliteStore, session: &SessionI
         .unwrap();
     }
     tx.commit().await.unwrap();
-    // The ordinary owner reader authenticates its private history consistently;
-    // only independent native evidence detects this coordinated substitution.
+    // Independent publication bytes now reject this coherent rewrite before
+    // the native-parent cross-check; both sources must remain authoritative.
     let mut tx = store.writer.begin().await.unwrap();
-    let owners = registered(
-        &mut tx,
-        session,
-        64,
-        &mut Budget::new(65536, PublicSessionLimit::HeaderBytes),
-        &mut Proof::bounded(32 * 1024 * 1024),
-    )
-    .await
-    .unwrap();
-    assert_eq!(owners.len(), 0);
+    assert!(
+        registered(
+            &mut tx,
+            session,
+            64,
+            &mut Budget::new(65536, PublicSessionLimit::HeaderBytes),
+            &mut Proof::bounded(32 * 1024 * 1024),
+        )
+        .await
+        .is_err()
+    );
     tx.rollback().await.unwrap();
     assert!(matches!(
         check(store, session, 32 * 1024 * 1024).await.0,
