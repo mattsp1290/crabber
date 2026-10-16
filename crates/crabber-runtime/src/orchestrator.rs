@@ -2666,7 +2666,7 @@ impl Orchestrator {
                     worker().await;
                     // Resource failures remain visible in the separate drain;
                     // they are not a panic of this actual returned worker.
-                    let _ = resources.finish().await;
+                    let _ = resources.finish_heartbeats().await;
                 }
                 failed.termination()
             },

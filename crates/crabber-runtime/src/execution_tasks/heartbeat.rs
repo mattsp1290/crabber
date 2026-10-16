@@ -44,7 +44,7 @@ impl WorkerResources {
             .cloned()
             .collect()
     }
-    pub(super) async fn finish_heartbeats(&self) -> Result<(), ()> {
+    pub(crate) async fn finish_heartbeats(&self) -> Result<(), ()> {
         loop {
             let scopes = self.heartbeat_scopes();
             for scope in &scopes {
