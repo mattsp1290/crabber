@@ -175,6 +175,7 @@ impl ToolResourceOwner {
     /// join handle retained here; later drains resume those same joins. Failure
     /// stays visible even after all tasks have terminated.
     pub async fn drain(&self, bound: Duration) -> ResourceDrain {
+        self.close();
         let _ = tokio::time::timeout(bound, self.join()).await;
         self.snapshot()
     }
