@@ -40,3 +40,10 @@ Normal Agent plan providers still use the legacy preparation coverage path.
 Scoped instances joining in this probe must not be interpreted as positive
 whole-runtime deletion evidence. The API remains unstable pending the independent
 SDK, external Git-only consumer and publication/adoption gates.
+
+The `conformance` integration target also runs the published
+`session_management_contract`, `control_contract` and `interaction_contract`
+harnesses through the custom adapter on every enabled backend. These exercise
+actual transactions, revision conflicts, frozen interactions and metadata replay;
+they are not success-returning Store mocks. The historical harness import paths
+remain available for existing adapter users.

@@ -1,3 +1,4 @@
+//! Actual retained worker/preparation joins and scoped session resources.
 use super::*;
 use std::time::Duration;
 

@@ -18,9 +18,7 @@ async fn closed_agent_parent_controls_initialize_no_factories_or_execution() {
         .store(store.clone())
         .provider(Arc::new(provider.clone()))
         .config(AgentConfig::new(selection("scripted")))
-        .extension_factory(Arc::new(super::management::ForbiddenFactory(
-            factories.clone(),
-        )))
+        .extension_factory(Arc::new(super::ForbiddenFactory(factories.clone())))
         .build()
         .unwrap();
     let (admitted, target) = started_fixture(&store).await;

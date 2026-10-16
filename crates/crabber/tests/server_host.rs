@@ -1,85 +1,10 @@
-#[path = "server_host/aggregate_v2.rs"]
-mod aggregate_v2;
-#[path = "server_host/approval.rs"]
-mod approval;
-#[path = "server_host/attempt_control.rs"]
-mod attempt_control;
-#[path = "server_host/deletion.rs"]
-mod deletion;
+#[path = "server_host/support.rs"]
+pub mod support;
+pub use support::*;
 #[path = "server_host/factories.rs"]
 mod factories;
-#[path = "server_host/fork.rs"]
-mod fork;
-#[path = "server_host/frontend_continuation.rs"]
-mod frontend_continuation;
-#[path = "server_host/interaction_hooks.rs"]
-mod interaction_hooks;
-#[path = "server_host/management.rs"]
-mod management;
-#[path = "server_host/runtime_input.rs"]
-mod runtime_input;
 #[path = "server_host/session_invocations.rs"]
 mod session_invocations;
-#[path = "server_host/tool_continuation.rs"]
-mod tool_continuation;
-use async_trait::async_trait;
-use crabber::{
-    Admission, AdmissionKey, AdmissionOptions, Agent, AgentConfig, ExecutionContext,
-    ExtensionError, FakeProvider, InputFingerprint, JsonToolExecutor, PermissionDecision,
-    RuntimeError, Scope, Selection, SessionContext, SessionId, StaticPolicy, StreamDelta,
-    ToolDefinition,
-    core::{CoreError, RunStatus, ToolCallId, ToolInfo},
-    extension::{Extension, Registrar, ToolContext},
-    session::{MemoryStore, Store},
-};
-use serde_json::{Value, json};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
-
-fn selection(model: &str) -> Selection {
-    Selection {
-        provider_id: "fake".into(),
-        model_id: model.into(),
-    }
-}
-fn context(session: &str, workspace: &str, directory: &str, model: &str) -> ExecutionContext {
-    ExecutionContext::new(
-        SessionContext::new(session.into(), workspace, directory),
-        selection(model),
-    )
-}
-fn options() -> AdmissionOptions {
-    AdmissionOptions {
-        key: AdmissionKey::new("host-input").unwrap(),
-        fingerprint: InputFingerprint::new("a".repeat(64)).unwrap(),
-        behavior_fingerprint: InputFingerprint::new("b".repeat(64)).unwrap(),
-    }
-}
-fn done() -> Vec<StreamDelta> {
-    vec![
-        StreamDelta::TextDelta("done".into()),
-        StreamDelta::Completed,
-    ]
-}
-fn call(id: &str) -> Vec<StreamDelta> {
-    vec![
-        StreamDelta::ToolCallStart {
-            call_id: ToolCallId::from(id),
-            name: "identity".into(),
-        },
-        StreamDelta::ToolCallArgsDelta {
-            call_id: ToolCallId::from(id),
-            text: "{\"directory\":\"forged\"}".into(),
-        },
-        StreamDelta::ToolCallDone {
-            call_id: ToolCallId::from(id),
-        },
-        StreamDelta::Completed,
-    ]
-}
-
 struct IdentityTool {
     observed: Arc<Mutex<Vec<SessionContext>>>,
     together: Arc<tokio::sync::Barrier>,

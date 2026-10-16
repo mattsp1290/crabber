@@ -1,30 +1,8 @@
 use super::*;
 use crabber::{
-    ExtensionFactory, FactoryContext, FactoryScope, ListSessions, ManageSession, SessionChange,
-    SessionDefaults,
+    ListSessions, ManageSession, SessionChange, SessionDefaults,
     core::{ControlId, SessionRevision},
-    extension::ComponentIdentity,
 };
-pub(super) struct ForbiddenFactory(pub(super) Arc<AtomicUsize>);
-#[async_trait]
-impl ExtensionFactory for ForbiddenFactory {
-    fn identity(&self) -> ComponentIdentity {
-        ComponentIdentity {
-            id: "management-factory".into(),
-            version: "1".into(),
-        }
-    }
-    fn config_hash(&self) -> String {
-        "v1".into()
-    }
-    fn scope(&self) -> FactoryScope {
-        FactoryScope::Session
-    }
-    async fn create(&self, _: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        panic!("metadata control must never initialize a factory");
-    }
-}
 #[tokio::test]
 async fn management_controls_work_without_factories_and_after_close() {
     let store = Arc::new(MemoryStore::new());

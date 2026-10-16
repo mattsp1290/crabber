@@ -199,7 +199,7 @@ mod run_control {
 #[path = "../../crabber-session/src/public_run.rs"]
 #[allow(dead_code)]
 mod public_run;
-#[path = "../../crabber-session/src/run_control_contract.rs"]
+#[path = "../../crabber-session/src/control_contract.rs"]
 #[allow(dead_code)]
 mod run_control_contract;
 
@@ -278,7 +278,7 @@ mod tool_continuation {
 #[path = "../../crabber-session/src/attempt_control/turn.rs"]
 #[allow(dead_code)]
 mod attempt_control_turn;
-#[path = "../../crabber-session/src/tool_continuation_contract.rs"]
+#[path = "../../crabber-session/src/interaction_contract.rs"]
 #[allow(dead_code)]
 mod tool_continuation_contract;
 pub use crabber::session::{
@@ -355,7 +355,7 @@ mod deletion {
 #[path = "../../crabber-session/src/management/records.rs"]
 #[allow(dead_code)]
 mod management;
-#[path = "../../crabber-session/src/management_contract.rs"]
+#[path = "../../crabber-session/src/session_management_contract.rs"]
 #[allow(dead_code)]
 mod management_contract;
 pub use crabber::session::{

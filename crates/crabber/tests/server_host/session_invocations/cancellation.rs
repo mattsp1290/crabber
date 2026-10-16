@@ -138,7 +138,7 @@ async fn aggregate(
         .public_session_snapshot_v2(crabber::PublicSessionRequestV2 {
             session_id: session.clone(),
             continuation: None,
-            limits: crate::aggregate_v2::limits(),
+            limits: crate::aggregate_limits(),
         })
         .await
         .unwrap()

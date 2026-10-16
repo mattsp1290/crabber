@@ -24,8 +24,10 @@ mod frontend_continuation;
 #[cfg(test)]
 mod frontend_contract;
 pub use frontend_continuation::*;
+pub mod interaction_contract;
 mod tool_continuation;
-pub mod tool_continuation_contract;
+/// Existing adapter imports retain the same substantive conformance harness.
+pub use interaction_contract as tool_continuation_contract;
 pub use tool_continuation::*;
 mod approval;
 mod approval_termination;
@@ -70,8 +72,10 @@ pub use queue::{
     QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
     QueuePageRequest, QueueReceipt, QueueState, QueueSummary, RetainedQueue,
 };
+pub mod control_contract;
 pub mod run_control;
-pub mod run_control_contract;
+/// Existing adapter imports retain the same substantive conformance harness.
+pub use control_contract as run_control_contract;
 pub use run_control::{
     RunControlAction, RunControlBinding, RunControlBoundary, RunControlError, RunControlKind,
     RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus,
@@ -85,7 +89,9 @@ pub use deletion::{
 };
 mod fork;
 pub use fork::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
-pub mod management_contract;
+pub mod session_management_contract;
+/// Existing adapter imports retain the same substantive conformance harness.
+pub use session_management_contract as management_contract;
 pub mod session_owner;
 pub mod session_owner_contract;
 pub use management::{

@@ -1,4 +1,9 @@
-//! Actual Agent controls cross controller boundaries and enter provider context once.
+//! Exact durable controls across controllers, closed hosts and worker boundaries.
+#[path = "server_host/support.rs"]
+pub mod support;
+pub use support::*;
+#[path = "server_host/attempt_control.rs"]
+mod attempt_control;
 #[path = "run_controls/contract.rs"]
 mod contract;
 #[path = "run_controls/faults.rs"]
@@ -11,7 +16,6 @@ mod provider;
 mod store;
 #[path = "run_controls/tools.rs"]
 mod tools;
-use std::sync::Arc;
 #[tokio::test]
 async fn memory_durable_controls() {
     contract::run(Arc::new(crabber::session::MemoryStore::new())).await;

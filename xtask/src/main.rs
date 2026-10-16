@@ -132,6 +132,24 @@ fn check_server_host(workspace: &Path) {
         workspace,
         &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
     );
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "crabber",
+            "--features",
+            "sqlite",
+            "--test",
+            "server_host",
+            "--test",
+            "durable_interactions",
+            "--test",
+            "durable_controls",
+            "--test",
+            "session_management",
+        ],
+    );
     run_script(
         workspace,
         "locked server-host consumer",

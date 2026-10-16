@@ -81,7 +81,7 @@ async fn aggregate(
         let PublicSessionOutcomeV2::Page(page) = store
             .public_session_snapshot_v2(PublicSessionRequestV2 {
                 session_id: target.clone(),
-                limits: crate::aggregate_v2::limits(),
+                limits: crate::aggregate_limits(),
                 continuation,
             })
             .await

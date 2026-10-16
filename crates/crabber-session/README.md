@@ -492,3 +492,17 @@ handoff, private lease renewal, explicit join and resolver receipts. SQL source
 proofs survive controller restarts; metadata retries never return authority.
 See [session resource ownership](../../docs/session-owners.md) for the admission
 identity guards, cleanup semantics, bounds and host responsibilities.
+
+
+### Public adapter conformance suites
+
+Custom adapters can invoke `session_management_contract::run_contract` with a
+Store, and `control_contract::run_contract` / `interaction_contract::run_contract`
+with a factory that installs the supplied `ManualClock`. These are the actual
+shared transactional harnesses. The prior `management_contract`,
+`run_control_contract` and `tool_continuation_contract` import paths reexport the
+same implementations; no duplicate tests or alternate protocol are introduced.
+The public [probe conformance target](../../examples/server-host-probe/tests/conformance.rs)
+runs them against an injected forwarding adapter on Memory, SQLite and PostgreSQL.
+A forwarding adapter must retain the complete native transactional capability
+contract; a new storage backend must implement and independently qualify it.

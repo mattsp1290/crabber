@@ -299,9 +299,7 @@ async fn aggregate_v2_closed_host_reads_frontend_without_any_dispatch() {
         .store(store.clone())
         .provider(Arc::new(provider.clone()))
         .config(AgentConfig::new(selection("scripted")))
-        .extension_factory(Arc::new(super::management::ForbiddenFactory(
-            factories.clone(),
-        )))
+        .extension_factory(Arc::new(super::ForbiddenFactory(factories.clone())))
         .build()
         .unwrap();
     reader.close_extensions().await.unwrap();
