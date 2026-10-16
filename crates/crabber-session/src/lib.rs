@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 14;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 15;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 10;
+pub const SQLITE_SCHEMA_VERSION: i64 = 11;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -82,6 +82,8 @@ pub use deletion::{
     DeleteSession, DeletionBlocker, DeletionError, DeletionOutcome, DeletionReceipt,
     SessionDisposition,
 };
+mod fork;
+pub use fork::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
 pub mod management_contract;
 pub mod session_owner;
 pub mod session_owner_contract;
@@ -253,3 +255,9 @@ async fn memory_frontend_contract() {
 async fn memory_frontend_near_limit_recovery() {
     frontend_contract::large::run(|clock| crate::MemoryStore::with_clock(clock)).await;
 }
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+mod sql_fork_contract;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+mod fork_pending_contract;

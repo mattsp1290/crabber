@@ -453,6 +453,24 @@ pub trait Store: Send + Sync {
         Err(crate::DeletionError::Unsupported)
     }
 
+    /// Atomically copy an explicitly selected closed conversation prefix.
+    /// Imported calls are presentation records and never acquire execution
+    /// authority. Custom stores must implement the complete guarded contract.
+    async fn fork_session(
+        &self,
+        _request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        Err(crate::ForkError::Unsupported)
+    }
+    /// Original fork metadata only, including after source archive or erasure.
+    async fn lookup_session_fork(
+        &self,
+        _target: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        Err(crate::ForkError::Unsupported)
+    }
+
     /// Pure host metadata control; never initializes runtime/provider/tool code.
     async fn manage_session(
         &self,

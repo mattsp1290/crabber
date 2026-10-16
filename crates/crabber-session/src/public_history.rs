@@ -1,7 +1,13 @@
 //! Public conversation projection with conservative raw-read accounting.
 use crate::{SnapshotContinuation, SnapshotLimit, SnapshotPage, SnapshotUsage};
-use crabber_core::{ContentBlock, EventCursor, Message, PartKind, SessionRevision, ToolCallRecord};
+use crabber_core::{
+    EventCursor, ImportedMessageProvenance, ImportedToolCall, Message, SessionRevision,
+    ToolCallRecord,
+};
 use serde::{Deserialize, Serialize};
+
+mod redaction;
+pub(crate) use redaction::{redact_message, redact_result};
 
 /// A bounded history page safe for ordinary public conversation display.
 /// Provider state and reasoning are omitted at every content depth. IDs and
@@ -13,6 +19,10 @@ pub struct PublicHistoryPage {
     pub high_water: EventCursor,
     pub messages: Vec<Message>,
     pub tool_calls: Vec<ToolCallRecord>,
+    #[serde(default)]
+    pub imported_calls: Vec<ImportedToolCall>,
+    #[serde(default)]
+    pub imported_provenance: Vec<ImportedMessageProvenance>,
     /// Cost of the bounded raw read, before redaction. Private records still
     /// consume this budget; projection never bypasses backend allocation caps.
     pub read_usage: SnapshotUsage,
@@ -32,44 +42,26 @@ pub enum PublicHistoryOutcome {
     },
 }
 
-fn visible(block: &ContentBlock) -> bool {
-    !matches!(
-        block,
-        ContentBlock::ProviderState { .. } | ContentBlock::Reasoning { .. }
-    )
-}
-fn redact(block: &mut ContentBlock) {
-    if let ContentBlock::ToolResult { content, .. } = block {
-        content.retain(visible);
-        for child in content {
-            redact(child);
-        }
-    }
-}
 impl From<SnapshotPage> for PublicHistoryPage {
     fn from(mut page: SnapshotPage) -> Self {
         for message in &mut page.messages {
-            message.parts.retain(|part| {
-                !matches!(part.kind, PartKind::ProviderState | PartKind::Reasoning)
-                    && visible(&part.content)
-            });
-            for part in &mut message.parts {
-                redact(&mut part.content);
-            }
+            redact_message(message);
         }
         for call in &mut page.tool_calls {
             if let Some(result) = &mut call.result {
-                result.content.retain(visible);
-                for block in &mut result.content {
-                    redact(block);
-                }
+                redact_result(result);
             }
+        }
+        for call in &mut page.imported_calls {
+            redact_result(&mut call.result);
         }
         Self {
             captured_revision: page.captured_revision,
             high_water: page.high_water,
             messages: page.messages,
             tool_calls: page.tool_calls,
+            imported_calls: page.imported_calls,
+            imported_provenance: page.imported_provenance,
             read_usage: page.usage,
             continuation: page.continuation,
         }

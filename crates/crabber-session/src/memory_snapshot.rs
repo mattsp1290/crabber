@@ -6,16 +6,24 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[path = "memory_snapshot/record.rs"]
+mod record;
+
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Boundary {
     session_hash: String,
     messages: usize,
     calls: usize,
+    imported: usize,
+    provenance: usize,
     revision: u64,
     public_revision: crabber_core::SessionRevision,
     high_water: EventCursor,
     message_offset: usize,
     call_offset: usize,
+    imported_offset: usize,
+    provenance_offset: usize,
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -32,7 +40,7 @@ impl MemoryStore {
         let json = serde_json::to_string(boundary)
             .map_err(|_| StoreError::Validation("invalid snapshot boundary".into()))?;
         let signature = digest(&[&self.snapshot_key, &json]);
-        Ok(SnapshotContinuation(format!("{signature}:{json}")))
+        Ok(SnapshotContinuation(format!("v2:{signature}:{json}")))
     }
 
     fn snapshot_boundary(
@@ -54,6 +62,8 @@ impl MemoryStore {
             }
             let (signature, json) = token
                 .0
+                .strip_prefix("v2:")
+                .ok_or_else(|| StoreError::Validation("unsupported snapshot continuation".into()))?
                 .split_once(':')
                 .ok_or_else(|| StoreError::Validation("invalid snapshot continuation".into()))?;
             if signature != digest(&[&self.snapshot_key, json]) {
@@ -74,6 +84,11 @@ impl MemoryStore {
                 session_hash,
                 messages: state.messages.for_session(&request.session_id).len(),
                 calls: state.call_order.for_session(&request.session_id).len(),
+                imported: state.imported_calls.for_session(&request.session_id).len(),
+                provenance: state
+                    .imported_provenance
+                    .for_session(&request.session_id)
+                    .len(),
                 revision,
                 public_revision: state
                     .public_revisions
@@ -89,6 +104,8 @@ impl MemoryStore {
                     .unwrap_or(EventCursor(0)),
                 message_offset: 0,
                 call_offset: 0,
+                imported_offset: 0,
+                provenance_offset: 0,
             }
         };
         Ok(boundary)
@@ -114,89 +131,38 @@ impl MemoryStore {
                 high_water: boundary.high_water,
             });
         }
-        let messages = state.messages.for_session(&request.session_id);
-        let calls = state.call_order.for_session(&request.session_id);
         let mut page = SnapshotPage {
             captured_revision: boundary.public_revision,
             high_water: boundary.high_water,
             messages: Vec::new(),
             tool_calls: Vec::new(),
+            imported_calls: Vec::new(),
+            imported_provenance: Vec::new(),
             usage: SnapshotUsage::default(),
             continuation: None,
         };
         loop {
-            let mut usage = page.usage;
-            let encoded = if boundary.message_offset < boundary.messages {
-                let message = &messages[boundary.message_offset];
-                usage.messages = usage.messages.saturating_add(1);
-                usage.parts = usage.parts.saturating_add(message.parts.len());
-                usage.text_bytes = message.parts.iter().fold(usage.text_bytes, |n, p| {
-                    n.saturating_add(crate::snapshot::text_bytes(&p.content))
-                });
-                if usage.exceeded(request.limits).is_none() {
-                    crate::snapshot::encoded_bytes(
-                        message,
-                        request
-                            .limits
-                            .encoded_bytes
-                            .saturating_sub(page.usage.encoded_bytes),
-                    )
-                } else {
-                    None
-                }
-            } else if boundary.call_offset < boundary.calls {
-                let call = &state.calls[&calls[boundary.call_offset]];
-                usage.tool_calls = usage.tool_calls.saturating_add(1);
-                if let Some(result) = &call.result {
-                    usage.text_bytes = result.content.iter().fold(usage.text_bytes, |n, b| {
-                        n.saturating_add(crate::snapshot::text_bytes(b))
-                    });
-                }
-                if usage.exceeded(request.limits).is_none() {
-                    crate::snapshot::encoded_bytes(
-                        call,
-                        request
-                            .limits
-                            .encoded_bytes
-                            .saturating_sub(page.usage.encoded_bytes),
-                    )
-                } else {
-                    None
-                }
-            } else {
+            let Some(next) = record::next(state, &request.session_id, &boundary)? else {
                 return Ok(SnapshotOutcome::Page(page));
             };
-            let limit = usage.exceeded(request.limits).or_else(|| {
-                if let Some(bytes) = encoded {
-                    usage.encoded_bytes = usage.encoded_bytes.saturating_add(bytes);
-                    None
-                } else {
-                    Some(SnapshotLimit::EncodedBytes)
+            match next.measure(page.usage, request.limits) {
+                Ok(usage) => {
+                    next.append(&mut page, &mut boundary);
+                    page.usage = usage;
                 }
-            });
-            if let Some(limit) = limit {
-                let continuation = self.snapshot_token(&boundary)?;
-                if page.usage.messages == 0 && page.usage.tool_calls == 0 {
-                    return Ok(SnapshotOutcome::Limited {
-                        high_water: boundary.high_water,
-                        limit,
-                        continuation,
-                    });
+                Err(limit) => {
+                    let continuation = self.snapshot_token(&boundary)?;
+                    if page.usage.encoded_bytes == 0 {
+                        return Ok(SnapshotOutcome::Limited {
+                            high_water: boundary.high_water,
+                            limit,
+                            continuation,
+                        });
+                    }
+                    page.continuation = Some(continuation);
+                    return Ok(SnapshotOutcome::Page(page));
                 }
-                page.continuation = Some(continuation);
-                return Ok(SnapshotOutcome::Page(page));
             }
-            // Clone only a complete record that has passed every cap.
-            if boundary.message_offset < boundary.messages {
-                page.messages
-                    .push(messages[boundary.message_offset].clone());
-                boundary.message_offset += 1;
-            } else {
-                page.tool_calls
-                    .push(state.calls[&calls[boundary.call_offset]].clone());
-                boundary.call_offset += 1;
-            }
-            page.usage = usage;
         }
     }
 }
@@ -301,6 +267,68 @@ mod snapshot_tests {
             allocation.bytes_total < 16_384,
             "oversized record cloned: {allocation:?}"
         );
+    }
+
+    #[test]
+    fn imported_carriers_are_bounded_before_cloning() {
+        use crabber_core::{
+            ImportedCallSource, ImportedMessageProvenance, ImportedToolCall, ToolResult,
+            ToolResultStatus,
+        };
+        for provenance in [false, true] {
+            let (store, session) = seeded();
+            let mut state = store.state.lock().unwrap();
+            if provenance {
+                state.imported_provenance.push(
+                    session.clone(),
+                    ImportedMessageProvenance {
+                        session_id: session.clone(),
+                        message_id: "target-message".into(),
+                        source_session_id: "source".into(),
+                        source_revision: crabber_core::SessionRevision::INITIAL,
+                        source_message_id: "source-message".into(),
+                        source_run_id: None,
+                        parts: (0..8192)
+                            .map(|n| (PartId(format!("target-{n}")), PartId("s".repeat(512))))
+                            .collect(),
+                    },
+                );
+            } else {
+                state.imported_calls.push(
+                    session.clone(),
+                    ImportedToolCall {
+                        session_id: session.clone(),
+                        id: "imported".into(),
+                        assistant_message_id: "assistant".into(),
+                        result_message_id: "result".into(),
+                        name: "tool".into(),
+                        arguments: serde_json::json!({"large":"x".repeat(1_048_576)}),
+                        result: ToolResult {
+                            status: ToolResultStatus::Completed,
+                            content: vec![],
+                        },
+                        source_session_id: "source".into(),
+                        source_revision: crabber_core::SessionRevision::INITIAL,
+                        source_call_id: "source-call".into(),
+                        source_kind: ImportedCallSource::NativeExecution,
+                        source_run_id: Some("source-run".into()),
+                    },
+                );
+            }
+            let allocation = allocation_counter::measure(|| {
+                assert!(matches!(
+                    store.read_snapshot(&state, &request(&session)).unwrap(),
+                    SnapshotOutcome::Limited {
+                        limit: SnapshotLimit::EncodedBytes,
+                        ..
+                    }
+                ));
+            });
+            assert!(
+                allocation.bytes_total < 16_384,
+                "imported carrier cloned: {allocation:?}"
+            );
+        }
     }
 
     #[test]

@@ -4,6 +4,8 @@ mod approval;
 mod attempt_control;
 #[path = "server_host/factories.rs"]
 mod factories;
+#[path = "server_host/fork.rs"]
+mod fork;
 #[path = "server_host/frontend_continuation.rs"]
 mod frontend_continuation;
 #[path = "server_host/interaction_hooks.rs"]

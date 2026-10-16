@@ -25,6 +25,7 @@ mod public_state;
 mod session_owner;
 mod tool_result;
 
+mod fork;
 mod frontend;
 mod queue;
 mod run_control;
@@ -518,10 +519,19 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        // Later migrations widen this constraint for additional metadata kinds.
+        // Reapplying the v10 definition would reject already committed v15 forks.
+        let queue_migrated: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=10)")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if !queue_migrated {
+            sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
         sqlx::raw_sql(include_str!("../migrations/0011_tool_continuations.sql"))
             .execute(&mut *tx)
             .await
@@ -540,6 +550,10 @@ impl PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0015_safe_forks.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())
@@ -1067,6 +1081,19 @@ impl Store for PostgresStore {
         request: crate::ApprovalContinuationRecovery,
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         self.recover_approval(&request).await
+    }
+    async fn fork_session(
+        &self,
+        request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        self.fork(request).await
+    }
+    async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        self.fork_receipt(target, id).await
     }
     async fn manage_session(
         &self,
@@ -1666,6 +1693,15 @@ impl ExecutionStore for PostgresExecution {
         }
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Validation("invalid new tool call".into()));
+        }
+        let imported: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imported_tool_calls WHERE id=$1)")
+                .bind(&call.id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if imported {
+            return Err(StoreError::Conflict);
         }
         let accounting = snapshot::call_record(&call)?;
         sqlx::query("INSERT INTO tool_calls(id,run_id,status,data,snapshot_record,snapshot_parts,snapshot_text,snapshot_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")

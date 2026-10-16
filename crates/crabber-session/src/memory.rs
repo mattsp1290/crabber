@@ -4,6 +4,8 @@ mod admission;
 mod approval;
 #[path = "memory/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "memory/fork.rs"]
+mod fork;
 #[path = "memory/frontend.rs"]
 mod frontend;
 #[path = "memory/tool_continuation.rs"]
@@ -120,6 +122,10 @@ struct State {
     session_owners: crate::session_owner::Ledger,
     management: BTreeMap<SessionId, crate::management::Metadata>,
     management_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::management::Audit>,
+    fork_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::fork::Audit>,
+    imported_calls: SessionSequence<crabber_core::ImportedToolCall>,
+    imported_call_ids: std::collections::BTreeSet<ToolCallId>,
+    imported_provenance: SessionSequence<crabber_core::ImportedMessageProvenance>,
     runs: BTreeMap<RunId, Run>,
     run_order: Vec<RunId>,
     messages: SessionSequence<Message>,
@@ -139,6 +145,7 @@ struct State {
 
 #[derive(Clone)]
 enum OperationReceipt {
+    Fork(crate::ForkReceipt),
     RunControl(crate::RunControlReceipt),
     FrontendStaging(crate::FrontendStagingReceipt),
     Queue(crate::QueueReceipt),
@@ -684,6 +691,19 @@ impl Store for MemoryStore {
             .receipt(session, id)
     }
 
+    async fn fork_session(
+        &self,
+        request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        self.fork(request)
+    }
+    async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        self.fork_receipt(target, id)
+    }
     async fn manage_session(
         &self,
         request: crate::ManageSession,
@@ -1352,6 +1372,7 @@ impl ExecutionStore for MemoryExecution {
             if call.run_id != run.id
                 || call.status != ToolCallStatus::Pending
                 || state.calls.contains_key(&call.id)
+                || state.imported_call_ids.contains(&call.id)
             {
                 return Err(StoreError::Validation("invalid new tool call".into()));
             }

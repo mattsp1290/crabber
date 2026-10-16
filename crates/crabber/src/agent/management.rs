@@ -36,6 +36,25 @@ impl Agent {
         self.runtime.session_disposition(session).await
     }
 
+    /// Copy an explicitly selected closed history prefix without initializing extensions.
+    /// # Errors
+    /// Rejects unsupported stores, changed source scope/revision or corrupt provenance.
+    pub async fn fork_session(
+        &self,
+        request: crabber_session::ForkSession,
+    ) -> Result<crabber_session::ForkOutcome, crabber_session::ForkError> {
+        self.runtime.fork_session(request).await
+    }
+    /// Reconcile original fork metadata without reopening its source.
+    /// # Errors
+    /// Returns typed unsupported or integrity failures.
+    pub async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<crabber_session::ForkReceipt>, crabber_session::ForkError> {
+        self.runtime.lookup_session_fork(target, id).await
+    }
     /// Mutate bounded session metadata without starting provider/tool work.
     /// # Errors
     /// Returns typed scope, replay, revision or storage failures.

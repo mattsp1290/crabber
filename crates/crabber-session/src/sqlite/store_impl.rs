@@ -274,6 +274,19 @@ impl Store for SqliteStore {
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         self.recover_approval(&request).await
     }
+    async fn fork_session(
+        &self,
+        request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        self.fork(request).await
+    }
+    async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        self.fork_receipt(target, id).await
+    }
     async fn manage_session(
         &self,
         request: crate::ManageSession,

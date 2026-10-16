@@ -1,6 +1,6 @@
 use super::*;
 use crate::{SnapshotLimits, SnapshotRequest, Store};
-use crabber_core::{MessageId, Part, PartId, Role, SessionId, ToolCallId};
+use crabber_core::{ContentBlock, MessageId, Part, PartId, PartKind, Role, SessionId, ToolCallId};
 
 fn secret() -> ContentBlock {
     ContentBlock::ProviderState {
@@ -202,6 +202,8 @@ fn tool_record_results_are_recursively_redacted() {
         high_water: EventCursor(0),
         messages: vec![],
         tool_calls: vec![expected.clone()],
+        imported_calls: vec![],
+        imported_provenance: vec![],
         usage: SnapshotUsage::default(),
         continuation: None,
     };
