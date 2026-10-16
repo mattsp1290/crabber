@@ -8,6 +8,8 @@ pub(crate) mod completion_history;
 mod historical;
 #[path = "native_parent/run.rs"]
 mod run;
+#[path = "native_parent/source_protocol.rs"]
+pub(crate) mod source_protocol;
 use crate::{
     AttemptCleanup, AttemptReceipt, AttemptState, AttemptTarget, PhaseOperation, PhaseReceipt,
     PhaseTarget,

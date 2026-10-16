@@ -111,6 +111,11 @@ struct State {
         BTreeMap<(SessionId, crabber_core::SessionOwnerOperationId), RunId>,
     ownership_protocol_sessions: BTreeSet<SessionId>,
     native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
+    native_run_protocols: BTreeSet<(SessionId, RunId)>,
+    native_run_sources:
+        BTreeMap<(SessionId, RunId, u64), crate::native_parent::source_protocol::JournalSource>,
+    native_run_source_heads:
+        BTreeMap<(SessionId, RunId), crate::native_parent::source_protocol::JournalHead>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,
     run_controls: BTreeMap<(SessionId, crabber_core::ControlId), crate::run_control::Record>,

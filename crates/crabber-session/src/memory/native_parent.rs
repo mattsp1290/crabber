@@ -2,6 +2,8 @@
 use super::{OperationReceipt, State};
 use crate::native_parent::{Error, RunIssuance, RunState, Witness};
 use crabber_core::{EventKind, EventRecord, Run};
+#[path = "native_parent/source_protocol.rs"]
+pub(super) mod source_protocol;
 
 pub(super) fn record_attempt(
     state: &mut State,
@@ -176,6 +178,7 @@ pub(super) fn record_owned_admission(
     {
         return Err(Error);
     }
+    source_protocol::append(state, &issuance, true)?;
     state
         .preparation_admission_joins
         .insert(join, run.id.clone());
@@ -196,6 +199,7 @@ pub(super) fn record_run_states_with_completion(
     next: RunState,
     completion: Option<crate::native_parent::CompletionSource>,
 ) -> Result<(), Error> {
+    crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
         .native_run_issuances
         .range(
@@ -208,6 +212,9 @@ pub(super) fn record_run_states_with_completion(
         )
         .next_back()
         .map(|(_, value)| value);
+    if let Some(previous) = previous {
+        source_protocol::verify_previous(state, previous, latest)?;
+    }
     if completion.is_some() && latest.is_none() {
         return Err(Error);
     }
@@ -223,6 +230,7 @@ pub(super) fn record_run_states_with_completion(
         if state.native_run_issuances.contains_key(&key) {
             return Err(Error);
         }
+        source_protocol::append(state, &issuance, previous.is_none())?;
         state.native_run_issuances.insert(key, issuance);
     } else if completion.is_some() {
         return Err(Error);

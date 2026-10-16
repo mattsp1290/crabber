@@ -57,7 +57,7 @@ impl RunState {
         scope(&self.session_id, &self.run_id)
     }
 }
-fn scope(session: &SessionId, run: &RunId) -> Result<(), Error> {
+pub(super) fn scope(session: &SessionId, run: &RunId) -> Result<(), Error> {
     if session.0.is_empty() || session.0.len() > 512 || session.0.chars().any(char::is_control) {
         return Err(Error);
     }
