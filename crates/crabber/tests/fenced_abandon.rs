@@ -1,3 +1,5 @@
+#[path = "../../crabber-session/src/native_parent.rs"]
+mod native_parent;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_rounds;

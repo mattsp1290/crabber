@@ -310,6 +310,7 @@ fn publish_phase(
             .checked_add(1)
             .ok_or(Error::RevisionExhausted)?;
     }
+    super::native_parent::record_phase(state, run, &record, &receipt)?;
     state
         .phases
         .insert(record.snapshot.target.id.clone(), record);

@@ -21,6 +21,8 @@ mod attempt;
 mod execution_binding;
 #[path = "memory/management.rs"]
 mod management;
+#[path = "memory/native_parent.rs"]
+mod native_parent;
 #[path = "memory/phase.rs"]
 mod phase;
 #[path = "memory/public_header.rs"]
@@ -80,6 +82,7 @@ pub struct MemoryStore {
 
 #[derive(Clone, Default)]
 struct State {
+    native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
     tool_continuations:

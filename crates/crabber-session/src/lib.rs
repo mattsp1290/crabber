@@ -36,6 +36,7 @@ pub use attempt_control::{
 };
 mod attempt_conclusion;
 pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
+mod native_parent;
 mod phase;
 mod phase_resolution;
 pub use phase_resolution::{PhaseResolution, PhaseResolutionOutcome};

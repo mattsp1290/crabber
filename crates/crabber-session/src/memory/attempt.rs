@@ -233,6 +233,7 @@ impl MemoryExecution {
             event_cursor: cursor,
             attempt: record.snapshot.clone(),
         };
+        super::native_parent::record_attempt(state, &run, &request.command, &record, &receipt)?;
         state.attempts.insert(id.clone(), record);
         bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
         state
