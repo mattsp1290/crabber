@@ -6,6 +6,9 @@ use admission::{admit_keyed_transaction, admit_transaction};
 #[path = "memory/events.rs"]
 mod events;
 use events::EventLog;
+#[path = "memory/history.rs"]
+mod history;
+use history::SessionSequence;
 #[path = "memory/abandon.rs"]
 mod abandon;
 #[path = "memory/admission_execution.rs"]
@@ -88,10 +91,10 @@ struct State {
     management_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::management::Audit>,
     runs: BTreeMap<RunId, Run>,
     run_order: Vec<RunId>,
-    messages: Vec<Message>,
+    messages: SessionSequence<Message>,
     events: EventLog,
     calls: BTreeMap<ToolCallId, ToolCallRecord>,
-    call_order: Vec<ToolCallId>,
+    call_order: SessionSequence<ToolCallId>,
     snapshot_revisions: BTreeMap<SessionId, u64>,
     public_revisions: BTreeMap<SessionId, crabber_core::SessionRevision>,
     public_contents: BTreeMap<SessionId, crabber_core::PublicStateContents>,
@@ -257,7 +260,7 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
     }
     crate::ensure_storable(&message)?;
     bump_public_revision(state, &run.session_id)?;
-    state.messages.push(message);
+    state.messages.push(message.session_id.clone(), message);
     Ok(())
 }
 
@@ -1020,7 +1023,9 @@ impl ExecutionStore for MemoryExecution {
             }
             crate::ensure_storable(&call)?;
             insert_event(state, run, pending_event)?;
-            state.call_order.push(call.id.clone());
+            state
+                .call_order
+                .push(run.session_id.clone(), call.id.clone());
             state.calls.insert(call.id.clone(), call);
             Ok(())
         })

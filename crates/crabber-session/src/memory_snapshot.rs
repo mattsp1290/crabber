@@ -18,24 +18,6 @@ struct Boundary {
     call_offset: usize,
 }
 
-impl Boundary {
-    fn skip_unrelated(&mut self, state: &State, session: &crabber_core::SessionId) {
-        // Skip unrelated sessions without allocating an index or history vector.
-        while self.message_offset < self.messages
-            && state.messages[self.message_offset].session_id != *session
-        {
-            self.message_offset += 1;
-        }
-        while self.call_offset < self.calls {
-            let call = &state.calls[&state.call_order[self.call_offset]];
-            if state.runs[&call.run_id].session_id == *session {
-                break;
-            }
-            self.call_offset += 1;
-        }
-    }
-}
-
 fn digest(parts: &[&str]) -> String {
     let mut hash = Sha256::new();
     for part in parts {
@@ -90,8 +72,8 @@ impl MemoryStore {
         } else {
             Boundary {
                 session_hash,
-                messages: state.messages.len(),
-                calls: state.call_order.len(),
+                messages: state.messages.for_session(&request.session_id).len(),
+                calls: state.call_order.for_session(&request.session_id).len(),
                 revision,
                 public_revision: state
                     .public_revisions
@@ -132,6 +114,8 @@ impl MemoryStore {
                 high_water: boundary.high_water,
             });
         }
+        let messages = state.messages.for_session(&request.session_id);
+        let calls = state.call_order.for_session(&request.session_id);
         let mut page = SnapshotPage {
             captured_revision: boundary.public_revision,
             high_water: boundary.high_water,
@@ -141,10 +125,9 @@ impl MemoryStore {
             continuation: None,
         };
         loop {
-            boundary.skip_unrelated(state, &request.session_id);
             let mut usage = page.usage;
             let encoded = if boundary.message_offset < boundary.messages {
-                let message = &state.messages[boundary.message_offset];
+                let message = &messages[boundary.message_offset];
                 usage.messages = usage.messages.saturating_add(1);
                 usage.parts = usage.parts.saturating_add(message.parts.len());
                 usage.text_bytes = message.parts.iter().fold(usage.text_bytes, |n, p| {
@@ -162,7 +145,7 @@ impl MemoryStore {
                     None
                 }
             } else if boundary.call_offset < boundary.calls {
-                let call = &state.calls[&state.call_order[boundary.call_offset]];
+                let call = &state.calls[&calls[boundary.call_offset]];
                 usage.tool_calls = usage.tool_calls.saturating_add(1);
                 if let Some(result) = &call.result {
                     usage.text_bytes = result.content.iter().fold(usage.text_bytes, |n, b| {
@@ -206,11 +189,11 @@ impl MemoryStore {
             // Clone only a complete record that has passed every cap.
             if boundary.message_offset < boundary.messages {
                 page.messages
-                    .push(state.messages[boundary.message_offset].clone());
+                    .push(messages[boundary.message_offset].clone());
                 boundary.message_offset += 1;
             } else {
                 page.tool_calls
-                    .push(state.calls[&state.call_order[boundary.call_offset]].clone());
+                    .push(state.calls[&calls[boundary.call_offset]].clone());
                 boundary.call_offset += 1;
             }
             page.usage = usage;
@@ -281,12 +264,15 @@ mod snapshot_tests {
     fn large_history_allocation_is_bounded_before_cloning() {
         let (store, session) = seeded();
         let mut state = store.state.lock().unwrap();
-        state.messages.push(message(&session, "small", "small"));
+        state
+            .messages
+            .push(session.clone(), message(&session, "small", "small"));
         let text = "x".repeat(32_768);
         for i in 0..2048 {
-            state
-                .messages
-                .push(message(&session, &format!("large-{i}"), &text));
+            state.messages.push(
+                session.clone(),
+                message(&session, &format!("large-{i}"), &text),
+            );
         }
         let mut continuation = None;
         let allocation = allocation_counter::measure(|| {
@@ -323,7 +309,7 @@ mod snapshot_tests {
         let mut state = store.state.lock().unwrap();
         let first = message(&session, "one", "é");
         let bytes = serde_json::to_vec(&first).unwrap().len();
-        state.messages.push(first.clone());
+        state.messages.push(session.clone(), first.clone());
         for (limit, expected) in [
             (
                 SnapshotLimits {
@@ -382,8 +368,12 @@ mod snapshot_tests {
     fn mutable_record_invalidates_original_boundary_and_tokens_are_authenticated() {
         let (store, session) = seeded();
         let mut state = store.state.lock().unwrap();
-        state.messages.push(message(&session, "one", "one"));
-        state.messages.push(message(&session, "two", "two"));
+        state
+            .messages
+            .push(session.clone(), message(&session, "one", "one"));
+        state
+            .messages
+            .push(session.clone(), message(&session, "two", "two"));
         let SnapshotOutcome::Page(page) = store.read_snapshot(&state, &request(&session)).unwrap()
         else {
             panic!("page")
@@ -397,7 +387,7 @@ mod snapshot_tests {
             Err(StoreError::Validation(_))
         ));
         state.snapshot_revisions.insert(session.clone(), 1);
-        state.messages[0].parts[0].content = ContentBlock::Text {
+        state.messages.iter_mut().next().unwrap().parts[0].content = ContentBlock::Text {
             text: "changed".into(),
         };
         assert!(
@@ -408,7 +398,10 @@ mod snapshot_tests {
         else {
             panic!("restart")
         };
-        assert_eq!(restarted.messages[0], state.messages[0]);
+        assert_eq!(
+            restarted.messages[0],
+            state.messages.for_session(&session)[0]
+        );
     }
 }
 

@@ -120,7 +120,9 @@ fn historical_phase(
         phase.snapshot.state = PhaseState::Uncertain;
         phase.output = None;
     }
-    state.call_order.push(call.id.clone());
+    state
+        .call_order
+        .push(f.run.session_id.clone(), call.id.clone());
     state.calls.insert(call.id.clone(), call);
     state.phases.insert(phase.snapshot.target.id.clone(), phase);
 }
