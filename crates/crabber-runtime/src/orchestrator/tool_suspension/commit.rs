@@ -10,6 +10,9 @@ impl Orchestrator {
         mut batch: ToolContinuationSuspension,
         authority: ToolSuspensionAuthority,
     ) -> Result<crabber_core::EventRecord, RuntimeError> {
+        // The caller has joined every phase/run resource and this path either
+        // returns a genuine pause or a typed boundary error, never more effects.
+        let _observation = self.observation_lifetime.quiescent_commit();
         for retry in 0..3 {
             let Ok(Some(stored)) = self.store.get_run(scope.run).await else {
                 return Err(self.fail_tool_suspensions(scope).await);

@@ -1,3 +1,6 @@
+#[path = "orchestrator/observation_lifetime.rs"]
+mod observation_lifetime;
+use observation_lifetime::ObservationLifetime;
 #[path = "orchestrator/tool_recovery.rs"]
 mod tool_recovery;
 pub use tool_recovery::RecoverTool;
@@ -496,6 +499,7 @@ pub struct Orchestrator {
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     session_invocations: crate::session_invocations::SessionInvocations,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
+    observation_lifetime: Arc<ObservationLifetime>,
     tool_resumes: Arc<
         std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
     >,
@@ -786,6 +790,7 @@ impl OrchestratorBuilder {
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             session_invocations: crate::session_invocations::SessionInvocations::default(),
             owned_attempt: None,
+            observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
             tool_suspensions: Arc::default(),
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
@@ -916,6 +921,7 @@ impl HeartbeatGuard {
         fence: RunFence,
         clock: Arc<dyn Clock>,
         period: Duration,
+        observation_lifetime: Arc<ObservationLifetime>,
     ) -> Self {
         let lost = Arc::new(AtomicBool::new(false));
         let lost_in_task = Arc::clone(&lost);
@@ -926,11 +932,19 @@ impl HeartbeatGuard {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
+                if !observation_lifetime.active() {
+                    break;
+                }
                 if execution
                     .renew_lease(clock.now() + time::Duration::seconds(30))
                     .await
                     .is_err()
                 {
+                    // A native pause can commit before its ACK returns. Recheck
+                    // after the Store await before treating our own revocation as loss.
+                    if !observation_lifetime.active() {
+                        break;
+                    }
                     let settled_by_this_owner = store
                         .get_run(&fence.run_id)
                         .await
@@ -939,7 +953,7 @@ impl HeartbeatGuard {
                         .is_some_and(|run| {
                             run.status.is_terminal() && run.claim_token == fence.claim_token
                         });
-                    if settled_by_this_owner {
+                    if settled_by_this_owner || !observation_lifetime.active() {
                         break;
                     }
                     lost_in_task.store(true, Ordering::SeqCst);
@@ -1414,6 +1428,7 @@ impl Orchestrator {
         };
         let execution: Arc<dyn ExecutionStore> = execution.into();
         let mut worker = self.clone();
+        worker.observation_lifetime = Arc::default();
         worker.tool_suspensions = Arc::default();
         worker.tool_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(match granted {
@@ -1439,6 +1454,7 @@ impl Orchestrator {
             fence.clone(),
             Arc::clone(&self.clock),
             self.heartbeat_interval,
+            Arc::clone(&worker.observation_lifetime),
         );
         let mut signal = heartbeat.signal.clone();
         let lost = Arc::clone(&heartbeat.lost);
@@ -2601,6 +2617,7 @@ impl Orchestrator {
             execution.begin_admission_execution().await?;
         }
         let mut worker = self.clone();
+        worker.observation_lifetime = Arc::default();
         worker.tool_suspensions = Arc::default();
         worker.tool_resumes = Arc::default();
         worker.owned_attempt = Some(Arc::new(
@@ -2617,6 +2634,7 @@ impl Orchestrator {
             fence.clone(),
             Arc::clone(&self.clock),
             self.heartbeat_interval,
+            Arc::clone(&worker.observation_lifetime),
         );
         let run_id = fence.run_id.clone();
         let run_started_at = self.clock.now();

@@ -32,6 +32,8 @@ mod approval_recovery;
 #[path = "tests/durable_approval.rs"]
 mod durable_approval;
 mod native_phase;
+#[path = "tests/suspension_observation.rs"]
+mod suspension_observation;
 #[path = "tests/tool_suspension_faults.rs"]
 mod tool_suspension_faults;
 mod turn_budget;
@@ -1963,6 +1965,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 
 #[derive(Default)]
 struct SettlementGate {
+    observation: Option<Arc<suspension_observation::ObservationGate>>,
     admission: Option<Arc<task_ownership::preparation::AdmissionResponseGate>>,
     append: Option<Arc<OperationalAppendGate>>,
     settlements: AtomicUsize,
@@ -2003,6 +2006,23 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    fn supports_run_controls(&self) -> bool {
+        self.gate.observation.is_some()
+    }
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<crabber_session::RunControlBinding, crabber_session::RunControlError> {
+        self.inner.run_control_binding(session, run).await
+    }
+    async fn run_controls(
+        &self,
+        target: &crabber_session::RunControlTarget,
+    ) -> Result<crabber_session::RunControlPage, crabber_session::RunControlError> {
+        self.inner.run_controls(target).await
+    }
+
     fn supports_session_owners(&self) -> bool {
         true
     }
@@ -2093,6 +2113,14 @@ impl Store for DelayedTerminalStore {
         Option<crabber_session::ToolContinuationReceipt>,
         crabber_session::ToolContinuationError,
     > {
+        if self
+            .gate
+            .observation
+            .as_ref()
+            .is_some_and(|gate| gate.lose_ack)
+        {
+            return Err(crabber_session::ToolContinuationError::UnknownStoreOutcome);
+        }
         self.inner.lookup_tool_continuation(session, id).await
     }
     fn supports_owned_attempts(&self) -> bool {
@@ -2367,6 +2395,16 @@ impl Store for DelayedTerminalStore {
 
 #[async_trait]
 impl ExecutionStore for DelayedTerminalExecution {
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crabber_session::RunControlBoundary, crabber_session::RunControlError> {
+        if let Some(gate) = &self.gate.observation {
+            return gate.observe(self.inner.as_ref(), turn).await;
+        }
+        self.inner.observe_run_controls(turn).await
+    }
+
     async fn suspend_tool_continuation(
         &self,
         request: crabber_session::ToolContinuationSuspension,
@@ -2423,7 +2461,16 @@ impl ExecutionStore for DelayedTerminalExecution {
         if self.gate.fail_permission_event.load(Ordering::SeqCst) {
             return Err(crabber_session::ApprovalError::UnknownStoreOutcome);
         }
-        self.inner.suspend_for_approval(batch, authority).await
+        let result = self.inner.suspend_for_approval(batch, authority).await;
+        if let Some(gate) = &self.gate.observation
+            && result.is_ok()
+        {
+            gate.acknowledge().await;
+            if gate.lose_ack {
+                return Err(crabber_session::ApprovalError::UnknownStoreOutcome);
+            }
+        }
+        result
     }
 
     async fn mutate_attempt(
@@ -2465,6 +2512,19 @@ impl ExecutionStore for DelayedTerminalExecution {
             &conclusion.boundary,
             crabber_session::RunBoundary::Suspended { .. }
         ) {
+            let result = self.inner.conclude_attempt(conclusion, authority).await;
+            if let Some(gate) = &self.gate.observation
+                && result.is_ok()
+            {
+                gate.acknowledge().await;
+                if gate.lose_ack {
+                    return Err(AttemptError::UnknownStoreOutcome);
+                }
+            }
+            return result;
+        }
+        if self.gate.observation.is_some() {
+            // This fixture delays only suspension ACKs, never terminal publication.
             return self.inner.conclude_attempt(conclusion, authority).await;
         }
         self.gate.settlements.fetch_add(1, Ordering::SeqCst);
@@ -2497,6 +2557,9 @@ impl ExecutionStore for DelayedTerminalExecution {
         self.inner.begin_admission_execution().await
     }
     async fn renew_lease(&self, until: time::OffsetDateTime) -> Result<(), StoreError> {
+        if let Some(gate) = &self.gate.observation {
+            return gate.renew(self.inner.as_ref(), until).await;
+        }
         self.inner.renew_lease(until).await
     }
     async fn append_message(&self, message: Message) -> Result<(), StoreError> {

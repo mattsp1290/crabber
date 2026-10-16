@@ -190,6 +190,7 @@ impl Orchestrator {
                 run_id: run_id.clone(),
             });
         }
+        let _observation = self.observation_lifetime.quiescent_commit();
         let run = self
             .store
             .get_run(run_id)

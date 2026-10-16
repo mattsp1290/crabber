@@ -139,6 +139,10 @@ impl Orchestrator {
                 run_id: run_id.clone(),
             });
         }
+        // Terminal Completed may roll back with PendingInput and resume effects;
+        // only final suspension paths can close the observation lifetime.
+        let _observation = matches!(boundary, crabber_session::RunBoundary::Suspended { .. })
+            .then(|| self.observation_lifetime.quiescent_commit());
         let run = self
             .store
             .get_run(run_id)

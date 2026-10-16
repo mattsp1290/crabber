@@ -112,7 +112,14 @@ impl Orchestrator {
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             timer.tick().await;
-            match execution.observe_run_controls(None).await {
+            if !self.observation_lifetime.active() {
+                return std::future::pending().await;
+            }
+            let observed = execution.observe_run_controls(None).await;
+            if !self.observation_lifetime.active() {
+                return std::future::pending().await;
+            }
+            match observed {
                 Ok(boundary) if boundary.cancel_observed => return Ok(()),
                 Ok(_) => (),
                 Err(RunControlError::StaleOwner) => return Err(RuntimeError::LeaseLost),

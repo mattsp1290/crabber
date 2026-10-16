@@ -44,6 +44,12 @@ pub(super) async fn suspend(
         .inner
         .suspend_tool_continuation(request, authority)
         .await?;
+    if let Some(gate) = &execution.gate.observation {
+        gate.acknowledge().await;
+        if gate.lose_ack {
+            return Err(Error::UnknownStoreOutcome);
+        }
+    }
     match execution.gate.tool_suspension_fault.load(Ordering::SeqCst) {
         4 => return Err(Error::UnknownStoreOutcome),
         5 => receipt.semantic_digest = InputFingerprint::new("0".repeat(64)).unwrap(),
@@ -51,7 +57,7 @@ pub(super) async fn suspend(
     }
     Ok(receipt)
 }
-struct Pausing(Arc<AtomicUsize>);
+pub(super) struct Pausing(pub(super) Arc<AtomicUsize>);
 #[async_trait]
 impl ResumableTool for Pausing {
     fn identity(&self) -> ResumableToolIdentity {
