@@ -145,6 +145,11 @@ async fn cleanup_join_ack_retry_retains_actual_observation_and_never_dispatches(
         .await
         .unwrap();
         assert_eq!(h.child_state(&descriptor).await, SessionOwnerState::Joined);
+        assert_eq!(
+            h.gate.owned_join_calls.load(Ordering::SeqCst),
+            if point == 1 { 2 } else { 1 }
+        );
+        assert_eq!(h.gate.cleanup_uncertain_keys.lock().unwrap().len(), 0);
         assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
         assert_eq!(h.provider.cleanup_completed.load(Ordering::SeqCst), 1);
         assert_eq!(h.fake.requests().len(), 1);

@@ -218,6 +218,9 @@ impl Orchestrator {
             resources,
             disposed,
             cleanup: None,
+            cleanup_source: None,
+            joined: None,
+            cleanup_failure: None,
         });
         Ok(activation)
     }

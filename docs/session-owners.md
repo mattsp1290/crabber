@@ -248,7 +248,12 @@ until explicit eligible native reconciliation or abandonment. A plan lifetime
 lease only signals the independently retained cleanup supervisor. The child stays
 Active until the actual main task and every registered sealed resource join,
 followed by the exact durable Join acknowledgement. Cleanup ACK loss retains
-those observations for explicit retry. Running-factory cancellation applies the
+those observations for explicit retry, which checks the original Join receipt
+before another write. An actually failed cleanup records a stable keyed
+MarkUncertain while retaining its failed task result and remaining resources.
+Unknown Join acknowledgement never becomes cleanup failure, and reconciliation
+never overwrites a committed Joined state. Timeout alone supplies neither
+uncertainty nor Join evidence. Running-factory cancellation applies the
 actual cooperative scope-close signal before recording the original cancellation
 observation; non-cooperative work and failed cleanup remain blockers.
 

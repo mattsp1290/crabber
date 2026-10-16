@@ -1,7 +1,9 @@
 //! Exact local completion retention. A registry entry never remints dispatch.
 use super::{JoinedPreparation, PreparationGrant, RuntimeError};
 use crabber_session::session_owner::{
-    owned_scope::{OwnedCleanupTask, OwnedTaskRegistration},
+    owned_scope::{
+        JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask, OwnedTaskRegistration,
+    },
     preparation::{PreparationReconciliation, PreparedOperation},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -44,6 +46,9 @@ pub(super) struct OwnedEntry {
     pub resources: crabber_extension::ToolResourceOwner,
     pub disposed: CancellationToken,
     pub cleanup: Option<OwnedCleanupTask>,
+    pub cleanup_source: Option<JoinSource>,
+    pub joined: Option<JoinedOwnedScope>,
+    pub cleanup_failure: Option<OwnedCleanupFailure>,
 }
 impl RetainedPreparations {
     pub(super) fn reserve_capacity(

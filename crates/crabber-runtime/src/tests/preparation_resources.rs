@@ -1,4 +1,6 @@
 //! Actual bridge acquisition, native ACK loss and independent physical cleanup.
+#[path = "preparation_resources/cleanup_failure.rs"]
+mod cleanup_failure;
 #[path = "preparation_resources/faults.rs"]
 mod faults;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
@@ -22,6 +24,7 @@ struct ScopedProvider {
     cleanup_started: Arc<Notify>,
     cleanup_release: Arc<Notify>,
     cleanup_completed: Arc<AtomicUsize>,
+    cleanup_failure: Arc<AtomicUsize>,
     wait_for_close: std::sync::atomic::AtomicBool,
     entered: Notify,
 }
@@ -34,6 +37,7 @@ impl ScopedProvider {
             cleanup_started: Arc::new(Notify::new()),
             cleanup_release: Arc::new(Notify::new()),
             cleanup_completed: Arc::new(AtomicUsize::new(0)),
+            cleanup_failure: Arc::new(AtomicUsize::new(0)),
             wait_for_close: std::sync::atomic::AtomicBool::new(false),
             entered: Notify::new(),
         })
@@ -69,6 +73,7 @@ impl RunPlanProvider for ScopedProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let release = self.cleanup_release.clone();
         let completed = self.cleanup_completed.clone();
+        let failure = self.cleanup_failure.clone();
         // Actual cleanup is registered before acquiring any resource. The
         // separate witness below verifies that disposal alone does not join it.
         let (started, started_rx) = oneshot::channel();
@@ -78,7 +83,11 @@ impl RunPlanProvider for ScopedProvider {
                 let _ = started.send(());
                 release.notified().await;
                 completed.fetch_add(1, Ordering::SeqCst);
-                Ok(())
+                match failure.load(Ordering::SeqCst) {
+                    1 => Err(crabber_extension::ResourceFailure::CleanupFailed),
+                    2 => panic!("actual scoped cleanup panicked"),
+                    _ => Ok(()),
+                }
             })
             .unwrap();
         // This notification task is also owned by the supplied scope, including

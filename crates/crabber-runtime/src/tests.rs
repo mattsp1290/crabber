@@ -1974,6 +1974,9 @@ struct SettlementGate {
     preparation_fault: AtomicUsize,
     activation_fault: AtomicUsize,
     owned_join_fault: AtomicUsize,
+    owned_join_calls: AtomicUsize,
+    cleanup_uncertain_fault: AtomicUsize,
+    cleanup_uncertain_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
     malformed_owned_join: AtomicUsize,
     observation: Option<Arc<suspension_observation::ObservationGate>>,
     admission: Option<Arc<task_ownership::preparation::AdmissionResponseGate>>,
@@ -2009,7 +2012,7 @@ struct SettlementGate {
 }
 
 struct DelayedTerminalStore {
-    inner: Arc<MemoryStore>,
+    inner: Arc<dyn Store>,
     gate: Arc<SettlementGate>,
 }
 
@@ -2161,6 +2164,7 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::SessionOwnerOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        self.gate.owned_join_calls.fetch_add(1, Ordering::SeqCst);
         let point = self.gate.owned_join_fault.swap(0, Ordering::SeqCst);
         if point == 1 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
@@ -2273,13 +2277,31 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::SessionOwnerOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
-        let detached = self
+        let kind = self
             .inner
             .get_session_owner(&request.session_id, &request.target.id)
             .await?
             .binding
-            .kind
-            == crabber_session::session_owner::SessionOwnerKind::DetachedInvocation;
+            .kind;
+        let uncertain = matches!(
+            request.command,
+            crabber_session::session_owner::SessionOwnerCommand::MarkUncertain { .. }
+        ) && kind
+            == crabber_session::session_owner::SessionOwnerKind::RetainedCapacity;
+        let uncertain_fault = if uncertain {
+            self.gate
+                .cleanup_uncertain_keys
+                .lock()
+                .unwrap()
+                .push(request.id.clone());
+            self.gate.cleanup_uncertain_fault.swap(0, Ordering::SeqCst)
+        } else {
+            0
+        };
+        if uncertain_fault == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let detached = kind == crabber_session::session_owner::SessionOwnerKind::DetachedInvocation;
         let fault = match request.command {
             crabber_session::session_owner::SessionOwnerCommand::Begin => 2,
             crabber_session::session_owner::SessionOwnerCommand::Join { .. } => 3,
@@ -2288,6 +2310,9 @@ impl Store for DelayedTerminalStore {
         let scope = request.session_id.clone();
         let target = request.target.clone();
         let result = self.inner.mutate_session_owner(request, authority).await?;
+        if uncertain_fault == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
         if fault == 2 {
             self.cancel_before_begin_ack(scope, target, detached)
                 .await?;
@@ -2944,7 +2969,7 @@ async fn completed_commit_survives_heartbeat_channel_closing_before_settle_retur
         ..SettlementGate::default()
     });
     let store = Arc::new(DelayedTerminalStore {
-        inner: Arc::clone(&inner),
+        inner: inner.clone(),
         gate: Arc::clone(&gate),
     });
     let fake = FakeProvider::scripted(vec![text_script("done")]);

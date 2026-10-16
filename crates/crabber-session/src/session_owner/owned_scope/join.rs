@@ -48,6 +48,13 @@ impl OwnedCleanupTask {
             result: None,
         }
     }
+    /// The failure returned by this actual retained cleanup task, if observed.
+    /// A registration mismatch, timeout or an unpolled task supplies no result.
+    /// This metadata grants neither cleanup nor a Join right.
+    #[must_use]
+    pub fn observed_failure(&self) -> Option<OwnedCleanupFailure> {
+        self.result.and_then(Result::err)
+    }
     async fn observe(&mut self) -> Result<(), OwnedCleanupFailure> {
         if let Some(result) = self.result {
             return result;

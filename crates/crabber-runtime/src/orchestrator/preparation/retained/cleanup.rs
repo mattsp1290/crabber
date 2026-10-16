@@ -4,10 +4,13 @@ use crabber_session::{
     Store,
     session_owner::{
         MutateSessionOwner, SessionOwnerCommand, SessionOwnerOutcome, SessionOwnerTermination,
-        owned_scope::{OwnedCleanupFailure, OwnedCleanupTask},
     },
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[path = "cleanup/failure.rs"]
+mod failure;
+#[path = "cleanup/observation.rs"]
+mod observation;
 
 pub(in crate::orchestrator::preparation) async fn start(
     registry: RetainedPreparations,
@@ -83,42 +86,29 @@ pub(in crate::orchestrator::preparation) async fn start(
 
 async fn joined_resources(entry: &SharedEntry, store: &dyn Store) -> Result<(), ()> {
     let mut current = entry.lock().await;
-    let authority = current
-        .grant
-        .retained_resources_authority()
-        .cloned()
-        .ok_or(())?;
-    let owned = current.owned.as_mut().ok_or(())?;
-    if owned.cleanup.is_none() {
-        let resources = owned.resources.clone();
-        owned.cleanup = Some(OwnedCleanupTask::from_host_task(
-            owned.task.activation().clone(),
-            tokio::spawn(async move {
-                loop {
-                    let report = resources.drain(Duration::from_secs(5)).await;
-                    if !report.failures.is_empty() {
-                        return Err(OwnedCleanupFailure::Failed);
-                    }
-                    if report.pending == 0 {
-                        return Ok(());
-                    }
-                }
-            }),
-        ));
-    }
-    let observed = owned.task.join().await.map_err(|_| ())?;
-    let proof = observed
-        .observe_resources(owned.cleanup.as_mut().ok_or(())?)
-        .await
-        .map_err(|_| ())?;
+    let result = observation::observe(current.owned.as_mut().ok_or(())?).await;
+    let proof = match result {
+        Ok(proof) => proof,
+        Err(Some(failure)) => {
+            let _ = failure::publish(&current, store, failure).await;
+            return Err(());
+        }
+        Err(None) => return Err(()),
+    };
     // The renewal/cancellation observer is retained service work too. Stop and
     // observe its actual join before publishing the resource owner's Join.
     current.heartbeat_stop.cancel();
     if let Some(heartbeat) = current.heartbeat.take() {
         heartbeat.await.map_err(|_| ())?;
     }
-    // Unknown Join ACK leaves the opaque proof and actual joins retained; an
-    // explicit later cleanup call retries this exact source, never work.
+    publish_join(&current, store, proof).await
+}
+
+async fn publish_join(
+    current: &super::Entry,
+    store: &dyn Store,
+    proof: crabber_session::session_owner::owned_scope::JoinedOwnedScope,
+) -> Result<(), ()> {
     let request = proof.request().map_err(|_| ())?;
     let digest = proof.fingerprint().map_err(|_| ())?;
     let binding =
@@ -127,14 +117,34 @@ async fn joined_resources(entry: &SharedEntry, store: &dyn Store) -> Result<(), 
         )
         .map_err(|_| ())?
         .binding;
+    // Reconcile the original receipt before any current-state check. A lost or
+    // malformed ACK cannot turn successful physical cleanup into uncertainty.
+    if let Some(receipt) = store
+        .lookup_session_owner(&request.session_id, &request.id)
+        .await
+        .map_err(|_| ())?
+    {
+        return valid_join(
+            SessionOwnerOutcome::Replayed(receipt),
+            &request,
+            &digest,
+            &binding,
+        )
+        .then_some(())
+        .ok_or(());
+    }
+    let authority = current
+        .grant
+        .retained_resources_authority()
+        .cloned()
+        .ok_or(())?;
     let outcome = store
         .join_owned_scope(proof, authority)
         .await
         .map_err(|_| ())?;
-    if !valid_join(outcome, &request, &digest, &binding) {
-        return Err(());
-    }
-    Ok(())
+    valid_join(outcome, &request, &digest, &binding)
+        .then_some(())
+        .ok_or(())
 }
 
 fn valid_join(

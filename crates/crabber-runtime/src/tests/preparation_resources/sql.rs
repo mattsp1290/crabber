@@ -33,6 +33,7 @@ async fn journey(store: Arc<dyn Store>) {
     );
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.fake.requests().len(), 1);
+    cleanup_failure::contract(h.memory.clone()).await;
 }
 
 #[cfg(feature = "sqlite")]
