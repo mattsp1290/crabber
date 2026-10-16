@@ -2,8 +2,13 @@
 //! whose constructor already performed effects would violate this boundary.
 use super::{Error, OwnedDispatchPermit, OwnedMainDisposition, OwnedScopeActivation};
 mod driver;
+mod pending;
 pub use driver::DriverMainContext;
 use driver::MainIngress;
+pub use pending::{
+    BoundSuccessorControl, PendingSuccessorControl, PendingSuccessorError,
+    PendingSuccessorObservation, PendingSuccessorTask, PendingSuccessorTasks,
+};
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};
 

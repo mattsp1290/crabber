@@ -4,7 +4,11 @@ pub(crate) mod join;
 mod task;
 pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask};
 pub(crate) mod join_verify;
-pub use task::{DriverMainContext, JoinedOwnedTask, OwnedTaskRegistration};
+pub use task::{
+    BoundSuccessorControl, DriverMainContext, JoinedOwnedTask, OwnedTaskRegistration,
+    PendingSuccessorControl, PendingSuccessorError, PendingSuccessorObservation,
+    PendingSuccessorTask, PendingSuccessorTasks,
+};
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};
 use crabber_core::{InputFingerprint, SessionId, SessionOwnerOperationId};
