@@ -19,14 +19,7 @@ impl SqliteExecution {
     ) -> Result<ToolContinuationReceipt, Error> {
         let scope = scope(self).await?;
 
-        if !batch.frontend.is_empty()
-            && let Some(saved) = self.store.tool_receipt(&scope, &batch.id).await?
-        {
-            if saved.run_id != self.fence.run_id
-                || saved.semantic_digest != batch.fingerprint(&scope, &self.fence.run_id)?
-            {
-                return Err(Error::SemanticConflict);
-            }
+        if let Some(saved) = frontend_replay(self, &scope, &batch).await? {
             return Ok(saved);
         }
         let (mut tx, run) = if batch.frontend.is_empty() {
@@ -143,6 +136,24 @@ impl SqliteExecution {
         after(finish(tx, result).await, fault)
     }
 }
+async fn frontend_replay(
+    execution: &SqliteExecution,
+    scope: &SessionId,
+    batch: &ToolContinuationSuspension,
+) -> Result<Option<ToolContinuationReceipt>, Error> {
+    if batch.frontend.is_empty() {
+        return Ok(None);
+    }
+    let saved = execution.store.tool_receipt(scope, &batch.id).await?;
+    if let Some(saved) = &saved
+        && (saved.run_id != execution.fence.run_id
+            || saved.semantic_digest != batch.fingerprint(scope, &execution.fence.run_id)?)
+    {
+        return Err(Error::SemanticConflict);
+    }
+    Ok(saved)
+}
+
 async fn barrier(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,

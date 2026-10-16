@@ -31,6 +31,8 @@ mod approval_order;
 mod approval_recovery;
 #[path = "tests/durable_approval.rs"]
 mod durable_approval;
+#[path = "tests/frontend_replay.rs"]
+mod frontend_replay;
 mod native_phase;
 #[path = "tests/suspension_observation.rs"]
 mod suspension_observation;

@@ -1,6 +1,6 @@
 # Original continuation reconciliation
 
-Replaying an approval or tool continuation uses its original operation identity and captured request semantics. A matching receipt returns metadata and never creates another execution handle. Changed run, continuation generation, revision, or supplied choices are rejected.
+Replaying an approval, native tool or frontend continuation, including its explicit Unstarted recovery, uses its original operation identity and captured request semantics. A matching receipt returns metadata and never creates another execution handle. Changed run, continuation generation, revision, supplied choices or frontend resolver assertions are rejected.
 
 The native stores authenticate the original frozen batch against its protected suspension receipt and event before extracting its plan fingerprint. They bound that selected batch before transferring or cloning it. This read does not decode the mutable Run, checkpoint, current answers, owner tokens, or cross-kind handoff. Oversized unrelated current fields therefore do not require loading a private checkpoint merely to reconcile a receipt.
 

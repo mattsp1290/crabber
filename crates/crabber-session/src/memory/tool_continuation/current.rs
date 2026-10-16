@@ -19,14 +19,10 @@ pub(super) fn verify(state: &State, record: &ToolContinuationRecord) -> Result<(
     )
     .map_err(|_| Error::UnknownStoreOutcome)?;
     if let Some(proof) = &cross {
-        let id = record
-            .recovery
-            .as_ref()
-            .map(|r| &r.id)
-            .or(record.claim.as_ref().map(|c| &c.id))
-            .ok_or(Error::UnknownStoreOutcome)?;
-        let source = receipt(state, &record.session_id, id)?.ok_or(Error::UnknownStoreOutcome)?;
-        if proof.predecessor.operation_id != source.operation_id
+        let (id, digest) = record.latest_claim_source()?;
+        let source = receipt(state, &record.session_id, &id)?.ok_or(Error::UnknownStoreOutcome)?;
+        if source.semantic_digest != digest
+            || proof.predecessor.operation_id != source.operation_id
             || proof.predecessor.digest != source.semantic_digest
             || proof.predecessor.cursor != source.event_cursor
         {
