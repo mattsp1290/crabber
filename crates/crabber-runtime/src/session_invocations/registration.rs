@@ -9,6 +9,7 @@ use crabber_session::session_owner::{
 };
 use sha2::{Digest, Sha256};
 pub(super) struct Started {
+    pub scoped: bool,
     pub authority: SessionOwnerAuthority,
     pub source: crabber_session::session_owner::owned_scope::OwnedScopeSource,
 }
@@ -109,7 +110,8 @@ pub(super) async fn start(
     parent: &Parent,
     invocation: &Invocation,
 ) -> Result<Option<Started>, Error> {
-    let request = reserve(parent, &invocation.request, store.supports_owned_scopes())?;
+    let scoped = store.supports_owned_scopes();
+    let request = reserve(parent, &invocation.request, scoped)?;
     request.fingerprint().map_err(|_| Error::Rejected)?;
     let target = crabber_session::session_owner::SessionOwnerTarget {
         id: invocation.request.id.clone(),
@@ -183,6 +185,7 @@ pub(super) async fn start(
             && receipt.owner.state == SessionOwnerState::Active =>
         {
             Ok(Some(Started {
+                scoped,
                 authority,
                 source:
                     crabber_session::session_owner::owned_scope::OwnedScopeSource::from_receipts(

@@ -1789,6 +1789,8 @@ struct SettlementGate {
     service_join_bad_binding: std::sync::atomic::AtomicBool,
     service_join_calls: AtomicUsize,
     service_join_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
+    invocation_poll_panic: std::sync::atomic::AtomicBool,
+    invocation_poll_entered: Notify,
     driver_register_fault: AtomicUsize,
     driver_register_request_override:
         Mutex<Option<crabber_session::session_owner::driver::RegisterExecutionDriver>>,
@@ -2207,6 +2209,22 @@ impl Store for DelayedTerminalStore {
         Option<crabber_session::session_owner::SessionOwnerCancellation>,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        if self.gate.invocation_poll_panic.load(Ordering::SeqCst)
+            && self
+                .inner
+                .get_session_owner(authority.session_id(), &authority.target().id)
+                .await?
+                .binding
+                .kind
+                == crabber_session::session_owner::SessionOwnerKind::DetachedInvocation
+            && self
+                .gate
+                .invocation_poll_panic
+                .swap(false, Ordering::SeqCst)
+        {
+            self.gate.invocation_poll_entered.notify_one();
+            panic!("detached control Store future panicked");
+        }
         if authority.target().id.0.starts_with("driver-owner-")
             && self.gate.driver_poll_panic.swap(false, Ordering::SeqCst)
         {

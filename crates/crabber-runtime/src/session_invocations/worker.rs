@@ -16,7 +16,12 @@ pub(super) async fn run(
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
 ) {
-    let started = match super::registration::start(&*store, &parent, &invocation).await {
+    let started = super::store_call(async {
+        Ok(super::registration::start(&*store, &parent, &invocation).await)
+    })
+    .await
+    .unwrap_or(Err(Error::UnknownOutcome));
+    let started = match started {
         Ok(Some(started)) => started,
         Ok(None) => {
             invocation.status(SessionInvocationStatus::Replayed);
@@ -35,11 +40,20 @@ pub(super) async fn run(
             return;
         }
     };
-    if store.supports_owned_scopes() {
+    if started.scoped {
         super::scoped::run(store, parent, invocation, task, sender, started).await;
         return;
     }
-    let authority = started.authority;
+    run_legacy(store, parent, invocation, task, sender, started.authority).await;
+}
+async fn run_legacy(
+    store: Arc<dyn Store>,
+    parent: Parent,
+    invocation: Arc<Invocation>,
+    task: SessionInvocationTask,
+    sender: oneshot::Sender<Result<Admission, Error>>,
+    authority: SessionOwnerAuthority,
+) {
     invocation.status(SessionInvocationStatus::Active);
     super::cancellation::poll(&*store, &invocation, &authority).await;
     let resources = invocation.resources.clone();
@@ -104,7 +118,9 @@ pub(super) async fn mark_uncertain(
             },
         },
     };
-    let _ = store.mutate_session_owner(uncertain, Some(authority)).await;
+    let _ =
+        super::store_call(async { store.mutate_session_owner(uncertain, Some(authority)).await })
+            .await;
 }
 
 async fn publish_join(
@@ -125,9 +141,12 @@ async fn publish_join(
         return;
     };
     loop {
-        let receipt = match store
-            .mutate_session_owner(join.clone(), Some(authority.clone()))
-            .await
+        let receipt = match super::store_call(async {
+            store
+                .mutate_session_owner(join.clone(), Some(authority.clone()))
+                .await
+        })
+        .await
         {
             Ok(
                 Outcome::Applied {
@@ -170,18 +189,20 @@ pub(super) async fn renew(
     invocation: &Invocation,
     authority: &SessionOwnerAuthority,
 ) {
-    super::cancellation::poll(store, invocation, authority).await;
-    let renew = MutateSessionOwner {
-        id: crabber_core::SessionOwnerOperationId::new(),
-        session_id: authority.session_id().clone(),
-        target: authority.target().clone(),
-        command: Command::Renew { lease_ms: 30_000 },
-    };
-    if store
-        .mutate_session_owner(renew, Some(authority.clone()))
-        .await
-        .is_err()
-    {
+    let result = super::store_call(async {
+        super::cancellation::poll(store, invocation, authority).await;
+        let renew = MutateSessionOwner {
+            id: crabber_core::SessionOwnerOperationId::new(),
+            session_id: authority.session_id().clone(),
+            target: authority.target().clone(),
+            command: Command::Renew { lease_ms: 30_000 },
+        };
+        store
+            .mutate_session_owner(renew, Some(authority.clone()))
+            .await
+    })
+    .await;
+    if result.is_err() {
         invocation.cancel.cancel();
     }
 }

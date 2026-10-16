@@ -14,6 +14,17 @@ pub(super) async fn poll(
     invocation: &Invocation,
     authority: &SessionOwnerAuthority,
 ) {
+    if super::store_call(async {
+        poll_inner(store, invocation, authority).await;
+        Ok(())
+    })
+    .await
+    .is_err()
+    {
+        invocation.cancel.cancel();
+    }
+}
+async fn poll_inner(store: &dyn Store, invocation: &Invocation, authority: &SessionOwnerAuthority) {
     if !store.supports_session_owner_cancellation() {
         return;
     }

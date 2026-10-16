@@ -233,8 +233,32 @@ impl SessionInvocationSpawner for BoundSpawner {
             }
         };
         if existing {
-            return registration::replay(&*self.store, &self.parent, &request).await;
+            return store_call(async {
+                Ok(registration::replay(&*self.store, &self.parent, &request).await)
+            })
+            .await
+            .unwrap_or(Err(Error::UnknownOutcome));
         }
         receiver.await.map_err(|_| Error::UnknownOutcome)?
+    }
+}
+
+/// Untrusted Store construction/polling cannot unwind through physical owners.
+async fn store_call<T>(
+    call: impl std::future::Future<
+        Output = Result<T, crabber_session::session_owner::SessionOwnerError>,
+    >,
+) -> Result<T, crabber_session::session_owner::SessionOwnerError> {
+    use futures::FutureExt;
+    match std::panic::AssertUnwindSafe(call).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => {
+            if let Err(nested) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+            {
+                std::mem::forget(nested);
+            }
+            Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome)
+        }
     }
 }

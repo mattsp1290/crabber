@@ -3,6 +3,8 @@ use crabber_extension::{
     SessionInvocationAdmission, SessionInvocationError, SessionInvocationRequest,
 };
 use crabber_session::session_owner::SessionOwnerState;
+#[path = "session_invocations/faults.rs"]
+mod faults;
 #[path = "session_invocations/scoped.rs"]
 mod scoped;
 struct DetachedTool {

@@ -42,17 +42,20 @@ pub(super) async fn run(
         return;
     };
     super::cancellation::poll(&*store, &invocation, &authority).await;
-    let activated = store
-        .activate_owned_scope(
-            registration.activation().clone(),
-            authority.clone(),
-            Some(OwnedScopeParentAuthority::Native(
-                crabber_session::session_owner::SessionOwnerParentAuthority::Phase(
-                    parent.authority,
-                ),
-            )),
-        )
-        .await;
+    let activated = super::store_call(async {
+        store
+            .activate_owned_scope(
+                registration.activation().clone(),
+                authority.clone(),
+                Some(OwnedScopeParentAuthority::Native(
+                    crabber_session::session_owner::SessionOwnerParentAuthority::Phase(
+                        parent.authority,
+                    ),
+                )),
+            )
+            .await
+    })
+    .await;
     let acknowledged = acknowledge_registration(
         activated,
         &mut registration,
@@ -93,11 +96,26 @@ pub(super) async fn run(
     if !successful {
         invocation.status(SessionInvocationStatus::Uncertain);
     }
-    let resources = invocation.resources.clone();
-    // This task owns the exact invocation scope's sealing and actual child
-    // joins. Its result is observed independently from the main task result.
-    let mut cleanup = OwnedCleanupTask::from_host_task(
-        main.activation().clone(),
+    let mut cleanup = register_cleanup(invocation.resources.clone(), main.activation().clone());
+    let proof = loop {
+        tokio::select! {
+            proof = main.observe_resources(&mut cleanup) => break proof,
+            _ = ticker.tick() => super::worker::renew(&*store, &invocation, &authority).await,
+        }
+    };
+    match proof {
+        Ok(proof) if successful => publish_join(&*store, &invocation, authority, proof).await,
+        _ => super::worker::mark_uncertain(&*store, &invocation, authority).await,
+    }
+}
+
+fn register_cleanup(
+    resources: crabber_extension::ToolResourceOwner,
+    activation: crabber_session::session_owner::owned_scope::OwnedScopeActivation,
+) -> OwnedCleanupTask {
+    // Sealing and actual child joins are observed separately from main.
+    OwnedCleanupTask::from_host_task(
+        activation,
         tokio::spawn(async move {
             loop {
                 let report = resources.drain(Duration::from_secs(1)).await;
@@ -110,17 +128,7 @@ pub(super) async fn run(
                 }
             }
         }),
-    );
-    let proof = loop {
-        tokio::select! {
-            proof = main.observe_resources(&mut cleanup) => break proof,
-            _ = ticker.tick() => super::worker::renew(&*store, &invocation, &authority).await,
-        }
-    };
-    match proof {
-        Ok(proof) if successful => publish_join(&*store, &invocation, authority, proof).await,
-        _ => super::worker::mark_uncertain(&*store, &invocation, authority).await,
-    }
+    )
 }
 
 // A known cancelled registration still acknowledges its fresh Reserve+Begin.
@@ -159,9 +167,12 @@ async fn publish_join(
         return;
     };
     loop {
-        let receipt = match store
-            .join_owned_scope(proof.clone(), authority.clone())
-            .await
+        let receipt = match super::store_call(async {
+            store
+                .join_owned_scope(proof.clone(), authority.clone())
+                .await
+        })
+        .await
         {
             Ok(
                 SessionOwnerOutcome::Applied {
