@@ -534,6 +534,10 @@ impl PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0015_safe_forks.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())

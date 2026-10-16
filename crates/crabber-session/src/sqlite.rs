@@ -60,6 +60,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0009_session_owners.sql"),
     "\nINSERT INTO schema_version(version) VALUES(9);\n",
     include_str!("../migrations/sqlite/0010_frontend_continuations.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(10);\n",
+    include_str!("../migrations/sqlite/0011_safe_forks.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.
