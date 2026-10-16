@@ -10,9 +10,9 @@ impl crate::sqlite::SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         joined: &JoinedPreparation,
     ) -> Result<Option<PreparationCompletion>, Error> {
-        if !matches!(joined.observed_operation(), PreparedOperation::Admit(_)) {
+        let PreparedOperation::Admit(bound) = joined.observed_operation() else {
             return Ok(None);
-        }
+        };
         let grant = joined.observed_grant();
         let metadata = grant.reconciliation()?;
         let row = sqlx::query(ORIGINAL)
@@ -52,6 +52,7 @@ impl crate::sqlite::SqliteStore {
                 &session,
                 &initial,
                 &SourceAudits::from_array(&audits),
+                &bound.binding,
             )
             .map(PreparationCompletion::AdmissionReplayed)
             .map(Some)

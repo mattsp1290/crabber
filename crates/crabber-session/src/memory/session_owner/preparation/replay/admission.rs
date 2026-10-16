@@ -8,9 +8,9 @@ impl crate::memory::MemoryStore {
         state: &crate::memory::State,
         joined: &JoinedPreparation,
     ) -> Result<Option<PreparationCompletion>, Error> {
-        if !matches!(joined.observed_operation(), PreparedOperation::Admit(_)) {
+        let PreparedOperation::Admit(bound) = joined.observed_operation() else {
             return Ok(None);
-        }
+        };
         let grant = joined.observed_grant();
         let metadata = grant.reconciliation()?;
         let key = (metadata.session_id.clone(), metadata.join_id);
@@ -54,7 +54,7 @@ impl crate::memory::MemoryStore {
             child_begin: audits[4],
         };
         witness
-            .replay(grant, session, initial, &sources)
+            .replay(grant, session, initial, &sources, &bound.binding)
             .map(PreparationCompletion::AdmissionReplayed)
             .map(Some)
     }

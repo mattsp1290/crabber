@@ -24,10 +24,11 @@ pub(crate) fn source(record: &Record) -> Result<PreparationResourceLink, Error> 
         })?,
     })
 }
-pub(crate) fn fingerprint(
+pub(crate) fn fingerprint_with_input(
     command: &MutateSessionOwner,
     link: &PreparationResourceLink,
     child: &SessionOwnerTarget,
+    input: Option<&InputFingerprint>,
 ) -> Result<InputFingerprint, Error> {
     if command.session_id != link.session_id
         || command.target != link.root
@@ -41,6 +42,15 @@ pub(crate) fn fingerprint(
         || child.generation != crabber_core::SessionOwnerGeneration::INITIAL
     {
         return Err(Error::UnknownStoreOutcome);
+    }
+    if let Some(input) = input {
+        return digest(&(
+            "crabber.preparation.native-handoff.v2",
+            command.fingerprint()?,
+            link,
+            child,
+            input,
+        ));
     }
     digest(&(
         "crabber.preparation.native-handoff.v1",
@@ -68,7 +78,12 @@ pub(crate) fn record_fingerprint(
         },
     };
     match &record.retained_resources {
-        Some(child) => fingerprint(&command, &source(record)?, child),
+        Some(child) => fingerprint_with_input(
+            &command,
+            &source(record)?,
+            child,
+            record.unkeyed_input.as_ref(),
+        ),
         None => command.fingerprint(),
     }
 }

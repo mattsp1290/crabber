@@ -38,11 +38,11 @@ impl super::PostgresStore {
             )
             .await
             .map_err(storage_error)?;
-            let proof =
+            let mut proof =
                 Box::pin(self.verify_service_preparation(&mut tx, joined.observed_grant(), None))
                     .await
                     .map_err(storage_error)?;
-            proof.verify_observation(&joined)?;
+            proof.bind_observed_operation(&joined)?;
             let join =
                 crate::session_owner::preparation::proof::join_request(joined.observed_grant())
                     .map_err(storage_error)?;

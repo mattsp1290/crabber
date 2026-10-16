@@ -2,6 +2,17 @@
 use super::{Error, Record, ReserveSessionOwner, SessionOwnerGeneration, SessionOwnerState};
 use crate::session_owner::preparation;
 pub(super) fn validate(record: &Record) -> Result<(), Error> {
+    if record.unkeyed_input.is_some()
+        && (record.version != 2
+            || record.retained_resources.is_none()
+            || record.snapshot.state != SessionOwnerState::Joined
+            || record.preparation.as_ref().is_none_or(|origin| {
+                !matches!(origin.key, preparation::PreparationKey::Unkeyed(_))
+                    || origin.purpose != preparation::PreparationPurpose::OrdinaryAdmission
+            }))
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
     if let Some(driver) = &record.driver {
         if record.version != 2
             || record.preparation.is_some()

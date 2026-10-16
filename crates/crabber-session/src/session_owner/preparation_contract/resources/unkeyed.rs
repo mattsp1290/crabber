@@ -80,12 +80,13 @@ pub(super) async fn run(store: &impl Store) {
     let mut changed = bound;
     changed.binding.plan_fingerprint = InputFingerprint::new("c".repeat(64)).unwrap();
     changed.request.plan_fingerprint = changed.binding.plan_fingerprint.as_str().to_owned();
-    assert!(
-        store
-            .complete_preparation(observed(grant, changed, Arc::new(AtomicUsize::new(0))).await)
-            .await
-            .is_err()
-    );
+    // A coherent replacement plan still has the same original semantic intent.
+    // The immutable joined capsule must independently reject this exact retry.
+    changed.binding.input_fingerprint = changed.binding.computed_input_fingerprint().unwrap();
+    changed.binding.validate(&changed.request).unwrap();
+    let changed = observed(grant, changed, Arc::new(AtomicUsize::new(0))).await;
+    changed.verify_original_intent().unwrap();
+    assert!(store.complete_preparation(changed).await.is_err());
     assert_eq!(
         store.session_revision(&saved.session_id).await.unwrap(),
         revision

@@ -24,3 +24,6 @@ pub(crate) mod admission;
 
 #[path = "preparation_recovery.rs"]
 pub(crate) mod recovery;
+
+#[path = "../../../crabber-session/src/session_owner/preparation/binding_digest.rs"]
+pub(crate) mod binding_digest;

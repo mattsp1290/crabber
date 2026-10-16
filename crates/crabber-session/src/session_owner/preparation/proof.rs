@@ -41,6 +41,7 @@ pub(crate) struct VerifiedPreparation<'a> {
     pub grant: &'a PreparationGrant,
     pub effective_revision: SessionRevision,
     pub(super) resource_handoff: Option<VerifiedResourceHandoff>,
+    pub(crate) unkeyed_input: Option<crabber_core::InputFingerprint>,
 }
 
 /// Transaction-local source evidence, minted only after current root and child
@@ -53,6 +54,20 @@ pub(crate) struct VerifiedResourceHandoff {
     pub(super) activation: Option<crabber_core::InputFingerprint>,
 }
 impl VerifiedResourceHandoff {
+    pub(super) fn from_verified_child(
+        link: super::PreparationResourceLink,
+        child: &Record,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            link,
+            child: child.snapshot.target.clone(),
+            activation: child
+                .owned_scope
+                .as_ref()
+                .map(crate::session_owner::owned_scope::OwnedScopeActivation::fingerprint)
+                .transpose()?,
+        })
+    }
     pub(crate) fn source(&self) -> &super::PreparationResourceLink {
         &self.link
     }
@@ -62,6 +77,25 @@ impl VerifiedResourceHandoff {
 }
 
 impl VerifiedPreparation<'_> {
+    /// Called only after authenticating this transaction's actual joined task.
+    pub(crate) fn bind_observed_operation(
+        &mut self,
+        joined: &super::JoinedPreparation,
+    ) -> Result<(), Error> {
+        self.verify_observation(joined)?;
+        if self.resource_handoff.is_some()
+            && let super::PreparedOperation::Admit(bound) = joined.observed_operation()
+        {
+            if !matches!(
+                self.grant.original_reservation().key,
+                super::PreparationKey::Unkeyed(_)
+            ) {
+                return Err(Error::SemanticConflict);
+            }
+            self.unkeyed_input = Some(super::binding_digest::unkeyed_binding(&bound.binding)?);
+        }
+        Ok(())
+    }
     pub(crate) fn require_resource_activation(&self) -> Result<(), Error> {
         if self
             .grant
@@ -241,6 +275,7 @@ pub(crate) fn verify_with_services<'a>(
         grant,
         effective_revision,
         resource_handoff: None,
+        unkeyed_input: None,
     })
 }
 pub(crate) fn join_fingerprint(
@@ -248,7 +283,12 @@ pub(crate) fn join_fingerprint(
     command: &MutateSessionOwner,
 ) -> Result<crabber_core::InputFingerprint, Error> {
     match proof.resource_handoff() {
-        Some(handoff) => super::handoff::fingerprint(command, handoff.source(), handoff.child()),
+        Some(handoff) => super::handoff::fingerprint_with_input(
+            command,
+            handoff.source(),
+            handoff.child(),
+            proof.unkeyed_input.as_ref(),
+        ),
         None => command.fingerprint(),
     }
 }
@@ -269,6 +309,7 @@ pub(crate) fn record_handoff(
     }
     if let Some(handoff) = proof.resource_handoff() {
         record.retained_resources = Some(handoff.child().clone());
+        record.unkeyed_input.clone_from(&proof.unkeyed_input);
     } else if record.snapshot.binding.component_id == super::OWNED_PREPARATION_COMPONENT {
         return Err(Error::StaleOwner);
     }
@@ -372,6 +413,7 @@ pub(crate) fn join_request(grant: &PreparationGrant) -> Result<MutateSessionOwne
 fn verify_join_receipt(
     grant: &PreparationGrant,
     receipt: Option<&crate::session_owner::SessionOwnerReceipt>,
+    input: Option<&crabber_core::InputFingerprint>,
 ) -> Result<(), Error> {
     let receipt = receipt.ok_or(Error::InvalidTransition)?;
     let expected = join_request(grant)?;
@@ -379,10 +421,11 @@ fn verify_join_receipt(
         || receipt.operation_id != expected.id
         || receipt.semantic_digest
             != match grant.retained_resources_authority() {
-                Some(child) => super::handoff::fingerprint(
+                Some(child) => super::handoff::fingerprint_with_input(
                     &expected,
                     &super::PreparationResourceLink::for_grant(grant)?,
                     child.target(),
+                    input,
                 )?,
                 None => expected.fingerprint()?,
             }
@@ -423,5 +466,9 @@ pub(crate) fn verify_join_audit(
     {
         return Err(Error::InvalidTransition);
     }
-    verify_join_receipt(grant, Some(&audit.receipt))
+    verify_join_receipt(
+        grant,
+        Some(&audit.receipt),
+        audit.record.unkeyed_input.as_ref(),
+    )
 }

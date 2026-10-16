@@ -30,11 +30,11 @@ impl MemoryStore {
                     return Ok(outcome);
                 }
                 let before = revision(state, &session);
-                let proof = state
+                let mut proof = state
                     .session_owners
                     .verify_preparation(joined.observed_grant(), before, now)
                     .map_err(storage_error)?;
-                proof.verify_observation(joined)?;
+                proof.bind_observed_operation(joined)?;
                 state
                     .session_owners
                     .mutate_preparation_join(&proof, now, before)

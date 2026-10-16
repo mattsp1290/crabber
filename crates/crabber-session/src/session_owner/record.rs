@@ -28,6 +28,8 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unkeyed_input: Option<InputFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owned_scope: Option<super::owned_scope::OwnedScopeActivation>,
@@ -68,6 +70,7 @@ impl Record {
             service: None,
             driver: None,
             retained_resources: None,
+            unkeyed_input: None,
             cancellation: None,
             parent,
             owned_scope: None,

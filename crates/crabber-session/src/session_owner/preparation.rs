@@ -74,6 +74,7 @@ pub use completion::{
 pub use resource_contract::{bind_resource_contract, resource_contract};
 
 pub(crate) mod admission;
+pub(crate) mod binding_digest;
 pub(crate) mod handoff;
 pub(crate) mod proof;
 

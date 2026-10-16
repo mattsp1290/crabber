@@ -109,15 +109,10 @@ pub(crate) fn verify<'a>(
     Ok(VerifiedPreparation {
         grant,
         effective_revision,
-        resource_handoff: Some(super::proof::VerifiedResourceHandoff {
-            link,
-            child: child.snapshot.target.clone(),
-            activation: child
-                .owned_scope
-                .as_ref()
-                .map(crate::session_owner::owned_scope::OwnedScopeActivation::fingerprint)
-                .transpose()?,
-        }),
+        unkeyed_input: None,
+        resource_handoff: Some(super::proof::VerifiedResourceHandoff::from_verified_child(
+            link, child,
+        )?),
     })
 }
 fn key(revision: Option<RevisionState>) -> (u8, u64) {

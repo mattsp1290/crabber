@@ -31,6 +31,8 @@ pub(crate) struct Witness {
     source: super::PreparationResourceLink,
     child: SessionOwnerTarget,
     join_digest: InputFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unkeyed_input: Option<InputFingerprint>,
 }
 
 pub(crate) struct SourceAudits<'a> {
@@ -64,7 +66,11 @@ impl Witness {
         }
         let join = proof::join_request(preparation.grant)?;
         let value = Self {
-            format_version: 1,
+            format_version: if preparation.unkeyed_input.is_some() {
+                2
+            } else {
+                1
+            },
             initial: RunState::from_run(run).map_err(|_| Error::UnknownStoreOutcome)?,
             session: SessionOrigin {
                 workspace_id: session.workspace_id.clone(),
@@ -76,6 +82,7 @@ impl Witness {
             source: resources.source().clone(),
             child: resources.child().clone(),
             join_digest: proof::join_fingerprint(preparation, &join)?,
+            unkeyed_input: preparation.unkeyed_input.clone(),
         };
         value.validate()?;
         Ok(Some(value))
@@ -128,7 +135,10 @@ impl Witness {
         serde_json::to_string(self).map_err(|_| Error::UnknownStoreOutcome)
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.format_version != 1
+        if !matches!(
+            (self.format_version, self.unkeyed_input.is_some()),
+            (1, false) | (2, true)
+        ) || (self.unkeyed_input.is_some() && !matches!(self.key, PreparationKey::Unkeyed(_)))
             || self.initial.status != crabber_core::RunStatus::Running
             || self.admitted_revision == SessionRevision::INITIAL
             || self.source.session_id != *self.session_id()
@@ -150,7 +160,12 @@ impl Witness {
             || self.source.root_reserve != ids.reserve
             || self.source.root_begin != ids.begin
             || self.child.id != child.owner
-            || handoff::fingerprint(&join, &self.source, &self.child)? != self.join_digest
+            || handoff::fingerprint_with_input(
+                &join,
+                &self.source,
+                &self.child,
+                self.unkeyed_input.as_ref(),
+            )? != self.join_digest
         {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -172,8 +187,14 @@ impl Witness {
         session: &Session,
         initial: &RunIssuance,
         audits: &SourceAudits<'_>,
+        binding: &crate::ExecutionBindingCapsule,
     ) -> Result<super::PreparationAdmissionReceipt, Error> {
         self.verify_sources(session, initial, audits)?;
+        if let Some(input) = &self.unkeyed_input
+            && super::binding_digest::unkeyed_binding(binding)? != *input
+        {
+            return Err(Error::SemanticConflict);
+        }
         super::proof::verify_join_audit(grant, Some(audits.join))?;
         let original = grant.original_reservation();
         let super::PreparationKey::Unkeyed(id) = &original.key else {
@@ -241,6 +262,7 @@ impl Witness {
             || audits.join.receipt.semantic_digest != self.join_digest
             || audits.join.receipt.operation != crate::session_owner::SessionOwnerOperation::Join
             || audits.join.record.retained_resources.as_ref() != Some(&self.child)
+            || audits.join.record.unkeyed_input != self.unkeyed_input
             || audits.child_reserve.receipt.operation_id != child.reserve
             || audits.child_begin.receipt.operation_id != child.begin
             || audits.child_begin.receipt.operation
