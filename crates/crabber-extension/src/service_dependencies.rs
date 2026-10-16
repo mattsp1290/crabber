@@ -84,6 +84,11 @@ pub enum SessionServiceDependencyAdmission {
     Replayed,
     /// Known refusal before dispatch; the supplied task/factory did not run.
     Cancelled,
+    /// Original registration remains uncertain. Retain this control handle and
+    /// the same generation; neither initialization nor exposure is permitted.
+    /// Retrying must keep the original task/source/identities and cannot turn
+    /// a metadata replay into a fresh acquisition.
+    Uncertain(SessionServiceDependencyHandle),
 }
 
 /// Runtime capability already bound to the exact session and protected original

@@ -2,7 +2,8 @@
 use async_trait::async_trait;
 use crabber_extension::{
     ContextualPlanProvider, Registry, ServiceGenerationDescriptor, SessionServiceDependencies,
-    SessionServiceDependencyAdmission as Admission, SessionServiceDependencyError as Error,
+    SessionServiceDependencyAdmission as Admission, SessionServiceDependencyControl,
+    SessionServiceDependencyError as Error, SessionServiceDependencyHandle,
     SessionServiceDependencyTask, SessionServiceRegistrar,
 };
 use std::sync::{
@@ -83,4 +84,66 @@ async fn metadata_replay_and_cancel_never_invoke_supplied_factory() {
         assert_eq!(host.calls.load(Ordering::SeqCst), 1);
         assert_eq!(effects.load(Ordering::SeqCst), 0);
     }
+}
+
+struct UncertainHost {
+    generation: ServiceGenerationDescriptor,
+    control: SessionServiceDependencyHandle,
+}
+struct UncertainControl {
+    closes: Arc<AtomicUsize>,
+}
+#[async_trait]
+impl SessionServiceDependencyControl for UncertainControl {
+    async fn close_and_join(
+        &self,
+        _bound: Duration,
+    ) -> Result<crabber_extension::ResourceDrain, Error> {
+        self.closes.fetch_add(1, Ordering::SeqCst);
+        Err(Error::UnknownOutcome)
+    }
+}
+#[async_trait]
+impl SessionServiceRegistrar for UncertainHost {
+    async fn register(
+        &self,
+        generation: ServiceGenerationDescriptor,
+        _task: SessionServiceDependencyTask,
+    ) -> Result<Admission, Error> {
+        assert_eq!(generation, self.generation);
+        Ok(Admission::Uncertain(self.control.clone()))
+    }
+}
+
+#[tokio::test]
+async fn uncertain_retry_preserves_close_control_without_dispatch_or_cleanup_credit() {
+    let generation = generation().await;
+    let closes = Arc::new(AtomicUsize::new(0));
+    let host = Arc::new(UncertainHost {
+        generation: generation.clone(),
+        control: SessionServiceDependencyHandle::from_host(Arc::new(UncertainControl {
+            closes: closes.clone(),
+        })),
+    });
+    let dependencies = SessionServiceDependencies::from_host(host);
+    let effects = Arc::new(AtomicUsize::new(0));
+    for _ in 0..2 {
+        let task_effects = effects.clone();
+        let outcome = dependencies
+            .register(generation.clone(), move |_| {
+                task_effects.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+        let Admission::Uncertain(control) = outcome else {
+            panic!("uncertain registration gained acquisition");
+        };
+        assert_eq!(
+            control.close_and_join(Duration::from_secs(1)).await,
+            Err(Error::UnknownOutcome)
+        );
+    }
+    assert_eq!(closes.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
 }
