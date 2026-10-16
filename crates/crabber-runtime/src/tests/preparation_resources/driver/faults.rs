@@ -1,5 +1,7 @@
 //! Physical ownership survives custom Store faults and mismatched sources.
 use super::*;
+#[path = "faults/isolation.rs"]
+mod isolation;
 #[path = "faults/late.rs"]
 mod late;
 #[path = "faults/pending.rs"]
@@ -27,12 +29,9 @@ async fn store_poll_panic_retains_actual_main_and_cleanup_until_their_joins() {
     tokio::time::timeout(Duration::from_secs(2), observer.entered.notified())
         .await
         .unwrap();
-    let resources = h.runtime.execution_tasks_for_test().tool_resources(
-        handle.session_id().clone(),
-        run.clone(),
-        crabber_core::ToolCallId::new(),
-        None,
-    );
+    let resources = handle
+        .worker_resources_for_test()
+        .tool_resources(crabber_core::ToolCallId::new(), None);
     let release_child = Arc::new(Notify::new());
     let child_release = release_child.clone();
     let child_returned = Arc::new(AtomicUsize::new(0));
@@ -143,6 +142,7 @@ async fn genuine_other_run_driver_grant_cannot_dispatch_this_runs_work() {
     h.gate.driver_register_fault.store(1, Ordering::SeqCst);
     let b = start_initial(&h, false).await;
     let b_run = b.run_id().clone();
+    let b_resources = b.worker_resources_for_test().clone();
     assert!(b.done().await.is_err());
     let persisted = h.memory.get_run(&b_run).await.unwrap().unwrap();
     *h.gate.driver_register_request_override.lock().unwrap() = Some(RegisterExecutionDriver {
@@ -178,12 +178,11 @@ async fn genuine_other_run_driver_grant_cannot_dispatch_this_runs_work() {
         panic!("unacknowledged work must not dispatch");
     })
     .unwrap();
-    let tasks = h.runtime.execution_tasks_for_test().clone();
     let mut cleanup = OwnedCleanupTask::from_host_task(
         main.activation().clone(),
         tokio::spawn(async move {
-            tasks
-                .finish_run_resources(&b_run)
+            b_resources
+                .finish()
                 .await
                 .map_err(|()| OwnedCleanupFailure::Failed)
         }),

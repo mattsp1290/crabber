@@ -3,7 +3,7 @@ mod control;
 mod resources;
 mod retirement;
 use super::{RunResult, RuntimeError};
-use crate::execution_tasks::ExecutionTasks;
+use crate::execution_tasks::WorkerResources;
 use crabber_session::{
     Store,
     session_owner::{
@@ -66,7 +66,7 @@ impl WorkerCompletion {
 
 pub(super) async fn run<F, W>(
     store: Arc<dyn Store>,
-    resources: ExecutionTasks,
+    resources: WorkerResources,
     request: RegisterExecutionDriver,
     cancellation: CancellationToken,
     completion: WorkerCompletion,
@@ -133,7 +133,7 @@ where
     let (main_joined, observe_main) = oneshot::channel();
     let mut cleanup = OwnedCleanupTask::from_host_task(
         main.activation().clone(),
-        tokio::spawn(resources::finish(resources, run, observe_main)),
+        tokio::spawn(resources::finish(resources, observe_main)),
     );
     let (joined, ()) = futures::join!(
         async {

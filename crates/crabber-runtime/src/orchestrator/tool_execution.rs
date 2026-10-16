@@ -64,12 +64,12 @@ impl Orchestrator {
                 scope.turn.clone(),
             )
             .await?;
-        let resources = self.execution_tasks.tool_resources(
-            scope.session.id.clone(),
-            scope.run.clone(),
-            record.id.clone(),
-            Some(owner.target.clone()),
-        );
+        let worker = self
+            .worker_resources
+            .as_ref()
+            .filter(|worker| worker.matches(&scope.session.id, scope.run))
+            .ok_or(RuntimeError::PreparationRecoveryRequired)?;
+        let resources = worker.tool_resources(record.id.clone(), Some(owner.target.clone()));
         let guard = resources.guard();
         let settled = AtomicBool::new(false);
         let mut call = PendingCall::from_record(&record);

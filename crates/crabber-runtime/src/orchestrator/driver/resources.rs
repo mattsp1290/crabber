@@ -1,13 +1,11 @@
 //! Signal children while main runs; final cleanup follows the actual main join.
-use crate::execution_tasks::ExecutionTasks;
-use crabber_core::RunId;
+use crate::execution_tasks::WorkerResources;
 use crabber_session::session_owner::owned_scope::OwnedCleanupFailure;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
 pub(super) async fn finish(
-    resources: ExecutionTasks,
-    run: RunId,
+    resources: WorkerResources,
     mut main: oneshot::Receiver<()>,
 ) -> Result<(), OwnedCleanupFailure> {
     let mut failed = false;
@@ -18,7 +16,7 @@ pub(super) async fn finish(
                 break;
             }
             closed = async {
-                let result = resources.finish_run_resources(&run).await;
+                let result = resources.finish().await;
                 // A still-running main can register another scope after an
                 // empty drain. Keep this actual cleanup task alive, and close
                 // later scopes without spinning or waiting for main first.
@@ -29,7 +27,7 @@ pub(super) async fn finish(
     }
     // No main result, early empty drain, cancellation, or barrier substitutes
     // for this final actual drain after the independently observed main join.
-    let final_drain = resources.finish_run_resources(&run).await;
+    let final_drain = resources.finish().await;
     if failed || final_drain.is_err() {
         Err(OwnedCleanupFailure::Failed)
     } else {

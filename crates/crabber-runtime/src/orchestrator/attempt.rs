@@ -131,8 +131,7 @@ impl Orchestrator {
             .as_ref()
             .ok_or(AttemptError::InvalidTransition)?;
         if !self
-            .execution_tasks
-            .join_run_resources(run_id, RESOURCE_JOIN_BOUND)
+            .join_worker_resources(run_id, RESOURCE_JOIN_BOUND)
             .await
         {
             return Err(RuntimeError::AttemptCleanupIncomplete {

@@ -113,8 +113,7 @@ impl Orchestrator {
             return Err(self.fail_tool_suspensions(scope).await);
         }
         if !self
-            .execution_tasks
-            .join_run_resources(scope.run, super::attempt::RESOURCE_JOIN_BOUND)
+            .join_worker_resources(scope.run, super::attempt::RESOURCE_JOIN_BOUND)
             .await
         {
             return Err(RuntimeError::AttemptCleanupIncomplete {

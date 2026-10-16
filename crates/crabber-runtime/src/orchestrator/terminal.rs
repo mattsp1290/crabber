@@ -72,8 +72,7 @@ impl Orchestrator {
             return Err(error);
         }
         if !self
-            .execution_tasks
-            .join_run_resources(run, super::attempt::RESOURCE_JOIN_BOUND)
+            .join_worker_resources(run, super::attempt::RESOURCE_JOIN_BOUND)
             .await
         {
             return Err(RuntimeError::AttemptCleanupIncomplete {

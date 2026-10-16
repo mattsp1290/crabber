@@ -527,6 +527,7 @@ pub struct Orchestrator {
     behavior_fingerprint: crabber_core::InputFingerprint,
     host_callbacks: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
+    worker_resources: Option<crate::execution_tasks::WorkerResources>,
     session_invocations: crate::session_invocations::SessionInvocations,
     session_services: crate::session_services::SessionServices,
     preparation_scope: Option<preparation::scope::PlanScope>,
@@ -828,6 +829,7 @@ impl OrchestratorBuilder {
         Ok(Orchestrator {
             host_callbacks,
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
+            worker_resources: None,
             session_invocations: crate::session_invocations::SessionInvocations::default(),
             session_services: crate::session_services::SessionServices::default(),
             preparation_scope: None,
@@ -879,6 +881,7 @@ pub struct RunHandle {
     done: oneshot::Receiver<Result<RunResult, RuntimeError>>,
     task: Arc<crate::execution_tasks::ExecutionTask>,
     tasks: crate::execution_tasks::ExecutionTasks,
+    worker_resources: Arc<crate::execution_tasks::WorkerResources>,
     completion: watch::Receiver<bool>,
     cancellation: CancellationToken,
     events: Option<crate::RunEvents>,
@@ -1022,9 +1025,18 @@ impl Drop for HeartbeatGuard {
 }
 
 impl RunHandle {
+    #[cfg(test)]
+    pub(crate) fn worker_resources_for_test(&self) -> &crate::execution_tasks::WorkerResources {
+        &self.worker_resources
+    }
+
     /// Clone local control while retaining sole ownership of the event receiver.
     #[must_use]
     pub fn control(&self) -> RunControl {
+        debug_assert!(
+            self.worker_resources
+                .matches(&self.session_id, &self.run_id)
+        );
         RunControl {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
@@ -1099,6 +1111,12 @@ impl RunHandle {
 }
 
 impl Orchestrator {
+    async fn join_worker_resources(&self, run: &RunId, bound: Duration) -> bool {
+        match &self.worker_resources {
+            Some(resources) if resources.run_matches(run) => resources.join(bound).await,
+            _ => false,
+        }
+    }
     #[cfg(test)]
     pub(crate) fn execution_tasks_for_test(&self) -> &crate::execution_tasks::ExecutionTasks {
         &self.execution_tasks
@@ -2667,6 +2685,11 @@ impl Orchestrator {
         let (completion_sender, completion) = watch::channel(false);
         let cancellation = CancellationToken::new();
         let mut runtime = self.clone();
+        let resources = self
+            .execution_tasks
+            .worker_resources(session_id.clone(), run_id.clone());
+        runtime.worker_resources = Some(resources.clone());
+        let handle_resources = Arc::new(resources.clone());
         let (event_observer, events) = crate::execution_events::ExecutionEventObserver::channel(
             runtime.observer.clone(),
             session_id.clone(),
@@ -2678,7 +2701,6 @@ impl Orchestrator {
         let complete = driver::WorkerCompletion::new(sender, completion_sender);
         let failed = complete.clone();
         let store = self.store.clone();
-        let resources = self.execution_tasks.clone();
         let native_cancel = cancellation.clone();
         let worker = move || async move {
             let guard = event_observer.guard();
@@ -2718,6 +2740,7 @@ impl Orchestrator {
             done,
             task,
             tasks: self.execution_tasks.clone(),
+            worker_resources: handle_resources,
             completion,
             cancellation,
             events: Some(events),

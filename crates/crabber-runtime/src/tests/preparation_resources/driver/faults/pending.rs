@@ -23,12 +23,9 @@ async fn pending_store_poll_survives_cancellation_while_resource_closure_progres
     tokio::time::timeout(Duration::from_secs(2), observer.entered.notified())
         .await
         .unwrap();
-    let resource = h.runtime.execution_tasks_for_test().tool_resources(
-        handle.session_id().clone(),
-        run.clone(),
-        crabber_core::ToolCallId::new(),
-        None,
-    );
+    let resource = handle
+        .worker_resources_for_test()
+        .tool_resources(crabber_core::ToolCallId::new(), None);
     let closing = resource.resources().closing().unwrap();
     let release_child = Arc::new(Notify::new());
     let child_release = release_child.clone();

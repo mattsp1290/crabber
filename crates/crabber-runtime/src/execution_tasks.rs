@@ -70,6 +70,7 @@ struct OwnedToolResources {
     call_id: ToolCallId,
     phase: Option<crabber_session::PhaseTarget>,
     owner: crabber_extension::ToolResourceOwner,
+    worker: Option<WorkerResourceId>,
 }
 #[derive(Default, Clone)]
 pub(crate) struct ExecutionTasks {
@@ -79,6 +80,48 @@ pub(crate) struct ExecutionTasks {
 struct ExecutionOwners {
     tasks: BTreeMap<RunId, Arc<ExecutionTask>>,
     resources: Vec<Arc<OwnedToolResources>>,
+}
+
+/// Local ownership of one actual worker's resources; never native authority.
+#[derive(Clone)]
+pub(crate) struct WorkerResources {
+    tasks: ExecutionTasks,
+    id: WorkerResourceId,
+    session_id: SessionId,
+    run_id: RunId,
+}
+#[derive(Clone)]
+struct WorkerResourceId(Arc<()>);
+impl WorkerResources {
+    pub(crate) fn tool_resources(
+        &self,
+        call_id: ToolCallId,
+        phase: Option<crabber_session::PhaseTarget>,
+    ) -> crabber_extension::ToolResourceOwner {
+        self.tasks.tool_resources_for_worker(
+            self.session_id.clone(),
+            self.run_id.clone(),
+            call_id,
+            phase,
+            Some(self.id.clone()),
+        )
+    }
+    pub(crate) fn run_matches(&self, run: &RunId) -> bool {
+        self.run_id == *run
+    }
+    pub(crate) fn matches(&self, session: &SessionId, run: &RunId) -> bool {
+        self.session_id == *session && self.run_id == *run
+    }
+    pub(crate) async fn join(&self, bound: Duration) -> bool {
+        self.tasks
+            .join_worker_resources(&self.run_id, Some(&self.id), bound)
+            .await
+    }
+    pub(crate) async fn finish(&self) -> Result<(), ()> {
+        self.tasks
+            .finish_worker_resources(&self.run_id, Some(&self.id))
+            .await
+    }
 }
 
 pub(crate) struct ExecutionTask {
@@ -117,12 +160,31 @@ impl ExecutionTask {
     }
 }
 impl ExecutionTasks {
+    pub(crate) fn worker_resources(&self, session_id: SessionId, run_id: RunId) -> WorkerResources {
+        WorkerResources {
+            tasks: self.clone(),
+            id: WorkerResourceId(Arc::new(())),
+            session_id,
+            run_id,
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn tool_resources(
         &self,
         session_id: SessionId,
         run_id: RunId,
         call_id: ToolCallId,
         phase: Option<crabber_session::PhaseTarget>,
+    ) -> crabber_extension::ToolResourceOwner {
+        self.tool_resources_for_worker(session_id, run_id, call_id, phase, None)
+    }
+    fn tool_resources_for_worker(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+        call_id: ToolCallId,
+        phase: Option<crabber_session::PhaseTarget>,
+        worker: Option<WorkerResourceId>,
     ) -> crabber_extension::ToolResourceOwner {
         let owner = crabber_extension::ToolResourceOwner::new();
         self.owners
@@ -135,6 +197,7 @@ impl ExecutionTasks {
                 call_id,
                 phase,
                 owner: owner.clone(),
+                worker,
             }));
         owner
     }
@@ -163,7 +226,12 @@ impl ExecutionTasks {
     }
     /// Called after the worker has dropped every tool future. This joins only
     /// that run's sealed resource scopes, never the worker awaiting this method.
-    pub(crate) async fn join_run_resources(&self, run: &RunId, bound: Duration) -> bool {
+    async fn join_worker_resources(
+        &self,
+        run: &RunId,
+        worker: Option<&WorkerResourceId>,
+        bound: Duration,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + bound;
         let scopes = self
             .owners
@@ -171,7 +239,15 @@ impl ExecutionTasks {
             .unwrap()
             .resources
             .iter()
-            .filter(|scope| scope.run_id == *run)
+            .filter(|scope| {
+                scope.run_id == *run
+                    && worker.is_none_or(|id| {
+                        scope
+                            .worker
+                            .as_ref()
+                            .is_some_and(|actual| Arc::ptr_eq(&actual.0, &id.0))
+                    })
+            })
             .cloned()
             .collect::<Vec<_>>();
         for scope in &scopes {
@@ -189,7 +265,15 @@ impl ExecutionTasks {
             .unwrap()
             .resources
             .iter()
-            .filter(|scope| scope.run_id == *run)
+            .filter(|scope| {
+                scope.run_id == *run
+                    && worker.is_none_or(|id| {
+                        scope
+                            .worker
+                            .as_ref()
+                            .is_some_and(|actual| Arc::ptr_eq(&actual.0, &id.0))
+                    })
+            })
             .all(|scope| {
                 let report = scope.owner.snapshot();
                 report.sealed && report.pending == 0 && report.failures.is_empty()
@@ -197,7 +281,15 @@ impl ExecutionTasks {
     }
     /// Close every actual registered resource scope after its main worker join.
     /// Closing only signals/seals; the drain still awaits actual task joins.
+    #[cfg(test)]
     pub(crate) async fn finish_run_resources(&self, run: &RunId) -> Result<(), ()> {
+        self.finish_worker_resources(run, None).await
+    }
+    async fn finish_worker_resources(
+        &self,
+        run: &RunId,
+        worker: Option<&WorkerResourceId>,
+    ) -> Result<(), ()> {
         loop {
             let scopes = self
                 .owners
@@ -205,7 +297,15 @@ impl ExecutionTasks {
                 .unwrap()
                 .resources
                 .iter()
-                .filter(|scope| scope.run_id == *run)
+                .filter(|scope| {
+                    scope.run_id == *run
+                        && worker.is_none_or(|id| {
+                            scope
+                                .worker
+                                .as_ref()
+                                .is_some_and(|actual| Arc::ptr_eq(&actual.0, &id.0))
+                        })
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             // Signal the complete captured set before waiting on any one
@@ -221,7 +321,11 @@ impl ExecutionTasks {
                 }
                 pending |= report.pending != 0;
             }
-            if !pending && self.join_run_resources(run, Duration::ZERO).await {
+            if !pending
+                && self
+                    .join_worker_resources(run, worker, Duration::ZERO)
+                    .await
+            {
                 return Ok(());
             }
             tokio::task::yield_now().await;

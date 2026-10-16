@@ -30,12 +30,9 @@ async fn late_resource(panic: bool) {
     tokio::time::timeout(Duration::from_secs(2), observer.entered.notified())
         .await
         .unwrap();
-    let early = h.runtime.execution_tasks_for_test().tool_resources(
-        handle.session_id().clone(),
-        run.clone(),
-        crabber_core::ToolCallId::new(),
-        None,
-    );
+    let early = handle
+        .worker_resources_for_test()
+        .tool_resources(crabber_core::ToolCallId::new(), None);
     if panic {
         tokio::time::timeout(
             Duration::from_secs(7),
@@ -59,12 +56,9 @@ async fn late_resource(panic: bool) {
     tokio::time::sleep(Duration::from_millis(50)).await;
     // The earlier empty scope has physically drained, but the original main
     // can still acquire/register a later scope before it actually returns.
-    let late = h.runtime.execution_tasks_for_test().tool_resources(
-        handle.session_id().clone(),
-        run.clone(),
-        crabber_core::ToolCallId::new(),
-        None,
-    );
+    let late = handle
+        .worker_resources_for_test()
+        .tool_resources(crabber_core::ToolCallId::new(), None);
     let released = Arc::new(Notify::new());
     let wait = released.clone();
     let returned = Arc::new(AtomicUsize::new(0));
