@@ -1,5 +1,6 @@
 //! Per-preparation resources, distinct from shared service lifetimes and cleanup proof.
 mod acquisition;
+mod provider;
 use crate::{
     ComponentIdentity, ExtensionError, ResourceFailure, ResourceRegistrationError, ToolResources,
 };

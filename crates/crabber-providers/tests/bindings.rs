@@ -268,3 +268,94 @@ async fn bound_stream_rejects_request_route_drift_and_invalid_output_caps() {
     valid.max_tokens = Some(1024);
     assert!(bound.streamer().stream(valid).await.is_ok());
 }
+
+#[tokio::test]
+async fn release_observer_waits_for_extracted_streamer_and_returned_stream() {
+    let resolver = Routing {
+        version: AtomicUsize::new(1),
+        credential: Arc::new(AtomicUsize::new(1)),
+        acquisitions: AtomicUsize::new(0),
+    };
+    let (bound, released) = resolver.bind(&selection()).await.unwrap().observe_release();
+    let clone = bound.clone();
+    let streamer = bound.streamer();
+    let stream = streamer.stream(request()).await.unwrap();
+    drop(bound);
+    drop(clone);
+    assert!(!released.is_released());
+    drop(streamer);
+    assert!(!released.is_released());
+    drop(stream);
+    tokio::time::timeout(std::time::Duration::from_secs(1), released.released())
+        .await
+        .unwrap();
+    assert!(released.is_released());
+}
+
+struct PanickingStream;
+impl futures::Stream for PanickingStream {
+    type Item = StreamDelta;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Pending
+    }
+}
+impl Drop for PanickingStream {
+    fn drop(&mut self) {
+        panic!("stream disposal failed");
+    }
+}
+struct DisposalProbe(bool);
+#[async_trait]
+impl Streamer for DisposalProbe {
+    async fn stream(&self, _: ModelRequest) -> Result<DeltaStream, ProviderError> {
+        Ok(Box::pin(PanickingStream))
+    }
+}
+impl Drop for DisposalProbe {
+    fn drop(&mut self) {
+        assert!(!self.0, "provider disposal failed");
+    }
+}
+#[tokio::test]
+async fn destructor_panics_never_acknowledge_provider_or_stream_disposal() {
+    let resolver = Routing {
+        version: AtomicUsize::new(1),
+        credential: Arc::new(AtomicUsize::new(1)),
+        acquisitions: AtomicUsize::new(0),
+    };
+    let descriptor = resolver.binding_descriptor(&selection()).unwrap();
+    let (bound, released) = crabber_providers::BoundProvider::new(
+        &selection(),
+        descriptor.clone(),
+        Arc::new(DisposalProbe(true)),
+    )
+    .unwrap()
+    .observe_release();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(bound))).is_err());
+    assert!(!released.is_released());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), released.released())
+            .await
+            .is_err()
+    );
+
+    let (bound, released) = crabber_providers::BoundProvider::new(
+        &selection(),
+        descriptor,
+        Arc::new(DisposalProbe(false)),
+    )
+    .unwrap()
+    .observe_release();
+    let stream = bound.streamer().stream(request()).await.unwrap();
+    drop(bound);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stream))).is_err());
+    assert!(!released.is_released());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), released.released())
+            .await
+            .is_err()
+    );
+}

@@ -9,7 +9,11 @@
 //! types come from `reqwest` 0.12.
 
 mod binding;
-pub use binding::{BoundProvider, ProviderBindingError, VersionedAdapter, VersionedResolver};
+pub use binding::{
+    BoundProvider, ProviderBindingError, ProviderReleaseObserver, ProviderResourceContext,
+    ProviderResourceContract, ProviderResourceFailure, ProviderResourceHost,
+    ProviderResourceRegistrationError, ProviderResourceTask, VersionedAdapter, VersionedResolver,
+};
 use crabber_core::ProviderBindingDescriptor;
 
 use async_trait::async_trait;
@@ -170,6 +174,49 @@ pub trait ProviderAdapter: Send + Sync {
     ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
         Err(ProviderBindingError::Unavailable)
     }
+    /// Pure ownership policy for bind/restore. None preserves legacy behavior
+    /// and supplies no cleanup coverage; this method must have no effects.
+    /// # Errors
+    /// Refuses invalid or unavailable declarations.
+    fn binding_resource_contract(
+        &self,
+        _selection: &Selection,
+    ) -> Result<Option<ProviderResourceContract>, ProviderBindingError> {
+        Ok(None)
+    }
+    /// Acquire only within pre-registered host capacity. Implementations must
+    /// register cleanup before effects, retain service dependencies separately,
+    /// and never fall back to unscoped acquisition.
+    /// # Errors
+    /// The default refuses; opting into a declaration requires this bridge.
+    async fn bind_owned(
+        &self,
+        _selection: &Selection,
+        _context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        Err(ProviderBindingError::ResourcesUnsupported)
+    }
+    /// Restore the exact declared route within owned capacity.
+    /// # Errors
+    /// Refuses changed configuration before acquisition or an unimplemented bridge.
+    async fn restore_binding_owned(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+        context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind_owned(&selection, context).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
+    }
     /// Acquire and hold the implementation selected by this exact descriptor.
     /// # Errors
     /// Returns binding, selection or provider acquisition failures.
@@ -212,6 +259,49 @@ pub trait Resolver: Send + Sync {
         _selection: &Selection,
     ) -> Result<ProviderBindingDescriptor, ProviderBindingError> {
         Err(ProviderBindingError::Unavailable)
+    }
+    /// Pure ownership policy for bind/restore. None preserves legacy behavior
+    /// and supplies no cleanup coverage; this method must have no effects.
+    /// # Errors
+    /// Refuses invalid or unavailable declarations.
+    fn binding_resource_contract(
+        &self,
+        _selection: &Selection,
+    ) -> Result<Option<ProviderResourceContract>, ProviderBindingError> {
+        Ok(None)
+    }
+    /// Acquire only within pre-registered host capacity. Implementations must
+    /// register cleanup before effects, retain service dependencies separately,
+    /// and never fall back to unscoped acquisition.
+    /// # Errors
+    /// The default refuses; opting into a declaration requires this bridge.
+    async fn bind_owned(
+        &self,
+        _selection: &Selection,
+        _context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        Err(ProviderBindingError::ResourcesUnsupported)
+    }
+    /// Restore the exact declared route within owned capacity.
+    /// # Errors
+    /// Refuses changed configuration before acquisition or an unimplemented bridge.
+    async fn restore_binding_owned(
+        &self,
+        descriptor: &ProviderBindingDescriptor,
+        context: &ProviderResourceContext,
+    ) -> Result<BoundProvider, ProviderBindingError> {
+        let selection = Selection {
+            provider_id: descriptor.provider_id().into(),
+            model_id: descriptor.model_id().into(),
+        };
+        if self.binding_descriptor(&selection)? != *descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        let bound = self.bind_owned(&selection, context).await?;
+        if bound.descriptor() != descriptor {
+            return Err(ProviderBindingError::VersionConflict);
+        }
+        Ok(bound)
     }
     /// Acquire and hold the implementation selected by this exact descriptor.
     /// # Errors
