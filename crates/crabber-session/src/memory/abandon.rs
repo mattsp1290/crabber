@@ -36,23 +36,13 @@ pub(super) fn abandon_transaction(
     {
         return Err(AbandonError::NativeReconciliationRequired);
     }
+    let no_effect_v1 = super::admission_journal::no_effect(state, &run, &request)?;
     // Revoke first in the transaction candidate. Publication of any
     // change waits until all settlements and evidence have succeeded.
     revoke_run(state, &mut run, now)?;
     #[cfg(test)]
     fail_boundary(state, 1)?;
-    let calls: Vec<_> = state
-        .calls
-        .values()
-        .filter(|call| {
-            call.run_id == run.id
-                && matches!(
-                    call.status,
-                    ToolCallStatus::Pending | ToolCallStatus::Running
-                )
-        })
-        .cloned()
-        .collect();
+    let calls = unfinished_calls(state, &run);
     let interrupted_tools = calls.iter().map(|call| call.id.clone()).collect();
     for call in calls {
         let (result, message, event) = interrupted_tool(&run, &call, now);
@@ -83,6 +73,7 @@ pub(super) fn abandon_transaction(
     #[cfg(test)]
     fail_boundary(state, 5)?;
     let evidence = AbandonEvidence {
+        no_effect_v1: no_effect_v1.clone(),
         request,
         run: run.clone(),
         interrupted_tools,
@@ -103,6 +94,7 @@ pub(super) fn abandon_transaction(
     state.abandonments.insert(
         outcome.run.id.clone(),
         AbandonCommit {
+            no_effect_v1,
             request: evidence.request,
             outcome: outcome.clone(),
         },
@@ -163,4 +155,19 @@ fn fail_boundary(state: &State, boundary: u8) -> Result<(), AbandonError> {
         return Err(StoreError::Validation(format!("injected boundary {boundary}")).into());
     }
     Ok(())
+}
+
+fn unfinished_calls(state: &State, run: &Run) -> Vec<crabber_core::ToolCallRecord> {
+    state
+        .calls
+        .values()
+        .filter(|call| {
+            call.run_id == run.id
+                && matches!(
+                    call.status,
+                    ToolCallStatus::Pending | ToolCallStatus::Running
+                )
+        })
+        .cloned()
+        .collect()
 }

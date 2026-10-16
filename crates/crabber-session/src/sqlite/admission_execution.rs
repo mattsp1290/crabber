@@ -12,6 +12,30 @@ pub(super) async fn load_record(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read(tx, record).await?;
+    }
+    Ok(record)
+}
+pub(super) async fn load_record_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionExecutionRecord>, crate::public_session::v2::proof::ReadError<StoreError>>
+{
+    use crate::public_session::v2::proof::ReadError;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_executions WHERE run_id=$1").bind(&run.0),proof).await.map_err(ReadError::Budget)?;
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read_with_proof(tx, record, proof).await?;
+    }
+    Ok(record)
+}
+async fn load_unchecked(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
     let record = sqlx::query("SELECT capsule_version,CASE WHEN length(CAST(data AS BLOB))<=16777216 THEN data END AS data,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
@@ -29,11 +53,22 @@ pub(super) async fn load_record(
             Ok(record)
         })
         .transpose()?;
-    if let Some(record) = &record {
-        if record.receipt.run_id != *run {
+    if let Some(record) = &record
+        && record.receipt.run_id != *run
+    {
+        return Err(StoreError::AdmissionConflict);
+    }
+    if record.is_none() {
+        let orphan: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM admission_execution_sources WHERE run_id=$1)",
+        )
+        .bind(&run.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if orphan {
             return Err(StoreError::AdmissionConflict);
         }
-        super::admission_journal::read(tx, record).await?;
     }
     Ok(record)
 }

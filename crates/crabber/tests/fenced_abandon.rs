@@ -357,6 +357,7 @@ pub use crabber::session::{
     VersionedPhase, admission_config_hash, ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
+#[allow(dead_code)]
 mod abandonment;
 #[path = "../../crabber-session/src/abandonment_contract.rs"]
 mod abandonment_contract;

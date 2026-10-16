@@ -11,6 +11,30 @@ pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read(tx, record).await?;
+    }
+    Ok(record)
+}
+pub(super) async fn load_record_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<AdmissionExecutionRecord>, crate::public_session::v2::proof::ReadError<StoreError>>
+{
+    use crate::public_session::v2::proof::ReadError;
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(CASE WHEN capsule_version=1 THEN octet_length(data::text) ELSE octet_length(data_json) END AS BIGINT) FROM admission_executions WHERE run_id=$1").bind(&run.0),proof).await.map_err(ReadError::Budget)?;
+    let record = load_unchecked(tx, run).await?;
+    if let Some(record) = &record {
+        super::admission_journal::read_with_proof(tx, record, proof).await?;
+    }
+    Ok(record)
+}
+async fn load_unchecked(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
     let record = sqlx::query("SELECT capsule_version,CASE WHEN capsule_version=1 AND octet_length(data::text)<=16777216 THEN data ELSE NULL END AS data,CASE WHEN octet_length(data_json)<=16777216 THEN data_json END AS data_json,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
@@ -19,7 +43,7 @@ pub(super) async fn load_record(
         .map(|row| {
             let version: i32 = row.try_get("capsule_version").map_err(db)?;
             let record: AdmissionExecutionRecord = match version {
-                1 => decode(row.get("data"))?,
+                1 => decode(row.try_get::<Option<sqlx::types::Json<serde_json::Value>>, _>("data").map_err(db)?.ok_or(StoreError::AdmissionConflict)?)?,
                 2 => AdmissionExecutionRecord::decode(&row.try_get::<Option<String>, _>("data_json").map_err(db)?.ok_or(StoreError::AdmissionConflict)?)?,
                 _ => return Err(StoreError::AdmissionConflict),
             };
@@ -31,11 +55,22 @@ pub(super) async fn load_record(
             Ok(record)
         })
         .transpose()?;
-    if let Some(record) = &record {
-        if record.receipt.run_id != *run {
+    if let Some(record) = &record
+        && record.receipt.run_id != *run
+    {
+        return Err(StoreError::AdmissionConflict);
+    }
+    if record.is_none() {
+        let orphan: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM admission_execution_sources WHERE run_id=$1)",
+        )
+        .bind(&run.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+        if orphan {
             return Err(StoreError::AdmissionConflict);
         }
-        super::admission_journal::read(tx, record).await?;
     }
     Ok(record)
 }

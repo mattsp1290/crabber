@@ -538,6 +538,15 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .await
             .unwrap();
         // Build exact v3/v4 table fixtures from the legacy None admission path.
+        let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM admission_execution_sources")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(sources, 0, "legacy admission has no execution-start source");
+        sqlx::query("DROP TABLE admission_execution_sources")
+            .execute(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("DROP TABLE admission_executions")
             .execute(&store.pool)
             .await

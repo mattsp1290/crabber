@@ -81,6 +81,7 @@ async fn settle(
     if native {
         return Err(AbandonError::NativeReconciliationRequired);
     }
+    let no_effect_v1 = super::admission_journal::no_effect(tx, &run, &request).await?;
     run.claim_token = uuid::Uuid::new_v4().to_string();
     run.lease_until = now;
     run.updated_at = now;
@@ -118,6 +119,7 @@ async fn settle(
     run.status = RunStatus::Interrupted;
     save_run(tx, &run).await?;
     let evidence = AbandonEvidence {
+        no_effect_v1: no_effect_v1.clone(),
         request,
         run: run.clone(),
         interrupted_tools,
@@ -142,6 +144,7 @@ async fn settle(
     // Ordinary event writers have no path to this table. Publish authenticated
     // provenance only in the transaction that rotated and fully settled the run.
     let commit = AbandonCommit {
+        no_effect_v1,
         request: evidence.request,
         outcome: outcome.clone(),
     };

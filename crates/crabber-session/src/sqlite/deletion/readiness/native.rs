@@ -40,6 +40,8 @@ pub(super) async fn runtime(
                 return Err(blocked(DeletionBlocker::Runtime));
             }
             runs::verify(tx, session, &id, facts.status, proof).await?;
+            // A verified terminal domain is still not per-Run resource coverage.
+            super::super::super::abandon_history::verify(tx, session, &id, proof).await?;
             after = id.0;
         }
     }

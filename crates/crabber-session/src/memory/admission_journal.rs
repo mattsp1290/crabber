@@ -69,7 +69,8 @@ pub(super) fn verify(state: &State, run: &RunId) -> Result<(), StoreError> {
             Err(invalid())
         };
     };
-    if record.receipt.run_id != *run {
+    let actual = state.runs.get(run).ok_or_else(invalid)?;
+    if record.receipt.session_id != actual.session_id || record.receipt.run_id != *run {
         return Err(invalid());
     }
     admission_journal::verify(record, protocol, init, begin)?;
@@ -115,66 +116,75 @@ pub(super) fn begin(state: &mut State, id: &RunId) -> Result<(), StoreError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{MemoryStore, Store};
-    use crabber_core::SessionId;
-    #[tokio::test]
-    async fn execution_sources_reject_rollback_and_missing_new_init() {
-        let store = MemoryStore::new();
-        let now = time::OffsetDateTime::now_utc();
-        let keyed = crate::admission_execution_contract::keyed(&SessionId::new(), now);
-        let crate::KeyedAdmitOutcome::Started { receipt, admitted } =
-            store.admit_keyed_run(keyed.clone()).await.unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .admission_execution_sources
-                .len(),
-            1
-        );
-        let execution = store.execution(admitted.fence).await.unwrap();
-        execution.begin_admission_execution().await.unwrap();
-        assert_eq!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .admission_execution_sources
-                .len(),
-            2
-        );
-        assert_eq!(
-            execution.begin_admission_execution().await.unwrap_err(),
-            crate::AdmissionExecutionError::AlreadyStarted
-        );
-        store
-            .state
-            .lock()
-            .unwrap()
-            .admission_executions
-            .get_mut(&receipt.run_id)
-            .unwrap()
-            .state = crate::AdmissionExecutionState::Unstarted;
-        assert!(
-            store
-                .load_admission_execution(&receipt.session_id, &keyed.options.key)
-                .await
-                .is_err()
-        );
-        assert!(execution.begin_admission_execution().await.is_err());
-        let mut state = store.state.lock().unwrap();
-        state
-            .admission_execution_sources
-            .remove(&(receipt.run_id.clone(), Kind::Begin));
-        state
-            .admission_execution_sources
-            .remove(&(receipt.run_id.clone(), Kind::Init));
-        assert!(verify(&state, &receipt.run_id).is_err());
+#[path = "admission_journal/tests.rs"]
+mod tests;
+
+pub(super) fn no_effect(
+    state: &State,
+    run: &Run,
+    request: &crabber_core::AbandonRequest,
+) -> Result<Option<admission_journal::NoEffect>, StoreError> {
+    verify(state, &run.id)?;
+    let Some(record) = state.admission_executions.get(&run.id) else {
+        return Ok(None);
+    };
+    if !state.admission_execution_protocols.contains(&run.id)
+        || record.state != crate::AdmissionExecutionState::Unstarted
+    {
+        return Ok(None);
     }
+    let Some(Source::Init(init)) = state
+        .admission_execution_sources
+        .get(&(run.id.clone(), Kind::Init))
+    else {
+        return Err(invalid());
+    };
+    let count = record
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let mut messages = Vec::with_capacity(count);
+    let mut bytes = 0usize;
+    for message in state
+        .messages
+        .iter()
+        .filter(|m| m.run_id.as_ref() == Some(&run.id) && m.session_id == run.session_id)
+        .take(count + 1)
+    {
+        if messages.len() == count {
+            return Err(invalid());
+        }
+        bytes = bytes
+            .checked_add(
+                crate::snapshot::encoded_bytes(message, 16 * 1024 * 1024 - bytes)
+                    .ok_or_else(invalid)?,
+            )
+            .ok_or_else(invalid)?;
+        messages.push(message.clone());
+    }
+    record
+        .validate_messages(run, &messages)
+        .map_err(|_| invalid())?;
+    if state
+        .receipts
+        .get(&(run.session_id.clone(), record.key.clone()))
+        != Some(&record.receipt)
+        || run.checkpoint.is_some()
+        || run.error.is_some()
+        || run.usage != crabber_core::Usage::default()
+        || state.events.iter().any(|e| e.run_id == run.id)
+        || state.calls.values().any(|c| c.run_id == run.id)
+        || state
+            .epochs
+            .values()
+            .any(|e| e.run_id == run.id && e.id != run.epoch_id)
+    {
+        return Err(invalid());
+    }
+    let issuance = issuer(state, run, None)?;
+    issuance.verify(run).map_err(|_| invalid())?;
+    let value = admission_journal::NoEffect::new(init, issuance.clone())?;
+    value.verify(init, request)?;
+    Ok(Some(value))
 }

@@ -35,6 +35,7 @@ pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
  UNION ALL SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE e.session_id<>r.session_id AND (e.session_id=$1 OR r.session_id=$1)
  UNION ALL SELECT 1 FROM admission_receipts a JOIN runs r ON r.id=a.run_id JOIN messages m ON m.id=a.user_message_id WHERE (a.session_id=$1 OR r.session_id=$1 OR m.session_id=$1) AND (a.session_id<>r.session_id OR a.session_id<>m.session_id OR m.run_id IS NULL OR m.run_id<>a.run_id)
  UNION ALL SELECT 1 FROM admission_executions a JOIN runs r ON r.id=a.run_id WHERE a.session_id<>r.session_id AND (a.session_id=$1 OR r.session_id=$1)
+ UNION ALL SELECT 1 FROM admission_execution_sources a LEFT JOIN runs r ON r.id=a.run_id LEFT JOIN admission_executions x ON x.run_id=a.run_id WHERE (a.session_id=$1 OR r.session_id=$1 OR x.session_id=$1) AND (r.id IS NULL OR x.run_id IS NULL OR a.session_id<>r.session_id OR a.session_id<>x.session_id OR x.source_protocol<>1)
  UNION ALL SELECT 1 FROM inbox i JOIN runs r ON r.id=i.consumed_by_run WHERE i.session_id<>r.session_id AND (i.session_id=$1 OR r.session_id=$1)
 )";
 

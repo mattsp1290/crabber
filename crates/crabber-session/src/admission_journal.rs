@@ -13,6 +13,7 @@ pub(crate) enum Kind {
 }
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl Kind {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn name(self) -> &'static str {
         match self {
             Self::Init => "init",
@@ -111,6 +112,7 @@ impl Begin {
     }
 }
 impl Source {
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn kind(&self) -> Kind {
         match self {
             Self::Init(_) => Kind::Init,
@@ -165,4 +167,56 @@ pub(crate) fn verify(
         return Err(invalid());
     }
     Ok(())
+}
+
+/// Original, versioned assertion minted only by the actual abandonment writer
+/// after authenticating the protected Unstarted cohort and its complete input.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NoEffect {
+    version: u32,
+    init_digest: InputFingerprint,
+    pub issuance: RunIssuance,
+}
+impl NoEffect {
+    pub fn new(init: &Init, issuance: RunIssuance) -> Result<Self, StoreError> {
+        let value = Self {
+            version: 1,
+            init_digest: init.digest()?,
+            issuance,
+        };
+        value.verify_init(init)?;
+        Ok(value)
+    }
+    fn verify_init(&self, init: &Init) -> Result<(), StoreError> {
+        self.issuance.validate().map_err(|_| invalid())?;
+        if self.version != 1
+            || self.init_digest != init.digest()?
+            || self.issuance.sequence < init.issuance.sequence
+            || self.issuance.state.status != RunStatus::Running
+            || self.issuance.state.session_id != init.issuance.state.session_id
+            || self.issuance.state.run_id != init.issuance.state.run_id
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    pub fn verify(
+        &self,
+        init: &Init,
+        request: &crabber_core::AbandonRequest,
+    ) -> Result<(), StoreError> {
+        self.verify_init(init)?;
+        let expected = crate::native_parent::RunState::new(
+            &self.issuance.state.session_id,
+            &request.expected.run_id,
+            RunStatus::Running,
+            &request.expected.claim_token,
+        )
+        .map_err(|_| invalid())?;
+        if expected != self.issuance.state {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
