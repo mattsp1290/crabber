@@ -274,3 +274,6 @@ mod fork_pending_contract;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sql_deletion;
+
+#[cfg(test)]
+mod driver_contract;

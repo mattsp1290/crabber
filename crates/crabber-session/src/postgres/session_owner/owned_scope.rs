@@ -12,6 +12,20 @@ impl PostgresStore {
         authority: SessionOwnerAuthority,
         parent_authority: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
     ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
+        if request.target().id.0.starts_with("driver-owner-")
+            || matches!(
+                &parent_authority,
+                Some(
+                    crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(
+                        _
+                    )
+                )
+            )
+        {
+            return self
+                .activate_driver(request, authority, parent_authority)
+                .await;
+        }
         let digest = request.fingerprint()?;
         let mut tx = self
             .session_transaction(request.session_id())

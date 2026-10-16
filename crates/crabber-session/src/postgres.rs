@@ -1000,6 +1000,18 @@ impl Store for PostgresStore {
     > {
         Box::pin(self.complete_preparation(joined)).await
     }
+    fn supports_execution_drivers(&self) -> bool {
+        true
+    }
+    async fn register_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::ExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_driver(request).await
+    }
     fn supports_owned_scopes(&self) -> bool {
         true
     }
