@@ -71,6 +71,16 @@ impl Orchestrator {
         session: &SessionId,
         options: crabber_core::AdmissionOptions,
     ) -> Result<DurablePreparation, RuntimeError> {
+        let context = crabber_core::SessionContext::new(
+            session.clone(),
+            request.workspace_id.clone(),
+            request.directory.clone(),
+        );
+        if self.declared_resource_contract(&context)?.is_some()
+            && !self.store.supports_execution_drivers()
+        {
+            return Err(crabber_session::StoreError::HostUnsupported.into());
+        }
         self.begin_preparation_at(
             request,
             session,

@@ -1,3 +1,4 @@
+mod driver;
 #[path = "orchestrator/observation_lifetime.rs"]
 mod observation_lifetime;
 use observation_lifetime::ObservationLifetime;
@@ -157,6 +158,7 @@ pub struct Request {
 enum InitialEntry {
     Unkeyed,
     Keyed,
+    RecoveredKeyed,
 }
 struct InitialRequest {
     request: Request,
@@ -2359,7 +2361,7 @@ impl Orchestrator {
                 plan,
                 claimed.fence,
                 &persisted,
-                InitialEntry::Keyed,
+                InitialEntry::RecoveredKeyed,
                 Some(bound),
             ),
         })
@@ -2598,9 +2600,21 @@ impl Orchestrator {
         bound: Option<crabber_providers::BoundProvider>,
     ) -> RunHandle {
         let work_session = RunSession::from(session);
-        self.spawn_worker(
+        let driver = (matches!(entry, InitialEntry::Keyed) && plan.retains_preparation_resources())
+            .then(
+                || crabber_session::session_owner::driver::RegisterExecutionDriver {
+                    context: crabber_core::SessionContext::new(
+                        session.id.clone(),
+                        session.workspace_id.clone(),
+                        session.directory.clone(),
+                    ),
+                    fence: fence.clone(),
+                },
+            );
+        self.spawn_worker_inner(
             session.id.clone(),
             fence.run_id.clone(),
+            driver,
             move |runtime, cancellation| async move {
                 Box::pin(runtime.run(
                     fence,
@@ -2623,6 +2637,20 @@ impl Orchestrator {
         F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
         W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
     {
+        self.spawn_worker_inner(session_id, run_id, None, work)
+    }
+
+    fn spawn_worker_inner<F, W>(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+        driver: Option<crabber_session::session_owner::driver::RegisterExecutionDriver>,
+        work: F,
+    ) -> RunHandle
+    where
+        F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
+    {
         let (sender, done) = oneshot::channel();
         let (completion_sender, completion) = watch::channel(false);
         let cancellation = CancellationToken::new();
@@ -2635,18 +2663,41 @@ impl Orchestrator {
         );
         runtime.observer = event_observer.clone();
         let cancellation_for_work = cancellation.clone();
-        let task = self
-            .execution_tasks
-            .spawn(session_id.clone(), run_id.clone(), async move {
-                let guard = event_observer.guard();
-                let result = Box::pin(work(runtime, cancellation_for_work)).await;
-                drop(guard);
-                let _ = sender.send(result);
-                let _ = completion_sender.send(true);
-                // Keep the event sender alive until completion is published, even
-                // when no native tool retained its observer/context.
-                drop(event_observer);
-            });
+        let complete = driver::WorkerCompletion::new(sender, completion_sender);
+        let failed = complete.clone();
+        let store = self.store.clone();
+        let resources = self.execution_tasks.clone();
+        let native_cancel = cancellation.clone();
+        let worker = move || async move {
+            let guard = event_observer.guard();
+            let result = Box::pin(work(runtime, cancellation_for_work)).await;
+            drop(guard);
+            complete.publish(result);
+            drop(event_observer);
+        };
+        let task = self.execution_tasks.spawn_reporting(
+            session_id.clone(),
+            Some(run_id.clone()),
+            async move {
+                if let Some(request) = driver {
+                    if let Err(error) = driver::run(
+                        store,
+                        resources,
+                        request,
+                        native_cancel,
+                        failed.clone(),
+                        worker,
+                    )
+                    .await
+                    {
+                        failed.publish(Err(error));
+                    }
+                } else {
+                    worker().await;
+                }
+                failed.termination()
+            },
+        );
         RunHandle {
             session_id,
             run_id,
@@ -2719,7 +2770,7 @@ impl Orchestrator {
             return Err(RuntimeError::PlanChanged);
         }
         let execution: Arc<dyn ExecutionStore> = self.store.execution(fence.clone()).await?.into();
-        if matches!(entry, InitialEntry::Keyed) {
+        if !matches!(entry, InitialEntry::Unkeyed) {
             execution.begin_admission_execution().await?;
         }
         let mut worker = self.clone();

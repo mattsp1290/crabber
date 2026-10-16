@@ -78,6 +78,24 @@ signal, not a durable cancellation acknowledgement. `resume()` remains a conveni
 that awaits the resumed handle. Eligibility and binding errors can arrive through
 its result after preparation returns a handle.
 
+Fresh keyed workers whose plans retain an owned preparation lease also register
+an independent native `crabber.runtime.outer-worker.v1` owner. The Store must
+support execution drivers. Direct keyed admission checks that capability before
+preparation factory acquisition. Registration and activation replay return metadata only. Only a fresh
+activation opens the exact registered worker gate. The retained supervisor observes
+the actual outer worker join, including final measurements, observers, completion
+publication and drops, then separately joins registered cleanup before retiring the
+native driver. Dropping a handle preserves the original pending native call.
+Cleanup signals every captured scope before awaiting any one join. A worker panic
+remains visible even if its supervisor returns normally. Pending control I/O can
+delay retirement; bounded drains continue to report that supervisor as pending.
+
+This first driver source covers initial keyed admission only. Unkeyed and recovered
+workers still require their own authenticated driver sources. The driver does not
+certify provider, shared-service, callback or whole-run resource coverage. A failed
+cleanup leaves native retirement unresolved, and retained resource failures remain
+visible through drains. Durable deletion readiness remains conservative.
+
 These joins do not prove durable terminal outcome, callback/child-process cleanup
 or notification-task completion. Terminal-write errors, including lost acknowledgements
 after commit, return `RuntimeError::AttemptBoundaryUnknown` without a second terminal

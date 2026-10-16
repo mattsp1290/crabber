@@ -88,7 +88,7 @@ pub(crate) struct ExecutionTask {
     join: tokio::sync::Mutex<JoinState>,
 }
 enum JoinState {
-    Running(JoinHandle<()>),
+    Running(JoinHandle<TaskTermination>),
     Joined(TaskTermination),
 }
 impl ExecutionTask {
@@ -97,7 +97,7 @@ impl ExecutionTask {
         let termination = match &mut *state {
             JoinState::Joined(termination) => return *termination,
             JoinState::Running(handle) => match handle.await {
-                Ok(()) => TaskTermination::Returned,
+                Ok(termination) => termination,
                 Err(error) if error.is_cancelled() => TaskTermination::Cancelled,
                 Err(error) => {
                     // A panic payload may itself panic on Drop. Never let it
@@ -195,6 +195,39 @@ impl ExecutionTasks {
                 report.sealed && report.pending == 0 && report.failures.is_empty()
             })
     }
+    /// Close every actual registered resource scope after its main worker join.
+    /// Closing only signals/seals; the drain still awaits actual task joins.
+    pub(crate) async fn finish_run_resources(&self, run: &RunId) -> Result<(), ()> {
+        loop {
+            let scopes = self
+                .owners
+                .lock()
+                .unwrap()
+                .resources
+                .iter()
+                .filter(|scope| scope.run_id == *run)
+                .cloned()
+                .collect::<Vec<_>>();
+            // Signal the complete captured set before waiting on any one
+            // task; cleanup may depend on another scope receiving its close.
+            for scope in &scopes {
+                scope.owner.close();
+            }
+            let mut pending = false;
+            for scope in scopes {
+                let report = scope.owner.drain(Duration::from_secs(5)).await;
+                if !report.failures.is_empty() {
+                    return Err(());
+                }
+                pending |= report.pending != 0;
+            }
+            if !pending && self.join_run_resources(run, Duration::ZERO).await {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn spawn(
         &self,
         session_id: SessionId,
@@ -210,22 +243,33 @@ impl ExecutionTasks {
     ) -> Arc<ExecutionTask> {
         self.spawn_scoped(session_id, None, work)
     }
-    fn spawn_scoped(
+    /// Retain the supervisor join and the actual inner worker's observation.
+    pub(crate) fn spawn_reporting(
         &self,
         session_id: SessionId,
         run_id: Option<RunId>,
-        work: impl Future<Output = ()> + Send + 'static,
+        work: impl Future<Output = TaskTermination> + Send + 'static,
     ) -> Arc<ExecutionTask> {
         let mut owners = self.owners.lock().unwrap();
         let task = Arc::new(ExecutionTask {
             session_id,
-            // Local bookkeeping only; never persisted or used as authority.
             local_id: RunId::new(),
             run_id,
             join: tokio::sync::Mutex::new(JoinState::Running(tokio::spawn(work))),
         });
         owners.tasks.insert(task.local_id.clone(), task.clone());
         task
+    }
+    fn spawn_scoped(
+        &self,
+        session_id: SessionId,
+        run_id: Option<RunId>,
+        work: impl Future<Output = ()> + Send + 'static,
+    ) -> Arc<ExecutionTask> {
+        self.spawn_reporting(session_id, run_id, async move {
+            work.await;
+            TaskTermination::Returned
+        })
     }
     pub(crate) async fn join(&self, task: &Arc<ExecutionTask>) -> TaskTermination {
         let termination = task.join().await;

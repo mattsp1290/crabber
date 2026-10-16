@@ -335,6 +335,12 @@ impl RunPlan {
         self.preparation_lease = Some(lease);
         Ok(self)
     }
+    /// Whether this acquisition retains an actual preparation resource lease.
+    /// This selects stricter native worker registration; it proves no cleanup.
+    #[must_use]
+    pub fn retains_preparation_resources(&self) -> bool {
+        self.preparation_lease.is_some()
+    }
     pub fn release(self) {
         drop(self);
     }

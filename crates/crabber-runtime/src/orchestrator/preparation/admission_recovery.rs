@@ -70,7 +70,7 @@ impl Orchestrator {
                     plan,
                     claimed.fence,
                     &retained.session,
-                    InitialEntry::Keyed,
+                    InitialEntry::RecoveredKeyed,
                     Some(bound),
                 ),
             },

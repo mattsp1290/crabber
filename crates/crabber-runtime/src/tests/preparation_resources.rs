@@ -1,6 +1,8 @@
 //! Actual bridge acquisition, native ACK loss and independent physical cleanup.
 #[path = "preparation_resources/cleanup_failure.rs"]
 mod cleanup_failure;
+#[path = "preparation_resources/driver.rs"]
+mod driver;
 #[path = "preparation_resources/faults.rs"]
 mod faults;
 #[path = "preparation_resources/provider_binding.rs"]

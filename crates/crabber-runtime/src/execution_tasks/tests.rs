@@ -214,3 +214,32 @@ async fn session_drain_reports_worker_handoff_during_resource_wait() {
         [] as [RunId; 0]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn driver_cleanup_closes_every_scope_before_awaiting_cross_scope_joins() {
+    let tasks = ExecutionTasks::default();
+    let session = SessionId::new();
+    let run = RunId::new();
+    let a = tasks.tool_resources(session.clone(), run.clone(), ToolCallId::new(), None);
+    let b = tasks.tool_resources(session, run.clone(), ToolCallId::new(), None);
+    let wait_a = a.resources().closing().unwrap();
+    let wait_b = b.resources().closing().unwrap();
+    a.resources()
+        .spawn(async move {
+            wait_b.await;
+            Ok(())
+        })
+        .unwrap();
+    b.resources()
+        .spawn(async move {
+            wait_a.await;
+            Ok(())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), tasks.finish_run_resources(&run))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.snapshot().joined, 1);
+    assert_eq!(b.snapshot().joined, 1);
+}
