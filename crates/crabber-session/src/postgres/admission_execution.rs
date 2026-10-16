@@ -11,7 +11,7 @@ pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
-    sqlx::query("SELECT capsule_version,CASE WHEN capsule_version=1 THEN data ELSE NULL END AS data,CASE WHEN octet_length(data_json)<=16777216 THEN data_json END AS data_json,start_state FROM admission_executions WHERE run_id=$1")
+    let record = sqlx::query("SELECT capsule_version,CASE WHEN capsule_version=1 AND octet_length(data::text)<=16777216 THEN data ELSE NULL END AS data,CASE WHEN octet_length(data_json)<=16777216 THEN data_json END AS data_json,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
         .await
@@ -30,7 +30,14 @@ pub(super) async fn load_record(
             }
             Ok(record)
         })
-        .transpose()
+        .transpose()?;
+    if let Some(record) = &record {
+        if record.receipt.run_id != *run {
+            return Err(StoreError::AdmissionConflict);
+        }
+        super::admission_journal::read(tx, record).await?;
+    }
+    Ok(record)
 }
 
 async fn validate_binding(
@@ -131,6 +138,9 @@ pub(super) async fn begin(execution: &PostgresExecution) -> Result<(), Error> {
     if record.state != AdmissionExecutionState::Unstarted {
         return Err(Error::AlreadyStarted);
     }
+    super::admission_journal::begin(&mut tx, &record, &run)
+        .await
+        .map_err(unknown)?;
     record.state = AdmissionExecutionState::Started;
     if record.capsule.version == 2 {
         sqlx::query(

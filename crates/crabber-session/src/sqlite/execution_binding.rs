@@ -105,8 +105,8 @@ impl SqliteStore {
             };
             sqlx::query(
                     "INSERT INTO \
-                        admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) \
-                        VALUES($1,$2,$3,$4,'Unstarted',$5)",
+                        admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,source_protocol) \
+                        VALUES($1,$2,$3,$4,'Unstarted',$5,1)",
                 )
                 .bind(&receipt.run_id.0)
                 .bind(&receipt.session_id.0)
@@ -116,6 +116,7 @@ impl SqliteStore {
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
+            super::admission_journal::init(tx, &record, &admitted.run).await?;
         }
         Ok(KeyedAdmitOutcome::Started {
             receipt,

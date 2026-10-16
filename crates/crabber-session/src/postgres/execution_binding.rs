@@ -92,14 +92,15 @@ impl PostgresStore {
                 state: crate::AdmissionExecutionState::Unstarted,
             };
             if record.capsule.version == 2 {
-                sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,data_json) VALUES($1,$2,$3,2,'Unstarted','{}'::jsonb,$4)")
+                sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,data_json,source_protocol) VALUES($1,$2,$3,2,'Unstarted','{}'::jsonb,$4,1)")
                     .bind(&receipt.run_id.0).bind(&receipt.session_id.0).bind(keyed.options.key.as_str())
                     .bind(record.encode()?).execute(&mut **tx).await.map_err(db)?;
             } else {
-                sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data) VALUES($1,$2,$3,1,'Unstarted',$4)")
+                sqlx::query("INSERT INTO admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,source_protocol) VALUES($1,$2,$3,1,'Unstarted',$4,1)")
                     .bind(&receipt.run_id.0).bind(&receipt.session_id.0).bind(keyed.options.key.as_str())
                     .bind(json(&record)?).execute(&mut **tx).await.map_err(db)?;
             }
+            super::admission_journal::init(tx, &record, &admitted.run).await?;
         }
         Ok(KeyedAdmitOutcome::Started {
             receipt,

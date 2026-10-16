@@ -264,6 +264,7 @@ pub(super) fn admit_keyed_guarded(
         } else {
             crate::ensure_storable(&execution)?;
         }
+        super::admission_journal::init(state, &execution, &admitted.run)?;
         state
             .admission_executions
             .insert(admitted.run.id.clone(), execution);

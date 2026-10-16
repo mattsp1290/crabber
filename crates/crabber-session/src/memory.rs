@@ -23,6 +23,8 @@ use history::SessionSequence;
 mod abandon;
 #[path = "memory/admission_execution.rs"]
 mod admission_execution;
+#[path = "memory/admission_journal.rs"]
+mod admission_journal;
 #[path = "memory/attempt.rs"]
 mod attempt;
 #[path = "memory/execution_binding.rs"]
@@ -124,6 +126,9 @@ struct State {
     approval_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
     abandonments: BTreeMap<RunId, crate::abandonment::AbandonCommit>,
     admission_executions: BTreeMap<RunId, crate::AdmissionExecutionRecord>,
+    admission_execution_protocols: std::collections::BTreeSet<RunId>,
+    admission_execution_sources:
+        BTreeMap<(RunId, crate::admission_journal::Kind), crate::admission_journal::Source>,
     execution_bindings: BTreeMap<RunId, String>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
@@ -273,6 +278,7 @@ impl MemoryStore {
         operation: impl FnOnce(&mut State, &Run) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         self.ownership_fenced(fence, |state, run| {
+            admission_journal::verify(state, &run.id)?;
             if state
                 .admission_executions
                 .get(&run.id)
@@ -1069,7 +1075,8 @@ impl Store for MemoryStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        Ok(self.load_execution_record(session, key))
+        self.load_execution_record(session, key)
+            .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)
     }
     async fn claim_unstarted_admission(
         &self,
@@ -1193,10 +1200,9 @@ impl Store for MemoryStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
+        let state = self.state.lock().expect("memory store poisoned");
+        admission_journal::verify(&state, run)?;
+        Ok(state
             .admission_executions
             .get(run)
             .map(|record| record.state))
@@ -1205,6 +1211,7 @@ impl Store for MemoryStore {
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.transact(|state| {
             let now = self.clock.now();
+            admission_journal::verify(state, id)?;
             if state
                 .admission_executions
                 .get(id)

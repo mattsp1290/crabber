@@ -10,6 +10,7 @@ mod continuation_handoff;
 
 mod abandon;
 mod admission_execution;
+mod admission_journal;
 mod approval;
 mod attempt;
 mod deletion;
@@ -71,6 +72,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0011_safe_forks.sql"),
     "\nINSERT INTO schema_version(version) VALUES(11);\n",
     include_str!("../migrations/sqlite/0012_session_deletion.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(12);\n",
+    include_str!("../migrations/sqlite/0013_admission_execution_sources.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

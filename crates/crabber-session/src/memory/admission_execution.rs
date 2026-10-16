@@ -10,16 +10,21 @@ impl MemoryStore {
         &self,
         session: &SessionId,
         key: &AdmissionKey,
-    ) -> Option<AdmissionExecutionRecord> {
+    ) -> Result<Option<AdmissionExecutionRecord>, crate::StoreError> {
         let state = self.state.lock().expect("memory store poisoned");
-        let receipt = state.receipts.get(&(session.clone(), key.clone()))?;
-        state.admission_executions.get(&receipt.run_id).cloned()
+        let Some(receipt) = state.receipts.get(&(session.clone(), key.clone())) else {
+            return Ok(None);
+        };
+        super::admission_journal::verify(&state, &receipt.run_id)?;
+        Ok(state.admission_executions.get(&receipt.run_id).cloned())
     }
     pub(super) fn claim_admission(
         &self,
         claim: ClaimUnstartedAdmissionRequest,
     ) -> Result<ClaimedAdmission, Error> {
         self.transact(|state| {
+            super::admission_journal::verify(state, &claim.expected_fence.run_id)
+                .map_err(|_| Error::UnknownStoreFailure)?;
             let run = state
                 .runs
                 .get_mut(&claim.expected_fence.run_id)
@@ -90,6 +95,8 @@ impl MemoryStore {
 impl MemoryExecution {
     pub(super) fn begin_admission(&self) -> Result<(), Error> {
         self.store.transact(|state| {
+            super::admission_journal::verify(state, &self.fence.run_id)
+                .map_err(|_| Error::UnknownStoreFailure)?;
             let run = state
                 .runs
                 .get(&self.fence.run_id)
@@ -129,11 +136,16 @@ impl MemoryExecution {
             {
                 return Err(Error::SemanticConflict);
             }
+            if record.state != AdmissionExecutionState::Unstarted {
+                return Err(Error::AlreadyStarted);
+            }
+            super::admission_journal::begin(state, &self.fence.run_id)
+                .map_err(|_| Error::UnknownStoreFailure)?;
             let record = state
                 .admission_executions
-                .get_mut(&run.id)
+                .get_mut(&self.fence.run_id)
                 .ok_or(Error::MissingEvidence)?;
-            if record.receipt.run_id != run.id || record.receipt.session_id != run.session_id {
+            if record.receipt.run_id != self.fence.run_id {
                 return Err(Error::SemanticConflict);
             }
             if record.state != AdmissionExecutionState::Unstarted {

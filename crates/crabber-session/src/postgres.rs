@@ -14,6 +14,7 @@ mod run_facts;
 
 mod abandon;
 mod admission_execution;
+mod admission_journal;
 mod approval;
 mod attempt;
 mod deletion;
@@ -574,6 +575,12 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(include_str!(
+            "../migrations/0017_admission_execution_sources.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
         tx.commit().await.map_err(db)?;
         pool.close().await;
         Ok(())

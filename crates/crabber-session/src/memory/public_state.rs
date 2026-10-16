@@ -104,6 +104,8 @@ impl MemoryExecution {
                 return Ok(receipt.clone());
             }
             public_state::verify_owner(&run, &self.fence, self.store.clock.now())?;
+            super::admission_journal::verify(state, &run.id)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             if state
                 .admission_executions
                 .get(&run.id)

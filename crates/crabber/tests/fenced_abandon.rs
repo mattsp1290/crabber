@@ -357,6 +357,12 @@ pub use crabber::session::{
 mod abandonment;
 #[path = "../../crabber-session/src/abandonment_contract.rs"]
 mod abandonment_contract;
+#[path = "../../crabber-session/src/admission_execution_contract.rs"]
+#[allow(dead_code)]
+mod admission_execution_contract;
+#[path = "../../crabber-session/src/admission_journal.rs"]
+#[allow(dead_code)]
+mod admission_journal;
 #[path = "../../crabber-session/src/approval/audit.rs"]
 #[allow(dead_code)]
 mod approval_audit;

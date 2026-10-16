@@ -177,6 +177,7 @@ impl MemoryExecution {
         }
         let now = self.store.clock.now();
         attempt::verify_run(&run, &self.fence, now)?;
+        super::admission_journal::verify(state, &run.id).map_err(|_| Error::UnknownStoreOutcome)?;
         if state
             .admission_executions
             .get(&run.id)

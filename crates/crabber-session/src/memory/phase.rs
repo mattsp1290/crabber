@@ -220,6 +220,8 @@ impl MemoryStore {
                     None
                 }
             };
+            super::admission_journal::verify(state, &run.id)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             if state
                 .admission_executions
                 .get(&run.id)

@@ -12,7 +12,7 @@ pub(super) async fn load_record(
     tx: &mut Transaction<'_, Sqlite>,
     run: &RunId,
 ) -> Result<Option<AdmissionExecutionRecord>, StoreError> {
-    sqlx::query("SELECT capsule_version,CASE WHEN length(CAST(data AS BLOB))<=16777216 THEN data END AS data,start_state FROM admission_executions WHERE run_id=$1")
+    let record = sqlx::query("SELECT capsule_version,CASE WHEN length(CAST(data AS BLOB))<=16777216 THEN data END AS data,start_state FROM admission_executions WHERE run_id=$1")
         .bind(&run.0)
         .fetch_optional(&mut **tx)
         .await
@@ -28,7 +28,14 @@ pub(super) async fn load_record(
             }
             Ok(record)
         })
-        .transpose()
+        .transpose()?;
+    if let Some(record) = &record {
+        if record.receipt.run_id != *run {
+            return Err(StoreError::AdmissionConflict);
+        }
+        super::admission_journal::read(tx, record).await?;
+    }
+    Ok(record)
 }
 
 async fn validate_binding(
@@ -134,6 +141,9 @@ pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
         if record.state != AdmissionExecutionState::Unstarted {
             return Err(Error::AlreadyStarted);
         }
+        super::admission_journal::begin(&mut tx, &record, &run)
+            .await
+            .map_err(unknown)?;
         record.state = AdmissionExecutionState::Started;
         sqlx::query(
             "UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1",

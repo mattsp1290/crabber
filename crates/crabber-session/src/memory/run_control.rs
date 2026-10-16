@@ -182,6 +182,8 @@ impl MemoryExecution {
                 .ok_or(Error::NotFound)?;
             crate::attempt::verify_run(&run, &self.fence, self.store.clock.now())
                 .map_err(|_| Error::StaleOwner)?;
+            super::admission_journal::verify(state, &run.id)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             if state
                 .admission_executions
                 .get(&run.id)
