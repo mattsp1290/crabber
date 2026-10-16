@@ -31,7 +31,7 @@ impl HeartbeatGuard {
         if !resources.run_matches(&fence.run_id) {
             return Err(RuntimeError::PreparationRecoveryRequired);
         }
-        let owner = resources.heartbeat_resources();
+        let owner = resources.background_resources(crate::WorkerResourceKind::LeaseHeartbeat);
         let closing = owner
             .resources()
             .closing()

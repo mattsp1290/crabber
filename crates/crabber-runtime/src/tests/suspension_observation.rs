@@ -433,8 +433,11 @@ async fn worker_join_retains_original_heartbeat_renewal_after_main_returns() {
         .drain_session_execution_tasks(&session, std::time::Duration::from_millis(20))
         .await;
     assert_eq!(pending.pending, vec![run.clone()]);
-    assert!(pending.heartbeats.iter().any(|scope| {
-        scope.session_id == session && scope.run_id == run && scope.resources.pending == 1
+    assert!(pending.background_tasks.iter().any(|scope| {
+        scope.session_id == session
+            && scope.run_id == run
+            && scope.kind == crate::WorkerResourceKind::LeaseHeartbeat
+            && scope.resources.pending == 1
     }));
     assert_eq!(gate.stale_renewals.load(Ordering::SeqCst), 0);
     gate.release_heartbeat.notify_one();

@@ -537,7 +537,7 @@ impl Orchestrator {
         acknowledged.store(true, Ordering::SeqCst);
         self.observer.emit(&settled);
         if interrupted {
-            Self::notify_interrupted_settlement(plan, &settled, !fixed_interruption);
+            self.notify_interrupted_settlement(plan, &settled, !fixed_interruption)?;
             return Err(RuntimeError::Interrupted);
         }
         let settled_projection = serde_json::to_value(&settled).unwrap_or(Value::Null);

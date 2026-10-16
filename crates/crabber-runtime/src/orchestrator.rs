@@ -1,5 +1,6 @@
 mod driver;
 mod heartbeat;
+mod notifications;
 use heartbeat::HeartbeatGuard;
 mod host_callbacks;
 #[path = "orchestrator/observation_lifetime.rs"]
@@ -1069,13 +1070,13 @@ impl Orchestrator {
     /// deadline. A dropped run handle leaves its worker retained here.
     /// This does not stop ingress, cancel work, or prove durable settlement or
     /// external resource cleanup. Inspect `pending`, `pending_preparations` and
-    /// tool `resources` and `heartbeats` (sealed state, pending joins and failures). Active tool scopes
+    /// tool `resources` and `background_tasks` (sealed state, pending joins and failures). Active tool scopes
     /// remain open; the host must stop its ingress before a final drain.
     pub async fn drain_execution_tasks(&self, bound: Duration) -> crate::ExecutionTaskDrain {
         self.execution_tasks.drain(bound).await
     }
 
-    /// Join this session's retained preparation, workers, tools and heartbeats.
+    /// Join this session's retained preparation, workers, tools and background tasks.
     /// This is a local observation: it neither stops ingress nor proves durable
     /// cleanup or the absence of work on another controller.
     pub async fn drain_session_execution_tasks(
@@ -1963,36 +1964,8 @@ impl Orchestrator {
             )
             .await?;
         self.observer.emit(&event);
-        Self::notify_interrupted_settlement(plan, &event, false);
+        self.notify_interrupted_settlement(plan, &event, false)?;
         Ok(())
-    }
-
-    fn notify_interrupted_settlement(plan: &RunPlan, event: &EventRecord, protected: bool) {
-        // Notification callbacks cannot delay sibling settlement. Keep the plan lease
-        // until delivery finishes so mount shutdown still waits for these callbacks.
-        let plan = plan.clone();
-        let state_sink = crabber_extension::current_state_sink();
-        let projection = serde_json::to_value(event).unwrap_or(Value::Null);
-        tokio::spawn(async move {
-            let delivery = async {
-                plan.dispatcher
-                    .notify::<EventPublished>(projection.clone())
-                    .await;
-                if protected {
-                    plan.dispatcher
-                        .notify::<crabber_extension::ToolSettled>(projection)
-                        .await;
-                }
-            };
-            // Preserve state reads and best-effort writes; the original sink still
-            // rejects writes after terminal settlement through its execution fence.
-            if let Some(sink) = state_sink {
-                crabber_extension::with_state_sink(sink, delivery).await;
-            } else {
-                delivery.await;
-            }
-            plan.release();
-        });
     }
 
     /// Admits a run and starts its turn loop in the background.
@@ -2666,7 +2639,7 @@ impl Orchestrator {
                     worker().await;
                     // Resource failures remain visible in the separate drain;
                     // they are not a panic of this actual returned worker.
-                    let _ = resources.finish_heartbeats().await;
+                    let _ = resources.finish_background().await;
                 }
                 failed.termination()
             },
@@ -4527,10 +4500,32 @@ mod recovery_contract_tests {
             )
             .await
             .unwrap();
-        runtime
-            .settle_unfinished_calls(execution.as_ref(), &session_id, &run_id, &plan, false, None)
-            .await
-            .unwrap();
+        let work_session = session_id.clone();
+        let work_run = run_id.clone();
+        let work_plan = plan.clone();
+        let recovery = runtime.spawn_worker(
+            session_id.clone(),
+            run_id.clone(),
+            move |worker, _| async move {
+                worker
+                    .settle_unfinished_calls(
+                        execution.as_ref(),
+                        &work_session,
+                        &work_run,
+                        &work_plan,
+                        false,
+                        None,
+                    )
+                    .await?;
+                // This fixture exercises settlement without claiming a native
+                // terminal Run result. Its actual worker still owns delivery.
+                Err(RuntimeError::Interrupted)
+            },
+        );
+        assert!(matches!(
+            recovery.done().await,
+            Err(RuntimeError::Interrupted)
+        ));
         let record = Finished {
             harness: &harness,
             session_id,

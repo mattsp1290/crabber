@@ -60,6 +60,56 @@ async fn interrupt_and_finish(harness: &Harness, handle: RunHandle) -> Finished<
     }
 }
 
+fn interrupt_observation(
+    harness: &Harness,
+    handle: RunHandle,
+) -> (
+    Finished<'_>,
+    tokio::sync::watch::Receiver<bool>,
+    impl std::future::Future<Output = Result<crate::RunResult, crate::RuntimeError>> + Send + 'static,
+) {
+    let completion = handle.completion_signal();
+    let done = Finished {
+        harness,
+        session_id: handle.session_id().clone(),
+        run_id: handle.run_id().clone(),
+    };
+    handle.interrupt();
+    (done, completion, handle.done())
+}
+
+async fn wait_outcome(completion: &mut tokio::sync::watch::Receiver<bool>) {
+    // Outcome publication remains independent of actual background joins.
+    timeout(
+        INTERRUPT_SETTLEMENT_BOUND,
+        completion.wait_for(|done| *done),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+async fn assert_notification_pending(
+    done: &Finished<'_>,
+    worker: std::pin::Pin<&mut impl std::future::Future>,
+) {
+    let retained = done
+        .harness
+        .runtime()
+        .drain_session_execution_tasks(&done.session_id, std::time::Duration::from_millis(20))
+        .await;
+    assert_eq!(retained.pending, vec![done.run_id.clone()]);
+    assert!(retained.background_tasks.iter().any(|scope| {
+        scope.kind == crate::WorkerResourceKind::InterruptedSettlementNotification
+            && scope.resources.pending == 1
+    }));
+    assert!(
+        timeout(std::time::Duration::from_millis(25), worker)
+            .await
+            .is_err()
+    );
+}
+
 async fn assert_interrupted(done: &Finished<'_>, call: &ToolCallId, expected: &str) {
     let record = done.record(call).await;
     assert_eq!(record.status, ToolCallStatus::Interrupted);
@@ -327,12 +377,14 @@ async fn interrupted_notifications_cannot_block_sibling_settlement_and_retain_pl
             started.acquire_many(2).await.unwrap().forget();
         }
         let cancelled_at = Instant::now();
-        handle.interrupt();
+        let (done, mut completion, worker) = interrupt_observation(&harness, handle);
+        tokio::pin!(worker);
         timeout(INTERRUPT_SETTLEMENT_BOUND, entered.entered())
             .await
             .unwrap();
-        let done = interrupt_and_finish(&harness, handle).await;
+        wait_outcome(&mut completion).await;
         assert!(cancelled_at.elapsed() <= INTERRUPT_SETTLEMENT_BOUND);
+        assert_notification_pending(&done, worker.as_mut()).await;
         assert_interrupted(
             &done,
             &first.id,
@@ -353,6 +405,11 @@ async fn interrupted_notifications_cannot_block_sibling_settlement_and_retain_pl
             "blocked callback must retain the mount plan lease"
         );
         entered.release_all();
+        let result = timeout(INTERRUPT_SETTLEMENT_BOUND, worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.status, RunStatus::Interrupted);
         timeout(INTERRUPT_SETTLEMENT_BOUND, &mut close)
             .await
             .unwrap()
@@ -442,7 +499,9 @@ async fn delayed_protected_notifications_read_seeded_state_and_reject_terminal_w
         .await;
     let handle = harness.start().await;
     started.acquire().await.unwrap().forget();
-    let done = interrupt_and_finish(&harness, handle).await;
+    let (done, mut completion, worker) = interrupt_observation(&harness, handle);
+    tokio::pin!(worker);
+    wait_outcome(&mut completion).await;
     assert_interrupted(&done, &call.id, r#""protected""#).await;
     for _ in 0..2 {
         timeout(INTERRUPT_SETTLEMENT_BOUND, entered.entered())
@@ -455,6 +514,11 @@ async fn delayed_protected_notifications_read_seeded_state_and_reject_terminal_w
             .unwrap()
             .forget();
     }
+    let result = timeout(INTERRUPT_SETTLEMENT_BOUND, worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Interrupted);
     let persisted = harness
         .store
         .get_extension_state(EXTENSION, &done.session_id)
