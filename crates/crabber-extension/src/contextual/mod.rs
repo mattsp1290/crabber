@@ -1,9 +1,14 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
 mod cleanup;
+mod generation;
 mod initialization;
 mod instances;
 mod lifecycle;
 mod profile;
+pub use generation::{
+    ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
+    ServiceGenerationScope,
+};
 use profile::SharedRegistration;
 
 use crate::{
@@ -40,6 +45,7 @@ pub struct FactoryContext {
     workspace: WorkspaceContext,
     session_id: Option<SessionId>,
     cleanup: CleanupTracker,
+    generation: ServiceGenerationDescriptor,
 }
 impl FactoryContext {
     #[must_use]
@@ -53,6 +59,12 @@ impl FactoryContext {
     #[must_use]
     pub fn cleanup(&self) -> &CleanupTracker {
         &self.cleanup
+    }
+    /// Local service-generation identity. This carries no dispatch authority or
+    /// physical cleanup proof and does not alter the execution fingerprint.
+    #[must_use]
+    pub fn generation(&self) -> &ServiceGenerationDescriptor {
+        &self.generation
     }
 }
 
@@ -98,6 +110,7 @@ struct SlotState {
     closed: bool,
     records: Vec<Record>,
     initialization: Option<Arc<Initialization>>,
+    generation: Option<ServiceGenerationDescriptor>,
 }
 #[derive(Default)]
 struct Initialization {

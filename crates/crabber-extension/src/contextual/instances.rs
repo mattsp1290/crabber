@@ -127,6 +127,8 @@ impl ContextualPlanProvider {
         // A failed attempt's resources remain reachable until cleanup really ends.
         self.clean_records(&slot).await?;
         self.check_slot(&slot)?;
+        let generation = self.new_generation(&slot)?;
+        slot.state.lock().unwrap().generation = Some(generation);
         let result = AssertUnwindSafe(async {
             match &slot.owner {
                 Owner::Shared => self.install_shared(&slot).await,
@@ -231,6 +233,13 @@ impl ContextualPlanProvider {
                 ),
                 session_id: (scope == FactoryScope::Session).then(|| context.session_id().clone()),
                 cleanup: cleanup.tracker(),
+                generation: slot
+                    .state
+                    .lock()
+                    .unwrap()
+                    .generation
+                    .clone()
+                    .expect("generation selected before factory"),
             };
             let failed = || ExtensionError::ContextInitializationFailed {
                 component: registration.identity.id.clone(),

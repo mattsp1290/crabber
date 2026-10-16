@@ -14,6 +14,10 @@ pub(crate) struct RegistrationSnapshot {
     mounts: Vec<(Scope, Value)>,
 }
 impl RegistrationSnapshot {
+    pub(crate) fn all_declarations(&self) -> Value {
+        Value::Array(self.mounts.iter().map(|(_, value)| value.clone()).collect())
+    }
+
     pub(crate) fn for_context(&self, context: &SessionContext) -> Value {
         Value::Array(
             self.mounts

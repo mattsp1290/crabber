@@ -2,7 +2,11 @@
 
 mod contextual;
 mod dispatch;
-pub use contextual::{ContextualPlanProvider, ExtensionFactory, FactoryContext, FactoryScope};
+pub use contextual::{
+    ContextualPlanProvider, ExtensionFactory, FactoryContext, FactoryScope,
+    ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
+    ServiceGenerationScope,
+};
 mod model_middleware;
 pub use model_middleware::*;
 mod plan;
