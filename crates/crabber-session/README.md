@@ -331,11 +331,15 @@ selected defaults, without migration rewrites.
 Archive changes visibility and rejects fresh ordinary admissions under the same
 session transaction. It permits exact admission retries and existing approval,
 continuation and reconciliation controls; it does not cancel work. Selected
-provider/model identifiers are persisted host preferences. The current runtime
-still uses the explicit immutable admission selection; hosts must resolve these
-preferences into that selection themselves. Automatic selection of stored
-preferences, deletion/tombstones, safe forks and an aggregate coherent public
-management snapshot remain outstanding parts of WP5.
+provider/model identifiers are persisted host preferences. `Agent::prompt_session` and its
+default-selected variants resolve stored preferences with configured fallbacks;
+explicit execution contexts retain their immutable admitted selection. `ForkSession` creates nonexecuting
+imported history at a verified closed boundary. V2 aggregate snapshots compose
+that history with bounded authenticated control metadata. `delete_session` is
+restricted to positively verified quiet managed/fork sessions; retained runs and
+unclassified resource history remain blocked with `OwnershipUnknown`. See the
+[public host guide](../../docs/server-host.md) for the bounded controls and
+[offline probe](../../examples/server-host-probe/README.md) for executable use.
 
 PostgreSQL schema 9 adds session metadata and session-only audit records, sharing
 ControlId uniqueness with all other controls. Management audit never fabricates

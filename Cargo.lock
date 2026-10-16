@@ -2946,6 +2946,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "server-host-probe"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crabber",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

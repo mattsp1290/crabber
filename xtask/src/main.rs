@@ -32,6 +32,7 @@ fn check() {
     check_wit(workspace);
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
+    check_server_host(workspace);
     check_custom_http(workspace);
     run(
         workspace,
@@ -119,6 +120,23 @@ fn check() {
         "testdata/external-consumer/check.sh",
     );
     check_glue(workspace);
+}
+
+// This local adoption probe deliberately needs no network provider or AG-UI SDK.
+fn check_server_host(workspace: &Path) {
+    run(
+        workspace,
+        &["test", "-p", "server-host-probe", "--features", "sqlite"],
+    );
+    run(
+        workspace,
+        &["run", "--quiet", "-p", "server-host-probe", "--", "memory"],
+    );
+    run_script(
+        workspace,
+        "locked server-host consumer",
+        "testdata/server-host-consumer/check.sh",
+    );
 }
 
 fn check_sqlite(workspace: &Path) {

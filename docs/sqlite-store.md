@@ -26,19 +26,24 @@ wiring in the [session manifest](../crates/crabber-session/Cargo.toml).
 ## Lifecycle
 
 The host creates the parent directory, then calls `SqliteStore::migrate(path)`
-before `SqliteStore::connect(path)`. Migration owns file creation, schema changes
-and enabling WAL. Connect verifies the application identity, schema version 3 with its complete numbered history
-and WAL mode; it never creates a file or changes schema or journal mode.
+before `SqliteStore::connect(path)`. The current PostgreSQL counterpart is schema 17.
+SQLite initialization is fresh-only: archive or export needed history with the
+matching old binary, then create a new current database. There is no in-place
+upgrade from earlier SQLite schemas. Keep an untouched backup and its matching
+binary when rolling back; opening a current file with an older binary is not an
+upgrade or rollback mechanism. Migration owns file creation, schema changes
+and enabling WAL. Connect verifies the application identity, schema version 13
+with its complete numbered history and WAL mode; it never creates a file or changes schema or journal mode.
 
 | Input | `migrate(path)` | `connect(path)` | Executable proof in `sqlite::lifecycle_tests` |
 | --- | --- | --- | --- |
-| Missing file, existing parent | Creates version-3 WAL database | Refuses; creates nothing | `migrate_creates_current_version_wal_database`, `connect_never_creates_a_file` |
-| Fresh empty SQLite file | Initializes version 3, WAL and signing secret | Refuses until migrated | `interrupted_migration_leaves_a_fresh_database` |
-| Crabber version 3, WAL | Idempotent; preserves data and secret | Opens without schema writes | `migrate_is_idempotent_and_keeps_the_snapshot_secret`, `connect_is_read_only` |
-| Prior version 1/2 | Refuses without upgrading or changing journal mode | Refuses | `version_one_files_are_refused_without_migration_or_journal_changes`, `version_two_files_are_refused_without_migration_or_journal_changes` |
+| Missing file, existing parent | Creates version-13 WAL database | Refuses; creates nothing | `migrate_creates_current_version_wal_database`, `connect_never_creates_a_file` |
+| Fresh empty SQLite file | Initializes version 13, WAL and signing secret | Refuses until migrated | `interrupted_migration_leaves_a_fresh_database` |
+| Crabber version 13, WAL | Idempotent; preserves data and secret | Opens without schema writes | `migrate_is_idempotent_and_keeps_the_snapshot_secret`, `connect_is_read_only` |
+| Prior version 1–12 | Refuses without upgrading or changing journal mode | Refuses | `version_one_files_are_refused_without_migration_or_journal_changes`, `version_two_files_are_refused_without_migration_or_journal_changes` |
 | Unknown version or malformed version metadata | Refuses without changing logical content or journal mode | Refuses without changing logical content | `unknown_schema_version_is_refused_without_changes`, `malformed_version_metadata_is_refused_without_changes`, `unknown_schema_in_a_backup_is_refused_before_enabling_wal` |
 | Foreign tables/application ID, or non-SQLite input | Refuses without rewriting content | Refuses without rewriting content | `foreign_database_is_refused_without_changes`, `foreign_application_id_is_refused_without_changes`, `non_sqlite_inputs_are_refused_without_changes` |
-| Version-3 restore in non-WAL mode | Re-enables WAL without regenerating the secret | Refuses; asks host to migrate | `restored_backup_requires_migrate_then_connects` |
+| Version-13 restore in non-WAL mode | Re-enables WAL without regenerating the secret | Refuses; asks host to migrate | `restored_backup_requires_migrate_then_connects` |
 
 A WAL checkpoint can move committed frames into the main file without changing
 logical records. Refusal tests compare logical database content rather than

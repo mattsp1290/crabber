@@ -87,7 +87,9 @@ are outside this ownership scope. Initial workers, expired Unstarted recovery an
 eligible suspended continuation now reserve/reclaim and one-shot Begin a native
 attempt before business work. Native tool calls claim and begin their own phases
 before dispatch and atomically settle protected output after their resources join.
-Durable cancellation of active work and full orderly close remain unfinished. Result/completion signals
+Durable run cancellation records acceptance separately from worker observation
+and actual resource joins. Full orderly close and positive coverage for every
+resource class remain unfinished. Result/completion signals
 and event EOF never replace these checks.
 
 The live `ApprovalFacade::request` and `UserPrompter::ask` APIs have been removed.
@@ -119,9 +121,9 @@ registered resources under a one-second bound. Pending joins or failures stop
 continuation with `AttemptCleanupIncomplete`, retain ownership and leave the native
 attempt uncompleted. A later drain does not automatically resume execution or
 manufacture a successful result. These are local task observations; durable phase quiescence,
-external-effect reconciliation and explicit session-owned job transfer are still
-part of the pending native phase integration. They must not be inferred from
-this report. Execution fingerprints include resource contract version 1 and its
+external-effect reconciliation and explicit session-owned job transfer must be
+authenticated separately. They must not be inferred from this report. Execution
+fingerprints include resource contract version 3 and its
 capacity. Native attempt driver version 1 and its join bound are also fingerprinted;
 old plans fail closed and require their matching binary to finish. Custom stores
 must explicitly declare `supports_owned_attempts()` and implement its full contract;
@@ -190,7 +192,8 @@ The runtime uses these atomic APIs for both ordinary and keyed admission. It
 restores the retained backend/configuration before recovery claims, holds the
 same implementation across turns and compaction, and uses captured limits rather
 than querying a live model catalog. Missing legacy binding evidence fails closed.
-The complete common execution driver remains unfinished.
+The ordinary execution driver uses the retained binding. Complete resource
+coverage and all provider/preparation paths remain under qualification.
 
 Every Agent/Orchestrator builder requires an explicit `behavior_fingerprint` or
 `behavior_version` declaration for opaque native policy, tool and callback behavior.
@@ -230,8 +233,8 @@ report supported roles, media sources, MIME types and placements through
 `input_support()`. Responses encodes image data/URLs/opaque files in user input
 and function output; Chat Completions encodes data/URL images in user input.
 Other representations fail before credentials, headers or HTTP. Typed media
-remains ordered and Crabber never fetches source URLs. Frontend descriptors and continuation envelopes
-still require the pending durable interaction driver and fail closed today.
+remains ordered and Crabber never fetches source URLs. Frontend descriptors and
+continuation envelopes use the explicit durable driver described in [frontend tools](frontend-tool-continuations.md).
 
 `Store::session_revision` reads the current opaque public revision. Public history,
 call, epoch, event and accepted same-run input mutations advance it atomically;
@@ -239,7 +242,7 @@ lease refresh, private extension state, failed writes and receipt replay do not.
 Values can have gaps and are separate from event cursors and history-snapshot
 invalidation counters. Custom stores can run `revision_contract::run_contract`.
 This scalar alone does not validate a separately captured history snapshot;
-coherent public snapshots are still being implemented. Conditional admission
+use the coherent public snapshot contracts described below. Conditional admission
 is available through the captured typed envelope and `AdmitRequest.expected_revision`.
 
 The experimental `Store::public_state` reads state, display activities and their
@@ -337,8 +340,8 @@ Experimental native phase transitions work in Memory, SQLite and PostgreSQL.
 Custom adapters default to `Unsupported`. `mutate_phase` commits a
 phase record, source event, revision and receipt together. A fresh claim returns
 opaque authority; only a fresh applied begin permits dispatch. The authority is
-never serialized into a receipt or returned on replay. These APIs are not yet
-wired to the runtime's tool pipeline.
+never serialized into a receipt or returned on replay. The runtime uses phases
+around backend execution and frontend result processing. Host reconciliation remains explicit.
 
 `ExecutionStore::settle_tool_phase` atomically completes a started phase and its
 logical tool call, records the worker's assertion of complete quiescence, appends
@@ -371,8 +374,9 @@ conflict. Refusal leaves uncertainty intact. Final output remains separate from
 metadata and reconciliation never acknowledges worker cleanup. Only record
 quiescence after actual task joins or explicit ownership transfer. An uncertain
 phase blocks attempt cleanup even when its worker is quiescent. Compound
-suspension/checkpoint/interaction/barrier persistence remains under implementation;
-an ordinary phase claim cannot resume a suspended phase.
+suspension/checkpoint/interaction/barrier persistence is implemented for explicit
+native and frontend continuations; an ordinary phase claim cannot
+resume a suspended phase.
 
 Retain the original `PhaseMutation` and reconcile unknown acknowledgements with
 `lookup_phase_mutation`. Metadata reconciliation does not restore factories or
@@ -381,16 +385,18 @@ suite qualify these native transitions. SQLite/PostgreSQL process tests kill
 writers before commit and reconcile lost acknowledgements in fresh processes.
 Worker capabilities stay inside the writer; phase validation checks its parent
 without returning the broader attempt capability. An owner can finish phase
-quiescence after reporting incomplete attempt cleanup. Connecting runtime task
-joins to these durable phase/attempt transitions remains under implementation.
+quiescence after reporting incomplete attempt cleanup. The runtime connects
+actual owned task joins to durable phase/attempt boundaries;
+a public quiescence claim still requires the embedding to account for its own
+external resources.
 
 If the initial execution cannot acknowledge its interruption/failure terminal
 write, it returns `RuntimeError::TerminalOutcomeUnknown` with the runtime run ID
 and storage cause. The task may have stopped while the retained run is still
 running, or the terminal write may already have committed. Reconcile the run and
 durable events before deciding what to do next. Runtime terminal notifications
-follow acknowledged persistence. The common owned/resumed execution lifecycle
-and cleanup/join guarantees remain under implementation.
+follow acknowledged persistence. Owned ordinary/resumed paths retain joins. Complete resource coverage across
+all preparation providers, external services and historical runs is not inferred.
 
 Current regression coverage is in `crates/crabber/tests/server_host.rs` and
 `crates/crabber-extension/tests/context_plans.rs`: concurrent explicit workspaces,
@@ -418,3 +424,52 @@ WASM tools use `crabber:extensions@0.2.0` and return the same versioned completi
 envelope. `crabber_guest::json_tool_output` provides explicit JSON-to-text output;
 `ToolOutput::into_envelope` supports mixed content. Unsupported versions and
 malformed content fail closed. Rebuild guests after this contract change.
+
+
+## Bounded public management and adoption
+
+The [offline server-host probe](../examples/server-host-probe/README.md) and
+[locked path consumer](../testdata/server-host-consumer/README.md) execute public
+custom Store, custom tool, scoped factory, two-context, explicit interaction and
+post-close control flows. They use a scripted provider and require no credentials.
+They qualify local embedding only; the external Git-only consumer, final SDK
+projection and standard-tool adoption gates remain separate. The original
+minimal-embed glue remains subject to its existing 60-line limit.
+
+Use `Agent::session_summary` and `list_sessions` for bounded display metadata.
+`manage_session` supports stable-ID empty creation, rename, selected defaults and
+reversible archive under revision CAS. Archive blocks fresh ordinary admission;
+it does not cancel existing work or prevent original receipt replay. Explicit
+execution contexts keep their immutable workspace/directory and selection.
+
+`public_session_snapshot_v2` combines history and safe queue, continuation,
+frontend and ownership summaries. It shares one proof allowance across the
+actual bounded readers; it returns explicit Limited/unsupported outcomes instead
+of silently omitting evidence. V1 remains available with its original shape.
+Follow the returned inner history continuation with the same V2 request profile;
+it binds the captured revision and imported-history cutoffs. A revision change
+invalidates the capture. These DTOs expose no worker capability, private checkpoint,
+raw external answer or supplied frontend output. Empty local task lists are not
+durable quiescence evidence.
+
+`ForkSession` copies a verified closed history prefix into a new session with
+nonexecuting `ImportedToolCall` and message provenance. It does not clone run
+capabilities, pending questions, native effects or execution authority. The
+original operation key and source/target identity must be retained for exact
+replay. An exact replay remains metadata after later source changes.
+
+`crabber::session::DeleteSession` requires an exact revision (including revision
+zero), stable operation ID and positively verified creation coverage. The current
+positive subset is quiet managed or fork-created sessions with full native
+readiness. Every retained run, legacy origin or unclassified owner remains
+blocked with `OwnershipUnknown`; active states retain their specific Busy reasons.
+Deletion commits a minimal permanent tombstone and receipt with physical purge
+atomically under the session gate. Retry the original request after response loss
+before choosing a new key. A changed key/choice conflicts; replay is checked before
+current CAS. This is minimal logical erasure, not cryptographic erasure of backups
+or proof that all arbitrary native resource types are joined.
+
+Current bundled storage versions are PostgreSQL 17 and SQLite 13. PostgreSQL uses
+its versioned migration roster; SQLite accepts fresh current files and rejects
+older schemas rather than silently upgrading. Always run explicit migration
+before read-only `connect`; see [SQLite storage](sqlite-store.md).

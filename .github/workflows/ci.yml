@@ -93,3 +93,5 @@ jobs:
         run: cargo test -p crabber --features postgres --test admission_replay -- --nocapture
       - name: Public pre-session ownership and independent session resources
         run: cargo test -p crabber --features postgres --test session_owners -- --nocapture
+      - name: Offline customized server host and injected Store adoption
+        run: cargo test -p server-host-probe --features postgres -- --nocapture
