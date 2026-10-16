@@ -3,13 +3,6 @@ use super::VerifiedScope;
 use crate::public_session::v2::proof::{Failure as ProofFailure, ReadError};
 use crate::{DeletionBlocker, DeletionError};
 pub(crate) const MAX_PROOF_BYTES: usize = 32 * 1024 * 1024;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "guarded deletion coordinator consumes these typed results"
-    )
-)]
 pub(crate) enum Readiness {
     Ready(VerifiedScope),
     Blocked(DeletionBlocker),

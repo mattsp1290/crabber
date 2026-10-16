@@ -10,35 +10,18 @@ pub(crate) const MAX_PROOF_BYTES: usize = 32 * 1024 * 1024;
 #[path = "coverage/sql.rs"]
 pub(crate) mod sql;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
 pub(crate) enum CoverageRead {
     Unknown,
     Limited,
     Verified(VerifiedDeletionCoverage),
 }
 
-// These expectations are temporary integration markers. The guarded erasure
-// coordinator removes them when its positive-origin verifier is connected.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "positive ownership coverage verifier is being integrated"
-    )
-)]
 pub(crate) struct VerifiedDeletionCoverage {
     session_id: SessionId,
     revision: SessionRevision,
     proof_bytes: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded deletion readiness is being integrated")
-)]
 impl VerifiedDeletionCoverage {
     pub(crate) fn session_id(&self) -> &SessionId {
         &self.session_id

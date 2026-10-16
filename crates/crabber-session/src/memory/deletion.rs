@@ -4,6 +4,8 @@ use crate::deletion::coverage::{self, CoverageRead};
 use crate::deletion::origin::OriginKind;
 use crate::{DeletionError, DeletionReceipt, SessionDisposition, StoreError};
 use crabber_core::{ControlId, SessionId, SessionRevision};
+#[path = "deletion/coordinator.rs"]
+mod coordinator;
 #[cfg(test)]
 #[path = "deletion/fork_fixture.rs"]
 mod fork_fixture;
@@ -35,10 +37,6 @@ mod readiness;
 #[path = "deletion/snapshot_tests.rs"]
 mod snapshot_tests;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
 pub(super) fn coverage(state: &State, session: &SessionId) -> Result<CoverageRead, DeletionError> {
     let Some(origin) = state.ownership_origins.get(session) else {
         return Ok(CoverageRead::Unknown);

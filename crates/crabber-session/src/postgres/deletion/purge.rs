@@ -2,10 +2,6 @@
 use crate::{DeletionError as Error, sql_deletion::VerifiedScope};
 use sqlx::{Postgres, Transaction};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
 pub(super) async fn purge(
     tx: &mut Transaction<'_, Postgres>,
     scope: &VerifiedScope,

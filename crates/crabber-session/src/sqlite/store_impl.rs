@@ -18,6 +18,12 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn delete_session(
+        &self,
+        request: crate::DeleteSession,
+    ) -> Result<crate::DeletionOutcome, crate::DeletionError> {
+        self.guarded_delete(request).await
+    }
     async fn lookup_session_deletion(
         &self,
         session: &SessionId,

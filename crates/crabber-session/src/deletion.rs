@@ -110,6 +110,7 @@ impl DeleteSession {
     }
 }
 
+pub(crate) mod coordinator;
 pub(crate) mod coverage;
 pub(crate) mod origin;
 mod records;
@@ -121,3 +122,9 @@ pub(crate) mod contract;
 
 mod validation;
 pub(crate) use validation::{fork_error, management_error, owner_error, validate_session};
+
+#[cfg(test)]
+pub(crate) mod coordinator_contract;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+pub(crate) mod process;

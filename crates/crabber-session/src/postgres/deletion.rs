@@ -4,6 +4,7 @@ use crate::deletion::Tombstone;
 use crate::{DeletionError as Error, DeletionReceipt, SessionDisposition};
 use crabber_core::{ControlId, InputFingerprint, SessionId, SessionRevision};
 use sqlx::Row;
+mod coordinator;
 mod purge;
 mod readiness;
 #[cfg(test)]
@@ -30,46 +31,56 @@ pub(super) async fn ensure_live(
 fn revision(value: i64) -> Result<SessionRevision, Error> {
     SessionRevision::new(u64::try_from(value).map_err(unknown)?).map_err(unknown)
 }
+const VIEW: &str = "SELECT t.session_id IS NOT NULL AS present,CASE WHEN octet_length(t.operation_id)<=128 THEN t.operation_id END AS operation_id,t.expected_revision,t.final_revision,CASE WHEN octet_length(t.semantic_digest)<=64 THEN t.semantic_digest END AS semantic_digest,t.deleted_at_seconds,t.deleted_at_nanos,t.format_version,(SELECT public_revision FROM sessions WHERE id=$1) AS live_revision FROM (SELECT 1) singleton LEFT JOIN session_tombstones t ON t.session_id=$1";
+fn decode_view(
+    row: &sqlx::postgres::PgRow,
+    session: &SessionId,
+) -> Result<(Option<Tombstone>, Option<SessionRevision>), Error> {
+    let live = row
+        .try_get::<Option<i64>, _>("live_revision")
+        .map_err(unknown)?
+        .map(revision)
+        .transpose()?;
+    if !row.try_get::<bool, _>("present").map_err(unknown)? {
+        return Ok((None, live));
+    }
+    let tombstone = Tombstone {
+        format_version: u8::try_from(row.try_get::<i16, _>("format_version").map_err(unknown)?)
+            .map_err(unknown)?,
+        expected_revision: revision(row.try_get("expected_revision").map_err(unknown)?)?,
+        receipt: DeletionReceipt {
+            session_id: session.clone(),
+            operation_id: ControlId(row.try_get("operation_id").map_err(unknown)?),
+            semantic_digest: InputFingerprint::new(
+                row.try_get::<String, _>("semantic_digest")
+                    .map_err(unknown)?,
+            )
+            .map_err(unknown)?,
+            final_revision: revision(row.try_get("final_revision").map_err(unknown)?)?,
+            deleted_at: crate::deletion::timestamp(
+                row.try_get("deleted_at_seconds").map_err(unknown)?,
+                i64::from(row.try_get::<i32, _>("deleted_at_nanos").map_err(unknown)?),
+            )?,
+        },
+    };
+    tombstone.verify(session)?;
+    if live.is_some() {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok((Some(tombstone), None))
+}
 impl PostgresStore {
     async fn deletion_view(
         &self,
         session: &SessionId,
     ) -> Result<(Option<Tombstone>, Option<SessionRevision>), Error> {
         crate::deletion::validate_session(session)?;
-        let row = sqlx::query("SELECT t.session_id IS NOT NULL AS present,CASE WHEN octet_length(t.operation_id)<=128 THEN t.operation_id END AS operation_id,t.expected_revision,t.final_revision,CASE WHEN octet_length(t.semantic_digest)<=64 THEN t.semantic_digest END AS semantic_digest,t.deleted_at_seconds,t.deleted_at_nanos,t.format_version,(SELECT public_revision FROM sessions WHERE id=$1) AS live_revision FROM (SELECT 1) singleton LEFT JOIN session_tombstones t ON t.session_id=$1")
-            .bind(&session.0).fetch_one(&self.pool).await.map_err(unknown)?;
-        let live = row
-            .try_get::<Option<i64>, _>("live_revision")
-            .map_err(unknown)?
-            .map(revision)
-            .transpose()?;
-        if !row.try_get::<bool, _>("present").map_err(unknown)? {
-            return Ok((None, live));
-        }
-        let tombstone = Tombstone {
-            format_version: u8::try_from(row.try_get::<i16, _>("format_version").map_err(unknown)?)
-                .map_err(unknown)?,
-            expected_revision: revision(row.try_get("expected_revision").map_err(unknown)?)?,
-            receipt: DeletionReceipt {
-                session_id: session.clone(),
-                operation_id: ControlId(row.try_get("operation_id").map_err(unknown)?),
-                semantic_digest: InputFingerprint::new(
-                    row.try_get::<String, _>("semantic_digest")
-                        .map_err(unknown)?,
-                )
-                .map_err(unknown)?,
-                final_revision: revision(row.try_get("final_revision").map_err(unknown)?)?,
-                deleted_at: crate::deletion::timestamp(
-                    row.try_get("deleted_at_seconds").map_err(unknown)?,
-                    i64::from(row.try_get::<i32, _>("deleted_at_nanos").map_err(unknown)?),
-                )?,
-            },
-        };
-        tombstone.verify(session)?;
-        if live.is_some() {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        Ok((Some(tombstone), None))
+        let row = sqlx::query(VIEW)
+            .bind(&session.0)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(unknown)?;
+        decode_view(&row, session)
     }
     pub(super) async fn deletion_receipt(
         &self,

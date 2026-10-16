@@ -312,6 +312,10 @@ pub use crabber::session::{
 #[path = "../../crabber-session/src/deletion/contract.rs"]
 #[allow(dead_code)]
 pub(crate) mod deletion_contract;
+#[path = "../../crabber-session/src/deletion/coordinator.rs"]
+mod deletion_coordinator;
+#[path = "../../crabber-session/src/deletion/coordinator_contract.rs"]
+mod deletion_coordinator_contract;
 #[path = "../../crabber-session/src/deletion/coverage.rs"]
 #[allow(dead_code)]
 pub(crate) mod deletion_coverage;
@@ -324,8 +328,16 @@ mod deletion_records;
 #[path = "../../crabber-session/src/deletion/validation.rs"]
 #[allow(dead_code)]
 mod deletion_validation;
+#[path = "../../crabber-session/src/fork_pending_contract.rs"]
+#[allow(dead_code)]
+mod fork_pending_contract;
+#[path = "../../crabber-session/src/sql_fork_contract.rs"]
+#[allow(dead_code)]
+mod sql_fork_contract;
 mod deletion {
     pub(crate) use crate::deletion_contract as contract;
+    pub(crate) use crate::deletion_coordinator as coordinator;
+    pub(crate) use crate::deletion_coordinator_contract as coordinator_contract;
     pub(crate) use crate::deletion_coverage as coverage;
     pub(crate) use crate::deletion_origin as origin;
     pub(crate) use crate::deletion_records::Tombstone;

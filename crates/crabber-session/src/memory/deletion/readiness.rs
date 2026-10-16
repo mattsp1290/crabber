@@ -9,10 +9,6 @@ use crate::public_session::{
 use crate::{DeletionBlocker as Blocker, DeletionError as Error, PublicSessionLimit};
 use crabber_core::{SessionId, SessionRevision};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded deletion coordinator is being integrated")
-)]
 pub(super) fn read(
     state: &State,
     coverage: &VerifiedDeletionCoverage,

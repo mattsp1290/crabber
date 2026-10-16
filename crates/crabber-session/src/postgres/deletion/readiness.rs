@@ -8,10 +8,6 @@ use sqlx::{Postgres, Transaction};
 mod domains;
 mod native;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
 pub(super) async fn readiness(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

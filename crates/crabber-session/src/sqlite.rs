@@ -104,6 +104,8 @@ pub struct SqliteStore {
     #[cfg(test)]
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    deletion_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     control_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -229,6 +231,8 @@ async fn connect_with(
         binding_fault: Arc::default(),
         #[cfg(test)]
         queue_fault: Arc::default(),
+        #[cfg(test)]
+        deletion_fault: Arc::default(),
         #[cfg(test)]
         tool_continuation_fault: Arc::default(),
         #[cfg(test)]

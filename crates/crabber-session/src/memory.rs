@@ -93,6 +93,8 @@ pub struct MemoryStore {
     #[cfg(test)]
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    deletion_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     control_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -219,6 +221,8 @@ impl MemoryStore {
             binding_fault: Arc::default(),
             #[cfg(test)]
             queue_fault: Arc::default(),
+            #[cfg(test)]
+            deletion_fault: Arc::default(),
             #[cfg(test)]
             tool_continuation_fault: Arc::default(),
             #[cfg(test)]
@@ -780,6 +784,12 @@ impl Store for MemoryStore {
         state.session_owners.receipt(session, id)
     }
 
+    async fn delete_session(
+        &self,
+        request: crate::DeleteSession,
+    ) -> Result<crate::DeletionOutcome, crate::DeletionError> {
+        self.guarded_delete(request)
+    }
     async fn lookup_session_deletion(
         &self,
         session: &SessionId,

@@ -7,10 +7,6 @@ use std::collections::BTreeSet;
 
 #[path = "purge/preflight.rs"]
 mod preflight;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded deletion coordinator is being integrated")
-)]
 pub(super) fn purge(
     state: &mut State,
     session: &SessionId,

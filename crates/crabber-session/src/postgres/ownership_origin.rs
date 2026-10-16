@@ -28,10 +28,6 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
 
 /// Caller holds the ordinary session mutation gate throughout these reads and
 /// native readiness/purge. No carrier is fetched before its SQL byte cap.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
 pub(super) async fn coverage(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     session: &SessionId,
