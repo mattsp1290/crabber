@@ -366,3 +366,15 @@ async fn erased_activation_cannot_be_replaced_with_a_never_opened_gate() {
         None
     );
 }
+
+#[tokio::test]
+async fn session_service_dependency_contract() {
+    let store = super::MemoryStore::new();
+    crate::session_owner_contract::services::handoff(Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::cohort(Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::lifecycle(&store).await;
+    crate::session_owner_contract::services::faults(&store, |value| {
+        store.session_owner_fault.store(value, Ordering::SeqCst);
+    })
+    .await;
+}

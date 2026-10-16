@@ -16,7 +16,7 @@ pub(super) fn bind(bound: &mut crate::BoundKeyedAdmitRequest, contract: &InputFi
     bound.binding.validate_keyed(&bound.keyed).unwrap();
 }
 
-pub(super) async fn setup(store: &impl Store) -> (PreparationGrant, crate::BoundKeyedAdmitRequest) {
+pub(crate) async fn setup(store: &impl Store) -> (PreparationGrant, crate::BoundKeyedAdmitRequest) {
     let session = SessionId::new();
     let initial = fixture(&session, SessionRevision::INITIAL);
     let revision = create(store, &initial).await;

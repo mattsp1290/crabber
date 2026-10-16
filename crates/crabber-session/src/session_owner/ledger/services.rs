@@ -1,4 +1,6 @@
 //! Bounded independent membership and original sources for preparation services.
+#[path = "services/cohort.rs"]
+mod cohort;
 use super::{Error, Ledger, Record, SessionOwnerOperation};
 use crate::session_owner::preparation::{PreparationGrant, PreparationResourceLink};
 use std::collections::BTreeSet;
@@ -116,6 +118,7 @@ impl Ledger {
         self.verify_preparation(&request.grant, revision, now)?
             .require_resource_activation()?;
         let source = request.source()?;
+        self.ensure_service_generation_slot(&request.grant, &source)?;
         let roster = self.preparation_services(&request.grant)?;
         if roster.len() == MAX_SERVICES {
             return Err(Error::Capacity);

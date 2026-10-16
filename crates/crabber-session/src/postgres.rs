@@ -964,6 +964,24 @@ impl Store for PostgresStore {
     fn supports_preparation_resources(&self) -> bool {
         true
     }
+    fn supports_session_service_dependencies(&self) -> bool {
+        true
+    }
+    async fn register_session_service_dependency(
+        &self,
+        request: crate::session_owner::service::RegisterSessionServiceDependency,
+    ) -> Result<
+        crate::session_owner::service::SessionServiceDependencyOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Box::pin(self.register_service(request)).await
+    }
+    async fn check_session_service_dependency_access(
+        &self,
+        request: crate::session_owner::service::SessionServiceDependencyAccess,
+    ) -> Result<(), crate::session_owner::SessionOwnerError> {
+        Box::pin(self.check_service_access(request)).await
+    }
     async fn retain_preparation_resources(
         &self,
         grant: crate::session_owner::preparation::PreparationGrant,

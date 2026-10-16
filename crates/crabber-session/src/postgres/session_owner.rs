@@ -8,6 +8,7 @@ pub(super) mod public;
 mod reads;
 mod resources;
 pub(super) mod run;
+mod services;
 use super::PostgresStore;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,

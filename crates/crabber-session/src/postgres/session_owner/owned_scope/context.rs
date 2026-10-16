@@ -1,5 +1,5 @@
 //! Fresh factory dispatch reauthenticates its live root and native source.
-use super::super::{Error, Record, ReserveSessionOwner, parent, reads, revision};
+use super::super::{Error, Record, ReserveSessionOwner, parent};
 use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
 impl crate::postgres::PostgresStore {
     pub(super) async fn owned_scope_context(
@@ -8,6 +8,26 @@ impl crate::postgres::PostgresStore {
         record: &Record,
         authority: Option<&OwnedScopeParentAuthority>,
     ) -> Result<(), Error> {
+        if let Some(source) = &record.service {
+            let Some(OwnedScopeParentAuthority::ServicePreparation(grant)) = authority else {
+                return Err(Error::InvalidRequest);
+            };
+            if source.root
+                != crate::session_owner::preparation::PreparationResourceLink::for_grant(grant)?
+            {
+                return Err(Error::InvalidRequest);
+            }
+            if record.cancellation.is_some() {
+                return Err(Error::CancellationPending);
+            }
+            return Box::pin(self.verify_service_preparation(
+                tx,
+                grant,
+                Some(&record.snapshot.target),
+            ))
+            .await?
+            .require_resource_activation();
+        }
         if record.resource.is_some() {
             let Some(OwnedScopeParentAuthority::Preparation(grant)) = authority else {
                 return Err(Error::InvalidRequest);
@@ -22,25 +42,7 @@ impl crate::postgres::PostgresStore {
             {
                 return Err(Error::InvalidRequest);
             }
-            let root = reads::current(tx, session, &original.owner.binding.id).await?;
-            self.preparation_source_context(tx, original).await?;
-            reads::preparation_order(tx, grant).await?;
-            let audits = reads::preparation_audits(
-                tx,
-                session,
-                &root.snapshot.target.id,
-                Some(&record.snapshot.target.id),
-            )
-            .await?;
-            let revision = revision(tx, session).await?;
-            crate::session_owner::preparation::proof::verify_with_resources(
-                grant,
-                &root,
-                Some(record),
-                &audits,
-                revision,
-                self.clock.now(),
-            )?;
+            Box::pin(self.verify_service_preparation(tx, grant, None)).await?;
             return Ok(());
         }
         if record.preparation.is_some() {

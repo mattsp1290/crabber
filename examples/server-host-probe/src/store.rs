@@ -140,6 +140,7 @@ delegate! {
         fn lookup_admission(_session: &SessionId, _key: &AdmissionKey, ) -> Result<Option<AdmissionReceipt>, StoreError>;
         fn load_admission_execution(_session: &SessionId, _key: &AdmissionKey, ) -> Result< Option<s::AdmissionExecutionRecord>, s::AdmissionExecutionError, >;
         fn admission_execution_state(_run: &RunId, ) -> Result<Option<s::AdmissionExecutionState>, StoreError>;
+        fn inspect_admission_recovery(request: s::ClaimUnstartedAdmissionRequest) -> Result<s::session_owner::preparation::AdmissionRecoveryPreparation, s::AdmissionExecutionError>;
         fn claim_unstarted_admission(_request: s::ClaimUnstartedAdmissionRequest, ) -> Result<s::ClaimedAdmission, s::AdmissionExecutionError>;
         fn abandon_run(_request: c::AbandonRequest, ) -> Result<c::AbandonOutcome, c::AbandonError>;
         fn execution(fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;

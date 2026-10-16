@@ -299,3 +299,17 @@ async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_service_dependency_contract() {
+    let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
+    crate::session_owner_contract::services::handoff(std::sync::Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::cohort(std::sync::Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::lifecycle(&store).await;
+    crate::session_owner_contract::services::faults(&store, |value| {
+        store
+            .session_owner_fault
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await;
+}

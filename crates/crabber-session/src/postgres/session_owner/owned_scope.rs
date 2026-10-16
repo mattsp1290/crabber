@@ -40,8 +40,7 @@ impl PostgresStore {
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?;
             source::verify(&request.source, &record, &reserve, &begin)?;
-            self.owned_scope_context(&mut tx, &record, parent_authority.as_ref())
-                .await?;
+            Box::pin(self.owned_scope_context(&mut tx, &record, parent_authority.as_ref())).await?;
             source::activate(&mut record, &request, &authority, self.clock.now())?;
             let receipt = record.receipt(
                 request.id.clone(),

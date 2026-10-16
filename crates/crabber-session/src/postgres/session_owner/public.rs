@@ -108,7 +108,7 @@ async fn scan(
 /// Current/origin/context carriers, plus exact optional cancellation sources,
 /// and repeated routing fields fetched by `reads::current`.
 /// Length-only selection happens before ANY of their private bodies transfer.
-async fn preflight(
+pub(super) async fn preflight(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &str,

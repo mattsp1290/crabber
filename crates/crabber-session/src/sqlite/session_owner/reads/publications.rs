@@ -48,8 +48,14 @@ pub(in super::super) async fn preparation_order(
     grant: &crate::session_owner::preparation::PreparationGrant,
 ) -> Result<(), Error> {
     let request = grant.original_reservation();
+    let ids = super::services::service_ids(
+        tx,
+        &request.owner.binding.session_id,
+        &request.owner.binding.id,
+    )
+    .await?;
     let query = format!(
-        "{SOURCES} SELECT EXISTS(SELECT 1 FROM sources WHERE ordinal>(SELECT ordinal FROM sources WHERE operation_id=$2) AND NOT private AND owner_id<>$3 AND owner_id<>$4)"
+        "{SOURCES} SELECT EXISTS(SELECT 1 FROM sources WHERE ordinal>(SELECT ordinal FROM sources WHERE operation_id=$2) AND NOT private AND owner_id<>$3 AND owner_id<>$4 AND owner_id<>$5 AND owner_id<>$6 AND owner_id<>$7)"
     );
     let foreign: bool = sqlx::query_scalar(&query)
         .bind(&request.owner.binding.session_id.0)
@@ -61,6 +67,18 @@ pub(in super::super) async fn preparation_order(
                 .map_or(request.owner.binding.id.0.as_str(), |authority| {
                     authority.target().id.0.as_str()
                 }),
+        )
+        .bind(
+            ids.first()
+                .map_or(request.owner.binding.id.0.as_str(), |id| id.0.as_str()),
+        )
+        .bind(
+            ids.get(1)
+                .map_or(request.owner.binding.id.0.as_str(), |id| id.0.as_str()),
+        )
+        .bind(
+            ids.get(2)
+                .map_or(request.owner.binding.id.0.as_str(), |id| id.0.as_str()),
         )
         .fetch_one(&mut **tx)
         .await

@@ -15,12 +15,17 @@ impl MemoryStore {
             .owner
             .binding
             .session_id;
-        let outcome = self.transact(|state| {
-            super::super::deletion::ensure_live(state, session)
-                .map_err(crate::deletion::owner_error)?;
-            if let Some(receipt) = state.session_owners.service_receipt(request)? {
-                return Ok(SessionServiceDependencyOutcome::Replayed(Box::new(receipt)));
-            }
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        super::super::deletion::ensure_live(&guard, session)
+            .map_err(crate::deletion::owner_error)?;
+        if let Some(receipt) = guard.session_owners.service_receipt(request)? {
+            return Ok(SessionServiceDependencyOutcome::Replayed(Box::new(receipt)));
+        }
+        guard
+            .session_owners
+            .ensure_service_generation_slot(&request.grant, &request.source()?)?;
+        let mut next = guard.clone();
+        let outcome = (|state: &mut crate::memory::State| {
             let now = self.clock.now();
             super::validate_preparation_source(state, request.grant.original_reservation(), now)?;
             let current = revision(state, session);
@@ -34,7 +39,8 @@ impl MemoryStore {
             }
             before(fault(self))?;
             Ok(outcome)
-        })?;
+        })(&mut next)?;
+        *guard = next;
         if matches!(outcome, SessionServiceDependencyOutcome::Applied { .. }) && fault(self) == 2 {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -69,6 +75,66 @@ mod tests {
     use crate::session_owner_contract::services::{activated_setup, generation};
     use std::sync::atomic::Ordering;
 
+    #[tokio::test]
+    async fn service_generation_original_membership_and_bounds() {
+        let store = MemoryStore::new();
+        for huge in [false, true] {
+            let (request, receipt, next) =
+                crate::session_owner_contract::services::cohort::source_fixture(&store).await;
+            store
+                .state
+                .lock()
+                .unwrap()
+                .session_owners
+                .alter_service_for_test(
+                    &receipt.source.root.session_id,
+                    &receipt.began.owner.target.id,
+                    huge,
+                );
+            let expected = if huge {
+                Error::Capacity
+            } else {
+                Error::UnknownStoreOutcome
+            };
+            crate::session_owner_contract::services::cohort::source_refuses(
+                &store, request, receipt, expected, next,
+            )
+            .await;
+        }
+    }
+    #[test]
+    fn oversized_prior_service_is_refused_before_state_copy() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = MemoryStore::new();
+        let (_, receipt, next) = runtime
+            .block_on(crate::session_owner_contract::services::cohort::source_fixture(&store));
+        store
+            .state
+            .lock()
+            .unwrap()
+            .session_owners
+            .alter_service_for_test(
+                &receipt.source.root.session_id,
+                &receipt.began.owner.target.id,
+                true,
+            );
+        let mut generation = generation();
+        generation.id = "replacement-after-oversized-current".into();
+        let request = RegisterSessionServiceDependency {
+            grant: next,
+            generation,
+        };
+        let measured = allocation_counter::measure(|| {
+            assert!(matches!(
+                runtime.block_on(store.register_session_service_dependency(request)),
+                Err(Error::Capacity)
+            ));
+        });
+        assert!(
+            measured.bytes_max < 131_072,
+            "state copied before budget: {measured:?}"
+        );
+    }
     #[tokio::test]
     async fn service_compound_faults_preserve_original_metadata_without_authority() {
         let (store, grant) = activated_setup().await;

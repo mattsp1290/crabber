@@ -350,3 +350,22 @@ async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_service_dependency_contract() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    crate::session_owner_contract::services::handoff(std::sync::Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::cohort(std::sync::Arc::new(store.clone())).await;
+    crate::session_owner_contract::services::lifecycle(&store).await;
+    crate::session_owner_contract::services::faults(&store, |value| {
+        store
+            .session_owner_fault
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await;
+}

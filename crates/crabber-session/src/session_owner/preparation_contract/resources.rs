@@ -7,7 +7,7 @@ mod activation_faults;
 #[path = "resources/activation_guards.rs"]
 mod activation_guards;
 #[path = "resources/declaration.rs"]
-mod declaration;
+pub(crate) mod declaration;
 #[path = "resources/guards.rs"]
 pub(crate) mod guards;
 #[path = "resources/scope_integrity.rs"]
