@@ -1,7 +1,12 @@
 //! Bounded host registration, independent of extension and Store dependencies.
 mod acquisition;
+mod service;
 use crabber_core::{InputFingerprint, SessionContext};
 use futures::future::BoxFuture;
+pub use service::{
+    ProviderBindingFactory, ProviderServiceDependencies, ProviderServiceError, ProviderServiceHost,
+    ProviderServiceSource,
+};
 use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Arc};
 
@@ -34,12 +39,17 @@ pub trait ProviderResourceHost: Send + Sync {
 pub struct ProviderResourceContext {
     session: SessionContext,
     host: Arc<dyn ProviderResourceHost>,
+    services: ProviderServiceDependencies,
 }
 impl ProviderResourceContext {
     /// Trusted host capability bound to immutable routing before acquisition.
     #[must_use]
     pub fn from_host(session: SessionContext, host: Arc<dyn ProviderResourceHost>) -> Self {
-        Self { session, host }
+        Self {
+            session,
+            host,
+            services: ProviderServiceDependencies::default(),
+        }
     }
     #[must_use]
     pub fn session(&self) -> &SessionContext {

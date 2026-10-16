@@ -51,7 +51,14 @@ impl Orchestrator {
             .map(|_| {
                 self.preparation_scope
                     .as_ref()
-                    .map(|scope| scope.context.provider_resources())
+                    .map(|scope| {
+                        scope
+                            .context
+                            .provider_resources()
+                            .with_service_dependencies(
+                                scope.provider_services.bind(descriptor.clone()),
+                            )
+                    })
                     .ok_or_else(|| ProviderBindingError::ResourcesUnsupported.into())
             })
             .transpose()

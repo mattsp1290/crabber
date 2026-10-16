@@ -1,12 +1,15 @@
 //! Binding acquisition and exact restoration without selecting a substitute.
+mod future_release;
 mod release;
 mod resources;
 use crate::{ProviderError, Selection, Streamer};
 use crabber_core::ProviderBindingDescriptor;
 pub use release::ProviderReleaseObserver;
 pub use resources::{
-    ProviderResourceContext, ProviderResourceContract, ProviderResourceFailure,
-    ProviderResourceHost, ProviderResourceRegistrationError, ProviderResourceTask,
+    ProviderBindingFactory, ProviderResourceContext, ProviderResourceContract,
+    ProviderResourceFailure, ProviderResourceHost, ProviderResourceRegistrationError,
+    ProviderResourceTask, ProviderServiceDependencies, ProviderServiceError, ProviderServiceHost,
+    ProviderServiceSource,
 };
 use std::sync::Arc;
 
@@ -21,6 +24,8 @@ pub enum ProviderBindingError {
     InvalidDescriptor,
     #[error(transparent)]
     Acquisition(#[from] ProviderError),
+    #[error(transparent)]
+    Service(#[from] resources::ProviderServiceError),
     #[error("owned provider binding is unsupported")]
     ResourcesUnsupported,
     #[error(transparent)]

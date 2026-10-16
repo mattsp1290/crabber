@@ -311,3 +311,6 @@ async fn dropped_ready_generation_waiter_retains_registration_until_actual_ack_a
     assert_eq!(owner.drain(Duration::from_secs(1)).await.pending, 0);
     provider.close_all(Duration::from_secs(1)).await.unwrap();
 }
+
+#[path = "contextual_service_dependencies/provider_borrows.rs"]
+mod provider_borrows;

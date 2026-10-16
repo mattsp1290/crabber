@@ -181,21 +181,26 @@ impl Orchestrator {
             reservation.owner.binding.directory.clone(),
         );
         let parent_done = tokio_util::sync::CancellationToken::new();
+        let context = crabber_extension::PreparationResourceContext::from_host(
+            context,
+            resources.resources(),
+        )
+        .map_err(|_| StoreError::HostUnsupported)?
+        .with_service_dependencies(self.session_services.bind(
+            self.store.clone(),
+            grant.clone(),
+            parent_done.clone(),
+        ));
         let scope = PlanScope {
             contract: reservation
                 .resource_contract
                 .clone()
                 .ok_or(RuntimeError::PreparationRecoveryRequired)?,
-            context: crabber_extension::PreparationResourceContext::from_host(
-                context,
-                resources.resources(),
-            )
-            .map_err(|_| StoreError::HostUnsupported)?
-            .with_service_dependencies(self.session_services.bind(
-                self.store.clone(),
-                grant.clone(),
+            provider_services: crate::session_services::provider::ProviderServices::new(
+                context.clone(),
                 parent_done.clone(),
-            )),
+            ),
+            context,
             lease: crabber_extension::PreparationResourceLease::from_host(disposed.clone()),
         };
         let source = OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began)?;

@@ -6,6 +6,8 @@ mod ack;
 mod cleanup;
 #[path = "services/faults.rs"]
 mod faults;
+#[path = "services/provider.rs"]
+mod provider;
 #[path = "services/recovery.rs"]
 mod recovery;
 #[path = "services/retention.rs"]

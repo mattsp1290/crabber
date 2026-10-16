@@ -1,6 +1,7 @@
 //! Native session dependencies retain their original task and source across waiters.
 mod entry;
 mod generation;
+pub(crate) mod provider;
 mod worker;
 use crabber_extension::{
     ServiceGenerationDescriptor, SessionServiceDependencies,

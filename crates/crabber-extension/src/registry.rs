@@ -347,6 +347,17 @@ fn handler_version(h: &Handler, mount_seq: u64) -> String {
     };
     format!("{}:{mount_seq}:{phase}", h.order)
 }
+/// Actual mount lease; only an active concrete mount can issue it.
+pub(crate) struct MountMemberLease(Option<Arc<Mount>>);
+impl Drop for MountMemberLease {
+    fn drop(&mut self) {
+        if let Some(mount) = self.0.take()
+            && mount.leases.fetch_sub(1, Ordering::SeqCst) == 1
+        {
+            mount.released.notify_waiters();
+        }
+    }
+}
 struct Mount {
     id: u64,
     seq: u64,
@@ -1142,6 +1153,14 @@ pub struct MountHandle {
     mount: Arc<Mount>,
 }
 impl MountHandle {
+    pub(crate) fn borrow_member(&self) -> Result<MountMemberLease, ExtensionError> {
+        let active = self.mount.active.lock().unwrap();
+        if !*active {
+            return Err(ExtensionError::ContextOwnerClosed);
+        }
+        self.mount.leases.fetch_add(1, Ordering::SeqCst);
+        Ok(MountMemberLease(Some(self.mount.clone())))
+    }
     pub(crate) fn identity(&self) -> u64 {
         self.mount.id
     }

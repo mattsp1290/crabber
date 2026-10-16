@@ -37,15 +37,22 @@ impl Dependencies {
         generation: &ServiceGenerationDescriptor,
         services: &crate::SessionServiceDependencies,
     ) -> Result<(), ExtensionError> {
-        let dependency = {
-            let mut state = self.0.lock().unwrap();
-            check_context(&state, context)?;
-            dependency(&mut state, context, generation)?
-        };
+        let dependency = self.prepare_registration(context, generation)?;
         dependency
             .registration
             .acquire(services, dependency.clone())
             .await
+    }
+
+    // Caller may hold the owner gate so close cannot omit this pending entry.
+    pub(super) fn prepare_registration(
+        &self,
+        context: &SessionContext,
+        generation: &ServiceGenerationDescriptor,
+    ) -> Result<Arc<Dependency>, ExtensionError> {
+        let mut state = self.0.lock().unwrap();
+        check_context(&state, context)?;
+        dependency(&mut state, context, generation)
     }
 
     pub(super) fn generation_uncertain(&self, id: &ServiceGenerationId) -> bool {
@@ -86,6 +93,24 @@ impl Dependencies {
         generations: Vec<ServiceGenerationDescriptor>,
         factory: impl FnOnce() -> Result<RunPlan, ExtensionError>,
     ) -> Result<RunPlan, ExtensionError> {
+        let dependencies = self.reserve(context, generations)?;
+        // The factory can clone/expose mount resources only after reservation.
+        // A panic deliberately retains these counts: no disposal was proven.
+        let plan = match factory() {
+            Ok(plan) => plan,
+            Err(error) => {
+                release(&dependencies);
+                return Err(error);
+            }
+        };
+        Ok(plan.after_lease_release(move || release(&dependencies)))
+    }
+
+    fn reserve(
+        &self,
+        context: &SessionContext,
+        generations: Vec<ServiceGenerationDescriptor>,
+    ) -> Result<Vec<Arc<Dependency>>, ExtensionError> {
         let mut state = self.0.lock().unwrap();
         check_context(&state, context)?;
         let mut dependencies = generations
@@ -114,18 +139,26 @@ impl Dependencies {
         }
         drop(references);
         drop(state);
-        // The factory can clone/expose mount resources only after reservation.
-        // A panic deliberately retains these counts: no disposal was proven.
-        let plan = match factory() {
-            Ok(plan) => plan,
+        Ok(dependencies)
+    }
+    pub(super) fn track_member(
+        &self,
+        context: &SessionContext,
+        generation: ServiceGenerationDescriptor,
+        factory: impl FnOnce() -> Result<crate::registry::MountMemberLease, ExtensionError>,
+    ) -> Result<MemberReference, ExtensionError> {
+        let dependencies = self.reserve(context, vec![generation])?;
+        match factory() {
+            Ok(member) => Ok(MemberReference {
+                member: Some(member),
+                dependencies,
+            }),
             Err(error) => {
                 release(&dependencies);
-                return Err(error);
+                Err(error)
             }
-        };
-        Ok(plan.after_lease_release(move || release(&dependencies)))
+        }
     }
-
     pub(super) fn seal_context(
         &self,
         context: &SessionContext,
@@ -156,6 +189,18 @@ impl Dependencies {
                 dependency.clone()
             })
             .collect()
+    }
+}
+
+pub(super) struct MemberReference {
+    member: Option<crate::registry::MountMemberLease>,
+    dependencies: Vec<Arc<Dependency>>,
+}
+impl Drop for MemberReference {
+    fn drop(&mut self) {
+        // A destructor failure cannot acknowledge per-session disposal.
+        drop(self.member.take());
+        release(&self.dependencies);
     }
 }
 

@@ -35,6 +35,9 @@ impl OwnedMountHandle {
     pub(super) fn new(inner: MountHandle) -> Self {
         Self { inner }
     }
+    pub(crate) fn borrow_member(&self) -> Result<super::MountMemberLease, ExtensionError> {
+        self.inner.borrow_member()
+    }
     pub(crate) fn identity(&self) -> u64 {
         self.inner.identity()
     }

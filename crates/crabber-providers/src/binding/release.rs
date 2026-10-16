@@ -52,15 +52,21 @@ impl Drop for ObservedStreamer {
 #[async_trait::async_trait]
 impl Streamer for ObservedStreamer {
     async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
-        let stream = self
-            .inner
-            .as_ref()
-            .expect("live observed provider")
-            .stream(request)
-            .await?;
+        let (result, signal) = super::future_release::observe(
+            async {
+                self.inner
+                    .as_ref()
+                    .expect("live observed provider")
+                    .stream(request)
+                    .await
+            },
+            self.signal.as_ref().expect("live provider signal").clone(),
+        )
+        .await;
+        let stream = result?;
         Ok(Box::pin(ObservedStream {
             inner: Some(stream),
-            signal: Some(self.signal.as_ref().expect("live provider signal").clone()),
+            signal: Some(signal),
         }))
     }
 }
@@ -114,7 +120,10 @@ impl BoundProvider {
     }
 }
 
-fn dispose<T>(value: T, signal: &mut Option<Arc<Signal>>) {
+pub(super) fn dispose<T, S>(value: T, signal: &mut Option<Arc<S>>)
+where
+    S: ?Sized,
+{
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
         std::mem::forget(signal.take());
         resume_unwind(payload);

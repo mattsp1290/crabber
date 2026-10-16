@@ -216,27 +216,34 @@ impl ContextualPlanProvider {
 
     async fn install_factories(
         &self,
-        slot: &Slot,
+        slot: &Arc<Slot>,
         scope: FactoryScope,
     ) -> Result<(), ExtensionError> {
         let context = slot.context.as_ref().expect("factory owner has context");
         for registration in self.inner.factories.iter().filter(|f| f.scope == scope) {
             self.check_slot(slot)?;
             let (index, cleanup) = self.start_record(slot)?;
+            let generation = slot
+                .state
+                .lock()
+                .unwrap()
+                .generation
+                .clone()
+                .expect("selected generation");
             let factory_context = FactoryContext {
+                provider_source: super::ContextualServiceBorrowSource::new(
+                    self,
+                    slot,
+                    generation.clone(),
+                    index,
+                ),
                 workspace: WorkspaceContext::from_persisted(
                     context.workspace_id(),
                     context.directory(),
                 ),
                 session_id: (scope == FactoryScope::Session).then(|| context.session_id().clone()),
                 cleanup: cleanup.tracker(),
-                generation: slot
-                    .state
-                    .lock()
-                    .unwrap()
-                    .generation
-                    .clone()
-                    .expect("generation selected before factory"),
+                generation,
             };
             let failed = || ExtensionError::ContextInitializationFailed {
                 component: registration.identity.id.clone(),

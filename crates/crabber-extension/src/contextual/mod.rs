@@ -8,6 +8,8 @@ mod instances;
 mod lifecycle;
 mod native_dependency;
 mod profile;
+mod provider_service;
+pub use provider_service::{ContextualServiceBorrowLease, ContextualServiceBorrowSource};
 mod selection;
 pub use generation::{
     ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
@@ -50,6 +52,7 @@ pub struct FactoryContext {
     session_id: Option<SessionId>,
     cleanup: CleanupTracker,
     generation: ServiceGenerationDescriptor,
+    provider_source: ContextualServiceBorrowSource,
 }
 impl FactoryContext {
     #[must_use]
@@ -64,8 +67,13 @@ impl FactoryContext {
     pub fn cleanup(&self) -> &CleanupTracker {
         &self.cleanup
     }
-    /// Local service-generation identity. This carries no dispatch authority or
-    /// physical cleanup proof and does not alter the execution fingerprint.
+    /// Borrow-only capability for this actual factory member. It pins no lease
+    /// and supplies no physical shutdown or global-construction certificate.
+    #[must_use]
+    pub fn provider_service_source(&self) -> Arc<dyn crabber_providers::ProviderServiceSource> {
+        Arc::new(self.provider_source.clone())
+    }
+    /// Local generation metadata, without dispatch or physical cleanup authority.
     #[must_use]
     pub fn generation(&self) -> &ServiceGenerationDescriptor {
         &self.generation

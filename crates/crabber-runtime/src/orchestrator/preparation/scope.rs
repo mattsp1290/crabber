@@ -8,6 +8,7 @@ pub(in crate::orchestrator) struct PlanScope {
     pub contract: InputFingerprint,
     pub context: PreparationResourceContext,
     pub lease: PreparationResourceLease,
+    pub provider_services: crate::session_services::provider::ProviderServices,
 }
 impl Orchestrator {
     pub(in crate::orchestrator) fn freeze_preparation_semantics(
