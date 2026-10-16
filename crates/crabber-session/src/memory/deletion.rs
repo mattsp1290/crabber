@@ -5,8 +5,28 @@ use crate::deletion::origin::OriginKind;
 use crate::{DeletionError, DeletionReceipt, SessionDisposition, StoreError};
 use crabber_core::{ControlId, SessionId, SessionRevision};
 #[cfg(test)]
+#[path = "deletion/fork_fixture.rs"]
+mod fork_fixture;
+#[path = "deletion/imported.rs"]
+mod imported;
+#[cfg(test)]
+#[path = "deletion/journey_purge_tests.rs"]
+mod journey_purge_tests;
+#[cfg(test)]
 #[path = "deletion/lookup_tests.rs"]
 mod lookup_tests;
+#[path = "deletion/native.rs"]
+mod native;
+#[path = "deletion/purge.rs"]
+mod purge;
+#[cfg(test)]
+#[path = "deletion/purge_tests.rs"]
+mod purge_tests;
+#[path = "deletion/readiness.rs"]
+mod readiness;
+#[cfg(test)]
+#[path = "deletion/snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg_attr(
     not(test),

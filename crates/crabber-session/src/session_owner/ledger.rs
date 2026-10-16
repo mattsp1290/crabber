@@ -6,6 +6,11 @@ mod cancellation;
 mod owned_scope;
 #[path = "ledger/public.rs"]
 mod public;
+#[path = "ledger/publications.rs"]
+mod publications;
+#[cfg(test)]
+#[path = "ledger/purge_tests.rs"]
+mod purge_tests;
 use crate::session_owner::audit::{Audit, Publication, RevisionState, verify_current};
 use crate::session_owner::record::Record;
 use crate::session_owner::{
@@ -40,12 +45,52 @@ impl Ledger {
         self.audits.get(&(session.clone(), id.clone()))
     }
 
+    /// Physical erasure only; the caller separately establishes deletion readiness.
+    /// Publication allocation remains monotonic across erased scopes.
+    pub(crate) fn purge_session(
+        &mut self,
+        session: &SessionId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::public_session::v2::proof::Failure> {
+        use crate::public_session::v2::proof::unknown;
+        for ((scope, _), record) in &self.records {
+            if scope == session || &record.snapshot.binding.session_id == session {
+                proof.measure(record)?;
+                if scope != session || record.snapshot.binding.session_id != *session {
+                    return Err(unknown("owner scope"));
+                }
+            }
+        }
+        for ((scope, _), audit) in &self.audits {
+            if scope == session || &audit.receipt.session_id == session {
+                proof.measure(audit)?;
+                if scope != session || audit.receipt.session_id != *session {
+                    return Err(unknown("owner audit scope"));
+                }
+            }
+        }
+        if let Some(context) = self.contexts.get(session) {
+            proof.measure(context)?;
+        }
+        for ((scope, operation), publication) in &self.publications {
+            if scope == session {
+                proof.measure(&(scope, operation, publication))?;
+            }
+        }
+        self.validate_scope(session).map_err(unknown)?;
+        self.records.retain(|(scope, _), _| scope != session);
+        self.audits.retain(|(scope, _), _| scope != session);
+        self.contexts.remove(session);
+        self.publications.retain(|(scope, _), _| scope != session);
+        Ok(())
+    }
     /// A fork target must be a fresh identity, including pre-session ownership.
     /// This is a collision check, never a quiescence or deletion-readiness proof.
     pub(crate) fn contains_scope(&self, session: &SessionId) -> bool {
         self.contexts.contains_key(session)
             || self.records.keys().any(|(scope, _)| scope == session)
             || self.audits.keys().any(|(scope, _)| scope == session)
+            || self.publications.keys().any(|(scope, _)| scope == session)
     }
     pub fn context(
         &self,
@@ -173,6 +218,14 @@ impl Ledger {
         Ok(self.checked(session, id)?.snapshot.clone())
     }
     fn validate_scope(&self, session: &SessionId) -> Result<(), Error> {
+        self.validate_publications(
+            session,
+            &mut crate::public_session::v2::proof::Proof::legacy(),
+        )
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+        self.validate_owner_membership(session)
+    }
+    fn validate_owner_membership(&self, session: &SessionId) -> Result<(), Error> {
         // Identity anti-joins detect a removed owner even if another forged row
         // preserves the row count. Historical private bodies are not decoded.
         for ((scope, _), audit) in &self.audits {
@@ -253,6 +306,7 @@ impl Ledger {
             }
             return Ok(SessionOwnerOutcome::Replayed(saved));
         }
+        self.check_fresh_operation(session, &request.id)?;
         self.validate_scope(session)?;
         self.context(
             session,
@@ -345,6 +399,7 @@ impl Ledger {
             }
             return Ok((SessionOwnerOutcome::Replayed(saved), false));
         }
+        self.check_fresh_operation(&request.session_id, &request.id)?;
         self.validate_scope(&request.session_id)?;
         let mut record = self
             .checked(&request.session_id, &request.target.id)?

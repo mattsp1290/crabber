@@ -11,7 +11,8 @@ impl Ledger {
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Vec<crate::PublicRegisteredOwner>, crate::public_session::v2::proof::Failure> {
         use crate::public_session::v2::proof::{Failure, unknown};
-        self.validate_scope(session).map_err(unknown)?;
+        self.validate_publications(session, proof)?;
+        self.validate_owner_membership(session).map_err(unknown)?;
         let mut result = Vec::new();
         for ((scope, id), record) in &self.records {
             if scope != session {

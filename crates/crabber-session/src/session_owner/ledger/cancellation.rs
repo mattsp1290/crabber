@@ -19,6 +19,7 @@ impl Ledger {
             }
             return Ok(SessionOwnerOutcome::Replayed(saved));
         }
+        self.check_fresh_operation(&request.session_id, &request.id)?;
         self.validate_scope(&request.session_id)?;
         let mut record = self
             .checked(&request.session_id, &request.target.id)?
@@ -49,6 +50,7 @@ impl Ledger {
             }
             return Ok(SessionOwnerOutcome::Replayed(saved));
         }
+        self.check_fresh_operation(&request.session_id, &request.id)?;
         self.validate_scope(&request.session_id)?;
         let mut record = self
             .checked(&request.session_id, &request.target.id)?

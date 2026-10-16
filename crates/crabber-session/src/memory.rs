@@ -156,7 +156,7 @@ struct State {
     extension_values: BTreeMap<(SessionId, String), BTreeMap<String, String>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 enum OperationReceipt {
     Fork(crate::ForkReceipt),
     RunControl(crate::RunControlReceipt),

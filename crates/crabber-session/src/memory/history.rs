@@ -21,6 +21,14 @@ impl<T> SessionSequence<T> {
     pub(super) fn for_session(&self, session: &SessionId) -> &[T] {
         self.records.get(session).map_or(&[], Vec::as_slice)
     }
+    pub(super) fn remove_session(&mut self, session: &SessionId) {
+        self.records.remove(session);
+    }
+    pub(super) fn scoped_iter(&self) -> impl Iterator<Item = (&SessionId, &T)> {
+        self.records
+            .iter()
+            .flat_map(|(session, records)| records.iter().map(move |record| (session, record)))
+    }
     pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.records.values().flatten()
     }

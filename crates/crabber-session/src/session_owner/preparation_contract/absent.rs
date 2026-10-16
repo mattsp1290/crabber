@@ -57,12 +57,27 @@ pub(crate) async fn foreign_refuses(
     grant: PreparationGrant,
     bound: crate::BoundKeyedAdmitRequest,
 ) {
-    let session = bound.binding.request.session_id.clone();
-    let mut foreign = reservation(&bound).owner;
+    store
+        .reserve_session_owner(foreign_reservation(&bound), None)
+        .await
+        .unwrap();
+    assert_foreign_refusal(store, grant, bound).await;
+}
+pub(crate) fn foreign_reservation(
+    bound: &crate::BoundKeyedAdmitRequest,
+) -> super::super::ReserveSessionOwner {
+    let mut foreign = reservation(bound).owner;
     foreign.id = SessionOwnerOperationId::new();
     foreign.binding.id = crabber_core::SessionOwnerId::new();
     foreign.binding.kind = SessionOwnerKind::RetainedCapacity;
-    store.reserve_session_owner(foreign, None).await.unwrap();
+    foreign
+}
+pub(crate) async fn assert_foreign_refusal(
+    store: &impl Store,
+    grant: PreparationGrant,
+    bound: crate::BoundKeyedAdmitRequest,
+) {
+    let session = bound.binding.request.session_id.clone();
     assert_eq!(
         store
             .complete_preparation(joined(grant.clone(), bound.clone()).await)

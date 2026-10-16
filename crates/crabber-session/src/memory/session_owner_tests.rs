@@ -173,12 +173,32 @@ async fn preparation_absent_order_rejects_deleted_history_plus_foreign_publicati
     let (grant, bound, old) =
         crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
     store
+        .reserve_session_owner(
+            crate::session_owner::preparation_contract::absent::foreign_reservation(&bound),
+            None,
+        )
+        .await
+        .unwrap();
+    store
         .state
         .lock()
         .unwrap()
         .session_owners
         .erase_historical_audit_for_test(&bound.binding.request.session_id, &old);
-    crate::session_owner::preparation_contract::absent::foreign_refuses(&store, grant, bound).await;
+    assert_eq!(
+        store
+            .reserve_session_owner(
+                crate::session_owner::preparation_contract::absent::foreign_reservation(&bound),
+                None
+            )
+            .await
+            .unwrap_err(),
+        SessionOwnerError::UnknownStoreOutcome
+    );
+    crate::session_owner::preparation_contract::absent::assert_foreign_refusal(
+        &store, grant, bound,
+    )
+    .await;
 }
 
 #[tokio::test]

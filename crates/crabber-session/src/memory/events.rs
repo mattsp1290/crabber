@@ -33,6 +33,9 @@ impl EventLog {
     pub(super) fn iter(&self) -> Values<'_, u64, EventRecord> {
         self.records.values()
     }
+    pub(super) fn remove_session(&mut self, session: &crabber_core::SessionId) {
+        self.records.retain(|_, event| &event.session_id != session);
+    }
     pub(super) fn last(&self) -> Option<&EventRecord> {
         self.records.last_key_value().map(|(_, event)| event)
     }
