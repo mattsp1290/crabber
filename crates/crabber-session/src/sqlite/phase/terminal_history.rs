@@ -14,7 +14,7 @@ pub(in super::super) async fn validate(
 ) -> Result<(), Error> {
     let current = source(tx, run, call, false).await?;
     let terminal = source(tx, run, call, true).await?;
-    let row = sqlx::query(r"SELECT seq,CASE WHEN length(CAST(data AS BLOB))<=4198400 AND json_extract(data,'$.kind')='tool_call_settled' THEN data END AS event FROM events WHERE session_id=?1 AND run_id=?2 AND seq<?3 ORDER BY seq DESC LIMIT 1").bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(terminal.0.event_cursor.0).map_err(unknown)?).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::UnknownStoreOutcome)?;
+    let row = sqlx::query(r"SELECT seq,CASE WHEN length(CAST(data AS BLOB))<=?4 AND json_extract(data,'$.kind')='tool_call_settled' THEN data END AS event FROM events WHERE session_id=?1 AND run_id=?2 AND seq<?3 ORDER BY seq DESC LIMIT 1").bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(terminal.0.event_cursor.0).map_err(unknown)?).bind(i64::try_from(crate::phase::terminal_history::MAX_SETTLED_EVENT_BYTES).map_err(unknown)?).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::UnknownStoreOutcome)?;
     let settled = event(&row)?;
     crate::phase::terminal_history::verify(
         run,
