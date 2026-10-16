@@ -7,10 +7,16 @@ use crate::approval::{
 use crabber_core::{EventKind, EventRecord, Run, SessionId};
 
 fn operation(event: &EventRecord) -> Option<&str> {
+    // Typed tool continuations share the event kind but have a distinct payload
+    // domain. Select independently of mutable receipt or barrier availability.
+    if event.payload.get("kind").is_some() {
+        return None;
+    }
     event.payload.get("outcome")?.get("operation")?.as_str()
 }
 fn belongs(event: &EventRecord, record: &ApprovalRecord) -> bool {
-    event.session_id == record.session_id
+    event.payload.get("kind").is_none()
+        && event.session_id == record.session_id
         && event.run_id == record.run_id
         && event
             .payload
@@ -323,6 +329,30 @@ fn measure_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn tool_suspension_events_do_not_select_or_hide_approval_sources() {
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = super::super::MemoryStore::with_clock(clock.clone());
+        crate::approval_contract::current::retired(&store, &clock).await;
+        let mut state = store.state.lock().unwrap().clone();
+        let record = state.approvals.values().next().unwrap().clone();
+        let run = state.runs[&record.run_id].clone();
+        let mut event = selected(&state, &record, false).unwrap()[0].clone();
+        event.kind = EventKind::ContinuationChanged;
+        event.payload["kind"] = "tool_continuation".into();
+        event.payload["outcome"]["operation"] = "suspended".into();
+        event.cursor = Some(state.events.next_cursor().unwrap());
+        state.events.append(event.clone()).unwrap();
+        session(&state, &run.session_id).unwrap();
+        verify(&state, &run, &record, false).unwrap();
+        let mut tool_only = State::default();
+        event.cursor = Some(tool_only.events.next_cursor().unwrap());
+        tool_only.events.append(event).unwrap();
+        assert!(!has_source(&tool_only, &run));
+        session(&tool_only, &run.session_id).unwrap();
+    }
     #[test]
     fn oversized_current_sources_are_rejected_before_copying() {
         let runtime = tokio::runtime::Builder::new_current_thread()
