@@ -24,6 +24,7 @@ pub(crate) fn reservation(session: SessionId) -> ReserveSessionOwner {
             kind: SessionOwnerKind::Preparation,
             component_id: "host-preparation".into(),
             behavior_fingerprint: InputFingerprint::new("b".repeat(64)).unwrap(),
+            resource_contract: None,
             parent: None,
         },
         owner: "controller-a".into(),
@@ -58,9 +59,11 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
     assert!(store.supports_session_owners());
-    let request = reservation(SessionId::new());
+    let mut request = reservation(SessionId::new());
+    request.binding.resource_contract = Some(InputFingerprint::new("c".repeat(64)).unwrap());
     let session = &request.binding.session_id;
     let (reserved, authority, created_revision) = reserve_and_create(&store, &request).await;
+    immutable_resource_contract(&store, &request, created_revision).await;
     let begin = mutation(&reserved.owner, SessionOwnerCommand::Begin);
     let (active, grant) = applied(
         store
@@ -149,6 +152,26 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     unstarted(&store, &clock, session).await;
     races::run(&store).await;
 }
+async fn immutable_resource_contract(
+    store: &impl Store,
+    original: &ReserveSessionOwner,
+    revision: SessionRevision,
+) {
+    let mut changed = original.clone();
+    changed.binding.resource_contract = None;
+    assert!(matches!(
+        store.reserve_session_owner(changed, None).await,
+        Err(SessionOwnerError::SemanticConflict)
+    ));
+    assert_eq!(
+        store
+            .session_revision(&original.binding.session_id)
+            .await
+            .unwrap(),
+        revision
+    );
+}
+
 async fn reserve_and_create(
     store: &impl Store,
     request: &ReserveSessionOwner,

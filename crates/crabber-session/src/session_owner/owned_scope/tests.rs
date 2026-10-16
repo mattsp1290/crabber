@@ -8,6 +8,43 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+
+#[test]
+fn absent_resource_contract_preserves_original_reserve_shape_and_digest() {
+    let request = crate::session_owner_contract::reservation(SessionId::new());
+    let binding = &request.binding;
+    let legacy = serde_json::json!({
+        "session_id": binding.session_id,
+        "workspace_id": binding.workspace_id,
+        "directory": binding.directory,
+        "id": binding.id,
+        "kind": binding.kind,
+        "component_id": binding.component_id,
+        "behavior_fingerprint": binding.behavior_fingerprint,
+        "parent": binding.parent,
+    });
+    assert_eq!(serde_json::to_value(binding).unwrap(), legacy);
+    assert_eq!(
+        serde_json::from_value::<SessionOwnerBinding>(legacy.clone()).unwrap(),
+        *binding
+    );
+    assert_eq!(
+        request.fingerprint().unwrap(),
+        crate::session_owner::validation::digest(&(
+            "crabber.session-owner.reserve.v1",
+            &request.id,
+            legacy,
+        ))
+        .unwrap()
+    );
+    let mut declared = request.clone();
+    declared.binding.resource_contract =
+        Some(InputFingerprint::new(RUNTIME_DETACHED_RESOURCE_CONTRACT_V1).unwrap());
+    assert_ne!(
+        declared.fingerprint().unwrap(),
+        request.fingerprint().unwrap()
+    );
+}
 fn source(name: &str) -> OwnedScopeSource {
     let binding = SessionOwnerBinding {
         session_id: SessionId::from(name),
@@ -17,6 +54,7 @@ fn source(name: &str) -> OwnedScopeSource {
         kind: SessionOwnerKind::RetainedCapacity,
         component_id: "test".into(),
         behavior_fingerprint: InputFingerprint::new("a".repeat(64)).unwrap(),
+        resource_contract: None,
         parent: None,
     };
     let snapshot = SessionOwnerSnapshot {

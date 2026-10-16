@@ -57,6 +57,14 @@ fn reserve(parent: &Parent, request: &Request, scoped: bool) -> Result<ReserveSe
             kind: SessionOwnerKind::DetachedInvocation,
             component_id: request.component_id.clone(),
             behavior_fingerprint,
+            resource_contract: scoped
+                .then(|| {
+                    crabber_core::InputFingerprint::new(
+                        crabber_session::session_owner::owned_scope::RUNTIME_DETACHED_RESOURCE_CONTRACT_V1,
+                    )
+                })
+                .transpose()
+                .map_err(|_| Error::Rejected)?,
             parent: Some(SessionOwnerParent {
                 run_id: parent.run.clone(),
                 call_id: Some(parent.phase.call_id.clone()),

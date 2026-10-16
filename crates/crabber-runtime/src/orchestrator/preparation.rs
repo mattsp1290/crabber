@@ -128,6 +128,7 @@ impl Orchestrator {
                     kind: SessionOwnerKind::Preparation,
                     component_id: "crabber.runtime.preparation.v1".into(),
                     behavior_fingerprint: self.behavior_fingerprint.clone(),
+                    resource_contract: None,
                     parent: None,
                 },
                 owner: crabber_core::RunId::new().to_string(),

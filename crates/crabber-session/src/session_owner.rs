@@ -77,6 +77,11 @@ pub struct SessionOwnerBinding {
     pub kind: SessionOwnerKind,
     pub component_id: String,
     pub behavior_fingerprint: InputFingerprint,
+    /// Resource bridge selected before dispatch, frozen in the original Reserve.
+    /// A declaration requires separate observed dispatch and cleanup evidence.
+    /// Absence retains legacy ownership uncertainty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_contract: Option<InputFingerprint>,
     pub parent: Option<SessionOwnerParent>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

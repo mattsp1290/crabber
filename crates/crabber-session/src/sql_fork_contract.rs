@@ -171,6 +171,7 @@ pub(crate) async fn guards(store: &dyn Store, cold: &dyn Store) {
                     component_id: "fork-guard".into(),
                     behavior_fingerprint: crabber_core::InputFingerprint::new("f".repeat(64))
                         .unwrap(),
+                    resource_contract: None,
                     parent: None,
                 },
                 owner: "fork-fixture".into(),

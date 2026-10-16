@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 mod origin;
 pub use origin::OwnedScopeSource;
 
+/// Frozen Runtime detached-invocation resource bridge, version 1. Its factory
+/// runs behind the registered gate and all owned children join through the
+/// exact sealed invocation cleanup scope. This identifier alone proves no join.
+pub const RUNTIME_DETACHED_RESOURCE_CONTRACT_V1: &str =
+    "f45197b20788989cc382159ed8213ec99262cd540a0503f327938343c545d22e";
+
 /// Exact private parent capability needed for fresh dispatch, never metadata.
 /// Linked preparation children must still belong to the live eligible root;
 /// detached scopes revalidate their actual native parent immediately at activation.
