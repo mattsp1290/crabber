@@ -1,4 +1,5 @@
 mod driver;
+mod host_callbacks;
 #[path = "orchestrator/observation_lifetime.rs"]
 mod observation_lifetime;
 use observation_lifetime::ObservationLifetime;
@@ -524,6 +525,7 @@ impl Streamer for SingleUseStreamer {
 pub struct Orchestrator {
     store: Arc<dyn Store>,
     behavior_fingerprint: crabber_core::InputFingerprint,
+    host_callbacks: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     session_invocations: crate::session_invocations::SessionInvocations,
     preparation_scope: Option<preparation::scope::PlanScope>,
@@ -796,6 +798,7 @@ impl OrchestratorBuilder {
     ///
     /// Returns `Missing` if the store, resolver, or plan provider is absent.
     pub fn build(self) -> Result<Orchestrator, RuntimeError> {
+        let host_callbacks = host_callbacks::capture(&self);
         let heartbeat_interval = self.heartbeat_interval.unwrap_or(Duration::from_secs(5));
         if heartbeat_interval.is_zero() || heartbeat_interval >= Duration::from_secs(15) {
             return Err(RuntimeError::InvalidConfiguration(
@@ -822,6 +825,7 @@ impl OrchestratorBuilder {
             ));
         }
         Ok(Orchestrator {
+            host_callbacks,
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             session_invocations: crate::session_invocations::SessionInvocations::default(),
             preparation_scope: None,

@@ -231,6 +231,16 @@ Custom resolvers and opaque custom HTTP callbacks require an explicit
 Known keyed replay checks retained metadata before factory initialization and
 never reacquires a provider or grants execution authority.
 
+The frozen plan also records a private fixed inventory of configured wall and
+monotonic clocks, observers, model streams, permission policy, tool pipelines,
+host services and workspace readers. Changing a slot between its runtime default
+and an explicit host callback rejects executable recovery before a provider
+factory runs. The host behavior fingerprint still versions the callback's
+semantics. This inventory grants no resource cleanup or whole-run ownership
+coverage. Older plans without the inventory cannot pass executable recovery.
+An Agent with no configured observers uses the runtime's default observer;
+configured observers, including Datadog, remain explicit host callbacks.
+
 The experimental core `InputEnvelope` validates bounded ordered input and defines
 the versioned canonical hash for typed admission. It preserves supplied message,
 parent and part IDs, explicit media representations, frontend input/output schema

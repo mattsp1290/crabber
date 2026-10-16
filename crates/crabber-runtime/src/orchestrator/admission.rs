@@ -293,6 +293,7 @@ impl Orchestrator {
                 .ok_or(AdmissionExecutionError::MissingEvidence)?,
         )
         .map_err(|_| AdmissionExecutionError::MissingEvidence)?;
+        self.verify_host_callbacks(&components)?;
         let mut declarations = components.iter().filter(|c| c.id == REGISTRATION_COMPONENT);
         let declaration = declarations
             .next()

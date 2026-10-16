@@ -3,7 +3,7 @@ use super::*;
 use crabber_core::{Clock, ManualClock};
 
 pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
-    for point in [0, 1, 2, 3] {
+    for point in [0, 1, 2, 3, 4] {
         let gate = Arc::new(SettlementGate::default());
         gate.release.notify_one();
         let wrapped = Arc::new(DelayedTerminalStore {
@@ -34,6 +34,10 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
         clock.set(clock.now() + time::Duration::seconds(31));
         if point == 3 {
             unsupported_before_factory(&h, &initial).await;
+            continue;
+        }
+        if point == 4 {
+            changed_callbacks_before_factory(&h, clock.clone(), &receipt).await;
             continue;
         }
         h.gate.preparation_fault.store(point, Ordering::SeqCst);
@@ -128,6 +132,50 @@ async fn cold_controller_recovery(
     assert_eq!(cold.fake.requests().len(), 1);
     assert_eq!(previous.provider.calls.load(Ordering::SeqCst), 2);
     assert_eq!(previous.fake.requests().len(), 0);
+}
+
+async fn changed_callbacks_before_factory(
+    h: &Harness,
+    clock: Arc<ManualClock>,
+    original: &crabber_core::AdmissionReceipt,
+) {
+    let changed = Orchestrator::builder()
+        .behavior_fingerprint(h.runtime.behavior_fingerprint().clone())
+        .store(h.memory.clone())
+        .resolver(Arc::new(h.fake.clone()))
+        .plan_provider(h.provider.clone())
+        .clock(clock)
+        .observer(Arc::new(crate::NoopObserver))
+        .build()
+        .unwrap();
+    // Metadata remains independently readable; changed configuration cannot
+    // enter the keyed Runtime or claim a fresh recovery grant.
+    assert_eq!(
+        h.memory
+            .lookup_admission(&original.session_id, &options().key)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(original)
+    );
+    assert!(matches!(
+        changed.start_keyed(h.input.clone(), options()).await,
+        Err(RuntimeError::Store(
+            crabber_session::StoreError::AdmissionConflict
+        ))
+    ));
+    assert!(matches!(
+        changed.recover_admission(h.input.clone(), options()).await,
+        Err(RuntimeError::Store(
+            crabber_session::StoreError::AdmissionConflict
+        ))
+    ));
+    assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(h.fake.requests().len(), 0);
+    assert_eq!(
+        changed.retained_preparation_status(&original.session_id),
+        Vec::<crate::RetainedPreparationProgress>::new()
+    );
 }
 
 async fn unsupported_before_factory(h: &Harness, initial: &PreparationReconciliation) {

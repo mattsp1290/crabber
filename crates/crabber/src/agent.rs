@@ -328,6 +328,9 @@ impl AgentBuilder {
         }
         #[cfg(feature = "datadog")]
         let datadog = self.datadog.as_ref().map(crabber_obs::DatadogObserver::new);
+        let configured_observer = !self.observers.is_empty();
+        #[cfg(feature = "datadog")]
+        let configured_observer = configured_observer || datadog.is_some();
         let observer = Arc::new(AgentObservers {
             observers: self.observers,
             #[cfg(feature = "datadog")]
@@ -380,8 +383,10 @@ impl AgentBuilder {
             .resolver(resolver)
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)
-            .compaction(self.compaction)
-            .observer(observer);
+            .compaction(self.compaction);
+        if configured_observer {
+            runtime = runtime.observer(observer);
+        }
         if let Some(behavior) = self.behavior_fingerprint {
             runtime = runtime.behavior_fingerprint(behavior);
         }

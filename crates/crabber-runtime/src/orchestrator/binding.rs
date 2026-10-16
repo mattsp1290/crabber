@@ -42,6 +42,7 @@ impl Orchestrator {
                 || c.id == HOST_BEHAVIOR_COMPONENT
                 || c.id == super::attempt::DRIVER_COMPONENT
                 || c.id == resources::COMPONENT
+                || c.id == super::host_callbacks::COMPONENT
         }) {
             return Err(ProviderBindingError::InvalidDescriptor.into());
         }
@@ -53,6 +54,10 @@ impl Orchestrator {
         plan.components.push(ComponentIdentity {
             id: HOST_BEHAVIOR_COMPONENT.into(),
             version: behavior.as_str().into(),
+        });
+        plan.components.push(ComponentIdentity {
+            id: super::host_callbacks::COMPONENT.into(),
+            version: self.host_callbacks.as_str().into(),
         });
         plan.components.push(ComponentIdentity {
             id: super::attempt::DRIVER_COMPONENT.into(),
