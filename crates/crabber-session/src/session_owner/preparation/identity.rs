@@ -4,7 +4,14 @@ use crate::session_owner::{SessionOwnerError as Error, digest};
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
 
 pub(crate) fn ids(key: &PreparationKey, session: &SessionId) -> Result<Ids, Error> {
+    if let PreparationKey::ExpiredRun { run_id, issuance } = key {
+        crate::attempt::validate_identifier(&run_id.0).map_err(|_| Error::InvalidRequest)?;
+        if *issuance == 0 || *issuance >= i64::MAX as u64 {
+            return Err(Error::InvalidRequest);
+        }
+    }
     match key {
+        PreparationKey::ExpiredRun { .. } => (),
         PreparationKey::Admission(key) | PreparationKey::AdmissionRecovery { key, .. } => {
             crate::session_owner::identifier(key.as_str(), 512, false)?;
         }

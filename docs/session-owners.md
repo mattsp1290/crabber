@@ -363,3 +363,36 @@ does not establish continuity during a hot upgrade or prove the absence of
 resources after arbitrary erasure of all pre-protocol metadata and context.
 Legacy service scopes return Unsupported; hosts must not use that refusal to
 fall back to an unowned factory.
+
+
+### Prepared generic expired Run claim
+
+Bundled Stores expose `inspect_expired_run_preparation` for an exact expired
+native fence. This pure coherent read authenticates either an original checkpoint
+suspension conclusion and event, or a protected begun keyed admission with no
+parent reservation. It captures current R, the full original issuer digest,
+frozen capsule digest, original source receipt and chosen replacement owner and
+lease. Unsupported or ambiguous original sources fail before restoration.
+Unkeyed initial work and existing Unstarted parent reservations remain unsupported
+by this component. Run carriers are capped before private clone or SQL transfer;
+checkpoint suspension inspection accepts at most 64 calls and 64 phases.
+
+Fresh Reserve, Begin and atomic completion revalidate the original native source.
+Live prepared roots block competing legacy claims. Actual retained-task join and
+original preparation Join commit with the rotated native fence in one transaction.
+The v3 successor issuance binds the exact predecessor and original Join/source;
+no historical receipt is rewritten to the current revision.
+
+`lookup_expired_run_preparation(session, run, original_issuance)` authenticates the
+original source, preparation audits and actual successor without reading current
+Run state. It returns bounded metadata only. Completion replay likewise cannot
+mint a fence or run factories, including after lost ACKs or later R changes.
+This checkpoint supplies native Store primitives only. Runtime generic resume,
+successor driver ownership and normal Static/provider/service adoption still need
+their own integration; this association does not establish physical cleanup,
+whole-Run coverage or deletion readiness.
+
+The current inspection and reconciliation limits apply to individual carriers.
+They do not establish one aggregate 32 MiB proof budget or bound the complete
+Memory State clone. A future aggregate/history consumer must thread its shared
+caller proof budget through every selected source before transfer or cloning.

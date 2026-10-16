@@ -140,6 +140,8 @@ delegate! {
         fn lookup_admission(_session: &SessionId, _key: &AdmissionKey, ) -> Result<Option<AdmissionReceipt>, StoreError>;
         fn load_admission_execution(_session: &SessionId, _key: &AdmissionKey, ) -> Result< Option<s::AdmissionExecutionRecord>, s::AdmissionExecutionError, >;
         fn admission_execution_state(_run: &RunId, ) -> Result<Option<s::AdmissionExecutionState>, StoreError>;
+        fn inspect_expired_run_preparation(request: s::session_owner::preparation::InspectExpiredRunPreparation) -> Result<s::session_owner::preparation::ExpiredRunPreparation, s::session_owner::SessionOwnerError>;
+        fn lookup_expired_run_preparation(session: &SessionId, run: &RunId, issuance: u64) -> Result<Option<s::session_owner::preparation::ExpiredRunReceipt>, s::session_owner::SessionOwnerError>;
         fn inspect_admission_recovery(request: s::ClaimUnstartedAdmissionRequest) -> Result<s::session_owner::preparation::AdmissionRecoveryPreparation, s::AdmissionExecutionError>;
         fn claim_unstarted_admission(_request: s::ClaimUnstartedAdmissionRequest, ) -> Result<s::ClaimedAdmission, s::AdmissionExecutionError>;
         fn abandon_run(_request: c::AbandonRequest, ) -> Result<c::AbandonOutcome, c::AbandonError>;

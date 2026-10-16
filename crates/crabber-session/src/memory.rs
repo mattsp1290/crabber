@@ -29,6 +29,8 @@ mod admission_journal;
 mod attempt;
 #[path = "memory/execution_binding.rs"]
 mod execution_binding;
+#[path = "memory/expired.rs"]
+mod expired;
 #[path = "memory/management.rs"]
 mod management;
 #[path = "memory/native_parent.rs"]
@@ -238,6 +240,21 @@ impl MemoryStore {
 
     fn transact<T, E>(&self, operation: impl FnOnce(&mut State) -> Result<T, E>) -> Result<T, E> {
         let mut guard = self.state.lock().expect("memory store poisoned");
+        let mut next = guard.clone();
+        let output = operation(&mut next)?;
+        *guard = next;
+        Ok(output)
+    }
+
+    fn transact_or_replay<T, E>(
+        &self,
+        before: impl FnOnce(&State) -> Result<Option<T>, E>,
+        operation: impl FnOnce(&mut State) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(replayed) = before(&guard)? {
+            return Ok(replayed);
+        }
         let mut next = guard.clone();
         let output = operation(&mut next)?;
         *guard = next;
@@ -1149,6 +1166,26 @@ impl Store for MemoryStore {
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
         self.load_execution_record(session, key)
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)
+    }
+    async fn lookup_expired_run_preparation(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        issuance: u64,
+    ) -> Result<
+        Option<crate::session_owner::preparation::ExpiredRunReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.lookup_expired_source(session, run, issuance)
+    }
+    async fn inspect_expired_run_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::ExpiredRunPreparation,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_expired_source(request)
     }
     async fn inspect_admission_recovery(
         &self,

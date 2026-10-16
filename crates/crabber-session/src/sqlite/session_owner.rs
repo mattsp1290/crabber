@@ -215,6 +215,7 @@ impl SqliteStore {
             reads::scope(&mut tx, &request.session_id).await?;
             let mut record =
                 reads::current(&mut tx, &request.session_id, &request.target.id).await?;
+            super::expired::verify_begin(&mut tx, &record, &request, self.clock.now()).await?;
             let public = record.mutate(&request, authority.as_ref(), self.clock.now())?;
             let op = match request.command {
                 SessionOwnerCommand::Begin => SessionOwnerOperation::Begin,

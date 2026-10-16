@@ -157,7 +157,11 @@ impl Ledger {
         }
         Ok(Some(audit.receipt.clone()))
     }
-    fn checked(&self, session: &SessionId, id: &SessionOwnerId) -> Result<&Record, Error> {
+    pub(crate) fn checked(
+        &self,
+        session: &SessionId,
+        id: &SessionOwnerId,
+    ) -> Result<&Record, Error> {
         crate::session_owner::identifier(&session.0, 512, false)?;
         crate::session_owner::identifier(&id.0, 128, false)?;
         let record = self

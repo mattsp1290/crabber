@@ -10,6 +10,17 @@ pub(crate) fn validate(
         return Err(Error::InvalidRequest);
     };
     let (key, session, run, target, revision, digest) = match source {
+        PreparationSource::ExpiredRun(source) => (
+            PreparationKey::ExpiredRun {
+                run_id: source.request().expected_fence.run_id.clone(),
+                issuance: source.expected_issuance(),
+            },
+            &source.request().session_id,
+            &source.request().expected_fence.run_id,
+            ExistingWorkTarget::ExpiredRun(Box::new(source.target().clone())),
+            source.expected_revision(),
+            source.fingerprint()?,
+        ),
         PreparationSource::AdmissionRecovery(recovery) => (
             PreparationKey::AdmissionRecovery {
                 key: recovery.request().key.clone(),

@@ -46,58 +46,71 @@ impl MemoryStore {
             super::super::session_owner::preparation::ReservePreparation::fingerprint,
         )?;
         let fault = fault(self);
-        let outcome = self.transact(|state| {
-            super::deletion::ensure_live(state, &request.binding.session_id)
-                .map_err(crate::deletion::owner_error)?;
-            if let Some(saved) = state
-                .session_owners
-                .receipt(&request.binding.session_id, &request.id)?
-            {
-                if saved.semantic_digest != digest {
-                    return Err(Error::SemanticConflict);
-                }
-                return Ok(SessionOwnerOutcome::Replayed(saved));
-            }
-            if request.binding.parent.is_some()
-                && !state.sessions.contains_key(&request.binding.session_id)
-            {
-                return Err(Error::UnknownStoreOutcome);
-            }
-            if let Some(session) = state.sessions.get(&request.binding.session_id) {
-                session
-                    .ensure_identity(&request.binding.workspace_id, &request.binding.directory)
-                    .map_err(|_| Error::IdentityMismatch)?;
-                if state
-                    .management
-                    .get(&session.id)
-                    .is_some_and(|metadata| metadata.archived)
-                    && request.binding.parent.is_none()
-                    && !preparation.is_some_and(|value| matches!(value.purpose,
-                        crate::session_owner::preparation::PreparationPurpose::ExistingRun { .. }))
+        let outcome = self.transact_or_replay(
+            |state| {
+                preflight_expired_reservation(
+                    state,
+                    request,
+                    preparation,
+                    &digest,
+                    self.clock.now(),
+                )
+            },
+            |state| {
+                super::deletion::ensure_live(state, &request.binding.session_id)
+                    .map_err(crate::deletion::owner_error)?;
+                if let Some(saved) = state
+                    .session_owners
+                    .receipt(&request.binding.session_id, &request.id)?
                 {
-                    return Err(Error::InvalidTransition);
+                    if saved.semantic_digest != digest {
+                        return Err(Error::SemanticConflict);
+                    }
+                    return Ok(SessionOwnerOutcome::Replayed(saved));
                 }
-            }
-            let now = self.clock.now();
-            let parent = parent_proof(state, request, parent, now)?;
-            let revision = revision(state, &request.binding.session_id);
-            if let Some(preparation) = preparation {
-                validate_preparation(state, preparation, revision, now)?;
-            }
-            let outcome = state.session_owners.reserve_with_origin(
-                request,
-                parent,
-                now,
-                revision,
-                preparation.map(super::super::session_owner::preparation::origin),
-            )?;
-            if state.sessions.contains_key(&request.binding.session_id) {
-                bump_public_revision(state, &request.binding.session_id)
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
-            }
-            before(fault)?;
-            Ok(outcome)
-        })?;
+                if request.binding.parent.is_some()
+                    && !state.sessions.contains_key(&request.binding.session_id)
+                {
+                    return Err(Error::UnknownStoreOutcome);
+                }
+                if let Some(session) = state.sessions.get(&request.binding.session_id) {
+                    session
+                        .ensure_identity(&request.binding.workspace_id, &request.binding.directory)
+                        .map_err(|_| Error::IdentityMismatch)?;
+                    if state
+                        .management
+                        .get(&session.id)
+                        .is_some_and(|metadata| metadata.archived)
+                        && request.binding.parent.is_none()
+                        && !preparation.is_some_and(|value| {
+                            matches!(value.purpose,
+                        crate::session_owner::preparation::PreparationPurpose::ExistingRun { .. })
+                        })
+                    {
+                        return Err(Error::InvalidTransition);
+                    }
+                }
+                let now = self.clock.now();
+                let parent = parent_proof(state, request, parent, now)?;
+                let revision = revision(state, &request.binding.session_id);
+                if let Some(preparation) = preparation {
+                    validate_preparation(state, preparation, revision, now)?;
+                }
+                let outcome = state.session_owners.reserve_with_origin(
+                    request,
+                    parent,
+                    now,
+                    revision,
+                    preparation.map(super::super::session_owner::preparation::origin),
+                )?;
+                if state.sessions.contains_key(&request.binding.session_id) {
+                    bump_public_revision(state, &request.binding.session_id)
+                        .map_err(|_| Error::UnknownStoreOutcome)?;
+                }
+                before(fault)?;
+                Ok(outcome)
+            },
+        )?;
         after(outcome, fault)
     }
     pub(super) fn mutate_owner(
@@ -105,29 +118,104 @@ impl MemoryStore {
         request: &MutateSessionOwner,
         authority: Option<&SessionOwnerAuthority>,
     ) -> Result<SessionOwnerOutcome, Error> {
-        request.fingerprint()?;
+        let digest = request.fingerprint()?;
         let fault = fault(self);
-        let outcome = self.transact(|state| {
-            super::deletion::ensure_live(state, &request.session_id)
-                .map_err(crate::deletion::owner_error)?;
-            let revision = revision(state, &request.session_id);
-            let (outcome, public_change) = state.session_owners.mutate_at_revision(
-                request,
-                authority,
-                self.clock.now(),
-                revision,
-            )?;
-            if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
-                if public_change && state.sessions.contains_key(&request.session_id) {
-                    bump_public_revision(state, &request.session_id)
-                        .map_err(|_| Error::UnknownStoreOutcome)?;
+        let outcome = self.transact_or_replay(
+            |state| preflight_expired_begin(state, request, &digest, self.clock.now()),
+            |state| {
+                super::deletion::ensure_live(state, &request.session_id)
+                    .map_err(crate::deletion::owner_error)?;
+                let revision = revision(state, &request.session_id);
+                let (outcome, public_change) = state.session_owners.mutate_at_revision(
+                    request,
+                    authority,
+                    self.clock.now(),
+                    revision,
+                )?;
+                if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
+                    if public_change && state.sessions.contains_key(&request.session_id) {
+                        bump_public_revision(state, &request.session_id)
+                            .map_err(|_| Error::UnknownStoreOutcome)?;
+                    }
+                    before(fault)?;
                 }
-                before(fault)?;
-            }
-            Ok(outcome)
-        })?;
+                Ok(outcome)
+            },
+        )?;
         after(outcome, fault)
     }
+}
+fn preflight_expired_begin(
+    state: &State,
+    request: &MutateSessionOwner,
+    digest: &crabber_core::InputFingerprint,
+    now: OffsetDateTime,
+) -> Result<Option<SessionOwnerOutcome>, Error> {
+    if !matches!(
+        request.command,
+        crate::session_owner::SessionOwnerCommand::Begin
+    ) {
+        return Ok(None);
+    }
+    super::deletion::ensure_live(state, &request.session_id)
+        .map_err(crate::deletion::owner_error)?;
+    if let Some(saved) = state
+        .session_owners
+        .receipt(&request.session_id, &request.id)?
+    {
+        if &saved.semantic_digest != digest {
+            return Err(Error::SemanticConflict);
+        }
+        return Ok(Some(SessionOwnerOutcome::Replayed(saved)));
+    }
+    let record = state
+        .session_owners
+        .checked(&request.session_id, &request.target.id)?;
+    if let Some((run_id, target)) =
+        crate::session_owner::preparation::expired::native::begin_target(record, request)
+    {
+        let run = state.runs.get(run_id).ok_or(Error::NotFound)?;
+        let inspection =
+            crate::session_owner::preparation::expired::native::begin_request(run, target)?;
+        let actual = super::expired::context(state, inspection, now)?;
+        if actual.target() != target {
+            return Err(Error::StaleOwner);
+        }
+    }
+    Ok(None)
+}
+fn preflight_expired_reservation(
+    state: &State,
+    request: &ReserveSessionOwner,
+    preparation: Option<&crate::session_owner::preparation::ReservePreparation>,
+    digest: &crabber_core::InputFingerprint,
+    now: OffsetDateTime,
+) -> Result<Option<SessionOwnerOutcome>, Error> {
+    if preparation.is_some_and(|request| {
+        matches!(
+            request.source,
+            Some(crate::session_owner::preparation::PreparationSource::ExpiredRun(_))
+        )
+    }) {
+        super::deletion::ensure_live(state, &request.binding.session_id)
+            .map_err(crate::deletion::owner_error)?;
+        if let Some(saved) = state
+            .session_owners
+            .receipt(&request.binding.session_id, &request.id)?
+        {
+            if &saved.semantic_digest != digest {
+                return Err(Error::SemanticConflict);
+            }
+            return Ok(Some(SessionOwnerOutcome::Replayed(saved)));
+        }
+        validate_preparation(
+            state,
+            preparation.ok_or(Error::InvalidRequest)?,
+            revision(state, &request.binding.session_id),
+            now,
+        )?;
+    }
+    Ok(None)
 }
 pub(super) fn revision(state: &State, session: &crabber_core::SessionId) -> RevisionState {
     if state.sessions.contains_key(session) {
@@ -331,6 +419,10 @@ fn validate_preparation_source(
             let source = request.source.as_ref().ok_or(Error::Unsupported)?;
             crate::session_owner::preparation::source_validation::validate(source, request)?;
             match source {
+                crate::session_owner::preparation::PreparationSource::ExpiredRun(source) => {
+                    let current = super::expired::context(state, source.request().clone(), now)?;
+                    source.verify_source(&current)?;
+                }
                 crate::session_owner::preparation::PreparationSource::AdmissionRecovery(
                     recovery,
                 ) => {

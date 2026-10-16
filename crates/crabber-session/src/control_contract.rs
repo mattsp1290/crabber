@@ -3,6 +3,8 @@
 mod bounds;
 #[path = "run_control_contract/checkpoint.rs"]
 mod checkpoint;
+#[path = "run_control_contract/expired.rs"]
+pub(crate) mod expired;
 #[path = "run_control_contract/faults.rs"]
 mod faults;
 #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
@@ -159,6 +161,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     bounds::opaque_session(&store, &clock).await;
     waiting::run(&store, &clock).await;
     checkpoint::run(&store, &clock).await;
+    expired::expired_inspection(&store, &clock).await;
     tools::run(&store).await;
 }
 async fn ordered(store: &impl Store, clock: &ManualClock) {

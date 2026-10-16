@@ -13,6 +13,9 @@ impl super::super::SqliteStore {
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         let completed = match operation {
+            PreparedOperation::ExpiredRunResume(prepared) => PreparationCompletion::ExpiredRun(
+                self.claim_prepared_expired(tx, &prepared, proof).await?,
+            ),
             PreparedOperation::AdmissionRecovery(recovery) => {
                 PreparationCompletion::AdmissionRecovery(
                     crate::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(Box::new(
@@ -81,19 +84,7 @@ impl super::super::SqliteStore {
                     Box::pin(self.queue_apply_guarded(tx, request, digest, Some(proof))).await?,
                 )
             }
-            PreparedOperation::Admit(bound) => {
-                bound.binding.validate(&bound.request)?;
-                let user = bound.request.user_message.clone();
-                let admitted = self
-                    .admit_transaction_guarded(tx, bound.request, false, guard)
-                    .await?;
-                super::super::super::execution_binding::save(
-                    tx,
-                    &RetainedExecutionBinding::new(&admitted.run, &user, bound.binding),
-                )
-                .await?;
-                PreparationCompletion::Admitted(admitted)
-            }
+            PreparedOperation::Admit(bound) => self.admit_prepared_bound(tx, *bound, proof).await?,
             PreparedOperation::AdmitKeyed(bound) => {
                 let user = bound.keyed.request.user_message.clone();
                 let outcome = self.admit_keyed_guarded(tx, bound.keyed, guard).await?;
@@ -109,5 +100,28 @@ impl super::super::SqliteStore {
         };
         control::verify(tx, proof.grant, &completed).await?;
         Ok(completed)
+    }
+}
+
+impl super::super::SqliteStore {
+    async fn admit_prepared_bound(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        bound: crate::BoundAdmitRequest,
+        proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+    ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        let guard = crate::queue::AdmissionGuard::Preparation(proof);
+        bound.binding.validate(&bound.request)?;
+        let user = bound.request.user_message.clone();
+        let admitted = self
+            .admit_transaction_guarded(tx, bound.request, false, guard)
+            .await?;
+        super::super::super::execution_binding::save(
+            tx,
+            &RetainedExecutionBinding::new(&admitted.run, &user, bound.binding),
+        )
+        .await?;
+        Ok(PreparationCompletion::Admitted(admitted))
     }
 }

@@ -52,9 +52,16 @@ impl super::PostgresStore {
                 {
                     return Err(Error::SemanticConflict);
                 }
-                let run = super::super::load_run(tx, run_id, true)
-                    .await
-                    .map_err(unknown)?;
+                let run = if let Some(
+                    crate::session_owner::preparation::PreparationSource::ExpiredRun(source),
+                ) = &preparation.source
+                {
+                    super::super::expired::load_run(tx, source.request()).await?
+                } else {
+                    super::super::load_run(tx, run_id, true)
+                        .await
+                        .map_err(unknown)?
+                };
                 if run.session_id != binding.session_id {
                     return Err(Error::NotFound);
                 }
@@ -80,6 +87,12 @@ impl super::PostgresStore {
         source: &crate::session_owner::preparation::PreparationSource,
     ) -> Result<(), Error> {
         match source {
+            crate::session_owner::preparation::PreparationSource::ExpiredRun(source) => {
+                let current =
+                    super::super::expired::context(tx, source.request().clone(), self.clock.now())
+                        .await?;
+                source.verify_source(&current)?;
+            }
             crate::session_owner::preparation::PreparationSource::AdmissionRecovery(recovery) => {
                 super::super::admission_execution::validate_source(tx, recovery, self.clock.now())
                     .await

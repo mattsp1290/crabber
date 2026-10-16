@@ -1,6 +1,8 @@
 //! Bounded original metadata reconciliation, never replacement dispatch authority.
 #[path = "replay/admission.rs"]
 mod admission;
+#[path = "replay/expired.rs"]
+mod expired;
 #[path = "replay/recovery.rs"]
 mod recovery;
 use crate::session_owner::preparation::{
@@ -16,6 +18,9 @@ impl super::super::SqliteStore {
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
     > {
+        if let Some(outcome) = Self::replay_expired(tx, joined).await? {
+            return Ok(Some(outcome));
+        }
         if let Some(outcome) = Self::replay_recovery(tx, joined).await? {
             return Ok(Some(outcome));
         }

@@ -84,6 +84,7 @@ impl PreparationGrant {
 /// lineage is authenticated in the committing transaction.
 #[derive(Clone)]
 pub enum PreparedOperation {
+    ExpiredRunResume(Box<super::PreparedExpiredRunResume>),
     AdmissionRecovery(Box<super::PreparedAdmissionRecovery>),
     Admit(Box<BoundAdmitRequest>),
     AdmitKeyed(Box<BoundKeyedAdmitRequest>),
@@ -114,7 +115,24 @@ pub enum AdmissionRecoveryOutcome {
     Replayed(crabber_core::AdmissionReceipt),
 }
 
+/// Exact committed generic claim metadata; possession grants no worker fence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredRunReceipt {
+    pub session_id: crabber_core::SessionId,
+    pub run_id: crabber_core::RunId,
+    pub operation_id: crabber_core::SessionOwnerOperationId,
+    pub issuance: u64,
+    pub revision: crabber_core::SessionRevision,
+}
+pub enum ExpiredRunOutcome {
+    Claimed {
+        receipt: ExpiredRunReceipt,
+        fence: crabber_core::RunFence,
+    },
+    Replayed(ExpiredRunReceipt),
+}
 pub enum PreparationCompletion {
+    ExpiredRun(ExpiredRunOutcome),
     Admitted(AdmitOutcome),
     AdmissionRecovery(AdmissionRecoveryOutcome),
     AdmissionReplayed(PreparationAdmissionReceipt),
@@ -130,6 +148,7 @@ impl PreparationCompletion {
     pub fn is_replayed(&self) -> bool {
         match self {
             Self::Admitted(_) => false,
+            Self::ExpiredRun(outcome) => matches!(outcome, ExpiredRunOutcome::Replayed(_)),
             Self::AdmissionRecovery(outcome) => {
                 matches!(outcome, AdmissionRecoveryOutcome::Replayed(_))
             }
@@ -147,6 +166,7 @@ impl PreparationCompletion {
 /// Safe native-operation category; no capsule or dispatch authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreparationOperationKind {
+    ExpiredRunResume,
     AdmissionRecovery,
     Admission,
     KeyedAdmission,
@@ -248,6 +268,7 @@ impl JoinedPreparation {
     #[must_use]
     pub fn operation_kind(&self) -> PreparationOperationKind {
         match &self.operation {
+            PreparedOperation::ExpiredRunResume(_) => PreparationOperationKind::ExpiredRunResume,
             PreparedOperation::AdmissionRecovery(_) => PreparationOperationKind::AdmissionRecovery,
             PreparedOperation::Admit(_) => PreparationOperationKind::Admission,
             PreparedOperation::AdmitKeyed(_) => PreparationOperationKind::KeyedAdmission,
@@ -266,7 +287,8 @@ impl JoinedPreparation {
         match &mut self.operation {
             PreparedOperation::Admit(bound) => bound.request.lease = lease,
             PreparedOperation::AdmitKeyed(bound) => bound.keyed.request.lease = lease,
-            PreparedOperation::AdmissionRecovery(_)
+            PreparedOperation::ExpiredRunResume(_)
+            | PreparedOperation::AdmissionRecovery(_)
             | PreparedOperation::Queue { .. }
             | PreparedOperation::ApprovalClaim(_)
             | PreparedOperation::FrontendClaim(_)
@@ -308,5 +330,6 @@ redacted!(
     PreparedOperation,
     PreparationCompletion,
     AdmissionRecoveryOutcome,
+    ExpiredRunOutcome,
     JoinedPreparation
 );

@@ -27,3 +27,5 @@ pub(crate) mod recovery;
 
 #[path = "../../../crabber-session/src/session_owner/preparation/binding_digest.rs"]
 pub(crate) mod binding_digest;
+#[path = "preparation_expired.rs"]
+pub(crate) mod expired;

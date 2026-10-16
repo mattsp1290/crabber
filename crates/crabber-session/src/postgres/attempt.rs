@@ -389,3 +389,11 @@ async fn apply_run_transition(
     }
     Ok(settlement)
 }
+
+/// Pure no-parent eligibility; caller holds the same session transaction.
+pub(super) async fn pristine_for_expired(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    run: &crabber_core::Run,
+) -> Result<(), crate::AttemptError> {
+    pristine::check(tx, run).await
+}

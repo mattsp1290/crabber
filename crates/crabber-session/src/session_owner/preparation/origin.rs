@@ -24,8 +24,17 @@ impl Origin {
         crate::session_owner::identifier(&self.operation.0, 128, false)?;
         match &self.purpose {
             PreparationPurpose::OrdinaryAdmission => (),
-            PreparationPurpose::ExistingRun { run_id, .. } => {
+            PreparationPurpose::ExistingRun { run_id, work } => {
                 crate::session_owner::identifier(&run_id.0, 128, false)?;
+                if let super::ExistingWorkTarget::ExpiredRun(target) = work
+                    && target.fingerprint(
+                        &owner.binding.session_id,
+                        run_id,
+                        self.expected_revision,
+                    )? != self.intent
+                {
+                    return Err(Error::SemanticConflict);
+                }
             }
             PreparationPurpose::Queue { authority } => {
                 crate::session_owner::identifier(&authority.queue_id.0, 128, false)?;

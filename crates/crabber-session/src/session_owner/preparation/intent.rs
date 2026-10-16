@@ -116,6 +116,15 @@ pub(crate) fn validate(
     grant.original_reservation().fingerprint()?;
     let reserved = &grant.original_reservation();
     let intent = match operation {
+        PreparedOperation::ExpiredRunResume(prepared) => {
+            prepared.validate()?;
+            super::source_validation::validate(
+                &super::PreparationSource::ExpiredRun(prepared.source.clone()),
+                reserved,
+            )?;
+            binding_scope(grant, &prepared.binding)?;
+            prepared.source.fingerprint()?
+        }
         PreparedOperation::AdmissionRecovery(recovery) => {
             verify_admission_recovery(grant, recovery)?
         }

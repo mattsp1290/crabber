@@ -21,7 +21,25 @@ impl MemoryStore {
             .binding
             .session_id
             .clone();
-        let outcome = self.transact(
+        let outcome = self.transact_or_replay(
+            |state| {
+                if let crate::session_owner::preparation::PreparedOperation::ExpiredRunResume(
+                    prepared,
+                ) = joined.observed_operation()
+                {
+                    super::super::deletion::ensure_live(state, &session)?;
+                    if let Some(outcome) = Self::replay_expired(state, joined)? {
+                        return Ok(Some(outcome));
+                    }
+                    let current = super::super::expired::context(
+                        state,
+                        prepared.source.request().clone(),
+                        self.clock.now(),
+                    )?;
+                    prepared.source.verify_source(&current)?;
+                }
+                Ok(None)
+            },
             |state| -> Result<_, crate::session_owner::preparation::PreparationCommitError> {
                 super::super::deletion::ensure_live(state, &session)?;
                 let now = self.clock.now();

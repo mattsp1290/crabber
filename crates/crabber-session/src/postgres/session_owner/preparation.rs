@@ -72,6 +72,10 @@ impl super::PostgresStore {
             super::before(self).map_err(storage_error)?;
             #[cfg(test)]
             crate::binding_fault::trip(&self.binding_fault, 1)?;
+            #[cfg(test)]
+            if matches!(result, PreparationCompletion::ExpiredRun(_)) {
+                crate::run_control_contract::process::pause("expired-before");
+            }
             Ok(result)
         }
         .await;
@@ -80,6 +84,10 @@ impl super::PostgresStore {
                 tx.commit().await.map_err(super::super::db)?;
                 #[cfg(test)]
                 after_commit(self, &value)?;
+                #[cfg(test)]
+                if matches!(value, PreparationCompletion::ExpiredRun(_)) {
+                    crate::run_control_contract::process::pause("expired-after");
+                }
                 Ok(value)
             }
             Err(error) => {

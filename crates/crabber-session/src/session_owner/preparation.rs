@@ -61,6 +61,12 @@ impl ReservePreparation {
 mod origin;
 pub(crate) use origin::{Origin, origin};
 
+pub(crate) mod expired;
+pub use expired::{
+    ExpiredRunOrigin, ExpiredRunPreparation, ExpiredRunTarget, InspectExpiredRunPreparation,
+    PreparedExpiredRunResume,
+};
+
 pub(crate) mod recovery;
 pub use recovery::{AdmissionRecoveryPreparation, PreparedAdmissionRecovery};
 
@@ -68,8 +74,9 @@ mod completion;
 mod owned;
 mod resource_contract;
 pub use completion::{
-    AdmissionRecoveryOutcome, JoinedPreparation, PreparationAdmissionReceipt,
-    PreparationCompletion, PreparationGrant, PreparationOperationKind, PreparedOperation,
+    AdmissionRecoveryOutcome, ExpiredRunOutcome, ExpiredRunReceipt, JoinedPreparation,
+    PreparationAdmissionReceipt, PreparationCompletion, PreparationGrant, PreparationOperationKind,
+    PreparedOperation,
 };
 pub use resource_contract::{bind_resource_contract, resource_contract};
 
@@ -97,6 +104,7 @@ pub enum PreparationKey {
     Unkeyed(ControlId),
     Admission(AdmissionKey),
     AdmissionRecovery { key: AdmissionKey, issuance: u64 },
+    ExpiredRun { run_id: RunId, issuance: u64 },
     Queue(ControlId),
     Approval(ControlId),
     ToolContinuation(ControlId),

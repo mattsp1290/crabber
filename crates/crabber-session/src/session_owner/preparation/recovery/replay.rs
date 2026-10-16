@@ -75,7 +75,7 @@ pub(crate) fn verify(
     Ok(native.receipt.clone())
 }
 
-fn verify_audits(grant: &PreparationGrant, audits: &[Audit]) -> Result<(), Error> {
+pub(crate) fn verify_audits(grant: &PreparationGrant, audits: &[Audit]) -> Result<(), Error> {
     let ids = audit_ids(grant)?;
     if audits.len() != ids.len() {
         return Err(Error::UnknownStoreOutcome);

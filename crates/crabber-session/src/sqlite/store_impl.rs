@@ -670,6 +670,26 @@ impl Store for SqliteStore {
         })
         .await
     }
+    async fn lookup_expired_run_preparation(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        issuance: u64,
+    ) -> Result<
+        Option<crate::session_owner::preparation::ExpiredRunReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.lookup_expired_source(session, run, issuance).await
+    }
+    async fn inspect_expired_run_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::ExpiredRunPreparation,
+        crate::session_owner::SessionOwnerError,
+    > {
+        super::expired::inspect(self, request).await
+    }
     async fn inspect_admission_recovery(
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,

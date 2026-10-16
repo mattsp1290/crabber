@@ -34,7 +34,7 @@ pub(super) async fn cancel(
     request: &RunControlRequest,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
-    let calls = verify(tx, run).await?;
+    let calls = verify(tx, run).await?.0;
     apply_verified(tx, run, request, calls, run_control::source_turn(run)?, now).await
 }
 pub(in super::super) async fn apply_verified(
@@ -80,7 +80,10 @@ pub(in super::super) async fn apply_verified(
         .map_err(unknown)?;
     super::finalize_extra(tx, &terminal, now, Some((request, &event))).await
 }
-async fn verify(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result<Vec<ToolCallId>, Error> {
+pub(in super::super) async fn verify(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+) -> Result<(Vec<ToolCallId>, SuspensionProof), Error> {
     let data: Option<String> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=4227072 THEN data_json END FROM run_suspension_proofs WHERE run_id=$1")
         .bind(&run.id.0).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::Busy)?;
     let proof: SuspensionProof =
@@ -130,5 +133,5 @@ async fn verify(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result<Vec<ToolC
             return Err(Error::Busy);
         }
     }
-    Ok(ids)
+    Ok((ids, proof))
 }

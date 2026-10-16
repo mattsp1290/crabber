@@ -7,6 +7,8 @@
 //! connect remains read-only and requires explicit migration to schema v10.
 #[path = "postgres/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "postgres/expired.rs"]
+mod expired;
 #[path = "postgres/read_proof.rs"]
 mod read_proof;
 #[path = "postgres/run_facts.rs"]
@@ -1521,6 +1523,26 @@ impl Store for PostgresStore {
             .await
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         Ok(record)
+    }
+    async fn lookup_expired_run_preparation(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        issuance: u64,
+    ) -> Result<
+        Option<crate::session_owner::preparation::ExpiredRunReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.lookup_expired_source(session, run, issuance).await
+    }
+    async fn inspect_expired_run_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::ExpiredRunPreparation,
+        crate::session_owner::SessionOwnerError,
+    > {
+        expired::inspect(self, request).await
     }
     async fn inspect_admission_recovery(
         &self,

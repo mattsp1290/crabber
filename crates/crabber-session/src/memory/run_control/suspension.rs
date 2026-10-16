@@ -55,7 +55,10 @@ pub(in super::super) fn apply_verified(
         .map_err(run_control::unknown)?;
     Ok(())
 }
-fn verify(state: &State, run: &Run) -> Result<Vec<crabber_core::ToolCallId>, Error> {
+pub(in crate::memory) fn verify(
+    state: &State,
+    run: &Run,
+) -> Result<Vec<crabber_core::ToolCallId>, Error> {
     let proof = state.suspension_proofs.get(&run.id).ok_or(Error::Busy)?;
     let latest = state
         .attempts

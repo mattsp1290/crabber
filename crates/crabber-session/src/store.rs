@@ -1018,6 +1018,34 @@ pub trait Store: Send + Sync {
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
         Ok(None)
     }
+    /// Original generic-claim metadata only, reconciled by exact original
+    /// issuer sequence before current CAS/lease checks. Authenticates the actual
+    /// successor and immutable preparation/native sources; never returns a fence.
+    async fn lookup_expired_run_preparation(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+        _issuance: u64,
+    ) -> Result<
+        Option<crate::session_owner::preparation::ExpiredRunReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Coherently authenticates an expired generic Run's original suspension
+    /// or protected keyed execution source, current native issuer and frozen
+    /// binding before factories. This observation grants no execution authority.
+    /// Reservation and completion must revalidate the exact original source.
+    /// Unsupported adapters must fail before any restore or factory effect.
+    async fn inspect_expired_run_preparation(
+        &self,
+        _request: crate::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::ExpiredRunPreparation,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Coherent original recovery source/eligibility inspection, with no grant.
     /// Authenticate original admission Init/receipt/capsule and actual current
     /// native issuance/fence, then capture public revision under the same gate.

@@ -12,6 +12,14 @@ pub(super) async fn paused(
     before_pause: bool,
 ) -> (RunControlTarget, Option<crate::RunControlRequest>) {
     let admitted = crate::public_state_contract::admit(store, clock.now()).await;
+    pause_admitted(store, clock, before_pause, admitted).await
+}
+pub(super) async fn pause_admitted(
+    store: &impl Store,
+    clock: &ManualClock,
+    before_pause: bool,
+    admitted: crate::AdmitOutcome,
+) -> (RunControlTarget, Option<crate::RunControlRequest>) {
     let (execution, owner, target) = terminal::start_attempt(store, &admitted).await;
     let turn = TurnId::new();
     let call = ToolCallRecord {

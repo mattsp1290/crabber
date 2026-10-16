@@ -175,7 +175,7 @@ pub(crate) async fn run(store: &impl Store) {
             Err(SessionOwnerError::SemanticConflict)
         ));
     }
-    intent::run(store).await;
+    Box::pin(intent::run(store)).await;
     absent::run(store).await;
     unrelated_revision(store).await;
     presence_change(store).await;
