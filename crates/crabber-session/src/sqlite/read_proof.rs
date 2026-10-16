@@ -29,6 +29,18 @@ pub(super) async fn event(
     proof: &mut Proof,
 ) -> Result<crabber_core::EventRecord, crate::public_session::v2::proof::ReadError<crate::StoreError>>
 {
+    event_with_limit(tx, session, cursor, previous, 65536, proof).await
+}
+
+pub(super) async fn event_with_limit(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &crabber_core::SessionId,
+    cursor: crabber_core::EventCursor,
+    previous: bool,
+    maximum: usize,
+    proof: &mut Proof,
+) -> Result<crabber_core::EventRecord, crate::public_session::v2::proof::ReadError<crate::StoreError>>
+{
     use crate::public_session::v2::proof::ReadError;
     let comparison = if previous { "<" } else { "=" };
     let predicate = format!("session_id=$1 AND seq{comparison}$2 ORDER BY seq DESC LIMIT 1");
@@ -44,7 +56,7 @@ pub(super) async fn event(
     .await
     .map_err(ReadError::Budget)?;
     let query = format!(
-        "SELECT seq,CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,CASE WHEN length(CAST(data AS BLOB))<=65536 THEN data END AS data FROM events WHERE {predicate}"
+        "SELECT seq,CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,CASE WHEN length(CAST(data AS BLOB))<={maximum} THEN data END AS data FROM events WHERE {predicate}"
     );
     let row = sqlx::query(&query)
         .bind(&session.0)

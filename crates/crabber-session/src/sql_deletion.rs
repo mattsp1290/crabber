@@ -9,13 +9,6 @@ pub(crate) struct VerifiedScope {
     revision: SessionRevision,
 }
 impl VerifiedScope {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "guarded readiness integration constructs this scope"
-        )
-    )]
     pub(crate) fn from_coverage(coverage: &VerifiedDeletionCoverage) -> Self {
         Self {
             session: coverage.session_id().clone(),
@@ -93,3 +86,5 @@ pub(crate) const PURGE: &[&str] = &[
 
 #[cfg(test)]
 pub(crate) mod contract;
+
+pub(crate) mod readiness;

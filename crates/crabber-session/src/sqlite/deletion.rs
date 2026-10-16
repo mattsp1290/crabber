@@ -5,6 +5,7 @@ use crate::{DeletionError as Error, DeletionReceipt, SessionDisposition};
 use crabber_core::{ControlId, InputFingerprint, SessionId, SessionRevision};
 use sqlx::Row;
 mod purge;
+mod readiness;
 #[cfg(test)]
 mod tests;
 

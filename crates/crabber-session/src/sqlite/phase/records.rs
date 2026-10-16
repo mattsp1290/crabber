@@ -26,6 +26,25 @@ async fn row(
     lock: bool,
 ) -> Result<Option<(Option<String>, SessionRevision)>, Error> {
     let _ = lock;
+    let query = record_query(full, lock);
+    sqlx::query(&query)
+        .bind(&run.0)
+        .bind(id.map(|v| v.0.as_str()))
+        .bind(call.map(|v| v.0.as_str()))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db)
+        .map_err(sql::unknown)?
+        .map(|row| {
+            Ok((
+                row.get("record"),
+                sql::revision(row.get("public_revision"))?,
+            ))
+        })
+        .transpose()
+}
+fn record_query(full: bool, lock: bool) -> String {
+    let _ = lock;
     let projection = if full {
         format!(
             "json_object('version',json_extract(p.outcome_json,'$.version'),'snapshot',{SNAPSHOT},'token',p.claim_token,'output',json_extract(p.outcome_json,'$.output'))"
@@ -46,21 +65,7 @@ async fn row(
     let query = format!(
         "SELECT s.public_revision, CASE WHEN {BOUNDS} THEN {projection} END AS record {FROM}"
     );
-    sqlx::query(&query)
-        .bind(&run.0)
-        .bind(id.map(|v| v.0.as_str()))
-        .bind(call.map(|v| v.0.as_str()))
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(db)
-        .map_err(sql::unknown)?
-        .map(|row| {
-            Ok((
-                row.get("record"),
-                sql::revision(row.get("public_revision"))?,
-            ))
-        })
-        .transpose()
+    query
 }
 pub(super) async fn metadata(
     tx: &mut Transaction<'_, Sqlite>,
@@ -246,3 +251,49 @@ pub(super) async fn page(
         .collect::<Result<Vec<_>, _>>()?;
     request.finish(revision, phases)
 }
+
+use crate::public_session::v2::proof::{Proof, ReadError};
+pub(in super::super) async fn load_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    id: &PhaseId,
+    proof: &mut Proof,
+) -> Result<Option<PhaseRecord>, ReadError<Error>> {
+    let record = record_query(true, false);
+    let cost = format!(
+        "SELECT CAST(MAX(COALESCE(length(CAST(record AS BLOB)),0),COALESCE(length(CAST(p.outcome_json AS BLOB)),0)+COALESCE(length(CAST(p.claim_token AS BLOB)),0)+COALESCE(length(CAST(p.id AS BLOB)),0)+COALESCE(length(CAST(p.call_id AS BLOB)),0)+COALESCE(length(CAST(p.attempt_id AS BLOB)),0)+COALESCE(length(CAST(p.run_id AS BLOB)),0)+COALESCE(length(CAST(p.state AS BLOB)),0)+COALESCE(length(CAST(p.quiescence_state AS BLOB)),0)) AS BIGINT) FROM ({record}) bounded_phase JOIN tool_phases p ON p.run_id=$1 AND p.id=$2"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&run.0)
+            .bind(&id.0)
+            .bind(Option::<&str>::None),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(row(tx, run, Some(id), None, true, false)
+        .await?
+        .map(|(data, _)| sql::decode_record(data))
+        .transpose()?)
+}
+pub(in super::super) async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<PhaseReceipt>, ReadError<Error>> {
+    crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(RECEIPT_PROOF_COST)
+            .bind(&session.0)
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(receipt(tx, session, id).await?)
+}
+const RECEIPT_PROOF_COST: &str = "SELECT CAST(COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(r.semantic_digest AS BLOB)),0)+7+COALESCE(length(CAST(e.run_id AS BLOB)),0)+CASE WHEN r.kind='phase' THEN COALESCE(length(CAST(e.data AS BLOB)),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
