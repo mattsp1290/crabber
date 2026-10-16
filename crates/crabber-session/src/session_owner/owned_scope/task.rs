@@ -3,7 +3,8 @@
 use super::{Error, OwnedDispatchPermit, OwnedMainDisposition, OwnedScopeActivation};
 mod driver;
 pub use driver::DriverMainContext;
-use std::future::Future;
+use driver::MainIngress;
+use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 /// A retained task waiting behind a closed local gate. Register this with the
@@ -18,7 +19,7 @@ pub struct OwnedTaskRegistration<T> {
 }
 enum RegistrationKind {
     Generic,
-    Driver,
+    Driver(Arc<MainIngress>),
 }
 impl<T: Send + 'static> OwnedTaskRegistration<T> {
     /// The factory is invoked only after a fresh matching dispatch permit.
@@ -53,9 +54,11 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
         if &source.session != grant.original_request().context.session_id() {
             return Err(Error::SemanticConflict);
         }
-        Self::register_inner(source, RegistrationKind::Driver, move |context| {
-            context.map(factory)
-        })
+        Self::register_inner(
+            source,
+            RegistrationKind::Driver(MainIngress::new()),
+            move |context| context.map(factory),
+        )
     }
     fn register_inner<F, W>(
         source: super::OwnedScopeSource,
@@ -68,7 +71,13 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
     {
         let activation = OwnedScopeActivation::new(source)?;
         let (gate, ready) = oneshot::channel();
+        let seal = match &kind {
+            RegistrationKind::Generic => None,
+            RegistrationKind::Driver(ingress) => Some(ingress.guard()),
+        };
         let task = tokio::spawn(async move {
+            // The captured guard also closes if this future is never polled.
+            let _seal = seal;
             let context = ready.await.ok()?;
             Some(factory(context)?.await)
         });
@@ -94,9 +103,11 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
             return Err(Error::SemanticConflict);
         }
         let gate = self.gate.take().ok_or(Error::InvalidTransition)?;
-        let context = match self.kind {
+        let context = match &self.kind {
             RegistrationKind::Generic => None,
-            RegistrationKind::Driver => Some(DriverMainContext::dispatched(activation)),
+            RegistrationKind::Driver(ingress) => {
+                Some(DriverMainContext::dispatched(activation, ingress.clone()))
+            }
         };
         gate.send(context).map_err(|_| Error::UnknownStoreOutcome)
     }
@@ -181,3 +192,7 @@ pub(super) fn discard_panic(error: tokio::task::JoinError) {
 #[cfg(test)]
 #[path = "task/driver_tests.rs"]
 mod driver_tests;
+
+#[cfg(test)]
+#[path = "task/ingress_tests.rs"]
+mod ingress_tests;

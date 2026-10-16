@@ -12,10 +12,10 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 
-fn store() -> MemoryStore {
+pub(super) fn store() -> MemoryStore {
     MemoryStore::with_clock(Arc::new(ManualClock::new(time::OffsetDateTime::UNIX_EPOCH)))
 }
-async fn grant(store: &MemoryStore) -> Box<ExecutionDriverGrant> {
+pub(super) async fn grant(store: &MemoryStore) -> Box<ExecutionDriverGrant> {
     let admitted =
         crate::session_owner::preparation_contract::resources::initial_driver(store).await;
     let request = RegisterExecutionDriver {
@@ -49,7 +49,7 @@ async fn activate<T: Send + 'static>(
         .await
         .unwrap()
 }
-async fn permit<T: Send + 'static>(
+pub(super) async fn permit<T: Send + 'static>(
     store: &MemoryStore,
     grant: &ExecutionDriverGrant,
     main: &OwnedTaskRegistration<T>,
