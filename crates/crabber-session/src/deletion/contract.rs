@@ -6,9 +6,12 @@ use crabber_core::{ControlId, SessionId, SessionRevision};
 use time::OffsetDateTime;
 
 pub(crate) fn deleted() -> Tombstone {
+    deleted_for(&SessionId::new())
+}
+pub(crate) fn deleted_for(session: &SessionId) -> Tombstone {
     let request = DeleteSession {
         id: ControlId::new(),
-        session_id: SessionId::new(),
+        session_id: session.clone(),
         expected_revision: SessionRevision::INITIAL,
     };
     Tombstone {
@@ -25,6 +28,7 @@ pub(crate) fn deleted() -> Tombstone {
 }
 
 pub(crate) async fn metadata(store: &dyn Store, tombstone: &Tombstone) {
+    payload_guards(store, &tombstone.receipt.session_id).await;
     let receipt = &tombstone.receipt;
     assert_eq!(
         store
@@ -185,4 +189,81 @@ pub(crate) fn admission(session: &SessionId) -> crate::AdmitRequest {
             }],
         },
     }
+}
+
+pub(crate) async fn payload_guards(store: &dyn Store, deleted: &SessionId) {
+    assert_eq!(
+        store
+            .get_extension_state("extension", deleted)
+            .await
+            .unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    for kind in [crate::InboxKind::Steer, crate::InboxKind::FollowUp] {
+        let message = admission(deleted).user_message;
+        assert_eq!(
+            store
+                .enqueue_inbox(deleted, kind, message)
+                .await
+                .unwrap_err(),
+            StoreError::SessionDeleted
+        );
+        let foreign = admission(&SessionId::new()).user_message;
+        assert_eq!(
+            store
+                .enqueue_inbox(deleted, kind, foreign)
+                .await
+                .unwrap_err(),
+            StoreError::SessionDeleted
+        );
+    }
+    let missing = SessionId::new();
+    assert_eq!(
+        store
+            .get_extension_state("extension", &missing)
+            .await
+            .unwrap(),
+        std::collections::BTreeMap::new()
+    );
+    assert_eq!(
+        store
+            .enqueue_inbox(
+                &missing,
+                crate::InboxKind::FollowUp,
+                admission(&missing).user_message
+            )
+            .await
+            .unwrap_err(),
+        StoreError::NotFound
+    );
+}
+
+pub(crate) async fn seed_payloads(store: &dyn Store, session: &SessionId) -> SessionRevision {
+    let admitted = store.admit_run(admission(session)).await.unwrap();
+    store
+        .execution(admitted.fence)
+        .await
+        .unwrap()
+        .put_extension_state(
+            "extension",
+            vec![("key".into(), Some("retained fixture value".into()))],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_extension_state("extension", session)
+            .await
+            .unwrap(),
+        std::collections::BTreeMap::from([("key".into(), "retained fixture value".into())])
+    );
+    store
+        .enqueue_inbox(
+            session,
+            crate::InboxKind::FollowUp,
+            admission(session).user_message,
+        )
+        .await
+        .unwrap();
+    store.session_revision(session).await.unwrap()
 }

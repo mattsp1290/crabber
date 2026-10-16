@@ -1281,10 +1281,9 @@ impl Store for MemoryStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
+        let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
+        Ok(state
             .extension_values
             .get(&(session.clone(), extension_id.to_owned()))
             .cloned()
@@ -1298,6 +1297,7 @@ impl Store for MemoryStore {
         message: Message,
     ) -> Result<(), StoreError> {
         self.transact(|state| {
+            deletion::ensure_live(state, session)?;
             if !state.sessions.contains_key(session) {
                 return Err(StoreError::NotFound);
             }

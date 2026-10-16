@@ -96,3 +96,39 @@ async fn deleted_owner_lookups_and_held_cancel_authority_return_deleted() {
         before
     );
 }
+
+#[tokio::test]
+async fn deleted_payload_guards_precede_retained_rows_without_mutation() {
+    let store = MemoryStore::new();
+    let session = SessionId::new();
+    let revision = crate::deletion::contract::seed_payloads(&store, &session).await;
+    let before = store.state.lock().unwrap().extension_values.clone();
+    let inbox_before: Vec<_> = store
+        .state
+        .lock()
+        .unwrap()
+        .inbox
+        .iter()
+        .map(|row| (&row.session_id, &row.message, &row.consumed_by_run))
+        .map(|row| serde_json::to_value(row).unwrap())
+        .collect();
+    let tombstone = crate::deletion::contract::deleted_for(&session);
+    store
+        .state
+        .lock()
+        .unwrap()
+        .tombstones
+        .insert(session.clone(), tombstone);
+    crate::deletion::contract::payload_guards(&store, &session).await;
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.extension_values, before);
+    let inbox_after: Vec<_> = state
+        .inbox
+        .iter()
+        .map(|row| {
+            serde_json::to_value((&row.session_id, &row.message, &row.consumed_by_run)).unwrap()
+        })
+        .collect();
+    assert_eq!(inbox_after, inbox_before);
+    assert_eq!(state.public_revisions.get(&session), Some(&revision));
+}

@@ -88,13 +88,7 @@ async fn permanent_identity_guards() {
         panic!("reserved fixture owner")
     };
 
-    sqlx::query("INSERT INTO session_tombstones(session_id,operation_id,expected_revision,final_revision,semantic_digest,deleted_at_seconds,deleted_at_nanos,format_version) VALUES($1,$2,$3,$4,$5,$6,$7,1)")
-        .bind(&receipt.session_id.0).bind(&receipt.operation_id.0)
-        .bind(i64::try_from(tombstone.expected_revision.get()).unwrap())
-        .bind(i64::try_from(receipt.final_revision.get()).unwrap())
-        .bind(receipt.semantic_digest.as_str()).bind(receipt.deleted_at.unix_timestamp())
-        .bind(i32::try_from(receipt.deleted_at.nanosecond()).unwrap())
-        .execute(&store.pool).await.unwrap();
+    insert_tombstone(&store, &tombstone).await;
     crate::deletion::contract::metadata(&cold, &tombstone).await;
     assert_eq!(
         cold.get_session_owner(&receipt.session_id, &crabber_core::SessionOwnerId::new())
@@ -197,4 +191,50 @@ async fn cancelled_after_erasure(
             .unwrap_err(),
         crate::session_owner::SessionOwnerError::Deleted
     );
+}
+
+async fn insert_tombstone(
+    store: &super::super::PostgresStore,
+    tombstone: &crate::deletion::Tombstone,
+) {
+    let receipt = &tombstone.receipt;
+    sqlx::query("INSERT INTO session_tombstones(session_id,operation_id,expected_revision,final_revision,semantic_digest,deleted_at_seconds,deleted_at_nanos,format_version) VALUES($1,$2,$3,$4,$5,$6,$7,1)")
+        .bind(&receipt.session_id.0).bind(&receipt.operation_id.0)
+        .bind(i64::try_from(tombstone.expected_revision.get()).unwrap())
+        .bind(i64::try_from(receipt.final_revision.get()).unwrap())
+        .bind(receipt.semantic_digest.as_str()).bind(receipt.deleted_at.unix_timestamp())
+        .bind(i32::try_from(receipt.deleted_at.nanosecond()).unwrap())
+        .execute(&store.pool).await.unwrap();
+}
+
+#[tokio::test]
+async fn deleted_payload_guards_precede_retained_rows_without_mutation() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let cold = PostgresStore::connect(&url).await.unwrap();
+    let session = crabber_core::SessionId::new();
+    let revision = crate::deletion::contract::seed_payloads(&store, &session).await;
+    let before: String = sqlx::query_scalar("SELECT value FROM extension_state WHERE session_id=$1 AND extension_id='extension' AND key='key'")
+        .bind(&session.0).fetch_one(&store.pool).await.unwrap();
+    insert_tombstone(&store, &crate::deletion::contract::deleted_for(&session)).await;
+    crate::deletion::contract::payload_guards(&cold, &session).await;
+    let after: String = sqlx::query_scalar("SELECT value FROM extension_state WHERE session_id=$1 AND extension_id='extension' AND key='key'")
+        .bind(&session.0).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(after, before);
+    let inbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inbox WHERE session_id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 1);
+    let current: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(current, i64::try_from(revision.get()).unwrap());
 }

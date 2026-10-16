@@ -795,36 +795,45 @@ impl Store for SqliteStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
-        )
-        .bind(&session.0)
-        .bind(extension_id)
-        .fetch_all(&self.readers)
-        .await
-        .map_err(db)?;
-        rows.into_iter()
-            .map(|row| {
-                Ok((
-                    row.try_get("key").map_err(db)?,
-                    row.try_get("value").map_err(db)?,
-                ))
-            })
-            .collect()
+        let mut tx = self.readers.begin().await.map_err(db)?;
+        let result = async {
+            super::deletion::ensure_live(&mut tx, session).await?;
+            let rows = sqlx::query(
+                "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
+            )
+            .bind(&session.0)
+            .bind(extension_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(db)?;
+            rows.into_iter()
+                .map(|row| {
+                    Ok((
+                        row.try_get("key").map_err(db)?,
+                        row.try_get("value").map_err(db)?,
+                    ))
+                })
+                .collect()
+        }
+        .await;
+        finish(tx, result, std::convert::identity).await
     }
+
     async fn enqueue_inbox(
         &self,
         session: &SessionId,
         kind: InboxKind,
         message: Message,
     ) -> Result<(), StoreError> {
-        if message.session_id != *session {
-            return Err(StoreError::Validation(
-                "inbox message has wrong session".into(),
-            ));
-        }
         let mut tx = self.begin_write().await?;
         let result = async {
+            super::deletion::ensure_live(&mut tx, session).await?;
+            if message.session_id != *session {
+                return Err(StoreError::Validation(
+                    "inbox message has wrong session".into(),
+                ));
+            }
+
             sqlx::query("SELECT 1 FROM sessions WHERE id=$1")
                 .bind(&session.0)
                 .fetch_optional(&mut *tx)

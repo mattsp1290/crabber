@@ -1609,31 +1609,45 @@ impl Store for PostgresStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        deletion::ensure_live(&mut tx, session).await?;
         let rows = sqlx::query(
             "SELECT key,value FROM extension_state WHERE session_id=$1 AND extension_id=$2",
         )
         .bind(&session.0)
         .bind(extension_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
-        Ok(rows
+        let values = rows
             .into_iter()
-            .map(|row| (row.get("key"), row.get("value")))
-            .collect())
+            .map(|row| {
+                Ok((
+                    row.try_get("key").map_err(db)?,
+                    row.try_get("value").map_err(db)?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
+        tx.commit().await.map_err(db)?;
+        Ok(values)
     }
+
     async fn enqueue_inbox(
         &self,
         session: &SessionId,
         kind: InboxKind,
         message: Message,
     ) -> Result<(), StoreError> {
+        let mut tx = self.session_transaction(session).await?;
         if message.session_id != *session {
             return Err(StoreError::Validation(
                 "inbox message has wrong session".into(),
             ));
         }
-        let mut tx = self.session_transaction(session).await?;
         sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
             .bind(&session.0)
             .fetch_optional(&mut *tx)

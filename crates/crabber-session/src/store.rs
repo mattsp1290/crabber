@@ -1049,11 +1049,15 @@ pub trait Store: Send + Sync {
         run: &RunId,
     ) -> Result<Vec<ToolCallRecord>, StoreError>;
     async fn claim_expired_run(&self, run: &RunId, owner: &str) -> Result<RunFence, StoreError>;
+    /// Bundled stores return [`StoreError::SessionDeleted`] after permanent
+    /// erasure, while missing sessions have empty extension state.
     async fn get_extension_state(
         &self,
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError>;
+    /// Bundled stores reject permanently erased scopes before validating the
+    /// message. A missing session returns [`StoreError::NotFound`].
     async fn enqueue_inbox(
         &self,
         session: &SessionId,
