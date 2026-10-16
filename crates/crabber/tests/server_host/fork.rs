@@ -1,5 +1,7 @@
 #[path = "fork/admitted.rs"]
 mod admitted;
+#[path = "fork/snapshot.rs"]
+mod snapshot;
 // Copied native results become presentation history, never executable calls.
 use super::*;
 use crabber::core::{ContentBlock, ControlId, InputEnvelope, SessionRevision};
@@ -100,6 +102,13 @@ async fn memory_safe_fork_never_reexecutes_imported_native_calls() {
         .unwrap();
     assert_eq!(copied.len(), original.len());
     assert_eq!(receipt.imported_calls, 1);
+    snapshot::check(
+        store.as_ref(),
+        &request.target_session_id,
+        crabber::core::ImportedCallSource::NativeExecution,
+        original.len(),
+    )
+    .await;
     assert!(
         copied
             .iter()

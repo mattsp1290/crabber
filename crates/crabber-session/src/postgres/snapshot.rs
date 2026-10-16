@@ -4,7 +4,7 @@ use super::{
     EventCursor, Message, Postgres, PostgresStore, Row, StoreError, ToolCallRecord, Transaction,
     db, decode,
 };
-use crate::sql_snapshot::{Boundary, digest, invalid, parse, token};
+use crate::sql_snapshot::{Boundary, RecordKind, append_imported, digest, invalid, parse, token};
 pub(super) use crate::sql_snapshot::{call_record, message_record};
 use crate::{SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage};
 
@@ -119,15 +119,19 @@ impl PostgresStore {
         let mut b = if let Some(t) = &request.continuation {
             parse(t, &key, &session)?
         } else {
-            let row = sqlx::query("SELECT coalesce((SELECT max(seq) FROM messages WHERE session_id=$1),0) AS messages, coalesce((SELECT max(t.seq) FROM tool_calls t JOIN runs r ON r.id=t.run_id WHERE r.session_id=$1),0) AS calls, coalesce((SELECT max(seq) FROM events WHERE session_id=$1),0) AS high_water").bind(&request.session_id.0).fetch_one(&mut *tx).await.map_err(db)?;
+            let row = sqlx::query("SELECT coalesce((SELECT max(seq) FROM messages WHERE session_id=$1),0) AS messages, coalesce((SELECT max(t.seq) FROM tool_calls t JOIN runs r ON r.id=t.run_id WHERE r.session_id=$1),0) AS calls, coalesce((SELECT max(ordinal) FROM imported_tool_calls WHERE session_id=$1),0) AS imported, coalesce((SELECT max(ordinal) FROM imported_message_provenance WHERE session_id=$1),0) AS provenance, coalesce((SELECT max(seq) FROM events WHERE session_id=$1),0) AS high_water").bind(&request.session_id.0).fetch_one(&mut *tx).await.map_err(db)?;
             Boundary {
                 session,
                 revision,
                 public_revision,
                 messages: row.get("messages"),
                 calls: row.get("calls"),
+                imported: row.get("imported"),
+                provenance: row.get("provenance"),
                 message_after: 0,
                 call_after: 0,
+                imported_after: 0,
+                provenance_after: 0,
                 high_water: EventCursor(
                     u64::try_from(row.get::<i64, _>("high_water")).map_err(|_| invalid())?,
                 ),
@@ -144,6 +148,8 @@ impl PostgresStore {
             high_water: b.high_water,
             messages: Vec::new(),
             tool_calls: Vec::new(),
+            imported_calls: Vec::new(),
+            imported_provenance: Vec::new(),
             usage: SnapshotUsage::default(),
             continuation: None,
         };
@@ -156,6 +162,21 @@ impl PostgresStore {
             } else {
                 sqlx::query("SELECT t.seq,t.snapshot_parts,t.snapshot_text,t.snapshot_bytes FROM tool_calls t JOIN runs r ON r.id=t.run_id WHERE r.session_id=$1 AND t.seq>$2 AND t.seq<=$3 ORDER BY t.seq LIMIT 1").bind(&request.session_id.0).bind(b.call_after).bind(b.calls).fetch_optional(&mut *tx).await.map_err(db)?
             };
+            let (kind, row) = if is_message {
+                (RecordKind::Message, row)
+            } else if row.is_some() {
+                (RecordKind::Native, row)
+            } else {
+                let imported = sqlx::query("SELECT ordinal AS seq,CASE WHEN octet_length(id)<=512 THEN id END AS identity,snapshot_parts,snapshot_text,snapshot_bytes FROM imported_tool_calls WHERE session_id=$1 AND ordinal>$2 AND ordinal<=$3 ORDER BY ordinal LIMIT 1")
+        .bind(&request.session_id.0).bind(b.imported_after).bind(b.imported).fetch_optional(&mut *tx).await.map_err(db)?;
+                if imported.is_some() {
+                    (RecordKind::Imported, imported)
+                } else {
+                    let provenance = sqlx::query("SELECT ordinal AS seq,CASE WHEN octet_length(message_id)<=512 THEN message_id END AS identity,CAST(0 AS BIGINT) AS snapshot_parts,CAST(0 AS BIGINT) AS snapshot_text,snapshot_bytes FROM imported_message_provenance WHERE session_id=$1 AND ordinal>$2 AND ordinal<=$3 ORDER BY ordinal LIMIT 1")
+            .bind(&request.session_id.0).bind(b.provenance_after).bind(b.provenance).fetch_optional(&mut *tx).await.map_err(db)?;
+                    (RecordKind::Provenance, provenance)
+                }
+            };
             let Some(row) = row else {
                 tx.commit().await.map_err(db)?;
                 return Ok(SnapshotOutcome::Page(page));
@@ -163,7 +184,7 @@ impl PostgresStore {
             let mut usage = page.usage;
             if is_message {
                 usage.messages = usage.messages.saturating_add(1);
-            } else {
+            } else if kind != RecordKind::Provenance {
                 usage.tool_calls = usage.tool_calls.saturating_add(1);
             }
             usage.parts = usage.parts.saturating_add(
@@ -178,7 +199,7 @@ impl PostgresStore {
             if let Some(limit) = usage.exceeded(request.limits) {
                 let continuation = token(&b, &key)?;
                 tx.commit().await.map_err(db)?;
-                if page.usage.messages == 0 && page.usage.tool_calls == 0 {
+                if page.usage.encoded_bytes == 0 {
                     return Ok(SnapshotOutcome::Limited {
                         high_water: b.high_water,
                         limit,
@@ -188,25 +209,59 @@ impl PostgresStore {
                 page.continuation = Some(continuation);
                 return Ok(SnapshotOutcome::Page(page));
             }
-            let seq: i64 = row.get("seq");
-            let query = if is_message {
-                "SELECT snapshot_record FROM messages WHERE seq=$1"
+            let seq: i64 = row.try_get("seq").map_err(db)?;
+            if matches!(kind, RecordKind::Message | RecordKind::Native) {
+                let query = if is_message {
+                    "SELECT snapshot_record FROM messages WHERE seq=$1"
+                } else {
+                    "SELECT snapshot_record FROM tool_calls WHERE seq=$1"
+                };
+                let record: String = sqlx::query_scalar(query)
+                    .bind(seq)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                if is_message {
+                    page.messages
+                        .push(serde_json::from_str(&record).map_err(|_| invalid())?);
+                    b.message_after = seq;
+                } else {
+                    page.tool_calls
+                        .push(serde_json::from_str(&record).map_err(|_| invalid())?);
+                    b.call_after = seq;
+                }
             } else {
-                "SELECT snapshot_record FROM tool_calls WHERE seq=$1"
-            };
-            let record: String = sqlx::query_scalar(query)
-                .bind(seq)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-            if is_message {
-                page.messages
-                    .push(serde_json::from_str(&record).map_err(|_| invalid())?);
-                b.message_after = seq;
-            } else {
-                page.tool_calls
-                    .push(serde_json::from_str(&record).map_err(|_| invalid())?);
-                b.call_after = seq;
+                let bytes: i64 = row.try_get("snapshot_bytes").map_err(db)?;
+                let query = if kind == RecordKind::Imported {
+                    "SELECT CASE WHEN octet_length(data_json)=$3 THEN data_json END FROM imported_tool_calls WHERE session_id=$1 AND ordinal=$2"
+                } else {
+                    "SELECT CASE WHEN octet_length(data_json)=$3 THEN data_json END FROM imported_message_provenance WHERE session_id=$1 AND ordinal=$2"
+                };
+                let record: Option<String> = sqlx::query_scalar(query)
+                    .bind(&request.session_id.0)
+                    .bind(seq)
+                    .bind(bytes)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                let identity: Option<String> = row.try_get("identity").map_err(db)?;
+                append_imported(
+                    &mut page,
+                    kind,
+                    &record.ok_or_else(invalid)?,
+                    &request.session_id,
+                    &identity.ok_or_else(invalid)?,
+                    (
+                        row.try_get("snapshot_parts").map_err(db)?,
+                        row.try_get("snapshot_text").map_err(db)?,
+                        bytes,
+                    ),
+                )?;
+                if kind == RecordKind::Imported {
+                    b.imported_after = seq;
+                } else {
+                    b.provenance_after = seq;
+                }
             }
             page.usage = usage;
         }

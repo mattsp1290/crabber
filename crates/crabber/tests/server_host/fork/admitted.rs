@@ -95,6 +95,13 @@ async fn memory_fork_preserves_supplied_pairs_without_claiming_native_execution(
     assert!(
         matches!(agent.fork_session(request.clone()).await.unwrap(), ForkOutcome::Applied(receipt) if receipt.imported_calls == 1)
     );
+    snapshot::check(
+        store.as_ref(),
+        &request.target_session_id,
+        crabber::core::ImportedCallSource::AdmittedInput,
+        messages.len(),
+    )
+    .await;
     let second = fork_request(&agent, store.as_ref(), &request.target_session_id).await;
     assert!(
         matches!(agent.fork_session(second).await.unwrap(), ForkOutcome::Applied(receipt) if receipt.imported_calls == 1)

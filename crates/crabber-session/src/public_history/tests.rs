@@ -202,6 +202,8 @@ fn tool_record_results_are_recursively_redacted() {
         high_water: EventCursor(0),
         messages: vec![],
         tool_calls: vec![expected.clone()],
+        imported_calls: vec![],
+        imported_provenance: vec![],
         usage: SnapshotUsage::default(),
         continuation: None,
     };

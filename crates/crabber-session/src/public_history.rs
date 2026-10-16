@@ -1,6 +1,9 @@
 //! Public conversation projection with conservative raw-read accounting.
 use crate::{SnapshotContinuation, SnapshotLimit, SnapshotPage, SnapshotUsage};
-use crabber_core::{EventCursor, Message, SessionRevision, ToolCallRecord};
+use crabber_core::{
+    EventCursor, ImportedMessageProvenance, ImportedToolCall, Message, SessionRevision,
+    ToolCallRecord,
+};
 use serde::{Deserialize, Serialize};
 
 mod redaction;
@@ -16,6 +19,10 @@ pub struct PublicHistoryPage {
     pub high_water: EventCursor,
     pub messages: Vec<Message>,
     pub tool_calls: Vec<ToolCallRecord>,
+    #[serde(default)]
+    pub imported_calls: Vec<ImportedToolCall>,
+    #[serde(default)]
+    pub imported_provenance: Vec<ImportedMessageProvenance>,
     /// Cost of the bounded raw read, before redaction. Private records still
     /// consume this budget; projection never bypasses backend allocation caps.
     pub read_usage: SnapshotUsage,
@@ -45,11 +52,16 @@ impl From<SnapshotPage> for PublicHistoryPage {
                 redact_result(result);
             }
         }
+        for call in &mut page.imported_calls {
+            redact_result(&mut call.result);
+        }
         Self {
             captured_revision: page.captured_revision,
             high_water: page.high_water,
             messages: page.messages,
             tool_calls: page.tool_calls,
+            imported_calls: page.imported_calls,
+            imported_provenance: page.imported_provenance,
             read_usage: page.usage,
             continuation: page.continuation,
         }

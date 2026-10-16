@@ -498,11 +498,16 @@ pub(crate) async fn captured_history_revision(store: &dyn Store) {
     assert_eq!(second.captured_revision, first.captured_revision);
     assert_eq!(second.high_water, first.high_water);
     let original = request.continuation.as_ref().unwrap().0.clone();
-    let (signature, json) = original.split_once(':').unwrap();
+    let signed = original.strip_prefix("v2:").unwrap();
+    request.continuation = Some(crate::SnapshotContinuation(signed.into()));
+    assert!(store.snapshot(request.clone()).await.is_err());
+    request.continuation = Some(crate::SnapshotContinuation(format!("v3:{signed}")));
+    assert!(store.snapshot(request.clone()).await.is_err());
+    let (signature, json) = signed.split_once(':').unwrap();
     let mut boundary: serde_json::Value = serde_json::from_str(json).unwrap();
     boundary["public_revision"] = serde_json::json!(changed.revision);
     request.continuation = Some(crate::SnapshotContinuation(format!(
-        "{signature}:{boundary}"
+        "v2:{signature}:{boundary}"
     )));
     assert!(store.snapshot(request.clone()).await.is_err());
     request.continuation = None;
