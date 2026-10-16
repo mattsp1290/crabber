@@ -322,3 +322,13 @@ async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn original_approval_terminal_source_binds_request_and_actual_settlement() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
+    let store = store.with_clock(clock.clone());
+    crate::approval::terminal::contract::run(&store, &clock).await;
+}

@@ -404,6 +404,9 @@ mod approval_records;
 #[path = "../../crabber-session/src/approval/recovery_provenance.rs"]
 #[allow(dead_code)]
 mod approval_recovery_provenance;
+#[path = "../../crabber-session/src/approval/terminal.rs"]
+#[allow(dead_code)]
+pub(crate) mod approval_terminal;
 #[path = "../../crabber-session/src/approval/terminal_history.rs"]
 #[allow(dead_code)]
 pub(crate) mod approval_terminal_history;
@@ -415,6 +418,7 @@ mod approval {
     pub(crate) use crate::approval_recovery_provenance::{
         activate_recovery, verify_recovery_answer,
     };
+    pub(crate) use crate::approval_terminal as terminal;
     pub(crate) use crate::approval_terminal_history as terminal_history;
 }
 #[path = "../../crabber-session/src/approval_contract.rs"]

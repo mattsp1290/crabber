@@ -141,3 +141,12 @@ async fn current_approval_accepts_authentic_successor_and_parent_retirement() {
     .await;
     crate::approval_contract::current::retired(&store, &clock).await;
 }
+
+#[tokio::test]
+async fn original_approval_terminal_source_binds_request_and_actual_settlement() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::approval::terminal::contract::run(&store, &clock).await;
+}

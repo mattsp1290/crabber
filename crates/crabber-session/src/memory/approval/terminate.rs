@@ -1,5 +1,5 @@
 //! Administrative termination of a fully joined waiting batch.
-use super::{Error, publish, receipt, replay, revision};
+use super::{Error, publish_terminal, receipt, replay, revision};
 use crate::{ApprovalReceipt, ApprovalTermination, AttemptCleanup, AttemptState, approval};
 use crabber_core::{Run, ToolCallStatus};
 
@@ -83,8 +83,11 @@ pub(in super::super) fn apply_termination(
     if let Some(event) = request.turn_event(&run, record.batch.source_turn_id.clone(), now)? {
         super::super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
     }
-    let event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
-    super::super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
+    event.cursor = Some(
+        super::super::insert_event_captured(state, &run, event.clone())
+            .map_err(|_| Error::UnknownStoreOutcome)?,
+    );
     let previous =
         crate::native_parent::RunState::from_run(&run).map_err(|_| Error::UnknownStoreOutcome)?;
     request.apply_run(&mut run, now)?;
@@ -99,14 +102,7 @@ pub(in super::super) fn apply_termination(
     state.runs.insert(run.id.clone(), run.clone());
     state.approvals.insert(id, record);
     state.approval_barriers.remove(&run.session_id);
-    let saved = publish(
-        state,
-        &run,
-        request.id.clone(),
-        digest.clone(),
-        outcome,
-        now,
-    )?;
+    let saved = publish_terminal(state, &run, request, &event, outcome, now)?;
     request.verify_receipt(&saved)?;
 
     Ok((saved, true))

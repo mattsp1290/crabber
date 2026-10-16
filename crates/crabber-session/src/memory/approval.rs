@@ -102,6 +102,45 @@ fn publish_handoff(
     now: OffsetDateTime,
     handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ApprovalReceipt, Error> {
+    publish_extra(
+        state,
+        run,
+        id,
+        digest,
+        outcome,
+        now,
+        handoff.map(crate::approval::terminal::Extra::Handoff),
+    )
+}
+fn publish_terminal(
+    state: &mut State,
+    run: &Run,
+    request: &crate::ApprovalTermination,
+    settlement: &crabber_core::EventRecord,
+    outcome: crate::ApprovalOutcome,
+    now: time::OffsetDateTime,
+) -> Result<ApprovalReceipt, Error> {
+    publish_extra(
+        state,
+        run,
+        request.id.clone(),
+        request.fingerprint()?,
+        outcome,
+        now,
+        Some(crate::approval::terminal::Extra::Terminal(
+            request, settlement,
+        )),
+    )
+}
+fn publish_extra(
+    state: &mut State,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ApprovalOutcome,
+    now: OffsetDateTime,
+    extra: Option<crate::approval::terminal::Extra<'_>>,
+) -> Result<ApprovalReceipt, Error> {
     bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
     let receipt = ApprovalReceipt {
         session_id: run.session_id.clone(),
@@ -123,10 +162,7 @@ fn publish_handoff(
         &receipt.outcome,
         now,
     )?;
-    if let Some(handoff) = handoff {
-        event.payload["handoff"] =
-            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
-    }
+    crate::approval::terminal::attach(&mut event, extra)?;
     event.cursor = Some(receipt.event_cursor);
     state
         .events

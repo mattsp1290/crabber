@@ -89,6 +89,47 @@ pub(in super::super) async fn publish_handoff(
     now: time::OffsetDateTime,
     handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ApprovalReceipt, Error> {
+    publish_extra(
+        tx,
+        run,
+        id,
+        digest,
+        outcome,
+        now,
+        handoff.map(crate::approval::terminal::Extra::Handoff),
+    )
+    .await
+}
+pub(in super::super) async fn publish_terminal(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &crate::ApprovalTermination,
+    settlement: &crabber_core::EventRecord,
+    outcome: crate::ApprovalOutcome,
+    now: time::OffsetDateTime,
+) -> Result<ApprovalReceipt, Error> {
+    publish_extra(
+        tx,
+        run,
+        request.id.clone(),
+        request.fingerprint()?,
+        outcome,
+        now,
+        Some(crate::approval::terminal::Extra::Terminal(
+            request, settlement,
+        )),
+    )
+    .await
+}
+pub(in super::super) async fn publish_extra(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: crate::ApprovalOutcome,
+    now: time::OffsetDateTime,
+    extra: Option<crate::approval::terminal::Extra<'_>>,
+) -> Result<ApprovalReceipt, Error> {
     super::super::records::bump_public_revision(tx, &run.session_id)
         .await
         .map_err(sql::unknown)?;
@@ -100,10 +141,7 @@ pub(in super::super) async fn publish_handoff(
         .map_err(sql::unknown)?;
     let revision = crate::attempt::sql::revision(raw).map_err(approval::attempt_error)?;
     let mut event = approval::event(run, &id, &digest, revision, &outcome, now)?;
-    if let Some(handoff) = handoff {
-        event.payload["handoff"] =
-            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
-    }
+    crate::approval::terminal::attach(&mut event, extra)?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )

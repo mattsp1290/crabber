@@ -63,10 +63,12 @@ pub(in super::super) async fn apply_termination(
             .await
             .map_err(sql::unknown)?;
     }
-    let event = request.run_event(run, record.batch.source_turn_id.clone(), now)?;
-    super::super::records::insert_event(tx, run, &event)
-        .await
-        .map_err(sql::unknown)?;
+    let mut event = request.run_event(run, record.batch.source_turn_id.clone(), now)?;
+    event.cursor = Some(
+        super::super::records::insert_event_captured(tx, run, &event)
+            .await
+            .map_err(sql::unknown)?,
+    );
     let mut terminal = run.clone();
     request.apply_run(&mut terminal, now)?;
     super::super::run_control::finalize(tx, &terminal, now)
@@ -77,7 +79,7 @@ pub(in super::super) async fn apply_termination(
         .map_err(sql::unknown)?;
     write::save(tx, &record).await?;
     release_barrier(tx, &record).await?;
-    let saved = write::publish(tx, run, request.id.clone(), digest, outcome, now).await?;
+    let saved = write::publish_terminal(tx, run, request, &event, outcome, now).await?;
     request.verify_receipt(&saved)?;
 
     Ok((saved, true))

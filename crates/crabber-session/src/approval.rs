@@ -9,6 +9,7 @@ mod origin;
 pub(crate) use origin::OriginRunFacts;
 mod records;
 mod recovery;
+pub(crate) mod terminal;
 pub(crate) mod terminal_history;
 pub use recovery::ApprovalContinuationRecovery;
 mod recovery_provenance;

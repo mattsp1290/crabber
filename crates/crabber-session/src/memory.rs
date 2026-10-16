@@ -344,7 +344,14 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
     Ok(())
 }
 
-fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
+fn insert_event(state: &mut State, run: &Run, event: EventRecord) -> Result<(), StoreError> {
+    insert_event_captured(state, run, event).map(|_| ())
+}
+fn insert_event_captured(
+    state: &mut State,
+    run: &Run,
+    mut event: EventRecord,
+) -> Result<EventCursor, StoreError> {
     if event.kind == crabber_core::EventKind::ToolCallPending
         && event.payload.get("frontend_origin").is_some()
     {
@@ -375,11 +382,12 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
             "event belongs to another run".into(),
         ));
     }
-    event.cursor = Some(state.events.next_cursor()?);
+    let cursor = state.events.next_cursor()?;
+    event.cursor = Some(cursor);
     crate::ensure_storable(&event)?;
     bump_public_revision(state, &run.session_id)?;
     state.events.append(event)?;
-    Ok(())
+    Ok(cursor)
 }
 
 fn project_messages(

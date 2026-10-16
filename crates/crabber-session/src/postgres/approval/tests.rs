@@ -343,3 +343,20 @@ async fn approval_origin_rejects_coherent_deadline_and_source_changes() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn original_approval_terminal_source_binds_request_and_actual_settlement() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    crate::approval::terminal::contract::run(&store, &clock).await;
+}

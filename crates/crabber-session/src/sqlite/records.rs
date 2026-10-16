@@ -176,6 +176,13 @@ pub(super) async fn insert_event(
     run: &Run,
     event: &EventRecord,
 ) -> Result<(), StoreError> {
+    insert_event_captured(tx, run, event).await.map(|_| ())
+}
+pub(super) async fn insert_event_captured(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    event: &EventRecord,
+) -> Result<crabber_core::EventCursor, StoreError> {
     if event.kind == crabber_core::EventKind::ToolCallPending
         && event.payload.get("frontend_origin").is_some()
     {
@@ -207,15 +214,19 @@ pub(super) async fn insert_event(
         ));
     }
     // BEGIN IMMEDIATE serializes allocation with commit order.
-    sqlx::query("INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3)")
-        .bind(&run.session_id.0)
-        .bind(&run.id.0)
-        .bind(text(event)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
+    let seq: i64 = sqlx::query_scalar(
+        "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
+    )
+    .bind(&run.session_id.0)
+    .bind(&run.id.0)
+    .bind(text(event)?)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)?;
     bump_public_revision(tx, &run.session_id).await?;
-    Ok(())
+    Ok(crabber_core::EventCursor(u64::try_from(seq).map_err(
+        |_| StoreError::Validation("invalid event cursor".into()),
+    )?))
 }
 pub(super) async fn messages(
     connection: &mut SqliteConnection,

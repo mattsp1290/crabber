@@ -161,25 +161,9 @@ impl ApprovalTermination {
         now: OffsetDateTime,
     ) -> Result<EventRecord, ApprovalError> {
         self.check_run(run)?;
-        if turn_id.as_ref().is_some_and(|id| {
-            id.0.is_empty() || id.0.len() > 512 || id.0.chars().any(char::is_control)
-        }) {
-            return Err(ApprovalError::InvalidRequest);
-        }
-        Ok(EventRecord {
-            cursor: None,
-            session_id: run.session_id.clone(),
-            run_id: run.id.clone(),
-            turn_id,
-            kind: EventKind::RunSettled,
-            payload: serde_json::json!({"status":self.run_status(), "usage":run.usage,
-                "input_tokens":run.usage.input_tokens,"output_tokens":run.usage.output_tokens,
-                "duration_ms":0,"duration_ns":0}),
-            correlation: Some(run.id.to_string()),
-            live_only: false,
-            created_at: now,
-        })
+        crate::approval::terminal::frame(self, &run.usage, turn_id, now)
     }
+
     /// Close the original turn when the frozen batch belongs to one.
     /// # Errors
     /// Rejects inconsistent run scope or invalid presentation metadata.
