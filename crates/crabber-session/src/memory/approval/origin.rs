@@ -17,13 +17,7 @@ pub(in super::super) fn verify(
         return Err(Error::UnknownStoreOutcome);
     };
     let event = |cursor: crabber_core::EventCursor| {
-        state
-            .events
-            .get(
-                usize::try_from(cursor.0.checked_sub(1).ok_or(Error::UnknownStoreOutcome)?)
-                    .map_err(|_| Error::UnknownStoreOutcome)?,
-            )
-            .ok_or(Error::UnknownStoreOutcome)
+        state.events.get(cursor).ok_or(Error::UnknownStoreOutcome)
     };
     let audit = event(suspension.event_cursor)?;
     let native_audit = event(native.event_cursor)?;

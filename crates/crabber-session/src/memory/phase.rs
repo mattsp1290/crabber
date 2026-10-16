@@ -4,7 +4,7 @@ use crate::{
     PhaseCommand, PhaseError as Error, PhaseMutation, PhaseMutationOutcome, PhaseReceipt,
     PhaseWriteAuthority, VersionedPhase, phase,
 };
-use crabber_core::{ControlId, EventCursor, PhaseId, Run, RunId, SessionId, SessionRevision};
+use crabber_core::{ControlId, PhaseId, Run, RunId, SessionId, SessionRevision};
 
 #[derive(Clone, Copy)]
 enum PhaseCaller<'a> {
@@ -23,13 +23,12 @@ fn revision(state: &State, session: &SessionId) -> SessionRevision {
         .unwrap_or(SessionRevision::INITIAL)
 }
 fn verify(state: &State, receipt: &PhaseReceipt) -> Result<(), Error> {
-    let index = usize::try_from(receipt.event_cursor.0)
-        .ok()
-        .and_then(|n| n.checked_sub(1))
-        .ok_or(Error::UnknownStoreOutcome)?;
     phase::verify_receipt(
         receipt,
-        state.events.get(index).ok_or(Error::UnknownStoreOutcome)?,
+        state
+            .events
+            .get(receipt.event_cursor)
+            .ok_or(Error::UnknownStoreOutcome)?,
     )
 }
 impl MemoryStore {
@@ -282,7 +281,10 @@ fn publish_phase(
         .next()
         .map_err(|_| Error::RevisionExhausted)?;
     let mut event = phase::event(run, &request, &record.snapshot, now, digest.clone())?;
-    let cursor = EventCursor(state.events.len() as u64 + 1);
+    let cursor = state
+        .events
+        .next_cursor()
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     event.cursor = Some(cursor);
     let key = (run.session_id.clone(), request.id.clone());
     let receipt = PhaseReceipt {
@@ -312,7 +314,10 @@ fn publish_phase(
         .phases
         .insert(record.snapshot.target.id.clone(), record);
     bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
-    state.events.push(event);
+    state
+        .events
+        .append(event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state
         .operation_receipts
         .insert(key, OperationReceipt::Phase(receipt.clone()));

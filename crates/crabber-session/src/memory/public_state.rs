@@ -3,7 +3,7 @@ use crate::{
     PublicStateError as Error, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
     public_state,
 };
-use crabber_core::{ControlId, EventCursor, SessionId, SessionRevision};
+use crabber_core::{ControlId, SessionId, SessionRevision};
 
 impl MemoryStore {
     pub(super) fn read_public_state(
@@ -53,13 +53,12 @@ impl MemoryStore {
     }
 }
 fn verify(state: &State, receipt: &PublicStateReceipt) -> Result<(), Error> {
-    let index = usize::try_from(receipt.event_cursor.0)
-        .ok()
-        .and_then(|n| n.checked_sub(1))
-        .ok_or(Error::UnknownStoreOutcome)?;
     public_state::verify_receipt_event(
         receipt,
-        state.events.get(index).ok_or(Error::UnknownStoreOutcome)?,
+        state
+            .events
+            .get(receipt.event_cursor)
+            .ok_or(Error::UnknownStoreOutcome)?,
     )
 }
 fn revision(state: &State, session: &SessionId) -> SessionRevision {
@@ -113,13 +112,19 @@ impl MemoryExecution {
             }
             let next = current.next().map_err(|_| Error::RevisionExhausted)?;
             let mut event = public_state::event(&run, &mutation, next, self.store.clock.now());
-            let cursor = EventCursor(state.events.len() as u64 + 1);
+            let cursor = state
+                .events
+                .next_cursor()
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             event.cursor = Some(cursor);
             state
                 .public_contents
                 .insert(run.session_id.clone(), mutation.contents);
             bump_public_revision(state, &run.session_id).map_err(public_state::unknown)?;
-            state.events.push(event);
+            state
+                .events
+                .append(event)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             let receipt = PublicStateReceipt {
                 session_id: run.session_id,
                 run_id: run.id,

@@ -13,7 +13,7 @@ mod suspend;
 mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{ApprovalError as Error, ApprovalOutcome, ApprovalReceipt};
-use crabber_core::{ControlId, EventCursor, InputFingerprint, Run, SessionId};
+use crabber_core::{ControlId, InputFingerprint, Run, SessionId};
 pub(super) use origin::verify as verify_record;
 use time::OffsetDateTime;
 
@@ -32,13 +32,11 @@ fn receipt(
     if saved.session_id != *session || saved.operation_id != *id {
         return Err(Error::UnknownStoreOutcome);
     }
-    let index = saved
-        .event_cursor
-        .0
-        .checked_sub(1)
-        .and_then(|n| usize::try_from(n).ok())
+
+    let event = state
+        .events
+        .get(saved.event_cursor)
         .ok_or(Error::UnknownStoreOutcome)?;
-    let event = state.events.get(index).ok_or(Error::UnknownStoreOutcome)?;
     crate::approval::verify_receipt(saved, event)?;
     Ok(Some(saved.clone()))
 }
@@ -73,7 +71,10 @@ fn publish(
         operation_id: id.clone(),
         semantic_digest: digest,
         revision: revision(state, &run.session_id),
-        event_cursor: EventCursor(state.events.len() as u64 + 1),
+        event_cursor: state
+            .events
+            .next_cursor()
+            .map_err(|_| Error::UnknownStoreOutcome)?,
         outcome,
     };
     let mut event = crate::approval::event(
@@ -85,7 +86,10 @@ fn publish(
         now,
     )?;
     event.cursor = Some(receipt.event_cursor);
-    state.events.push(event);
+    state
+        .events
+        .append(event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state.operation_receipts.insert(
         (run.session_id.clone(), id),
         OperationReceipt::Approval(receipt.clone()),

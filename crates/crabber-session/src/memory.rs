@@ -3,6 +3,9 @@ mod admission;
 #[path = "memory/approval.rs"]
 mod approval;
 use admission::{admit_keyed_transaction, admit_transaction};
+#[path = "memory/events.rs"]
+mod events;
+use events::EventLog;
 #[path = "memory/abandon.rs"]
 mod abandon;
 #[path = "memory/admission_execution.rs"]
@@ -79,7 +82,7 @@ struct State {
     runs: BTreeMap<RunId, Run>,
     run_order: Vec<RunId>,
     messages: Vec<Message>,
-    events: Vec<EventRecord>,
+    events: EventLog,
     calls: BTreeMap<ToolCallId, ToolCallRecord>,
     call_order: Vec<ToolCallId>,
     snapshot_revisions: BTreeMap<SessionId, u64>,
@@ -268,10 +271,10 @@ fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<
             "event belongs to another run".into(),
         ));
     }
-    event.cursor = Some(EventCursor(state.events.len() as u64 + 1));
+    event.cursor = Some(state.events.next_cursor()?);
     crate::ensure_storable(&event)?;
     bump_public_revision(state, &run.session_id)?;
-    state.events.push(event);
+    state.events.append(event)?;
     Ok(())
 }
 

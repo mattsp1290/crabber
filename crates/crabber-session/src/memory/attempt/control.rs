@@ -3,7 +3,7 @@ use crate::{
     AttemptControlOutcome as Outcome, AttemptError as Error, AttemptReceipt,
     attempt_control::{self, Control},
 };
-use crabber_core::{EventCursor, Run};
+use crabber_core::Run;
 impl MemoryStore {
     pub(in super::super) fn host_attempt(&self, control: &Control) -> Result<Outcome, Error> {
         let digest = control.fingerprint()?;
@@ -65,7 +65,10 @@ impl MemoryStore {
             state.runs.insert(run.id.clone(), run.clone());
             state.attempts.insert(target.id.clone(), record.clone());
             let mut event = control.event(&run, &record.snapshot, now)?;
-            let cursor = EventCursor(state.events.len() as u64 + 1);
+            let cursor = state
+                .events
+                .next_cursor()
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             event.cursor = Some(cursor);
             bump_public_revision(state, session).map_err(|_| Error::UnknownStoreOutcome)?;
             let receipt = AttemptReceipt {
@@ -75,7 +78,10 @@ impl MemoryStore {
                 event_cursor: cursor,
                 attempt: record.snapshot,
             };
-            state.events.push(event);
+            state
+                .events
+                .append(event)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             state
                 .operation_receipts
                 .insert(key, OperationReceipt::Attempt(receipt.clone()));

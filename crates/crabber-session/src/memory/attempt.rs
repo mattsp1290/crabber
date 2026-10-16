@@ -7,18 +7,15 @@ use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,
     AttemptMutationOutcome, AttemptReceipt, VersionedAttempt, attempt,
 };
-use crabber_core::{
-    AttemptId, ControlId, EventCursor, RunId, SessionId, SessionRevision, ToolCallStatus,
-};
+use crabber_core::{AttemptId, ControlId, RunId, SessionId, SessionRevision, ToolCallStatus};
 
 fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Error> {
-    let index = usize::try_from(receipt.event_cursor.0)
-        .ok()
-        .and_then(|n| n.checked_sub(1))
-        .ok_or(Error::UnknownStoreOutcome)?;
     attempt::verify_receipt(
         receipt,
-        state.events.get(index).ok_or(Error::UnknownStoreOutcome)?,
+        state
+            .events
+            .get(receipt.event_cursor)
+            .ok_or(Error::UnknownStoreOutcome)?,
     )
 }
 impl MemoryStore {
@@ -200,7 +197,10 @@ impl MemoryExecution {
         } else {
             attempt::event(&run, &request, &record.snapshot, now)?
         };
-        let cursor = EventCursor(state.events.len() as u64 + 1);
+        let cursor = state
+            .events
+            .next_cursor()
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         event.cursor = Some(cursor);
         let receipt = AttemptReceipt {
             operation_id: request.id,
@@ -211,7 +211,10 @@ impl MemoryExecution {
         };
         state.attempts.insert(id.clone(), record);
         bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
-        state.events.push(event);
+        state
+            .events
+            .append(event)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         state
             .operation_receipts
             .insert(key, OperationReceipt::Attempt(receipt.clone()));
