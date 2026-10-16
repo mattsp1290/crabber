@@ -217,14 +217,53 @@ release acknowledgement. Its source-bound digest distinguishes this conclusion
 from generic cleanup. Failed cleanup remains an error and retained responsibility;
 no timeout, returned value, plan disposal or lease expiry supplies join evidence.
 An observed never-opened gate can record exact NoDispatch cleanup after either
-activation rollback or committed-but-unacknowledged activation.
+activation rollback or committed-but-unacknowledged activation. NoDispatch without
+an independently present original activation remains coverage-unknown. The host
+must retain exactly one original registration per fresh Reserve/Begin; recreating
+a never-opened registration cannot account for an earlier live task. Memory's
+independent publication roster rejects an erased known activation. Stronger
+cross-adapter proof of a zero-activation history requires a separate protected
+initialization/disposition journal; this protocol does not provide that proof.
 
 These primitives are structural evidence, not retroactive ownership coverage.
 They do not establish that a legacy Begin never dispatched earlier work, that a
 provider declared a scoped bridge in its frozen binding, or that every shared
 service was tracked. Generic reservations and cleanup remain coverage-unknown.
-Runtime adoption, frozen bridge provenance, resource transfer, failed-native-
-completion retention, queue disposal, generic recovery and callback/service
-ownership are still required before claiming whole-session coverage or enabling
-deletion. The extension's optional preparation resource declaration and lease
-signal are bridge primitives only; their presence does not establish cleanup.
+The runtime consumes a provider's optional preparation-resource declaration for
+ordinary admission, queue preparation/admission and typed continuation claims or
+recovery. Its fingerprint is captured before reservation/effects in the original
+preparation origin and a reserved, versioned frozen-runtime marker. Completion
+requires the exact task-returned intent and registered activation; a generic
+joined task cannot substitute. Replay/restoration reject changed declarations,
+including a legacy binding gaining a bridge later. Unsupported scoped paths
+refuse before factory acquisition. Providers without a declaration keep their
+normal legacy behavior and unknown resource coverage.
+
+At most 64 local preparations retain actual completion/resources. Failed or
+unknown native completion keeps its returned plan and original opaque proof;
+`retry_preparation_completion` retries that intent without factories or business
+dispatch. Its result is metadata only. In particular unkeyed replay supplies no
+replacement fence/RunHandle: its original Running/Unstarted run remains a blocker
+until explicit eligible native reconciliation or abandonment. A plan lifetime
+lease only signals the independently retained cleanup supervisor. The child stays
+Active until the actual main task and every registered sealed resource join,
+followed by the exact durable Join acknowledgement. Cleanup ACK loss retains
+those observations for explicit retry. Running-factory cancellation applies the
+actual cooperative scope-close signal before recording the original cancellation
+observation; non-cooperative work and failed cleanup remain blockers.
+
+`cleanup_retained_preparation` requests actual scoped cleanup after a failure;
+it does not report Joined. `retained_preparation_status` is bounded local metadata,
+available alongside original-key reconciliation after ingress closes. Empty local
+status does not prove cross-controller or durable quiescence. Queue preparation
+receipts retain their historical commit revision; later actual child cleanup is
+another public change, so dispatchers must capture a fresh caller CAS for admission.
+No business receipt or original input revision is silently refreshed.
+
+This remains partial ownership adoption. Generic resume/admission recovery that
+lacks typed preparation, facade initialization before reservation, resolver/provider
+binding acquisition, contextual initializer/reaper/shared-service dependencies and
+post-settlement callback ownership still need explicit protocols. An original
+bridge declaration or a native preparation witness alone does not establish those
+joins or certify whole-session coverage. Legacy owner/invocation rows stay unknown;
+none of this enables deletion or upgrades old history retroactively.

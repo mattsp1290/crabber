@@ -154,15 +154,70 @@ pub enum PreparationOperationKind {
 pub struct JoinedPreparation {
     pub(crate) grant: PreparationGrant,
     pub(crate) operation: PreparedOperation,
+    registered: Option<crate::session_owner::owned_scope::OwnedScopeActivation>,
 }
 impl JoinedPreparation {
+    /// Transfer an intent returned by the actual registered preparation child
+    /// task. The registration retains its physical main-task evidence for
+    /// later resource cleanup; no replacement task or reconstructed join is
+    /// used. The returned value must remain retained through native completion
+    /// and any independent resource handoff or cleanup.
+    /// # Errors
+    /// Refuses a different original child source before taking its output.
+    /// A non-returning main disposition or previously transferred value grants
+    /// no preparation proof. Business errors remain the original inner value.
+    pub async fn observe_registered<T: Send + 'static, E: Send + 'static>(
+        grant: PreparationGrant,
+        task: &mut crate::session_owner::owned_scope::OwnedTaskRegistration<
+            Result<(T, PreparedOperation), E>,
+        >,
+    ) -> Result<Result<(T, Self), E>, SessionOwnerError> {
+        super::owned::verify_child_source(&grant, &task.activation().source)?;
+        let registered = task.activation().clone();
+        let value = task
+            .take_value()
+            .await?
+            .ok_or(SessionOwnerError::InvalidTransition)?;
+        Ok(value.map(|(retained, operation)| {
+            (
+                retained,
+                Self {
+                    grant,
+                    operation,
+                    registered: Some(registered),
+                },
+            )
+        }))
+    }
+
     /// Authenticate the exact task-returned intent against its original
     /// reservation before native replay or transactional lineage validation.
     /// Custom adapters must call this before consuming the read-only view.
     /// # Errors
     /// Rejects changed keys, scope, purpose, input, options or frozen bindings.
     pub fn verify_original_intent(&self) -> Result<(), super::PreparationCommitError> {
+        if self
+            .grant
+            .original_reservation()
+            .resource_contract
+            .is_some()
+        {
+            let registered = self
+                .registered
+                .as_ref()
+                .ok_or(SessionOwnerError::InvalidTransition)?;
+            super::owned::verify_child_source(&self.grant, &registered.source)?;
+        }
         super::intent::validate(&self.grant, &self.operation)
+    }
+
+    /// Exact local registration whose actual returned intent was observed.
+    /// Metadata only; this cannot construct another joined observation.
+    #[must_use]
+    pub fn observed_registration(
+        &self,
+    ) -> Option<&crate::session_owner::owned_scope::OwnedScopeActivation> {
+        self.registered.as_ref()
     }
 
     /// Read-only original grant for trusted storage adapters.
@@ -214,9 +269,16 @@ impl JoinedPreparation {
         grant: PreparationGrant,
         task: tokio::task::JoinHandle<Result<(T, PreparedOperation), E>>,
     ) -> Result<Result<(T, Self), E>, tokio::task::JoinError> {
-        Ok(task
-            .await?
-            .map(|(retained, operation)| (retained, Self { grant, operation })))
+        Ok(task.await?.map(|(retained, operation)| {
+            (
+                retained,
+                Self {
+                    grant,
+                    operation,
+                    registered: None,
+                },
+            )
+        }))
     }
 }
 macro_rules! redacted {

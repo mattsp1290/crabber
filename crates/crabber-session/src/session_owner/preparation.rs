@@ -31,6 +31,10 @@ pub struct ReservePreparation {
     pub key: PreparationKey,
     #[serde(skip)]
     pub source: Option<PreparationSource>,
+    /// Pure original bridge declaration, frozen before any factory or resource
+    /// hook. Absence preserves legacy ownership-unknown semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_contract: Option<InputFingerprint>,
     pub expected_revision: SessionRevision,
     pub purpose: PreparationPurpose,
     pub intent: InputFingerprint,
@@ -42,6 +46,8 @@ impl ReservePreparation {
         self.owner.fingerprint()?;
         if self.owner.binding.kind != SessionOwnerKind::Preparation
             || self.owner.binding.parent.is_some()
+            || (self.resource_contract.is_some()
+                && self.owner.binding.component_id != OWNED_PREPARATION_COMPONENT)
         {
             return Err(Error::InvalidRequest);
         }
@@ -56,10 +62,13 @@ mod origin;
 pub(crate) use origin::{Origin, origin};
 
 mod completion;
+mod owned;
+mod resource_contract;
 pub use completion::{
     JoinedPreparation, PreparationAdmissionReceipt, PreparationCompletion, PreparationGrant,
     PreparationOperationKind, PreparedOperation,
 };
+pub use resource_contract::{bind_resource_contract, resource_contract};
 
 pub(crate) mod admission;
 pub(crate) mod handoff;

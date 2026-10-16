@@ -43,6 +43,9 @@ mod binding;
 mod input;
 #[path = "orchestrator/preparation.rs"]
 mod preparation;
+pub use preparation::{
+    PreparationRetryProgress, RetainedPreparationProgress, RetainedPreparationStatus,
+};
 #[path = "orchestrator/terminal.rs"]
 mod terminal;
 #[path = "orchestrator/tool_batch.rs"]
@@ -521,6 +524,8 @@ pub struct Orchestrator {
     behavior_fingerprint: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     session_invocations: crate::session_invocations::SessionInvocations,
+    preparation_scope: Option<preparation::scope::PlanScope>,
+    retained_preparations: preparation::retained::RetainedPreparations,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
     observation_lifetime: Arc<ObservationLifetime>,
     tool_resumes: Arc<
@@ -817,6 +822,8 @@ impl OrchestratorBuilder {
         Ok(Orchestrator {
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             session_invocations: crate::session_invocations::SessionInvocations::default(),
+            preparation_scope: None,
+            retained_preparations: preparation::retained::RetainedPreparations::default(),
             owned_attempt: None,
             observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
@@ -2065,7 +2072,8 @@ impl Orchestrator {
         let prepared_runtime = runtime.clone();
         let prepared_request = request.clone();
         let (plan, completion) = runtime
-            .finish_durable_preparation(grant, async move {
+            .finish_durable_preparation(grant, move |scope| async move {
+                let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
                 let (plan, admission, _) = prepared_runtime
                     .prepare_admission_in_session(&prepared_request, session_id)
                     .await?;
@@ -2172,7 +2180,8 @@ impl Orchestrator {
         let prepared_request = request.clone();
         let prepared_options = options.clone();
         let (plan, completion) = self
-            .finish_durable_preparation(grant, async move {
+            .finish_durable_preparation(grant, move |scope| async move {
+                let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
                 let (plan, keyed) = prepared_runtime
                     .prepare_keyed_admission(&prepared_request, prepared_options)
                     .await?;
@@ -2497,7 +2506,7 @@ impl Orchestrator {
         let provider = self.describe_provider(&plan, &request.selection)?;
         let plan = Self::bind_plan_provider(plan, &provider, &self.behavior_fingerprint)?;
         // Hash structured, independently observed semantics, never a caller's claim.
-        let mut config = json!([
+        let config = json!([
             "crabber.runtime.admission.v1",
             request.selection.provider_id,
             request.selection.model_id,
@@ -2526,7 +2535,7 @@ impl Orchestrator {
                 })
                 .collect::<Vec<_>>()
         ]);
-        config.sort_all_objects();
+        let config = self.freeze_preparation_semantics(config)?;
         let config_hash = admission_config_hash(&config);
         let admission = AdmitRequest {
             input_envelope: Some(input.clone()),

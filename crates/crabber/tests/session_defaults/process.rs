@@ -38,16 +38,18 @@ pub(super) async fn run(native: Arc<dyn Store>, sqlite_path: Option<std::path::P
     let probe = Probe::new(0);
     let host = agent(wrapped, &probe);
     let key = options();
-    assert!(
-        host.prompt_session_keyed(
+    let Err(error) = host
+        .prompt_session_keyed(
             session.clone(),
             "cold lost acknowledgement",
             key.clone(),
-            None
+            None,
         )
         .await
-        .is_err()
-    );
+    else {
+        panic!("lost native acknowledgement");
+    };
+    let preparation = error.preparation_reconciliation().unwrap().clone();
     let receipt = native
         .lookup_admission(&session, &key.key)
         .await
@@ -61,6 +63,7 @@ pub(super) async fn run(native: Arc<dyn Store>, sqlite_path: Option<std::path::P
         defaults(Some("cold-changed"), Some("cold-changed-model")),
     )
     .await;
+    super::recovery::reconcile_retained(&host, &preparation, &probe).await;
     host.close_extensions().await.unwrap();
     let fixture = Cold {
         session: session.clone(),

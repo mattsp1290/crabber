@@ -82,6 +82,8 @@ fn binding_scope(
         || binding.request.workspace_id != owner.workspace_id
         || binding.request.directory != owner.directory
         || binding.behavior_fingerprint != owner.behavior_fingerprint
+        || super::resource_contract(&binding.runtime_semantics)?
+            != grant.original_reservation().resource_contract
     {
         return conflict();
     }

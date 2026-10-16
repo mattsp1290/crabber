@@ -6,6 +6,8 @@ mod activation;
 mod activation_faults;
 #[path = "resources/activation_guards.rs"]
 mod activation_guards;
+#[path = "resources/declaration.rs"]
+mod declaration;
 #[path = "resources/guards.rs"]
 pub(crate) mod guards;
 #[path = "resources/scope_integrity.rs"]
@@ -33,6 +35,7 @@ async fn setup(
     (begin(store, &request).await, bound)
 }
 pub(crate) async fn run(store: &impl Store) {
+    Box::pin(declaration::run(store)).await;
     assert!(store.supports_preparation_resources());
     for existing in [false, true] {
         successful(store, existing).await;

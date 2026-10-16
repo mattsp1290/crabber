@@ -26,6 +26,7 @@ fn reservation(bound: &crate::BoundKeyedAdmitRequest) -> ReservePreparation {
     ReservePreparation {
         key: super::preparation::PreparationKey::Unkeyed(ControlId::new()),
         source: None,
+        resource_contract: None,
         owner,
         expected_revision: bound.keyed.request.expected_revision.unwrap(),
         purpose: PreparationPurpose::OrdinaryAdmission,

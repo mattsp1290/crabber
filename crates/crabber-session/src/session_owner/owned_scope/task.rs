@@ -80,6 +80,23 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
         }
         self.joined.as_ref().ok_or(Error::UnknownStoreOutcome)
     }
+
+    /// Move the actual returned value into its next retained owner exactly
+    /// once. The original main-task evidence stays in this registration for
+    /// separately observed resource cleanup. Taking the value never proves
+    /// that its resources have joined or that a durable handoff committed.
+    /// # Errors
+    /// Returns the same observation errors as `join`; interrupted observation
+    /// retains both the actual task and its value.
+    pub async fn take_value(&mut self) -> Result<Option<T>, Error> {
+        self.join().await?;
+        Ok(self
+            .joined
+            .as_mut()
+            .ok_or(Error::UnknownStoreOutcome)?
+            .value
+            .take())
+    }
 }
 
 /// Physical main-task evidence, inseparable from the original registration.

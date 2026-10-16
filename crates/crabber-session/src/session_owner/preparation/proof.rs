@@ -26,6 +26,7 @@ pub(crate) struct VerifiedPreparation<'a> {
 pub(crate) struct VerifiedResourceHandoff {
     pub(super) link: super::PreparationResourceLink,
     pub(super) child: crate::session_owner::SessionOwnerTarget,
+    pub(super) activation: Option<crabber_core::InputFingerprint>,
 }
 impl VerifiedResourceHandoff {
     pub(crate) fn source(&self) -> &super::PreparationResourceLink {
@@ -37,6 +38,30 @@ impl VerifiedResourceHandoff {
 }
 
 impl VerifiedPreparation<'_> {
+    pub(crate) fn verify_observation(
+        &self,
+        joined: &super::JoinedPreparation,
+    ) -> Result<(), Error> {
+        if self
+            .grant
+            .original_reservation()
+            .resource_contract
+            .is_some()
+        {
+            let observed = joined
+                .observed_registration()
+                .ok_or(Error::InvalidTransition)?
+                .fingerprint()?;
+            if self
+                .resource_handoff()
+                .and_then(|handoff| handoff.activation.as_ref())
+                != Some(&observed)
+            {
+                return Err(Error::SemanticConflict);
+            }
+        }
+        Ok(())
+    }
     /// Native transaction consumers may pair this exact proof with their actual
     /// newly admitted `RunID`. Legacy preparation has no positive handoff proof.
     pub(crate) fn resource_handoff(&self) -> Option<&VerifiedResourceHandoff> {
@@ -168,6 +193,17 @@ pub(crate) fn record_handoff(
     record: &mut Record,
     proof: &VerifiedPreparation<'_>,
 ) -> Result<(), Error> {
+    if proof
+        .grant
+        .original_reservation()
+        .resource_contract
+        .is_some()
+        && proof
+            .resource_handoff()
+            .is_none_or(|handoff| handoff.activation.is_none())
+    {
+        return Err(Error::StaleOwner);
+    }
     if let Some(handoff) = proof.resource_handoff() {
         record.retained_resources = Some(handoff.child().clone());
     } else if record.snapshot.binding.component_id == super::OWNED_PREPARATION_COMPONENT {

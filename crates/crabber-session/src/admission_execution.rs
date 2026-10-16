@@ -116,6 +116,9 @@ impl AdmissionExecutionCapsule {
                     text: data.text.clone(),
                 };
         let typed = self.version == 2 && self.input_envelope.is_some();
+        let resources =
+            crate::session_owner::preparation::resource_contract(&self.runtime_semantics)
+                .map_err(|_| StoreError::AdmissionConflict)?;
         if !matches!(
             (self.version, self.input_envelope.is_some()),
             (1, false) | (2, true)
@@ -133,7 +136,7 @@ impl AdmissionExecutionCapsule {
             || self.semantic_digest != keyed.semantic_digest()?
             || admission_config_hash(&self.runtime_semantics) != self.config_hash
             || !semantics.is_some_and(|s| {
-                s.len() == 15
+                s.len() == 15 + usize::from(resources.is_some())
                     && s[0] == "crabber.runtime.admission.v1"
                     && s[1] == data.provider_id
                     && s[2] == data.model_id

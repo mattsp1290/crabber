@@ -22,9 +22,10 @@ pub use orchestrator::{
     Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, ContinueFrontend,
     ContinueTool, DirectModelStream, ExecutionMode, INTERRUPT_SETTLEMENT_BOUND,
     INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer, Orchestrator,
-    OrchestratorBuilder, QueueControl, RecoverApproval, RecoverFrontend, RecoverReport,
-    RecoverTool, RecoverySkipReason, Request, RunControl, RunHandle, RunResult, RuntimeError,
-    SkippedRun, TOOL_PIPELINE_HANDLER_ID, ToolContinuation, TurnSnapshot,
+    OrchestratorBuilder, PreparationRetryProgress, QueueControl, RecoverApproval, RecoverFrontend,
+    RecoverReport, RecoverTool, RecoverySkipReason, Request, RetainedPreparationProgress,
+    RetainedPreparationStatus, RunControl, RunHandle, RunResult, RuntimeError, SkippedRun,
+    TOOL_PIPELINE_HANDLER_ID, ToolContinuation, TurnSnapshot,
 };
 pub use policy::{
     IdentityToolPipeline, InterruptPolicy, PermissionDecision, PermissionPolicy, PermissionRule,

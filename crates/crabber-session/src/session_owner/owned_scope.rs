@@ -82,15 +82,7 @@ impl OwnedScopeActivation {
 }
 
 fn key(source: &OwnedScopeSource) -> Result<SessionOwnerOperationId, Error> {
-    let digest = super::validation::digest(&(
-        "crabber.owned-scope.activation-key.v1",
-        &source.session,
-        &source.target,
-    ))?;
-    Ok(SessionOwnerOperationId(format!(
-        "owned-scope-{}",
-        digest.as_str()
-    )))
+    source::activation_key(&source.session, &source.target)
 }
 
 /// Fresh acknowledgement for exactly one pre-registered local dispatch. This

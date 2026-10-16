@@ -269,11 +269,12 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             authority,
         };
         wrapped.queue_loss.store(2, Ordering::SeqCst);
-        assert!(
-            host.admit_queue_in(&context(&session), admit.clone(), None)
-                .await
-                .is_err()
-        );
+        let failed = host
+            .admit_queue_in(&context(&session), admit.clone(), None)
+            .await
+            .err()
+            .unwrap();
+        let retained = failed.preparation_reconciliation().unwrap().clone();
         assert_eq!(probe.fake.requests().len(), 0);
         assert_eq!(probe.resolutions.load(Ordering::SeqCst), 0);
         update(
@@ -309,6 +310,7 @@ async fn unknown_ack(native: Arc<dyn Store>, clock: &ManualClock) {
             native.get_queue(&session, &queue).await.unwrap().state,
             QueueState::Admitted
         );
+        reconcile_retained(&host, &session, &retained, &probe).await;
         recover_expired(&restarted, clock, &session, &queue, &probe).await;
         host.close_extensions().await.unwrap();
         assert!(matches!(
@@ -401,4 +403,18 @@ async fn closed(native: Arc<dyn Store>) {
     ));
     assert_eq!(probe.factories.load(Ordering::SeqCst), 0);
     assert_eq!(probe.resolutions.load(Ordering::SeqCst), 0);
+}
+
+async fn reconcile_retained(
+    host: &Agent,
+    session: &SessionId,
+    retained: &session_owner::preparation::PreparationReconciliation,
+    probe: &Probe,
+) {
+    assert_eq!(host.retained_preparation_status(session).len(), 1);
+    let before_retry = probe.factories.load(Ordering::SeqCst);
+    let progress = host.retry_preparation_completion(retained).await.unwrap();
+    assert!(progress.replayed);
+    assert_eq!(probe.factories.load(Ordering::SeqCst), before_retry);
+    assert_eq!(host.retained_preparation_status(session), []);
 }

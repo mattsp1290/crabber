@@ -137,7 +137,8 @@ impl Orchestrator {
         let original_run = run.clone();
         let original_binding = binding.clone();
         let (resources, completed) = self
-            .finish_durable_preparation(grant, async move {
+            .finish_durable_preparation(grant, move |scope| async move {
+                let runtime = runtime.with_preparation_scope(scope);
                 let retained = runtime
                     .restore_resume_resources(&original_run, &original_binding)
                     .await?;

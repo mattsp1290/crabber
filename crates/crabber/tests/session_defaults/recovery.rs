@@ -90,6 +90,7 @@ pub(super) async fn run(native: Arc<dyn Store>, typed: bool) {
         defaults(Some("new-provider"), Some("new-model")),
     )
     .await;
+    reconcile_retained(&host, &preparation, &probe).await;
     host.close_extensions().await.unwrap();
     let factories = probe.factories.load(Ordering::SeqCst);
     let reads = wrapped.summary_reads.load(Ordering::SeqCst);
@@ -141,5 +142,34 @@ pub(super) async fn run(native: Arc<dyn Store>, typed: bool) {
     assert_eq!(
         probe.fake.requests()[0].selection,
         selection("host-provider", "host-model")
+    );
+}
+
+pub(super) async fn reconcile_retained(
+    host: &Agent,
+    preparation: &crabber::session::session_owner::preparation::PreparationReconciliation,
+    probe: &Probe,
+) {
+    let before = (
+        probe.factories.load(Ordering::SeqCst),
+        probe.resolutions.load(Ordering::SeqCst),
+        probe.fake.requests().len(),
+    );
+    let progress = host
+        .retry_preparation_completion(preparation)
+        .await
+        .unwrap();
+    assert!(progress.replayed);
+    assert_eq!(
+        before,
+        (
+            probe.factories.load(Ordering::SeqCst),
+            probe.resolutions.load(Ordering::SeqCst),
+            probe.fake.requests().len(),
+        )
+    );
+    assert_eq!(
+        host.retained_preparation_status(&preparation.session_id),
+        []
     );
 }

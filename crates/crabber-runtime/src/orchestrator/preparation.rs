@@ -50,7 +50,7 @@ impl Orchestrator {
         request: &mut Request,
         session: &SessionId,
         purpose: PreparationPurpose,
-    ) -> Result<PreparationGrant, RuntimeError> {
+    ) -> Result<DurablePreparation, RuntimeError> {
         self.begin_preparation_at(
             request,
             session,
@@ -70,7 +70,7 @@ impl Orchestrator {
         request: &mut Request,
         session: &SessionId,
         options: crabber_core::AdmissionOptions,
-    ) -> Result<PreparationGrant, RuntimeError> {
+    ) -> Result<DurablePreparation, RuntimeError> {
         self.begin_preparation_at(
             request,
             session,
@@ -90,7 +90,7 @@ impl Orchestrator {
         request: &mut Request,
         session: &SessionId,
         spec: PreparationSpec,
-    ) -> Result<PreparationGrant, RuntimeError> {
+    ) -> Result<DurablePreparation, RuntimeError> {
         self.begin_preparation_at(request, session, spec).await
     }
     async fn begin_preparation_at(
@@ -98,7 +98,7 @@ impl Orchestrator {
         request: &mut Request,
         session: &SessionId,
         spec: PreparationSpec,
-    ) -> Result<PreparationGrant, RuntimeError> {
+    ) -> Result<DurablePreparation, RuntimeError> {
         if !self.store.supports_preparation_protocol() {
             return Err(StoreError::HostUnsupported.into());
         }
@@ -115,9 +115,21 @@ impl Orchestrator {
             return Err(StoreError::AdmissionRevisionConflict.into());
         }
         request.captured_revision = Some(input.expected_revision());
+        let context = crabber_core::SessionContext::new(
+            session.clone(),
+            request.workspace_id.clone(),
+            request.directory.clone(),
+        );
+        let resource_contract = self.declared_resource_contract(&context)?;
+        if resource_contract.is_some()
+            && (!self.store.supports_preparation_resources() || !self.store.supports_owned_scopes())
+        {
+            return Err(StoreError::HostUnsupported.into());
+        }
         let reservation = ReservePreparation {
             key: spec.key.clone(),
             source: spec.source,
+            resource_contract: resource_contract.clone(),
             owner: ReserveSessionOwner {
                 id: SessionOwnerOperationId::new(),
                 binding: SessionOwnerBinding {
@@ -126,7 +138,12 @@ impl Orchestrator {
                     directory: request.directory.clone(),
                     id: SessionOwnerId::new(),
                     kind: SessionOwnerKind::Preparation,
-                    component_id: "crabber.runtime.preparation.v1".into(),
+                    component_id: if resource_contract.is_some() {
+                        crabber_session::session_owner::preparation::OWNED_PREPARATION_COMPONENT
+                    } else {
+                        "crabber.runtime.preparation.v1"
+                    }
+                    .into(),
                     behavior_fingerprint: self.behavior_fingerprint.clone(),
                     resource_contract: None,
                     parent: None,
@@ -146,15 +163,11 @@ impl Orchestrator {
             },
         }
         .bind_key(spec.key)?;
-        let context = crabber_core::SessionContext::new(
-            session.clone(),
-            request.workspace_id.clone(),
-            request.directory.clone(),
-        );
         self.plan_provider
             .check_preparation_context(&context)
             .map_err(RuntimeError::ExtensionPlan)?;
         let descriptor = reservation.reconciliation()?;
+        let capacity = self.retained_preparations.reserve_capacity()?;
         let reserved = self.store.reserve_preparation(reservation.clone()).await;
         let authority = match reserved {
             Ok(SessionOwnerOutcome::Applied {
@@ -181,7 +194,10 @@ impl Orchestrator {
         self.ensure_preparation_not_cancelled(&authority)
             .await
             .map_err(|error| incomplete(descriptor, error.into()))?;
-        Ok(PreparationGrant::from_fresh_begin(reservation, authority)?)
+        Ok(DurablePreparation {
+            grant: PreparationGrant::from_fresh_begin(reservation, authority)?,
+            capacity,
+        })
     }
     async fn begin_preparation_owner(
         &self,
@@ -221,56 +237,6 @@ impl Orchestrator {
             }
         }
         Ok(())
-    }
-    pub(super) async fn finish_durable_preparation<T: Send + 'static>(
-        &self,
-        grant: PreparationGrant,
-        work: impl std::future::Future<Output = Result<(T, PreparedOperation), RuntimeError>>
-        + Send
-        + 'static,
-    ) -> Result<(T, PreparationCompletion), RuntimeError> {
-        let descriptor = grant.reconciliation()?;
-        let store = self.store.clone();
-        let heartbeat_authority = grant.owner_authority().clone();
-        let stop = tokio_util::sync::CancellationToken::new();
-        let child_stop = stop.clone();
-        let heartbeat = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            loop {
-                tokio::select! {
-                    () = child_stop.cancelled() => break,
-                    _ = interval.tick() => {
-                        let renewal = MutateSessionOwner {
-                            id: SessionOwnerOperationId::new(),
-                            session_id: heartbeat_authority.session_id().clone(),
-                            target: heartbeat_authority.target().clone(),
-                            command: SessionOwnerCommand::Renew { lease_ms: 30_000 },
-                        };
-                        if store.mutate_session_owner(renewal, Some(heartbeat_authority.clone())).await.is_err() { break; }
-                    }
-                }
-            }
-        });
-        let task = tokio::spawn(async move {
-            let stop_guard = stop.drop_guard();
-            let result = work.await;
-            drop(stop_guard);
-            let _ = heartbeat.await;
-            result
-        });
-        let (plan, joined) = match JoinedPreparation::observe(grant, task).await {
-            Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => return Err(incomplete(descriptor, error)),
-            Err(_) => return Err(incomplete(descriptor, RuntimeError::TaskStopped)),
-        };
-        let result = self.store.complete_preparation(joined).await;
-        match result {
-            Ok(completed) => Ok((plan, completed)),
-            Err(error) => {
-                drop(plan);
-                Err(incomplete(descriptor, error.into()))
-            }
-        }
     }
 }
 impl Request {
@@ -353,5 +319,21 @@ pub(super) struct PreparationSpec {
     pub source: Option<crabber_session::session_owner::preparation::PreparationSource>,
 }
 
+pub(super) struct DurablePreparation {
+    grant: PreparationGrant,
+    capacity: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[path = "preparation/finish.rs"]
+mod finish;
+#[path = "preparation/progress.rs"]
+mod progress;
 #[path = "preparation/resume.rs"]
 mod resume;
+#[path = "preparation/retained.rs"]
+pub(super) mod retained;
+#[path = "preparation/scope.rs"]
+pub(super) mod scope;
+pub use progress::{
+    PreparationRetryProgress, RetainedPreparationProgress, RetainedPreparationStatus,
+};

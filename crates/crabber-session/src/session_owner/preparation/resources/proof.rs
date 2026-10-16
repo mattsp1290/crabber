@@ -104,6 +104,11 @@ pub(crate) fn verify<'a>(
         resource_handoff: Some(super::proof::VerifiedResourceHandoff {
             link,
             child: child.snapshot.target.clone(),
+            activation: child
+                .owned_scope
+                .as_ref()
+                .map(crate::session_owner::owned_scope::OwnedScopeActivation::fingerprint)
+                .transpose()?,
         }),
     })
 }

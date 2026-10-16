@@ -314,9 +314,15 @@ fn validate_preparation_source(
                 .get(run_id)
                 .filter(|run| run.session_id == request.owner.binding.session_id)
                 .ok_or(Error::NotFound)?;
-            super::execution_binding::read(state, &run.session_id, run_id)
+            let original = super::execution_binding::read(state, &run.session_id, run_id)
                 .map_err(|_| Error::UnknownStoreOutcome)?
                 .ok_or(Error::UnknownStoreOutcome)?;
+            if crate::session_owner::preparation::resource_contract(
+                &original.capsule.runtime_semantics,
+            )? != request.resource_contract
+            {
+                return Err(Error::SemanticConflict);
+            }
             super::native_parent::verify_run(state, run).map_err(|_| Error::UnknownStoreOutcome)?;
             let source = request.source.as_ref().ok_or(Error::Unsupported)?;
             crate::session_owner::preparation::source_validation::validate(source, request)?;

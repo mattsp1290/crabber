@@ -232,7 +232,7 @@ async fn preparation_failure(
     );
     assert_eq!(count(&dir.join("ledger"), "provider"), 0);
     assert_eq!(count(&dir.join("ledger"), "tool"), 0);
-    agent.close_extensions().await.unwrap();
+    finish_retained_failure(agent, dir, session, mode, descriptor).await;
     assert_eq!(
         agent
             .lookup_preparation_operation(session, &PreparationKey::Admission(options().key))
@@ -241,4 +241,34 @@ async fn preparation_failure(
             .as_ref(),
         Some(descriptor)
     );
+}
+
+async fn finish_retained_failure(
+    agent: &Agent,
+    dir: &Path,
+    session: &SessionId,
+    mode: &str,
+    descriptor: &crabber::session::session_owner::preparation::PreparationReconciliation,
+) {
+    if mode == "precommit" {
+        // Persistent failure retains the legacy plan until this process exits.
+        // Neither mount disposal nor an unsupported cleanup may imply Joined.
+        let retained = agent.retained_preparation_status(session);
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].preparation, *descriptor);
+        return;
+    }
+    if mode == "commit-loss" {
+        let factories = count(&dir.join("ledger"), "factory");
+        let progress = agent
+            .retry_preparation_completion(descriptor)
+            .await
+            .unwrap();
+        assert!(progress.replayed);
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
+        assert_eq!(count(&dir.join("ledger"), "provider"), 0);
+        assert_eq!(count(&dir.join("ledger"), "tool"), 0);
+        assert_eq!(agent.retained_preparation_status(session), []);
+    }
+    agent.close_extensions().await.unwrap();
 }

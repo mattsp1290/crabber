@@ -41,10 +41,17 @@ impl super::PostgresStore {
             crate::session_owner::preparation::PreparationPurpose::ExistingRun {
                 run_id, ..
             } => {
-                super::super::execution_binding::read(tx, &binding.session_id, run_id)
-                    .await
-                    .map_err(unknown)?
-                    .ok_or(Error::UnknownStoreOutcome)?;
+                let original =
+                    super::super::execution_binding::read(tx, &binding.session_id, run_id)
+                        .await
+                        .map_err(unknown)?
+                        .ok_or(Error::UnknownStoreOutcome)?;
+                if crate::session_owner::preparation::resource_contract(
+                    &original.capsule.runtime_semantics,
+                )? != preparation.resource_contract
+                {
+                    return Err(Error::SemanticConflict);
+                }
                 let run = super::super::load_run(tx, run_id, true)
                     .await
                     .map_err(unknown)?;

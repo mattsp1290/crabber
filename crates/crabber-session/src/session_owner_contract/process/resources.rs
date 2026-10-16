@@ -84,6 +84,7 @@ pub(super) async fn run(helper: &str, path: Option<&Path>) {
         let mut request = ReservePreparation {
             owner: reservation(SessionId::new()),
             source: None,
+            resource_contract: None,
             key: PreparationKey::Unkeyed(crabber_core::ControlId::new()),
             expected_revision: crabber_core::SessionRevision::INITIAL,
             purpose: PreparationPurpose::OrdinaryAdmission,

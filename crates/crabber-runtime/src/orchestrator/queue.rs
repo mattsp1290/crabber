@@ -333,7 +333,8 @@ impl Orchestrator {
         let prepared_request = captured.clone();
         let prepared_control = control.clone();
         let ((), completed) = self
-            .finish_durable_preparation(grant, async move {
+            .finish_durable_preparation(grant, move |scope| async move {
+                let runtime = runtime.with_preparation_scope(scope);
                 let (plan, prepared) = runtime
                     .prepare_keyed_admission(&prepared_request, retained.input.admission)
                     .await?;
@@ -396,7 +397,7 @@ impl Orchestrator {
         }
         let runtime = self.with_context(context);
         self.own_preparation(control.authority.session_id.clone(), async move {
-            runtime.admit_queue_owned(request, control).await
+            Box::pin(runtime.admit_queue_owned(request, control)).await
         })
         .await
     }
@@ -440,7 +441,8 @@ impl Orchestrator {
         let prepared_request = captured.clone();
         let prepared_control = control.clone();
         let (plan, completed) = self
-            .finish_durable_preparation(grant, async move {
+            .finish_durable_preparation(grant, move |scope| async move {
+                let runtime = runtime.with_preparation_scope(scope);
                 let (plan, restored) = runtime
                     .prepare_keyed_admission(&prepared_request, retained.input.admission)
                     .await?;

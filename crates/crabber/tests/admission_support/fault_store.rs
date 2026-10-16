@@ -75,7 +75,7 @@ impl Store for FaultStore {
                 )
                 .unwrap();
             }
-            if self.mode == "commit-loss" {
+            if self.mode == "commit-loss" && matches!(outcome, KeyedAdmitOutcome::Started { .. }) {
                 assert_eq!(
                     self.inner
                         .lookup_admission(&receipt.session_id, &options().key)

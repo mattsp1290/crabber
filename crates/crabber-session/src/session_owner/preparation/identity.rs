@@ -55,6 +55,7 @@ pub(crate) fn metadata(
         },
         key: origin.key.clone(),
         source: None,
+        resource_contract: origin.resource_contract.clone(),
         expected_revision: origin.expected_revision,
         purpose: origin.purpose.clone(),
         intent: origin.intent.clone(),

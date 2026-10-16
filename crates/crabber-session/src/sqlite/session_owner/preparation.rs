@@ -66,6 +66,7 @@ impl super::SqliteStore {
                 self.clock.now(),
             )
             .map_err(storage_error)?;
+            proof.verify_observation(&joined)?;
             let join =
                 crate::session_owner::preparation::proof::join_request(joined.observed_grant())
                     .map_err(storage_error)?;

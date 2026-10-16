@@ -286,6 +286,7 @@ async fn run_preparation(_store: &impl Store, helper: &str, path: Option<&Path>)
         let request = ReservePreparation {
             owner: reservation(SessionId::new()),
             source: None,
+            resource_contract: None,
             key: PreparationKey::Unkeyed(crabber_core::ControlId::new()),
             expected_revision: crabber_core::SessionRevision::INITIAL,
             purpose: PreparationPurpose::OrdinaryAdmission,

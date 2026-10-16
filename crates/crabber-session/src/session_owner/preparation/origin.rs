@@ -11,9 +11,16 @@ pub(crate) struct Origin {
     pub expected_revision: SessionRevision,
     pub purpose: PreparationPurpose,
     pub intent: InputFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_contract: Option<InputFingerprint>,
 }
 impl Origin {
     pub fn fingerprint(&self, owner: &ReserveSessionOwner) -> Result<InputFingerprint, Error> {
+        if self.resource_contract.is_some()
+            && owner.binding.component_id != super::OWNED_PREPARATION_COMPONENT
+        {
+            return Err(Error::InvalidRequest);
+        }
         crate::session_owner::identifier(&self.operation.0, 128, false)?;
         match &self.purpose {
             PreparationPurpose::OrdinaryAdmission => (),
@@ -52,5 +59,6 @@ pub(crate) fn origin(request: &ReservePreparation) -> Origin {
         expected_revision: request.expected_revision,
         purpose: request.purpose.clone(),
         intent: request.intent.clone(),
+        resource_contract: request.resource_contract.clone(),
     }
 }

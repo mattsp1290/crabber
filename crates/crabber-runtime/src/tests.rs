@@ -34,6 +34,8 @@ mod durable_approval;
 #[path = "tests/frontend_replay.rs"]
 mod frontend_replay;
 mod native_phase;
+#[path = "tests/preparation_resources.rs"]
+mod preparation_resources;
 #[path = "tests/suspension_observation.rs"]
 mod suspension_observation;
 #[path = "tests/tool_suspension_faults.rs"]
@@ -1969,6 +1971,10 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 
 #[derive(Default)]
 struct SettlementGate {
+    preparation_fault: AtomicUsize,
+    activation_fault: AtomicUsize,
+    owned_join_fault: AtomicUsize,
+    malformed_owned_join: AtomicUsize,
     observation: Option<Arc<suspension_observation::ObservationGate>>,
     admission: Option<Arc<task_ownership::preparation::AdmissionResponseGate>>,
     append: Option<Arc<OperationalAppendGate>>,
@@ -2059,6 +2065,12 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::preparation::PreparationCompletion,
         crabber_session::session_owner::preparation::PreparationCommitError,
     > {
+        let preparation_fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        if preparation_fault == 1 {
+            return Err(
+                crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),
+            );
+        }
         if joined.operation_kind() == crabber_session::session_owner::preparation::PreparationOperationKind::ApprovalRecovery
             && self.gate.approval_recovery_gate.load(Ordering::SeqCst)
         {
@@ -2066,6 +2078,11 @@ impl Store for DelayedTerminalStore {
             self.gate.approval_recovery_release.notified().await;
         }
         let completed = self.inner.complete_preparation(joined).await?;
+        if preparation_fault == 2 {
+            return Err(
+                crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),
+            );
+        }
         if let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
             crabber_session::ApprovalClaimOutcome::Applied { receipt, .. },
         ) = &completed
@@ -2097,6 +2114,86 @@ impl Store for DelayedTerminalStore {
             }
         }
         Ok(completed)
+    }
+
+    fn supports_preparation_resources(&self) -> bool {
+        true
+    }
+    fn supports_owned_scopes(&self) -> bool {
+        true
+    }
+    async fn retain_preparation_resources(
+        &self,
+        grant: crabber_session::session_owner::preparation::PreparationGrant,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationResourceOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.retain_preparation_resources(grant).await
+    }
+    async fn publish_owned_scope_activation(
+        &self,
+        request: crabber_session::session_owner::owned_scope::OwnedScopeActivation,
+        authority: crabber_session::session_owner::SessionOwnerAuthority,
+        parent: Option<crabber_session::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        let point = self.gate.activation_fault.swap(0, Ordering::SeqCst);
+        if point == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let outcome = self
+            .inner
+            .publish_owned_scope_activation(request, authority, parent)
+            .await?;
+        if point == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(outcome)
+    }
+    async fn join_owned_scope(
+        &self,
+        proof: crabber_session::session_owner::owned_scope::JoinedOwnedScope,
+        authority: crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        let point = self.gate.owned_join_fault.swap(0, Ordering::SeqCst);
+        if point == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let outcome = self
+            .inner
+            .join_owned_scope(proof, authority.clone())
+            .await?;
+        if point == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let malformed = self.gate.malformed_owned_join.swap(0, Ordering::SeqCst);
+        if malformed != 0 {
+            use crabber_session::session_owner::{
+                SessionOwnerOutcome, SessionOwnerState, SessionOwnerTermination,
+            };
+            let mut receipt = match outcome {
+                SessionOwnerOutcome::Applied { receipt, .. }
+                | SessionOwnerOutcome::Replayed(receipt) => receipt,
+            };
+            match malformed {
+                1 => receipt.owner.state = SessionOwnerState::Active,
+                2 => receipt.operation_id = crabber_core::SessionOwnerOperationId::new(),
+                3 => receipt.owner.termination = Some(SessionOwnerTermination::Panicked),
+                5 => receipt.owner.binding.workspace_id = "different".into(),
+                _ => (),
+            }
+            return Ok(SessionOwnerOutcome::Applied {
+                receipt,
+                authority: (malformed == 4).then_some(authority),
+            });
+        }
+        Ok(outcome)
     }
 
     fn supports_session_owner_cancellation(&self) -> bool {

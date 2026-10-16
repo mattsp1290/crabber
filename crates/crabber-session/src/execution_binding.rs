@@ -193,10 +193,13 @@ impl ExecutionBindingCapsule {
             .runtime_semantics
             .as_array()
             .ok_or(StoreError::AdmissionConflict)?;
+        let resources =
+            crate::session_owner::preparation::resource_contract(&self.runtime_semantics)
+                .map_err(|_| StoreError::AdmissionConflict)?;
         if !matches!(
             (self.version, self.input_envelope.is_some()),
             (2, false) | (3, true)
-        ) || values.len() != 15
+        ) || values.len() != 15 + usize::from(resources.is_some())
             || values[0] != "crabber.runtime.admission.v1"
             || values[1] != self.provider.provider_id()
             || values[2] != self.provider.model_id()

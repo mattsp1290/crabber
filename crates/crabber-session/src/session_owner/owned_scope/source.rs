@@ -120,3 +120,18 @@ pub(crate) fn activate(
     record.owned_scope = Some(request.clone());
     record.publish_change(now, true)
 }
+
+pub(crate) fn activation_key(
+    session: &crabber_core::SessionId,
+    target: &crate::session_owner::SessionOwnerTarget,
+) -> Result<crabber_core::SessionOwnerOperationId, Error> {
+    let digest = crate::session_owner::validation::digest(&(
+        "crabber.owned-scope.activation-key.v1",
+        session,
+        target,
+    ))?;
+    Ok(crabber_core::SessionOwnerOperationId(format!(
+        "owned-scope-{}",
+        digest.as_str()
+    )))
+}

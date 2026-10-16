@@ -128,6 +128,12 @@ impl Ledger {
         Ok(())
     }
     pub(super) fn verify_scope(&self, record: &Record) -> Result<(), Error> {
+        let session = &record.snapshot.binding.session_id;
+        let activation = source::activation_key(session, &record.snapshot.target)?;
+        let key = (session.clone(), activation);
+        if self.publications.contains_key(&key) && !self.audits.contains_key(&key) {
+            return Err(Error::UnknownStoreOutcome);
+        }
         let Some(scope) = source::context(record) else {
             return Ok(());
         };
@@ -143,6 +149,16 @@ impl Ledger {
             read(&scope.source.begin)?,
             self.audits.get(&(session.clone(), scope.id.clone())),
         )
+    }
+    #[cfg(test)]
+    pub(crate) fn rollback_activation_for_test(&mut self, activation: &OwnedScopeActivation) {
+        let session = activation.session_id().clone();
+        let begin = self.audits[&(session.clone(), activation.source.begin.clone())]
+            .record
+            .clone();
+        self.records
+            .insert((session.clone(), activation.target().id.clone()), begin);
+        self.audits.remove(&(session, activation.id.clone()));
     }
     #[cfg(test)]
     pub(crate) fn replace_scope_join_for_test(

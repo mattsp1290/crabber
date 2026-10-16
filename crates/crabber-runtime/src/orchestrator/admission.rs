@@ -78,11 +78,27 @@ impl Orchestrator {
             .plan_provider
             .registration_fingerprint(context)
             .map_err(RuntimeError::ExtensionPlan)?;
-        let plan = self
-            .plan_provider
-            .acquire_plan_in(context)
-            .await
-            .map_err(RuntimeError::ExtensionPlan)?;
+        let plan = if let Some(scope) = &self.preparation_scope {
+            if scope.context.session() != context
+                || self.declared_resource_contract(context)?.as_ref() != Some(&scope.contract)
+            {
+                return Err(StoreError::AdmissionConflict.into());
+            }
+            self.plan_provider
+                .acquire_plan_in_preparation(&scope.context)
+                .await
+                .map_err(RuntimeError::ExtensionPlan)?
+                .with_preparation_lease(scope.lease.clone())
+                .map_err(RuntimeError::ExtensionPlan)?
+        } else {
+            if self.declared_resource_contract(context)?.is_some() {
+                return Err(StoreError::HostUnsupported.into());
+            }
+            self.plan_provider
+                .acquire_plan_in(context)
+                .await
+                .map_err(RuntimeError::ExtensionPlan)?
+        };
         if !self.store.supports_tool_continuations()
             && plan
                 .tools
@@ -257,6 +273,11 @@ impl Orchestrator {
         plan_fingerprint: &str,
         context: &SessionContext,
     ) -> Result<(), RuntimeError> {
+        if crabber_session::session_owner::preparation::resource_contract(semantics)?
+            != self.declared_resource_contract(context)?
+        {
+            return Err(StoreError::AdmissionConflict.into());
+        }
         let semantics = semantics.as_array().ok_or(StoreError::AdmissionConflict)?;
         if semantics.get(5) != Some(&json!(format!("{:?}", self.execution_mode)))
             || semantics.get(6) != Some(&json!(self.compaction.trigger_ratio))

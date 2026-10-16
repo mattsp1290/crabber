@@ -322,3 +322,47 @@ async fn owned_scope_sources_and_join_hash_are_independent() {
         check::marker_refuses(&store, fixture).await;
     }
 }
+
+#[tokio::test]
+async fn erased_activation_cannot_be_replaced_with_a_never_opened_gate() {
+    use crate::session_owner::{
+        owned_scope::{OwnedCleanupTask, OwnedTaskRegistration},
+        preparation_contract::resources::scope_integrity,
+    };
+    let store = super::MemoryStore::new();
+    let original = scope_integrity::fixture(&store).await;
+    store
+        .state
+        .lock()
+        .unwrap()
+        .session_owners
+        .rollback_activation_for_test(&original.activation);
+    let mut replacement =
+        OwnedTaskRegistration::register(original.activation.source.clone(), || async {
+            panic!("replacement must never dispatch")
+        })
+        .unwrap();
+    let activation = replacement.activation().clone();
+    let observed = replacement.join().await.unwrap();
+    let mut cleanup = OwnedCleanupTask::from_host_task(activation, tokio::spawn(async { Ok(()) }));
+    let proof = observed.observe_resources(&mut cleanup).await.unwrap();
+    let join = proof.request().unwrap();
+    assert!(
+        Store::join_owned_scope(&store, proof, original.child.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get_session_owner(original.child.session_id(), &original.child.target().id)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .lookup_session_owner(&join.session_id, &join.id)
+            .await
+            .unwrap(),
+        None
+    );
+}

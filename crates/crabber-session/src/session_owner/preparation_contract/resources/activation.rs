@@ -9,7 +9,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 pub(super) async fn run(store: &impl Store) {
-    let (original, bound) = setup(store, true).await;
+    let (original, bound) = super::declaration::setup(store).await;
     let PreparationResourceOutcome::Applied {
         receipt: resources,
         grant,
@@ -23,7 +23,12 @@ pub(super) async fn run(store: &impl Store) {
     let dispatched = calls.clone();
     let mut task = OwnedTaskRegistration::register(source.clone(), move || {
         dispatched.fetch_add(1, Ordering::SeqCst);
-        async { 42 }
+        async move {
+            Ok::<_, ()>((
+                std::sync::Mutex::new(42),
+                PreparedOperation::AdmitKeyed(Box::new(bound)),
+            ))
+        }
     })
     .unwrap();
     let request = task.activation().clone();
@@ -63,15 +68,26 @@ pub(super) async fn run(store: &impl Store) {
         OwnedMainDisposition::NoDispatch
     );
     task.dispatch(*permit).unwrap();
+    let wrong_grant = changed_grant(&grant, &child);
+    assert!(matches!(
+        JoinedPreparation::observe_registered(wrong_grant, &mut task).await,
+        Err(SessionOwnerError::SemanticConflict)
+    ));
+    let (value, completion) = JoinedPreparation::observe_registered(*grant, &mut task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(*value.lock().unwrap(), 42);
+    assert!(task.take_value().await.unwrap().is_none());
     let observed = task.join().await.unwrap();
     assert_eq!(observed.disposition(), OwnedMainDisposition::Returned);
-    assert_eq!(observed.value(), Some(&42));
+    assert!(observed.value().is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     // The native guard authenticates the exact child's third public publication
     // and preserves the caller's original request/envelope revision.
     assert!(
         !store
-            .complete_preparation(joined(*grant, bound).await)
+            .complete_preparation(completion)
             .await
             .unwrap()
             .is_replayed()
@@ -90,9 +106,18 @@ pub(super) async fn run(store: &impl Store) {
     joined_resources(store, observed, &child).await;
 }
 
-async fn joined_resources(
+fn changed_grant(grant: &PreparationGrant, child: &SessionOwnerAuthority) -> PreparationGrant {
+    let mut wrong_original = grant.original_reservation().clone();
+    wrong_original.owner.binding.directory = "/other".into();
+    PreparationGrant::from_fresh_begin(wrong_original, grant.owner_authority().clone())
+        .unwrap()
+        .with_retained_resources(child.clone())
+        .unwrap()
+}
+
+async fn joined_resources<T>(
     store: &impl Store,
-    observed: &crate::session_owner::owned_scope::JoinedOwnedTask<i32>,
+    observed: &crate::session_owner::owned_scope::JoinedOwnedTask<T>,
     child: &SessionOwnerAuthority,
 ) {
     use crate::session_owner::owned_scope::{OwnedCleanupFailure, OwnedCleanupTask};

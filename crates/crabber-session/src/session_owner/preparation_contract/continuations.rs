@@ -24,6 +24,7 @@ pub(super) async fn request(
         owner,
         key: key.clone(),
         source: Some(source),
+        resource_contract: None,
         expected_revision: store.session_revision(&run.session_id).await.unwrap(),
         purpose: PreparationPurpose::ExistingRun {
             run_id: run.id.clone(),
