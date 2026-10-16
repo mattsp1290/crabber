@@ -2,6 +2,7 @@
 use super::{Error, approval, sql};
 use crate::approval::current::{CurrentProof, NativeSource, Release, Source};
 use crate::public_session::budget::{Budget, Failure, unknown};
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventRecord, Run, RunId, SessionId};
 use sqlx::{Postgres, Row, Transaction};
 #[derive(Clone, Copy)]
@@ -69,6 +70,23 @@ pub(in super::super) async fn rows(
         .map_err(super::super::db)
         .map_err(error)
 }
+async fn rows_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &approval::ApprovalRecord,
+    select: Select,
+    proof: &mut Proof,
+) -> Result<Vec<sqlx::postgres::PgRow>, ApprovalReadError> {
+    if proof.active() {
+        for row in rows(tx, record, select, false).await? {
+            let bytes = usize::try_from(row.try_get::<i64, _>("bytes").map_err(error)?)
+                .map_err(error)?
+                .checked_sub(256)
+                .ok_or(Error::UnknownStoreOutcome)?;
+            proof.charge(bytes).map_err(ApprovalReadError::Budget)?;
+        }
+    }
+    Ok(rows(tx, record, select, true).await?)
+}
 fn event(row: &sqlx::postgres::PgRow) -> Result<EventRecord, Error> {
     let text: String = row
         .try_get::<Option<String>, _>("event")
@@ -108,41 +126,65 @@ pub(in super::super) async fn verify(
     record: &approval::ApprovalRecord,
     releasing: bool,
 ) -> Result<(), Error> {
-    let answers = rows(tx, record, Select::Answers, true).await?;
+    verify_status(tx, run.status, record, releasing).await
+}
+pub(in super::super) async fn verify_status(
+    tx: &mut Transaction<'_, Postgres>,
+    status: crabber_core::RunStatus,
+    record: &approval::ApprovalRecord,
+    releasing: bool,
+) -> Result<(), Error> {
+    verify_status_with_proof(tx, status, record, releasing, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(in super::super) async fn verify_status_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    status: crabber_core::RunStatus,
+    record: &approval::ApprovalRecord,
+    releasing: bool,
+    proof: &mut Proof,
+) -> Result<(), ApprovalReadError> {
+    let answers = rows_with_proof(tx, record, Select::Answers, proof).await?;
     if answers.len() > 64 {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let answers = answers.iter().map(source).collect::<Result<_, _>>()?;
-    let latest = rows(tx, record, Select::Latest, true).await?;
+    let latest = rows_with_proof(tx, record, Select::Latest, proof).await?;
     let latest = source(latest.first().ok_or(Error::UnknownStoreOutcome)?)?;
     let release = if record.state == crate::ApprovalContinuationState::Released
         && record.termination.is_none()
     {
-        if let Some(proof) = super::super::continuation_handoff::verify(
+        if let Some(proof) = super::super::continuation_handoff::verify_with_proof(
             tx,
             &record.session_id,
             &record.run_id,
-            crate::continuation_handoff::Domain::Approval,
-            &record.batch.continuation,
-            &record.batch.next_attempt,
-            &record.batch.expected_plan,
+            &crate::continuation_handoff::ReadTarget {
+                domain: crate::continuation_handoff::Domain::Approval,
+                target: &record.batch.continuation,
+                parent: &record.batch.next_attempt,
+                plan: &record.batch.expected_plan,
+            },
+            proof,
         )
         .await?
         {
             Some(Release::Handoff(proof))
         } else {
-            let successor = rows(tx, record, Select::Successor, true).await?;
+            let successor = rows_with_proof(tx, record, Select::Successor, proof).await?;
             if let Some(row) = successor.first() {
                 let source = source(row)?;
                 let target = approval::current::continuation(&source.receipt.outcome);
-                let next = exact(tx, record, target).await?;
-                super::origin::verify(tx, &next).await?;
+                let next =
+                    exact_scoped_with_proof(tx, &record.session_id, &record.run_id, target, proof)
+                        .await?;
+                super::origin::verify_with_proof(tx, &next, proof).await?;
                 Some(Release::Successor {
                     pub_source: source,
                     attempt: next.batch.attempt,
                 })
             } else {
-                let native = rows(tx, record, Select::Native, true).await?;
+                let native = rows_with_proof(tx, record, Select::Native, proof).await?;
                 let row = native.first().ok_or(Error::UnknownStoreOutcome)?;
                 let receipt = serde_json::from_str(
                     &row.try_get::<Option<String>, _>("receipt")
@@ -150,7 +192,7 @@ pub(in super::super) async fn verify(
                         .ok_or(Error::UnknownStoreOutcome)?,
                 )
                 .map_err(|_| Error::UnknownStoreOutcome)?;
-                let latest = latest_attempt(tx, record).await?;
+                let latest = latest_attempt_with_proof(tx, record, proof).await?;
                 Some(Release::Native(NativeSource {
                     receipt,
                     event: event(row)?,
@@ -161,6 +203,7 @@ pub(in super::super) async fn verify(
     } else {
         None
     };
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(COALESCE(octet_length(continuation_id),0) AS BIGINT) FROM continuation_barriers WHERE session_id=$1").bind(&record.session_id.0), proof).await.map_err(ApprovalReadError::Budget)?;
     let barrier = sqlx::query_scalar::<_, Option<String>>(BARRIER)
         .bind(&record.session_id.0)
         .fetch_optional(&mut **tx)
@@ -169,8 +212,8 @@ pub(in super::super) async fn verify(
         .map_err(error)?
         .flatten()
         .map(crabber_core::ContinuationId);
-    record.verify_current(
-        run,
+    Ok(record.verify_current_status(
+        status,
         &CurrentProof {
             answers,
             latest,
@@ -178,9 +221,10 @@ pub(in super::super) async fn verify(
         },
         barrier.as_ref(),
         releasing,
-    )
+    )?)
 }
 const BARRIER: &str = "SELECT CASE WHEN octet_length(continuation_id)<=128 THEN continuation_id END FROM continuation_barriers WHERE session_id=$1";
+#[cfg(test)]
 pub(in super::super) async fn exact(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,
@@ -194,6 +238,31 @@ pub(in super::super) async fn exact_scoped(
     run: &RunId,
     target: &crate::ContinuationTarget,
 ) -> Result<approval::ApprovalRecord, Error> {
+    exact_scoped_with_proof(tx, session, run, target, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(in super::super) async fn exact_scoped_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    target: &crate::ContinuationTarget,
+    proof: &mut Proof,
+) -> Result<approval::ApprovalRecord, ApprovalReadError> {
+    let cost = format!(
+        "SELECT CAST(COALESCE(octet_length(data),0)+COALESCE(octet_length(state),0)+COALESCE(octet_length(workspace),0) AS BIGINT) FROM ({EXACT}) bounded_original"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&session.0)
+            .bind(&run.0)
+            .bind(&target.id.0)
+            .bind(i64::try_from(target.generation.get()).map_err(|_| Error::UnknownStoreOutcome)?),
+        proof,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
     let row = sqlx::query(EXACT)
         .bind(&session.0)
         .bind(&run.0)
@@ -220,16 +289,29 @@ pub(in super::super) async fn exact_scoped(
         .as_deref()
         != Some(&next.workspace_id)
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
-    super::verify_questions(tx, &next).await?;
+    super::verify_questions_with_proof(tx, &next, proof).await?;
     Ok(next)
 }
 const EXACT: &str = "SELECT CASE WHEN octet_length(c.data_json)<=4194304 THEN c.data_json END AS data,CASE WHEN octet_length(c.state)<=32 THEN c.state END AS state,CAST(c.format_version AS BIGINT) AS format_version,CASE WHEN octet_length(s.data->>'workspace_id')<=512 THEN s.data->>'workspace_id' END AS workspace FROM continuations c JOIN sessions s ON s.id=c.session_id WHERE c.session_id=$1 AND c.run_id=$2 AND c.id=$3 AND c.generation=$4";
-async fn latest_attempt(
+async fn latest_attempt_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,
-) -> Result<crate::AttemptSnapshot, Error> {
+    proof: &mut Proof,
+) -> Result<crate::AttemptSnapshot, ApprovalReadError> {
+    let cost = format!(
+        "SELECT CAST(COALESCE(octet_length(value),0) AS BIGINT) FROM ({ATTEMPT}) carrier(value)"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&record.session_id.0)
+            .bind(&record.run_id.0),
+        proof,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
     let text: Option<String> = sqlx::query_scalar(ATTEMPT)
         .bind(&record.session_id.0)
         .bind(&record.run_id.0)
@@ -238,8 +320,10 @@ async fn latest_attempt(
         .map_err(super::super::db)
         .map_err(error)?
         .flatten();
-    serde_json::from_str(&text.ok_or(Error::UnknownStoreOutcome)?)
-        .map_err(|_| Error::UnknownStoreOutcome)
+    Ok(
+        serde_json::from_str(&text.ok_or(Error::UnknownStoreOutcome)?)
+            .map_err(|_| Error::UnknownStoreOutcome)?,
+    )
 }
 const ATTEMPT: &str = "SELECT CASE WHEN octet_length(value)<=8192 THEN value END FROM (SELECT json_build_object('session_id',$1,'run_id',run_id,'target',json_build_object('id',id,'generation',generation),'state',state,'cleanup',cleanup_state)::text AS value FROM execution_attempts WHERE run_id=$2 ORDER BY generation DESC LIMIT 1) bounded";
 
@@ -364,6 +448,87 @@ fn charge_rows(rows: &[sqlx::postgres::PgRow], proof: &mut Budget) -> Result<(),
         proof.charge(
             usize::try_from(row.try_get::<i64, _>("bytes").map_err(unknown)?).map_err(unknown)?,
         )?;
+    }
+    Ok(())
+}
+
+/// Page every current identity and authenticate its immutable origin before
+/// applying state labels. A forged Released state never hides a live source.
+pub(in super::super) async fn session_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    proof: &mut Proof,
+) -> Result<(), ApprovalReadError> {
+    let mut after = String::new();
+    let mut count = 0_usize;
+    let mut active = false;
+    loop {
+        let rows=sqlx::query("SELECT CASE WHEN octet_length(id)<=128 THEN id END AS id,CASE WHEN octet_length(run_id)<=128 THEN run_id END AS run_id,generation,CAST(octet_length(id)+octet_length(run_id) AS BIGINT) AS bytes FROM continuations WHERE session_id=$1 AND id COLLATE \"C\">$2 ORDER BY id COLLATE \"C\" LIMIT 32").bind(&session.0).bind(&after).fetch_all(&mut **tx).await.map_err(error)?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            proof
+                .charge(
+                    usize::try_from(row.try_get::<i64, _>("bytes").map_err(error)?)
+                        .map_err(error)?,
+                )
+                .map_err(ApprovalReadError::Budget)?;
+        }
+        for row in rows {
+            let id = row
+                .try_get::<Option<String>, _>("id")
+                .map_err(error)?
+                .ok_or(Error::UnknownStoreOutcome)?;
+            let run = RunId(
+                row.try_get::<Option<String>, _>("run_id")
+                    .map_err(error)?
+                    .ok_or(Error::UnknownStoreOutcome)?,
+            );
+            let target = crate::ContinuationTarget {
+                id: crabber_core::ContinuationId(id.clone()),
+                generation: crabber_core::ContinuationGeneration::new(
+                    u64::try_from(row.try_get::<i64, _>("generation").map_err(error)?)
+                        .map_err(error)?,
+                )
+                .map_err(error)?,
+            };
+            let record = exact_scoped_with_proof(tx, session, &run, &target, proof).await?;
+            let facts = super::origin::verify_with_proof(tx, &record, proof).await?;
+            verify_status_with_proof(tx, facts.status, &record, false, proof).await?;
+            if record.state != crate::ApprovalContinuationState::Released {
+                if active {
+                    return Err(Error::UnknownStoreOutcome.into());
+                }
+                active = true;
+            }
+            count = count.checked_add(1).ok_or(Error::UnknownStoreOutcome)?;
+            after = id;
+        }
+    }
+    let carrier = super::super::tool_continuation::current::CARRIER;
+    let query = format!(
+        "SELECT COUNT(*) FROM events e WHERE e.session_id=$1 AND {carrier}#>>'{{kind}}'='continuation_changed' AND {carrier}#>>'{{payload,kind}}' IS NULL AND {carrier}#>>'{{payload,outcome,operation}}'='suspended'"
+    );
+    let origins: i64 = sqlx::query_scalar(&query)
+        .bind(&session.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(error)?;
+    if usize::try_from(origins).ok() != Some(count) {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    if count == 0 {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+        )
+        .bind(&session.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(error)?;
+        if exists {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
     }
     Ok(())
 }

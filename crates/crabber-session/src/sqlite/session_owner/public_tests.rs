@@ -88,12 +88,12 @@ async fn aggregate_owner_membership_and_shared_proof_budget() {
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         read(&store, &request.binding.session_id, 0, 65536)
             .await
             .0
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::PublicRegisteredOwner; 0]
     );
     // An erased Joined row is not an empty ledger: the immutable identity remains.
     sqlx::query("DELETE FROM session_owner_current WHERE session_id=$1 AND owner_id=$2")

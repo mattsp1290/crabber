@@ -4,9 +4,9 @@ mod claim;
 mod original_plan;
 pub(super) use claim::waiting_context;
 mod cancel;
-mod current;
+pub(super) mod current;
 pub(super) use cancel::cancel_waiting;
-mod scan;
+pub(super) mod scan;
 pub(super) use scan::pending as pending_in_session;
 mod evidence;
 mod guards;
@@ -142,3 +142,5 @@ pub(super) use write::replay_scope as replay_prepared;
 pub(super) use claim::preparation_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
+#[cfg(test)]
+mod aggregate_proof_tests;

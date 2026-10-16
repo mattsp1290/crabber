@@ -49,6 +49,20 @@ pub(super) async fn base(
     safe: &mut Budget,
     proof: &mut Budget,
 ) -> Result<PublicControlHeader, Failure> {
+    let (mut header, status) = common(tx, request, revision, safe).await?;
+    let (approval, barrier) =
+        super::approval::public_header(tx, request, status, header.attempt.as_ref(), safe, proof)
+            .await?;
+    header.approval = approval;
+    header.barrier = barrier;
+    Ok(header)
+}
+pub(super) async fn common(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &PublicHeaderRequest,
+    revision: SessionRevision,
+    safe: &mut Budget,
+) -> Result<(PublicControlHeader, Option<RunStatus>), Failure> {
     let (session, metadata, saved_revision) = super::management::current(tx, &request.session_id)
         .await
         .map_err(unknown)?
@@ -85,18 +99,20 @@ pub(super) async fn base(
     };
     let attempt = attempt(tx, request, safe).await?;
     let contents = contents(tx, request, revision, safe).await?;
-    let (approval, barrier) =
-        super::approval::public_header(tx, request, status, attempt.as_ref(), safe, proof).await?;
-    Ok(PublicControlHeader {
-        version: 1,
-        revision,
-        session,
-        attempt,
-        approval,
-        barrier,
-        contents,
-        read_usage: PublicHeaderUsage::default(),
-    })
+
+    Ok((
+        PublicControlHeader {
+            version: 1,
+            revision,
+            session,
+            attempt,
+            approval: None,
+            barrier: None,
+            contents,
+            read_usage: PublicHeaderUsage::default(),
+        },
+        status,
+    ))
 }
 async fn attempt(
     tx: &mut Transaction<'_, Postgres>,
@@ -236,3 +252,5 @@ fn oversized_approval_proof_is_not_transferred() {
         )
         .unwrap();
 }
+
+mod v2;

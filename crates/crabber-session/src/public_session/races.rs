@@ -31,6 +31,30 @@ impl Interposed<'_> {
 }
 #[async_trait]
 impl Store for Interposed<'_> {
+    async fn public_control_header_v2(
+        &self,
+        request: PublicHeaderRequestV2,
+    ) -> Result<PublicHeaderOutcomeV2, PublicSessionError> {
+        if self.boundary == 3 {
+            return Err(PublicSessionError::UnknownStoreOutcome);
+        }
+        let session = request.session_id.clone();
+        let result = self.inner.public_control_header_v2(request).await;
+        self.mutate(1, &session).await;
+        result
+    }
+    async fn public_history_v2(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<PublicHistoryOutcome, StoreError> {
+        if self.boundary == 4 {
+            return Err(StoreError::HostUnsupported);
+        }
+        let session = request.session_id.clone();
+        let result = self.inner.public_history_v2(request).await;
+        self.mutate(2, &session).await;
+        result
+    }
     async fn public_run_state(
         &self,
         session: &SessionId,
@@ -165,6 +189,40 @@ pub(crate) async fn run(store: &impl Store) {
             assert_eq!(store.session_revision(&session).await.unwrap(), revision);
             assert_eq!(
                 store.list_events(&session, None, 1000).await.unwrap(),
+                events
+            );
+        }
+    }
+}
+
+pub(crate) async fn run_v2(store: &impl Store) {
+    let (f, _, _) = crate::frontend_contract::fixture::paused(store).await;
+    for boundary in 0..6 {
+        let session = &f.request.session_id;
+        let revision = store.session_revision(session).await.unwrap();
+        let events = store.list_events(session, None, 1000).await.unwrap();
+        let reader = Interposed {
+            inner: store,
+            boundary,
+            fired: AtomicBool::new(false),
+        };
+        let result = reader
+            .public_session_snapshot_v2(PublicSessionRequestV2 {
+                session_id: session.clone(),
+                limits: crate::public_session::v2::tests::limits(),
+                continuation: None,
+            })
+            .await;
+        if boundary < 3 {
+            assert!(
+                matches!(result, Ok(PublicSessionOutcomeV2::Invalidated)),
+                "{boundary}: {result:?}"
+            );
+        } else {
+            assert!(result.is_err(), "{boundary}: {result:?}");
+            assert_eq!(store.session_revision(session).await.unwrap(), revision);
+            assert_eq!(
+                store.list_events(session, None, 1000).await.unwrap(),
                 events
             );
         }

@@ -1,4 +1,5 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 mod answer;
 mod claim;
 pub(super) mod current;
@@ -102,6 +103,35 @@ async fn load_inner(
     run: &RunId,
     validate_current: bool,
 ) -> Result<Option<(approval::ApprovalRecord, crabber_core::SessionRevision)>, Error> {
+    load_inner_with_proof(tx, session, run, validate_current, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) async fn load_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<(approval::ApprovalRecord, crabber_core::SessionRevision)>, ApprovalReadError> {
+    load_inner_with_proof(tx, session, run, true, proof).await
+}
+async fn load_inner_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    validate_current: bool,
+    proof: &mut Proof,
+) -> Result<Option<(approval::ApprovalRecord, crabber_core::SessionRevision)>, ApprovalReadError> {
+    let cost = format!(
+        "SELECT CAST(COALESCE(octet_length(workspace),0)+COALESCE(octet_length(id),0)+COALESCE(octet_length(state),0)+COALESCE(octet_length(data_json),0) AS BIGINT) FROM ({SNAPSHOT}) bounded_record"
+    );
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost).bind(&session.0).bind(&run.0),
+        proof,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
     let row = sqlx::query(SNAPSHOT)
         .bind(&session.0)
         .bind(&run.0)
@@ -115,12 +145,12 @@ async fn load_inner(
     let Some(id) = row.get::<Option<String>, _>("id") else {
         return if row.get::<Option<i64>, _>("generation").is_none() {
             if current::has_source(tx, session, Some(run)).await? {
-                Err(Error::UnknownStoreOutcome)
+                Err(Error::UnknownStoreOutcome.into())
             } else {
                 Ok(None)
             }
         } else {
-            Err(Error::UnknownStoreOutcome)
+            Err(Error::UnknownStoreOutcome.into())
         };
     };
     let generation: i64 = row.get("generation");
@@ -141,12 +171,12 @@ async fn load_inner(
         row.get("format_version"),
     )?;
     if row.get::<Option<String>, _>("workspace").as_deref() != Some(&record.workspace_id) {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
-    verify_questions(tx, &record).await?;
-    let saved_run = origin::verify(tx, &record).await?;
+    verify_questions_with_proof(tx, &record, proof).await?;
+    let saved_run = origin::verify_with_proof(tx, &record, proof).await?;
     if validate_current {
-        current::verify(tx, &saved_run, &record, false).await?;
+        current::verify_status_with_proof(tx, saved_run.status, &record, false, proof).await?;
     }
     Ok(Some((record, revision)))
 }
@@ -252,3 +282,43 @@ pub(super) use write::replay_scope as replay_prepared;
 pub(super) use claim::ready as preparation_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
+
+#[cfg(test)]
+mod origin_facts_tests;
+
+pub(super) async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<ApprovalReceipt>, ApprovalReadError> {
+    crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(RECEIPT_PROOF_COST)
+            .bind(&session.0)
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
+    Ok(receipt(tx, session, id).await?)
+}
+async fn verify_questions_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &approval::ApprovalRecord,
+    proof: &mut Proof,
+) -> Result<(), ApprovalReadError> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(QUESTION_PROOF_COST)
+            .bind(&record.batch.continuation.id.0)
+            .bind(&record.run_id.0),
+        proof,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
+    Ok(verify_questions(tx, record).await?)
+}
+const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(r.semantic_digest),0)+8+COALESCE(octet_length(e.run_id),0)+CASE WHEN r.kind='approval' THEN COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
+const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT octet_length(id)+octet_length(call_id) AS bytes FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded_questions";

@@ -58,6 +58,11 @@ async fn journey(store: Arc<dyn Store>, recover: bool) {
         .await
         .unwrap()
         .unwrap();
+    let original_page = aggregate_v2_page(&agent, &session).await;
+    assert_eq!(
+        original_page.header.tool.as_ref().unwrap().state,
+        crabber::session::ToolContinuationState::Waiting
+    );
     let request = response(&waiting);
     let recovery = if recover {
         let stored = store.get_run(&run).await.unwrap().unwrap();
@@ -114,6 +119,20 @@ async fn journey(store: Arc<dyn Store>, recover: bool) {
     assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(provider.requests().len(), 2);
+    let paused_page = aggregate_v2_page(&agent, &session).await;
+    assert_eq!(
+        paused_page.header.tool.as_ref().unwrap().state,
+        crabber::session::ToolContinuationState::Released
+    );
+    assert_eq!(
+        paused_page.header.approval.as_ref().unwrap().state,
+        crabber::session::ApprovalContinuationState::Waiting
+    );
+    assert!(matches!(
+        paused_page.header.barrier,
+        Some(crabber::PublicContinuationBarrierV2::Approval(_))
+    ));
+
     let events = store.list_events(&session, None, 1000).await.unwrap();
     let handoff = events
         .iter()
@@ -178,6 +197,10 @@ async fn journey(store: Arc<dyn Store>, recover: bool) {
     assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 3);
+    let terminal_page = aggregate_v2_page(&agent, &session).await;
+    assert!(terminal_page.is_terminal());
+    assert!(terminal_page.header.barrier.is_none());
+
     agent.close_extensions().await.unwrap();
     let before = store.list_events(&session, None, 1000).await.unwrap();
     let replay = if let Some(recovery) = recovery {

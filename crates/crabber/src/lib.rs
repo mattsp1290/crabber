@@ -53,10 +53,14 @@ pub use crabber_session::{
 pub use crabber_obs as obs;
 
 pub use crabber_session::{
-    PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
-    PublicHeaderRequest, PublicHeaderUsage, PublicResyncReason, PublicSessionError,
-    PublicSessionLimit, PublicSessionLimits, PublicSessionOutcome, PublicSessionPage,
-    PublicSessionPoll, PublicSessionRequest, PublicSessionSubscription,
+    PublicApprovalBarrier, PublicApprovalSummary, PublicContinuationBarrierV2, PublicControlHeader,
+    PublicControlHeaderV2, PublicFrontendRequirement, PublicHeaderOutcome, PublicHeaderOutcomeV2,
+    PublicHeaderRequest, PublicHeaderRequestV2, PublicHeaderUsage, PublicRegisteredOwner,
+    PublicResyncReason, PublicSessionError, PublicSessionLimit, PublicSessionLimitV2,
+    PublicSessionLimits, PublicSessionLimitsV2, PublicSessionOutcome, PublicSessionOutcomeV2,
+    PublicSessionPage, PublicSessionPageV2, PublicSessionPoll, PublicSessionPollV2,
+    PublicSessionRequest, PublicSessionRequestV2, PublicSessionSubscription,
+    PublicSessionSubscriptionV2, PublicToolRequirement, PublicToolSummary,
 };
 
 #[cfg(test)]

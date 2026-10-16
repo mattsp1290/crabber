@@ -1,14 +1,16 @@
 //! Atomic logical run boundary plus owned-attempt outcome and cleanup.
+mod materialize;
+pub(crate) use materialize::scoped as materialize_scope;
 mod audit;
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptFinish, AttemptMutation, AttemptReceipt,
 };
 pub(crate) use audit::{event, verify_event};
 use crabber_core::{
-    EventKind, EventRecord, InputFingerprint, Run, RunId, RunStatus, SessionId, TurnId, Usage,
+    EventRecord, InputFingerprint, Run, RunId, RunStatus, SessionId, TurnId, Usage,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -121,29 +123,7 @@ impl AttemptConclusion {
     /// # Errors
     /// Rejects invalid boundary or presentation metadata.
     pub fn materialize(&self, run: &Run) -> Result<EventRecord, AttemptError> {
-        self.validate()?;
-        let (kind, payload, correlation) = match &self.boundary {
-            RunBoundary::Terminal { status, usage, .. } => (
-                EventKind::RunSettled,
-                json!({"status":status,"usage":usage,
-                "input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"duration_ms":self.elapsed.as_millis(),"duration_ns":self.elapsed.as_nanos()}),
-                Some(run.id.to_string()),
-            ),
-            RunBoundary::Suspended { usage, .. } => {
-                (EventKind::RunPaused, json!({"usage":usage}), None)
-            }
-        };
-        Ok(EventRecord {
-            cursor: None,
-            session_id: run.session_id.clone(),
-            run_id: run.id.clone(),
-            turn_id: self.turn_id.clone(),
-            kind,
-            payload,
-            correlation,
-            live_only: false,
-            created_at: self.created_at,
-        })
+        materialize_scope(self, &run.session_id, &run.id)
     }
     /// Apply the checked logical boundary inside a trusted adapter transaction.
     /// This does not verify ownership or establish resource cleanup.

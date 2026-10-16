@@ -2,6 +2,7 @@
 #[path = "tool_continuation/original_plan.rs"]
 mod original_plan;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
+use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crate::tool_continuation::{self as domain, ToolContinuationRecord};
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptMutation, AttemptMutationOutcome,
@@ -19,7 +20,7 @@ mod claim;
 #[path = "tool_continuation/current.rs"]
 mod current;
 #[path = "tool_continuation/scan.rs"]
-mod scan;
+pub(super) mod scan;
 pub(super) use scan::pending as pending_in_session;
 fn active(state: &State, run: &Run) -> Result<Option<ToolContinuationRecord>, Error> {
     scan::run(state, run).map(|(_, active)| active)
@@ -70,16 +71,27 @@ pub(super) fn receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<ToolContinuationReceipt>, Error> {
+    receipt_with_proof(state, session, id, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) fn receipt_with_proof(
+    state: &State,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<ToolContinuationReceipt>, ToolReadError> {
     let Some(saved) = state.operation_receipts.get(&(session.clone(), id.clone())) else {
         return Ok(None);
     };
     let OperationReceipt::ToolContinuation(saved) = saved else {
-        return Err(Error::SemanticConflict);
+        return Err(Error::SemanticConflict.into());
     };
     if saved.session_id != *session || saved.operation_id != *id {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let event = event_at(state, saved.event_cursor)?;
+    proof.measure(saved).map_err(ToolReadError::Budget)?;
+    proof.measure(event).map_err(ToolReadError::Budget)?;
     domain::verify_receipt(saved, event)?;
     Ok(Some(saved.clone()))
 }
@@ -140,35 +152,38 @@ fn publish_handoff(
     );
     Ok(receipt)
 }
-pub(super) fn origin_record(
+pub(super) fn origin_record_with_proof(
     state: &State,
     id: &crabber_core::ContinuationId,
-) -> Result<ToolContinuationRecord, Error> {
+    proof: &mut Proof,
+) -> Result<ToolContinuationRecord, ToolReadError> {
     let borrowed = state
         .tool_continuations
         .get(id)
         .ok_or(Error::UnknownStoreOutcome)?;
+    proof.measure(borrowed).map_err(ToolReadError::Budget)?;
     if crate::snapshot::encoded_bytes(borrowed, 4 * 1024 * 1024).is_none() {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let record = borrowed.clone();
     record.validate()?;
-    let binding = super::execution_binding::read(state, &record.session_id, &record.run_id)
-        .map_err(|_| Error::UnknownStoreOutcome)?
-        .ok_or(Error::UnknownStoreOutcome)?;
+    let binding =
+        super::execution_binding::read_with_proof(state, &record.session_id, &record.run_id, proof)
+            .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?
+            .ok_or(Error::UnknownStoreOutcome)?;
     if binding.capsule.request.workspace_id != record.workspace_id {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let run = state
         .runs
         .get(&record.run_id)
         .ok_or(Error::UnknownStoreOutcome)?;
     for frontend in &record.batch.frontend {
-        super::frontend::verify_frozen(state, run, frontend)?;
+        super::frontend::verify_frozen_with_proof(state, run, frontend, proof)?;
     }
 
-    let original =
-        receipt(state, &record.session_id, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
+    let original = receipt_with_proof(state, &record.session_id, &record.batch.id, proof)?
+        .ok_or(Error::UnknownStoreOutcome)?;
     if original.run_id != record.run_id
         || original.semantic_digest
             != record
@@ -179,7 +194,7 @@ pub(super) fn origin_record(
                 continuation: record.batch.continuation.clone(),
             })
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let event = event_at(state, original.event_cursor)?;
     if event.created_at != record.created_at
@@ -188,11 +203,11 @@ pub(super) fn origin_record(
                 .map_err(|()| Error::UnknownStoreOutcome)?
                 .as_ref()
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     for question in &record.questions {
         if let Some(answer) = &question.answer {
-            let accepted = receipt(state, &record.session_id, &answer.id)?
+            let accepted = receipt_with_proof(state, &record.session_id, &answer.id, proof)?
                 .ok_or(Error::UnknownStoreOutcome)?;
             if accepted.run_id != record.run_id
                 || accepted.semantic_digest != answer.fingerprint()?
@@ -203,37 +218,78 @@ pub(super) fn origin_record(
                         state: question.view.state,
                     })
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
         }
     }
     if let Some(claim) = &record.claim {
-        let claimed =
-            receipt(state, &record.session_id, &claim.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        let claimed = receipt_with_proof(state, &record.session_id, &claim.id, proof)?
+            .ok_or(Error::UnknownStoreOutcome)?;
         record.verify_claim_receipt(&claimed)?;
     }
     if let Some(recovery) = &record.recovery {
-        let receipt =
-            receipt(state, &record.session_id, &recovery.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        let receipt = receipt_with_proof(state, &record.session_id, &recovery.id, proof)?
+            .ok_or(Error::UnknownStoreOutcome)?;
         recovery
             .verify_receipt(&receipt)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
     if let Some(recovery) = &record.frontend_recovery {
-        let receipt =
-            receipt(state, &record.session_id, &recovery.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        let receipt = receipt_with_proof(state, &record.session_id, &recovery.id, proof)?
+            .ok_or(Error::UnknownStoreOutcome)?;
         recovery
             .verify_receipt(&receipt)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
+    verify_native_origin(state, &record, proof)?;
     Ok(record)
+}
+fn verify_native_origin(
+    state: &State,
+    record: &ToolContinuationRecord,
+    proof: &mut Proof,
+) -> Result<(), ToolReadError> {
+    if proof.active() {
+        let key = domain::derived_id("tool-continuation-suspend-attempt", &record.batch.id);
+        let Some(OperationReceipt::Attempt(native)) = state
+            .operation_receipts
+            .get(&(record.session_id.clone(), key))
+        else {
+            return Err(Error::UnknownStoreOutcome.into());
+        };
+        proof.measure(native).map_err(ToolReadError::Budget)?;
+        proof
+            .measure(event_at(state, native.event_cursor)?)
+            .map_err(ToolReadError::Budget)?;
+        super::attempt::verify(state, native).map_err(|_| Error::UnknownStoreOutcome)?;
+        let source = state
+            .events
+            .iter()
+            .rev()
+            .find(|e| {
+                e.session_id == record.session_id
+                    && e.cursor.is_some_and(|c| c < native.event_cursor)
+            })
+            .ok_or(Error::UnknownStoreOutcome)?;
+        proof.measure(source).map_err(ToolReadError::Budget)?;
+        crate::continuation_handoff::verify_native_origin(&record.batch, native, source)?;
+    }
+    Ok(())
 }
 pub(super) fn checked_record(
     state: &State,
     id: &crabber_core::ContinuationId,
 ) -> Result<ToolContinuationRecord, Error> {
-    let record = origin_record(state, id)?;
-    current::verify(state, &record)?;
+    checked_record_with_proof(state, id, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) fn checked_record_with_proof(
+    state: &State,
+    id: &crabber_core::ContinuationId,
+    proof: &mut Proof,
+) -> Result<ToolContinuationRecord, ToolReadError> {
+    let record = origin_record_with_proof(state, id, proof)?;
+    current::verify_with_proof(state, &record, proof)?;
     Ok(record)
 }
 pub(super) fn fault(store: &MemoryStore) -> u8 {

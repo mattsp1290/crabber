@@ -224,6 +224,27 @@ pub enum InboxKind {
 /// Typed public state follows its separate bounded, lossless JSON contract.
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// V2 profile-bound public history. Custom adapters explicitly opt in.
+    async fn public_history_v2(
+        &self,
+        _request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicHistoryOutcome, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
+    /// Coherent fixed aggregate V2 metadata and history; no execution authority.
+    async fn public_session_snapshot_v2(
+        &self,
+        request: crate::PublicSessionRequestV2,
+    ) -> Result<crate::PublicSessionOutcomeV2, crate::PublicSessionError> {
+        crate::public_session::v2::compose::snapshot(self, request).await
+    }
+    /// Fixed aggregate V2 metadata. Custom adapters explicitly opt in.
+    async fn public_control_header_v2(
+        &self,
+        _request: crate::PublicHeaderRequestV2,
+    ) -> Result<crate::PublicHeaderOutcomeV2, crate::PublicSessionError> {
+        Err(crate::PublicSessionError::Unsupported)
+    }
     /// Bounded native metadata, with private approval proofs preflighted before decoding.
     async fn public_control_header(
         &self,

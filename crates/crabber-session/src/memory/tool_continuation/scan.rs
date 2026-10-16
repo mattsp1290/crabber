@@ -2,7 +2,7 @@
 use super::{Error, State, ToolContinuationRecord, ToolContinuationState, checked_record};
 use crabber_core::{EventKind, EventRecord, Run, SessionId};
 
-fn origin(event: &EventRecord) -> bool {
+pub(in super::super) fn origin(event: &EventRecord) -> bool {
     event.kind == EventKind::ContinuationChanged
         && event
             .payload

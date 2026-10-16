@@ -1,6 +1,8 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
-pub(super) use records::receipt as host_receipt;
 pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
+pub(super) use records::{
+    load_with_proof as load_host_attempt_with_proof, receipt_with_proof as host_receipt_with_proof,
+};
 mod control;
 pub(super) use control::host_turn;
 mod pristine;

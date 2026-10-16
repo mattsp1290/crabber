@@ -2,6 +2,7 @@
 use super::{approval, tool_continuation};
 use crate::ApprovalError as Error;
 use crate::continuation_handoff::{Domain, Handoff, Source};
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventCursor, InputFingerprint, Run, RunId, SessionId};
 use sqlx::{Postgres, Row, Transaction};
 fn unknown<T>(_: T) -> Error {
@@ -82,13 +83,23 @@ pub(super) async fn tool_source(
     tx: &mut Transaction<'_, Postgres>,
     record: &crate::tool_continuation::ToolContinuationRecord,
 ) -> Result<Source, Error> {
-    let (id, digest) = record.latest_claim_source().map_err(unknown)?;
-    let (receipt, _) = tool_continuation::read::receipt(tx, &record.session_id, &id)
+    tool_source_with_proof(tx, record, &mut Proof::legacy())
         .await
-        .map_err(unknown)?
-        .ok_or(Error::UnknownStoreOutcome)?;
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) async fn tool_source_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &crate::tool_continuation::ToolContinuationRecord,
+    proof: &mut Proof,
+) -> Result<Source, ApprovalReadError> {
+    let (id, digest) = record.latest_claim_source().map_err(unknown)?;
+    let (receipt, _) =
+        tool_continuation::read::receipt_with_proof(tx, &record.session_id, &id, proof)
+            .await
+            .map_err(|error| error.map_domain(unknown))?
+            .ok_or(Error::UnknownStoreOutcome)?;
     if receipt.semantic_digest != digest {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     Ok(Source {
         domain: Domain::Tool,
@@ -150,26 +161,47 @@ pub(super) async fn release(
     Ok(())
 }
 // Keep this bounded compound proof off callers' inline async state.
-pub(super) async fn verify(
+pub(super) async fn verify_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
-    domain: Domain,
-    target: &crate::ContinuationTarget,
-    parent: &crate::AttemptTarget,
-    plan: &InputFingerprint,
-) -> Result<Option<Handoff>, Error> {
-    Box::pin(verify_inner(tx, session, run, domain, target, parent, plan)).await
+    scope: &crate::continuation_handoff::ReadTarget<'_>,
+    proof: &mut Proof,
+) -> Result<Option<Handoff>, ApprovalReadError> {
+    Box::pin(verify_inner_with_proof(tx, session, run, scope, proof)).await
 }
-async fn verify_inner(
+
+async fn verify_inner_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
-    domain: Domain,
-    target: &crate::ContinuationTarget,
-    parent: &crate::AttemptTarget,
-    plan: &InputFingerprint,
-) -> Result<Option<Handoff>, Error> {
+    scope: &crate::continuation_handoff::ReadTarget<'_>,
+    read_budget: &mut Proof,
+) -> Result<Option<Handoff>, ApprovalReadError> {
+    let crate::continuation_handoff::ReadTarget {
+        domain,
+        target,
+        parent,
+        plan,
+    } = *scope;
+    let cost =
+        format!("SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM ({CROSS}) bounded_handoff");
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&session.0)
+            .bind(&run.0)
+            .bind(&target.id.0)
+            .bind(match domain {
+                Domain::Approval => "approval",
+                Domain::Tool => "tool",
+            })
+            .bind(0_i64),
+        read_budget,
+    )
+    .await
+    .map_err(ApprovalReadError::Budget)?;
+
     let rows = sqlx::query(CROSS)
         .bind(&session.0)
         .bind(&run.0)
@@ -183,7 +215,7 @@ async fn verify_inner(
         .await
         .map_err(unknown)?;
     if rows.len() > 1 {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let Some(row) = rows.first() else {
         return Ok(None);
@@ -207,16 +239,16 @@ async fn verify_inner(
         || proof.plan != *plan
         || event.cursor.is_none_or(|c| c <= proof.predecessor.cursor)
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let (cursor, native_key, tool_batch) =
-        successor(tx, session, run, &proof, parent, plan).await?;
-    let native = super::attempt::host_receipt(tx, session, &native_key)
-        .await
-        .map_err(unknown)?
+        successor_with_proof(tx, session, run, &proof, parent, plan, read_budget).await?;
+    let native = super::attempt::host_receipt_with_proof(tx, session, &native_key, read_budget)
+        .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     if let Some(batch) = tool_batch {
-        let source = source_event(tx, session, native.event_cursor).await?;
+        let source =
+            super::read_proof::event(tx, session, native.event_cursor, true, read_budget).await?;
         crate::continuation_handoff::verify_native_origin(&batch, &native, &source)
             .map_err(unknown)?;
     }
@@ -229,7 +261,7 @@ async fn verify_inner(
         || native.event_cursor >= cursor
         || native.event_cursor <= proof.predecessor.cursor
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     Ok(Some(proof))
 }
@@ -320,53 +352,42 @@ pub(super) async fn preflight(
     Ok(true)
 }
 
-async fn source_event(
-    tx: &mut Transaction<'_, Postgres>,
-    session: &SessionId,
-    cursor: EventCursor,
-) -> Result<crabber_core::EventRecord, Error> {
-    let row=sqlx::query("SELECT seq,CASE WHEN octet_length(data::text)<=65536 THEN data::text END AS event FROM events WHERE session_id=$1 AND seq<$2 ORDER BY seq DESC LIMIT 1").bind(&session.0).bind(i64::try_from(cursor.0).map_err(unknown)?).fetch_one(&mut **tx).await.map_err(unknown)?;
-    let text = row
-        .get::<Option<String>, _>("event")
-        .ok_or(Error::UnknownStoreOutcome)?;
-    let mut event: crabber_core::EventRecord = crate::public_state::decode_event(
-        sqlx::types::Json(serde_json::from_str(&text).map_err(unknown)?),
-    )
-    .map_err(unknown)?;
-    event.cursor = Some(EventCursor(
-        u64::try_from(row.get::<i64, _>("seq")).map_err(unknown)?,
-    ));
-    Ok(event)
-}
-
-async fn successor(
+async fn successor_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
     proof: &Handoff,
     parent: &crate::AttemptTarget,
     plan: &InputFingerprint,
+    read_budget: &mut Proof,
 ) -> Result<
     (
         EventCursor,
         crabber_core::ControlId,
         Option<crate::ToolContinuationSuspension>,
     ),
-    Error,
+    ApprovalReadError,
 > {
     Ok(match proof.successor_domain {
         Domain::Approval => {
-            let next = approval::current::exact_scoped(tx, session, run, &proof.successor).await?;
-            approval::origin::verify(tx, &next).await?;
+            let next = approval::current::exact_scoped_with_proof(
+                tx,
+                session,
+                run,
+                &proof.successor,
+                read_budget,
+            )
+            .await?;
+            approval::origin::verify_with_proof(tx, &next, read_budget).await?;
             if next.handoff.as_deref() != Some(proof)
                 || next.batch.attempt != *parent
                 || next.batch.id != proof.suspension_id
                 || next.batch.expected_plan != *plan
                 || next.batch.fingerprint(session, run)? != proof.suspension_digest
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
-            let saved = approval::receipt(tx, session, &next.batch.id)
+            let saved = approval::receipt_with_proof(tx, session, &next.batch.id, read_budget)
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?;
             (
@@ -376,10 +397,16 @@ async fn successor(
             )
         }
         Domain::Tool => {
-            let next = tool_continuation::read::origin(tx, session, run, Some(&proof.successor.id))
-                .await
-                .map_err(unknown)?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let next = tool_continuation::read::origin_with_proof(
+                tx,
+                session,
+                run,
+                Some(&proof.successor.id),
+                read_budget,
+            )
+            .await
+            .map_err(|error| error.map_domain(unknown))?
+            .ok_or(Error::UnknownStoreOutcome)?;
             if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
@@ -387,12 +414,17 @@ async fn successor(
                 || next.batch.expected_plan != *plan
                 || next.batch.fingerprint(session, run).map_err(unknown)? != proof.suspension_digest
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
-            let (saved, _) = tool_continuation::read::receipt(tx, session, &next.batch.id)
-                .await
-                .map_err(unknown)?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let (saved, _) = tool_continuation::read::receipt_with_proof(
+                tx,
+                session,
+                &next.batch.id,
+                read_budget,
+            )
+            .await
+            .map_err(|error| error.map_domain(unknown))?
+            .ok_or(Error::UnknownStoreOutcome)?;
             let native_key = crate::tool_continuation::derived_id(
                 "tool-continuation-suspend-attempt",
                 &next.batch.id,

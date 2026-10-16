@@ -2,6 +2,7 @@
 use super::{OperationReceipt, State};
 use crate::ApprovalError as Error;
 use crate::continuation_handoff::{Domain, Handoff, Source};
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventRecord, Run};
 fn unknown<T>(_: T) -> Error {
     Error::UnknownStoreOutcome
@@ -122,14 +123,15 @@ pub(super) fn candidate(
                 Domain::Tool => "tool",
             })
 }
-pub(super) fn verify(
+pub(super) fn verify_with_proof(
     state: &State,
     run: &Run,
     domain: Domain,
     target: &crate::ContinuationTarget,
     parent: &crate::AttemptTarget,
     plan: &crabber_core::InputFingerprint,
-) -> Result<Option<Handoff>, Error> {
+    read_budget: &mut Proof,
+) -> Result<Option<Handoff>, ApprovalReadError> {
     let mut selected = state.events.iter().filter(|e| {
         e.session_id == run.session_id && e.run_id == run.id && candidate(e, domain, &target.id)
     });
@@ -137,8 +139,11 @@ pub(super) fn verify(
         return Ok(None);
     };
     if selected.next().is_some() || crate::snapshot::encoded_bytes(event, 65536).is_none() {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
+    read_budget
+        .measure(event)
+        .map_err(ApprovalReadError::Budget)?;
     let proof = Handoff::from_event(event)
         .map_err(unknown)?
         .ok_or(Error::UnknownStoreOutcome)?;
@@ -147,20 +152,37 @@ pub(super) fn verify(
         || proof.plan != *plan
         || event.cursor.is_none_or(|c| c <= proof.predecessor.cursor)
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
-    let (saved, native_key) = successor(state, run, &proof, parent, plan)?;
+    let (saved, native_key) = successor_with_proof(state, run, &proof, parent, plan, read_budget)?;
     let cursor = match saved {
-        Some(OperationReceipt::Approval(r)) => r.event_cursor,
-        Some(OperationReceipt::ToolContinuation(r)) => r.event_cursor,
-        _ => return Err(Error::UnknownStoreOutcome),
+        Some(OperationReceipt::Approval(r)) => {
+            read_budget.measure(r).map_err(ApprovalReadError::Budget)?;
+            r.event_cursor
+        }
+        Some(OperationReceipt::ToolContinuation(r)) => {
+            read_budget.measure(r).map_err(ApprovalReadError::Budget)?;
+            r.event_cursor
+        }
+        _ => return Err(Error::UnknownStoreOutcome.into()),
     };
     let Some(OperationReceipt::Attempt(native)) = state
         .operation_receipts
         .get(&(run.session_id.clone(), native_key))
     else {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     };
+    read_budget
+        .measure(native)
+        .map_err(ApprovalReadError::Budget)?;
+    read_budget
+        .measure(
+            state
+                .events
+                .get(native.event_cursor)
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(ApprovalReadError::Budget)?;
     super::attempt::verify(state, native).map_err(unknown)?;
     if proof.successor_domain == Domain::Tool {
         let next = state
@@ -175,6 +197,9 @@ pub(super) fn verify(
                 e.session_id == run.session_id && e.cursor.is_some_and(|c| c < native.event_cursor)
             })
             .ok_or(Error::UnknownStoreOutcome)?;
+        read_budget
+            .measure(source)
+            .map_err(ApprovalReadError::Budget)?;
         crate::continuation_handoff::verify_native_origin(&next.batch, native, source)
             .map_err(unknown)?;
     }
@@ -186,7 +211,7 @@ pub(super) fn verify(
         || native.event_cursor >= cursor
         || native.event_cursor <= proof.predecessor.cursor
     {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     Ok(Some(proof))
 }
@@ -298,20 +323,24 @@ pub(super) fn preflight(
     Ok(true)
 }
 
-fn successor<'a>(
+fn successor_with_proof<'a>(
     state: &'a State,
     run: &Run,
     proof: &Handoff,
     parent: &crate::AttemptTarget,
     plan: &crabber_core::InputFingerprint,
-) -> Result<(Option<&'a OperationReceipt>, crabber_core::ControlId), Error> {
+    read_budget: &mut Proof,
+) -> Result<(Option<&'a OperationReceipt>, crabber_core::ControlId), ApprovalReadError> {
     Ok(match proof.successor_domain {
         Domain::Approval => {
             let next = state
                 .approvals
                 .get(&proof.successor.id)
                 .ok_or(Error::UnknownStoreOutcome)?;
-            super::approval::origin::verify(state, run, next)?;
+            read_budget
+                .measure(next)
+                .map_err(ApprovalReadError::Budget)?;
+            super::approval::origin::verify_with_proof(state, run, next, read_budget)?;
             if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
@@ -319,7 +348,7 @@ fn successor<'a>(
                 || next.batch.expected_plan != *plan
                 || next.batch.fingerprint(&run.session_id, &run.id)? != proof.suspension_digest
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
             (
                 state
@@ -329,8 +358,12 @@ fn successor<'a>(
             )
         }
         Domain::Tool => {
-            let next = super::tool_continuation::origin_record(state, &proof.successor.id)
-                .map_err(unknown)?;
+            let next = super::tool_continuation::origin_record_with_proof(
+                state,
+                &proof.successor.id,
+                read_budget,
+            )
+            .map_err(|e| e.map_domain(unknown))?;
             if next.handoff.as_deref() != Some(proof)
                 || next.batch.continuation != proof.successor
                 || next.batch.attempt != *parent
@@ -342,7 +375,7 @@ fn successor<'a>(
                     .map_err(unknown)?
                     != proof.suspension_digest
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
             (
                 state

@@ -2,6 +2,7 @@ use super::{
     Error, Postgres, ToolContinuationOutcome, ToolContinuationRecord, ToolContinuationState,
     Transaction, domain, unknown, write,
 };
+use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crabber_core::{InteractionState, Run};
 pub(in super::super) async fn cancel_waiting(
     tx: &mut Transaction<'_, Postgres>,
@@ -75,23 +76,28 @@ pub(in super::super) async fn cancel_waiting(
     .map_err(unknown)?;
     Ok(true)
 }
-pub(super) async fn verify(
+pub(super) async fn verify_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     record: &ToolContinuationRecord,
-) -> Result<(), Error> {
+    read_budget: &mut Proof,
+) -> Result<(), ToolReadError> {
     let Some(proof) = &record.termination else {
         return Ok(());
     };
-    super::super::run_control::verify_original_cancel(tx, &proof.accepted)
-        .await
-        .map_err(unknown)?;
-    super::super::run_control::verify_cancelled_target(tx, &proof.original.target)
-        .await
-        .map_err(unknown)?;
-    let (latest, _) = super::super::attempt::load_host_attempt(tx, &record.run_id, None, false)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::UnknownStoreOutcome)?;
+    super::super::run_control::verify_original_cancel_with_proof(tx, &proof.accepted, read_budget)
+        .await?;
+    super::super::run_control::verify_cancelled_target_with_proof(
+        tx,
+        &proof.original.target,
+        read_budget,
+    )
+    .await?;
+    let (latest, _) =
+        super::super::attempt::load_host_attempt_with_proof(tx, &record.run_id, None, read_budget)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
     latest.validate().map_err(unknown)?;
-    proof.verify_attempt(record, &latest.snapshot)
+    proof
+        .verify_attempt(record, &latest.snapshot)
+        .map_err(Into::into)
 }

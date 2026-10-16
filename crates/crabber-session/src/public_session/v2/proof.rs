@@ -33,21 +33,31 @@ impl Proof {
         )
     }
     pub fn charge(&mut self, bytes: usize) -> Result<(), Failure> {
-        self.0.charge(bytes).map_err(Into::into)
+        if self.active() {
+            self.0.charge(bytes).map_err(Into::into)
+        } else {
+            Ok(())
+        }
     }
     pub fn measure(&mut self, carrier: &impl Serialize) -> Result<(), Failure> {
-        self.0.measure(carrier).map_err(Into::into)
+        if self.active() {
+            self.0.measure(carrier).map_err(Into::into)
+        } else {
+            Ok(())
+        }
     }
     pub fn used(&self) -> usize {
         self.0.used
     }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn budget(&mut self) -> &mut crate::public_session::budget::Budget {
         &mut self.0
     }
 }
 impl From<crate::public_session::budget::Failure> for Failure {
     fn from(value: crate::public_session::budget::Failure) -> Self {
-        use crate::public_session::{PublicSessionLimit as Old, budget::Failure as F};
+        use crate::PublicSessionLimit as Old;
+        use crate::public_session::budget::Failure as F;
         match value {
             F::Error(error) => Self::Error(error),
             F::Limited(limit) => Self::Limited(match limit {
@@ -127,4 +137,71 @@ impl From<ReadError<crate::StoreError>> for ToolReadError {
             ReadError::Budget(error) => Self::Budget(error),
         }
     }
+}
+impl From<ReadError<crate::AttemptError>> for ToolReadError {
+    fn from(error: ReadError<crate::AttemptError>) -> Self {
+        match error {
+            ReadError::Domain(_) => Self::Domain(crate::ToolContinuationError::UnknownStoreOutcome),
+            ReadError::Budget(error) => Self::Budget(error),
+        }
+    }
+}
+pub(crate) type ApprovalReadError = ReadError<crate::ApprovalError>;
+impl From<ReadError<crate::StoreError>> for ApprovalReadError {
+    fn from(error: ReadError<crate::StoreError>) -> Self {
+        match error {
+            ReadError::Domain(_) => Self::Domain(crate::ApprovalError::UnknownStoreOutcome),
+            ReadError::Budget(error) => Self::Budget(error),
+        }
+    }
+}
+impl From<ReadError<crate::AttemptError>> for ApprovalReadError {
+    fn from(error: ReadError<crate::AttemptError>) -> Self {
+        match error {
+            ReadError::Domain(_) => Self::Domain(crate::ApprovalError::UnknownStoreOutcome),
+            ReadError::Budget(error) => Self::Budget(error),
+        }
+    }
+}
+impl From<ApprovalReadError> for ToolReadError {
+    fn from(error: ApprovalReadError) -> Self {
+        error.map_domain(|_| crate::ToolContinuationError::UnknownStoreOutcome)
+    }
+}
+impl From<ReadError<crate::RunControlError>> for ToolReadError {
+    fn from(error: ReadError<crate::RunControlError>) -> Self {
+        error.map_domain(|_| crate::ToolContinuationError::UnknownStoreOutcome)
+    }
+}
+
+pub(crate) fn validate_request(
+    request: &crate::PublicHeaderRequestV2,
+) -> Result<(), PublicSessionError> {
+    // Validate untrusted routing text before constructing the legacy view.
+    if request.session_id.0.is_empty()
+        || request.session_id.0.len() > 512
+        || request.session_id.0.chars().any(char::is_control)
+        || request.run_id.as_ref().is_some_and(|id| {
+            id.0.is_empty() || id.0.len() > 128 || id.0.chars().any(char::is_control)
+        })
+    {
+        return Err(PublicSessionError::InvalidRequest);
+    }
+    let legacy = crate::PublicHeaderRequest {
+        session_id: request.session_id.clone(),
+        run_id: request.run_id.clone(),
+        expected_revision: request.expected_revision,
+        max_bytes: request.limits.header_bytes,
+        max_proof_bytes: request.limits.proof_bytes,
+        max_interactions: request.limits.approval_interactions,
+    };
+    crate::public_session::budget::validate_request(&legacy)?;
+    if request.limits.tool_requirements > 64
+        || request.limits.queue_entries > 64
+        || request.limits.registered_owners > 1024
+        || request.limits.run_controls > 64
+    {
+        return Err(PublicSessionError::InvalidRequest);
+    }
+    Ok(())
 }

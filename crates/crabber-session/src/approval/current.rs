@@ -52,6 +52,15 @@ impl ApprovalRecord {
         barrier: Option<&ContinuationId>,
         releasing: bool,
     ) -> Result<(), Error> {
+        self.verify_current_status(run.status, proof, barrier, releasing)
+    }
+    pub(crate) fn verify_current_status(
+        &self,
+        run_status: RunStatus,
+        proof: &CurrentProof,
+        barrier: Option<&ContinuationId>,
+        releasing: bool,
+    ) -> Result<(), Error> {
         let fail = || Error::UnknownStoreOutcome;
         if proof.answers.len() > 64 {
             return Err(fail());
@@ -93,7 +102,7 @@ impl ApprovalRecord {
             ApprovalContinuationState::Waiting => {
                 if latest.operation_id != self.batch.id
                     || !matches!(latest.outcome, ApprovalOutcome::Suspended { .. })
-                    || run.status != RunStatus::Paused
+                    || run_status != RunStatus::Paused
                     || barrier != Some(&self.batch.continuation.id)
                 {
                     return Err(fail());
@@ -101,13 +110,15 @@ impl ApprovalRecord {
             }
             ApprovalContinuationState::Claimed => {
                 self.verify_claim_source(latest)?;
-                if (!releasing && run.status != RunStatus::Running)
+                if (!releasing && run_status != RunStatus::Running)
                     || barrier != Some(&self.batch.continuation.id)
                 {
                     return Err(fail());
                 }
             }
-            ApprovalContinuationState::Released => self.verify_release(run, proof, barrier)?,
+            ApprovalContinuationState::Released => {
+                self.verify_release(run_status, proof, barrier)?;
+            }
         }
         Ok(())
     }
@@ -129,7 +140,7 @@ impl ApprovalRecord {
     }
     fn verify_release(
         &self,
-        run: &Run,
+        run_status: RunStatus,
         proof: &CurrentProof,
         barrier: Option<&ContinuationId>,
     ) -> Result<(), Error> {
@@ -140,7 +151,7 @@ impl ApprovalRecord {
         if let Some(ended) = &self.termination {
             ended.request.verify_receipt(&proof.latest.receipt)?;
             if ended.ended_at != proof.latest.event.created_at
-                || run.status != ended.request.run_status()
+                || run_status != ended.request.run_status()
             {
                 return Err(fail());
             }
@@ -209,7 +220,7 @@ impl ApprovalRecord {
                     || snapshot.run_id != self.run_id
                     || snapshot.target != self.batch.next_attempt
                     || snapshot.cleanup != AttemptCleanup::Complete
-                    || run.status != status
+                    || run_status != status
                     || source.receipt.event_cursor <= proof.latest.receipt.event_cursor
                 {
                     return Err(fail());

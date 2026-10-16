@@ -1,4 +1,5 @@
 #[path = "../../crabber-session/src/continuation_handoff.rs"]
+#[allow(dead_code)]
 mod continuation_handoff;
 #[path = "../../crabber-session/src/continuation_origin.rs"]
 #[allow(dead_code)]
@@ -47,7 +48,7 @@ pub(crate) mod public_session_rounds;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "fenced_support/run_journal.rs"]
 mod run_journal;
-mod tests {
+pub(crate) mod tests {
     pub(super) fn request(
         session_id: crabber::core::SessionId,
     ) -> crabber::session::PublicSessionRequest {
@@ -118,24 +119,51 @@ mod session_owner {
     pub(crate) use crate::session_owner_validation::{digest, identifier, resolver};
     pub use crabber::session::session_owner::*;
 }
+#[path = "../../crabber-session/src/public_session/v2/projection.rs"]
+#[allow(dead_code)]
+pub(crate) mod aggregate_projection;
+#[path = "../../crabber-session/src/public_session/v2/proof.rs"]
+#[allow(dead_code)]
+pub(crate) mod aggregate_proof;
+#[path = "../../crabber-session/src/public_session/v2/tests.rs"]
+#[allow(dead_code)]
+pub(crate) mod aggregate_tests;
 #[path = "../../crabber-session/src/public_session/allocation.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_allocation;
 #[path = "../../crabber-session/src/public_session/budget.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_budget;
+#[path = "../../crabber-session/src/public_session/races.rs"]
+#[allow(dead_code, unused_imports)]
+pub(crate) mod public_session_races;
 #[path = "../../crabber-session/src/session_owner_contract.rs"]
 #[allow(dead_code)]
 pub mod session_owner_contract;
+#[path = "../../crabber-session/src/snapshot_profile.rs"]
+#[allow(dead_code)]
+mod snapshot_profile;
 mod public_session {
+    pub(crate) use crate::public_session_races as races;
+    pub(crate) mod v2 {
+        pub(crate) use crate::aggregate_projection as projection;
+        pub(crate) use crate::aggregate_proof as proof;
+        pub(crate) use crate::aggregate_tests as tests;
+    }
     pub(crate) use crate::public_session_allocation as allocation;
     pub(crate) use crate::public_session_budget as budget;
     pub(crate) use crate::public_session_rounds as rounds;
 }
 pub use crabber::session::{
     PublicApprovalBarrier, PublicApprovalSummary, PublicControlHeader, PublicHeaderOutcome,
-    PublicHeaderRequest, PublicHeaderUsage, PublicSessionError, PublicSessionLimit,
-    PublicSessionLimits, PublicSessionOutcome, PublicSessionRequest,
+    PublicHeaderRequest, PublicHeaderUsage, PublicHistoryOutcome, PublicSessionError,
+    PublicSessionLimit, PublicSessionLimits, PublicSessionOutcome, PublicSessionRequest,
+};
+pub use crabber::session::{
+    PublicContinuationBarrierV2, PublicControlHeaderV2, PublicFrontendRequirement,
+    PublicHeaderOutcomeV2, PublicHeaderRequestV2, PublicRegisteredOwner, PublicResyncReason,
+    PublicSessionLimitV2, PublicSessionLimitsV2, PublicSessionOutcomeV2, PublicSessionPollV2,
+    PublicSessionRequestV2, PublicSessionSubscriptionV2, PublicToolRequirement, PublicToolSummary,
 };
 pub use crabber::session::{
     RunControlAction, RunControlBinding, RunControlBoundary, RunControlError, RunControlKind,
@@ -304,6 +332,8 @@ mod abandonment_contract;
 #[path = "../../crabber-session/src/approval/audit.rs"]
 #[allow(dead_code)]
 mod approval_audit;
+#[path = "../../crabber-session/src/approval/conclusion.rs"]
+mod approval_conclusion;
 #[path = "../../crabber-session/src/approval/current.rs"]
 #[allow(dead_code)]
 pub(crate) mod approval_current;
@@ -321,6 +351,7 @@ mod approval_recovery_provenance;
 pub(crate) mod approval_terminal_history;
 mod approval {
     pub(crate) use crate::approval_audit::{event, verify_receipt};
+    pub(crate) use crate::approval_conclusion::at as conclusion_at;
     pub(crate) use crate::approval_current as current;
     pub(crate) use crate::approval_records::*;
     pub(crate) use crate::approval_recovery_provenance::{
@@ -336,7 +367,14 @@ mod approval_contract;
 mod attempt;
 #[path = "../../crabber-session/src/attempt_conclusion/audit.rs"]
 #[allow(dead_code)]
-mod attempt_conclusion;
+mod attempt_conclusion_audit;
+#[path = "../../crabber-session/src/attempt_conclusion/materialize.rs"]
+mod attempt_conclusion_materialize;
+mod attempt_conclusion {
+    pub(crate) use crate::attempt_conclusion_audit::*;
+    pub(crate) use crate::attempt_conclusion_materialize::scoped as materialize_scope;
+}
+
 #[path = "../../crabber-session/src/attempt_contract.rs"]
 #[allow(dead_code)]
 mod attempt_contract;

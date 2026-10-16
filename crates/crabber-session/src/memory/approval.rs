@@ -18,6 +18,7 @@ mod terminal_history;
 #[path = "approval/terminate.rs"]
 mod terminate;
 use super::{MemoryStore, OperationReceipt, State, bump_public_revision};
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crate::{ApprovalError as Error, ApprovalOutcome, ApprovalReceipt};
 use crabber_core::{ControlId, InputFingerprint, Run, SessionId};
 pub(super) use current::{has_source, preflight as preflight_current, session as verify_session};
@@ -32,26 +33,37 @@ pub(super) fn verify_record(
 pub(super) use terminate::apply_termination;
 use time::OffsetDateTime;
 
-fn receipt(
+pub(super) fn receipt(
     state: &State,
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<ApprovalReceipt>, Error> {
+    receipt_with_proof(state, session, id, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) fn receipt_with_proof(
+    state: &State,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<ApprovalReceipt>, ApprovalReadError> {
     crate::public_state::validate_id(id).map_err(|_| Error::InvalidRequest)?;
     let Some(saved) = state.operation_receipts.get(&(session.clone(), id.clone())) else {
         return Ok(None);
     };
     let OperationReceipt::Approval(saved) = saved else {
-        return Err(Error::SemanticConflict);
+        return Err(Error::SemanticConflict.into());
     };
     if saved.session_id != *session || saved.operation_id != *id {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
 
     let event = state
         .events
         .get(saved.event_cursor)
         .ok_or(Error::UnknownStoreOutcome)?;
+    proof.measure(saved).map_err(ApprovalReadError::Budget)?;
+    proof.measure(event).map_err(ApprovalReadError::Budget)?;
     crate::approval::verify_receipt(saved, event)?;
     Ok(Some(saved.clone()))
 }

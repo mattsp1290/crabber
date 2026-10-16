@@ -1,6 +1,6 @@
 use super::read;
+use crate::PublicSessionLimitV2;
 use crate::public_session::v2::proof::{Proof, ReadError};
-use crate::{PublicSessionLimitV2, Store};
 #[tokio::test]
 async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
     let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;

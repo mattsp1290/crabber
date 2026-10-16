@@ -1,6 +1,6 @@
 use super::read;
+use crate::PublicSessionLimitV2;
 use crate::public_session::v2::proof::{Proof, ReadError};
-use crate::{PublicSessionLimitV2, Store};
 #[tokio::test]
 async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
     let Some(url) = crate::postgres::tests::test_url() else {

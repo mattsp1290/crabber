@@ -314,24 +314,6 @@ fn cancel_waiting(
     })?;
     Ok(())
 }
-#[cfg(test)]
-mod tests {
-    #[tokio::test]
-    async fn durable_run_control_contract() {
-        crate::run_control_contract::run_contract(|clock| super::MemoryStore::with_clock(clock))
-            .await;
-        let store = super::MemoryStore::with_clock(std::sync::Arc::new(
-            crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
-        ));
-        crate::run_control_contract::run_fault_contract(&store, |point| {
-            store
-                .control_fault
-                .store(point, std::sync::atomic::Ordering::SeqCst);
-        })
-        .await;
-    }
-}
-
 pub(super) fn public_controls(
     state: &State,
     run: &Run,
@@ -342,13 +324,16 @@ pub(super) fn public_controls(
     use crate::public_session::v2::proof::{Failure, unknown};
     let target = RunControlTarget::of(run);
     proof.measure(&target)?;
-    for ((session, id), saved) in &state.operation_receipts {
-        let OperationReceipt::RunControl(saved) = saved else {
-            continue;
+    for ((session, id), record) in state.run_controls.iter().filter(|(_, record)| {
+        record.summary.receipt.target.run_id == run.id
+            && record.summary.receipt.target.session_id == run.session_id
+    }) {
+        proof.measure(&record.summary)?;
+        let Some(OperationReceipt::RunControl(saved)) =
+            state.operation_receipts.get(&(session.clone(), id.clone()))
+        else {
+            return Err(unknown("control original receipt"));
         };
-        if *session != run.session_id {
-            continue;
-        }
         proof.measure(saved)?;
         let source = state
             .events
@@ -395,4 +380,22 @@ pub(super) fn public_controls(
         return Err(Failure::Limited(crate::PublicSessionLimitV2::RunControls));
     }
     Ok(controls)
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn durable_run_control_contract() {
+        crate::run_control_contract::run_contract(|clock| super::MemoryStore::with_clock(clock))
+            .await;
+        let store = super::MemoryStore::with_clock(std::sync::Arc::new(
+            crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
+        ));
+        crate::run_control_contract::run_fault_contract(&store, |point| {
+            store
+                .control_fault
+                .store(point, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+    }
 }

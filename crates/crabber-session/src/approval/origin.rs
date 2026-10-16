@@ -4,6 +4,12 @@ use crate::approval::ApprovalRecord;
 use crate::{ApprovalError as Error, ApprovalReceipt};
 use crabber_core::{EventRecord, Run};
 
+pub(crate) struct OriginRunFacts<'a> {
+    pub session_id: &'a crabber_core::SessionId,
+    pub run_id: &'a crabber_core::RunId,
+    pub created_at: time::OffsetDateTime,
+}
+
 impl ApprovalRecord {
     pub(crate) fn verify_origin(
         &self,
@@ -14,18 +20,41 @@ impl ApprovalRecord {
         native_audit: &EventRecord,
         source: &EventRecord,
     ) -> Result<(), Error> {
-        self.validate(&run.session_id, &run.id)?;
+        self.verify_origin_at(
+            &OriginRunFacts {
+                session_id: &run.session_id,
+                run_id: &run.id,
+                created_at: run.created_at,
+            },
+            suspension,
+            audit,
+            native,
+            native_audit,
+            source,
+        )
+    }
+    pub(crate) fn verify_origin_at(
+        &self,
+        run: &OriginRunFacts<'_>,
+        suspension: &ApprovalReceipt,
+        audit: &EventRecord,
+        native: &AttemptReceipt,
+        native_audit: &EventRecord,
+        source: &EventRecord,
+    ) -> Result<(), Error> {
+        self.validate(run.session_id, run.run_id)?;
         self.verify_recovery_batch(suspension)?;
         crate::approval::verify_receipt(suspension, audit)?;
         crate::attempt::verify_receipt(native, native_audit)
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        let conclusion = self.batch.conclusion(run, self.created_at)?;
+        let conclusion =
+            crate::approval::conclusion_at(&self.batch, run.created_at, self.created_at)?;
         conclusion
             .verify_replay(native)
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        let mut expected = conclusion
-            .materialize(run)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let mut expected =
+            crate::attempt_conclusion::materialize_scope(&conclusion, run.session_id, run.run_id)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
         expected.cursor = source.cursor;
         if self.handoff.as_deref()
             != crate::continuation_handoff::Handoff::from_event(audit)

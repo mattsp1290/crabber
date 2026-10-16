@@ -4,6 +4,7 @@ use crate::approval::{
     ApprovalRecord,
     current::{CurrentProof, NativeSource, Release, Source},
 };
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventKind, EventRecord, Run, SessionId};
 
 fn operation(event: &EventRecord) -> Option<&str> {
@@ -57,9 +58,17 @@ pub(in super::super) fn selected<'a>(
     Ok(events)
 }
 pub(in super::super) fn source(state: &State, event: &EventRecord) -> Result<Source, Error> {
+    source_with_proof(state, event, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(in super::super) fn source_with_proof(
+    state: &State,
+    event: &EventRecord,
+    proof: &mut Proof,
+) -> Result<Source, ApprovalReadError> {
     let fail = || Error::UnknownStoreOutcome;
     if crate::snapshot::encoded_bytes(event, 65536).is_none() {
-        return Err(fail());
+        return Err(fail().into());
     }
     let id = event.correlation.as_deref().ok_or_else(fail)?;
     crate::attempt::validate_identifier(id).map_err(|_| fail())?;
@@ -67,13 +76,15 @@ pub(in super::super) fn source(state: &State, event: &EventRecord) -> Result<Sou
         .operation_receipts
         .get(&(event.session_id.clone(), crabber_core::ControlId(id.into())))
     else {
-        return Err(fail());
+        return Err(fail().into());
     };
     if saved.event_cursor != event.cursor.ok_or_else(fail)?
         || crate::snapshot::encoded_bytes(saved, 32768).is_none()
     {
-        return Err(fail());
+        return Err(fail().into());
     }
+    proof.measure(event).map_err(ApprovalReadError::Budget)?;
+    proof.measure(saved).map_err(ApprovalReadError::Budget)?;
     let source = Source {
         receipt: saved.clone(),
         event: event.clone(),
@@ -149,39 +160,52 @@ pub(super) fn verify(
     record: &ApprovalRecord,
     releasing: bool,
 ) -> Result<(), Error> {
+    verify_with_proof(state, run, record, releasing, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(super) fn verify_with_proof(
+    state: &State,
+    run: &Run,
+    record: &ApprovalRecord,
+    releasing: bool,
+    proof: &mut Proof,
+) -> Result<(), ApprovalReadError> {
     let answers = selected(state, record, true)?
         .into_iter()
-        .map(|event| source(state, event))
+        .map(|event| source_with_proof(state, event, proof))
         .collect::<Result<_, _>>()?;
-    let latest = source(
+    let latest = source_with_proof(
         state,
         selected(state, record, false)?
             .first()
             .copied()
             .ok_or(Error::UnknownStoreOutcome)?,
+        proof,
     )?;
     let release = if record.state == crate::ApprovalContinuationState::Released
         && record.termination.is_none()
     {
-        if let Some(proof) = super::super::continuation_handoff::verify(
+        if let Some(proof) = super::super::continuation_handoff::verify_with_proof(
             state,
             run,
             crate::continuation_handoff::Domain::Approval,
             &record.batch.continuation,
             &record.batch.next_attempt,
             &record.batch.expected_plan,
+            proof,
         )? {
             Some(Release::Handoff(proof))
         } else if let Some((next, event)) = successor(state, record)? {
-            super::origin::verify(state, run, next)?;
+            proof.measure(next).map_err(ApprovalReadError::Budget)?;
+            super::origin::verify_with_proof(state, run, next, proof)?;
             Some(Release::Successor {
-                pub_source: source(state, event)?,
+                pub_source: source_with_proof(state, event, proof)?,
                 attempt: next.batch.attempt.clone(),
             })
         } else {
             let event = native(state, record)?;
             if crate::snapshot::encoded_bytes(event, 65536).is_none() {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
             let id = event
                 .correlation
@@ -193,12 +217,12 @@ pub(super) fn verify(
                 .operation_receipts
                 .get(&(record.session_id.clone(), id))
             else {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             };
             if crate::snapshot::encoded_bytes(event, 65536).is_none()
                 || crate::snapshot::encoded_bytes(saved, 8192).is_none()
             {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
             let latest = state
                 .attempts
@@ -207,8 +231,13 @@ pub(super) fn verify(
                 .max_by_key(|a| a.snapshot.target.generation)
                 .ok_or(Error::UnknownStoreOutcome)?;
             if crate::snapshot::encoded_bytes(&latest.snapshot, 8192).is_none() {
-                return Err(Error::UnknownStoreOutcome);
+                return Err(Error::UnknownStoreOutcome.into());
             }
+            proof.measure(event).map_err(ApprovalReadError::Budget)?;
+            proof.measure(saved).map_err(ApprovalReadError::Budget)?;
+            proof
+                .measure(&latest.snapshot)
+                .map_err(ApprovalReadError::Budget)?;
             Some(Release::Native(NativeSource {
                 receipt: saved.clone(),
                 event: event.clone(),
@@ -218,7 +247,10 @@ pub(super) fn verify(
     } else {
         None
     };
-    record.verify_current(
+    proof
+        .measure(&state.approval_barriers.get(&record.session_id))
+        .map_err(ApprovalReadError::Budget)?;
+    Ok(record.verify_current(
         run,
         &CurrentProof {
             answers,
@@ -227,7 +259,7 @@ pub(super) fn verify(
         },
         state.approval_barriers.get(&record.session_id),
         releasing,
-    )
+    )?)
 }
 /// Validate the last independently published suspension, including absence of its barrier.
 pub(in super::super) fn session(state: &State, session: &SessionId) -> Result<(), Error> {
@@ -341,6 +373,54 @@ fn measure_source(
         return Err(unknown("source receipt"));
     };
     proof.measure(saved)
+}
+
+pub(in super::super) fn session_with_proof(
+    state: &State,
+    session: &SessionId,
+    proof: &mut Proof,
+) -> Result<(), ApprovalReadError> {
+    let mut count = 0_usize;
+    let mut active = false;
+    for (id, record) in state
+        .approvals
+        .iter()
+        .filter(|(_, r)| r.session_id == *session)
+    {
+        proof.measure(record).map_err(ApprovalReadError::Budget)?;
+        if *id != record.batch.continuation.id {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        let run = state
+            .runs
+            .get(&record.run_id)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        if run.session_id != *session {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        super::origin::verify_with_proof(state, run, record, proof)?;
+        verify_with_proof(state, run, record, false, proof)?;
+        if record.state != crate::ApprovalContinuationState::Released {
+            if active {
+                return Err(Error::UnknownStoreOutcome.into());
+            }
+            active = true;
+        }
+        count = count.checked_add(1).ok_or(Error::UnknownStoreOutcome)?;
+    }
+    let origins = state
+        .events
+        .iter()
+        .filter(|e| {
+            e.session_id == *session
+                && e.kind == EventKind::ContinuationChanged
+                && operation(e) == Some("suspended")
+        })
+        .count();
+    if origins != count || count == 0 && state.approval_barriers.contains_key(session) {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

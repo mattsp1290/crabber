@@ -141,3 +141,13 @@ pub(crate) async fn claimed_fixture(
         }
     }
 }
+
+/// One exact immutable predecessor target; cannot carry worker authority.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[derive(Clone, Copy)]
+pub(crate) struct ReadTarget<'a> {
+    pub domain: Domain,
+    pub target: &'a crate::ContinuationTarget,
+    pub parent: &'a crate::AttemptTarget,
+    pub plan: &'a crabber_core::InputFingerprint,
+}

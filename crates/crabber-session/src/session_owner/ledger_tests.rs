@@ -459,7 +459,10 @@ fn aggregate_owner_membership_authenticates_joined_filter_and_sentinel() {
             OffsetDateTime::UNIX_EPOCH,
         )
         .unwrap();
-    assert!(read(&ledger, 0, 65536).unwrap().is_empty());
+    assert_eq!(
+        read(&ledger, 0, 65536).unwrap(),
+        [] as [crate::PublicRegisteredOwner; 0]
+    );
 }
 
 #[test]

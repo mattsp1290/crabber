@@ -1,10 +1,22 @@
 //! Fixed public aggregate profile. The metadata sections are complete or Limited.
+pub(crate) mod compose;
+mod poll;
+pub(crate) mod projection;
 pub(crate) mod proof;
-use crate::session_owner::*;
-use crate::*;
+use crate::session_owner::{
+    SessionOwnerKind, SessionOwnerParent, SessionOwnerSnapshot, SessionOwnerState,
+    SessionOwnerTarget, SessionOwnerTermination,
+};
+use crate::{
+    AttemptSnapshot, AttemptTarget, ContinuationTarget, PhaseTarget, PublicApprovalBarrier,
+    PublicApprovalSummary, PublicHeaderUsage, PublicHistoryPage, PublicRunSummary,
+    PublicSessionError, QueueSummary, RunControlSummary, SessionSummary, SnapshotContinuation,
+    SnapshotLimit, SnapshotLimits, ToolContinuationState,
+};
 use crabber_core::{
     ControlId, InteractionId, InteractionState, RunId, SessionId, SessionRevision, ToolCallId,
 };
+pub use poll::{PublicSessionPollV2, PublicSessionSubscriptionV2};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -45,33 +57,7 @@ pub struct PublicHeaderRequestV2 {
 }
 impl PublicHeaderRequestV2 {
     pub(crate) fn validate(&self) -> Result<(), PublicSessionError> {
-        // Validate untrusted routing text before constructing the legacy view.
-        if self.session_id.0.is_empty()
-            || self.session_id.0.len() > 512
-            || self.session_id.0.chars().any(char::is_control)
-            || self.run_id.as_ref().is_some_and(|id| {
-                id.0.is_empty() || id.0.len() > 128 || id.0.chars().any(char::is_control)
-            })
-        {
-            return Err(PublicSessionError::InvalidRequest);
-        }
-        PublicHeaderRequest {
-            session_id: self.session_id.clone(),
-            run_id: self.run_id.clone(),
-            expected_revision: self.expected_revision,
-            max_bytes: self.limits.header_bytes,
-            max_proof_bytes: self.limits.proof_bytes,
-            max_interactions: self.limits.approval_interactions,
-        }
-        .validate()?;
-        if self.limits.tool_requirements > 64
-            || self.limits.queue_entries > 64
-            || self.limits.registered_owners > 1024
-            || self.limits.run_controls > 64
-        {
-            return Err(PublicSessionError::InvalidRequest);
-        }
-        Ok(())
+        proof::validate_request(self)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +97,7 @@ pub struct PublicToolRequirement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicFrontendRequirement {
     pub call_id: ToolCallId,
+    /// Frozen resume identity; this does not assert the phase has started.
     pub phase: PhaseTarget,
     pub name: String,
     pub descriptor_fingerprint: crabber_core::InputFingerprint,
@@ -176,3 +163,37 @@ pub enum PublicSessionOutcomeV2 {
     },
     Invalidated,
 }
+
+impl PublicSessionPageV2 {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.status.is_terminal())
+    }
+    #[must_use]
+    pub fn high_water(&self) -> crabber_core::EventCursor {
+        self.history.high_water
+    }
+}
+impl PublicSessionRequestV2 {
+    pub(crate) fn validate(&self) -> Result<(), PublicSessionError> {
+        if self.session_id.0.is_empty()
+            || self.session_id.0.len() > 512
+            || self.session_id.0.chars().any(char::is_control)
+            || self.continuation.as_ref().is_some_and(|c| c.0.len() > 4096)
+        {
+            return Err(PublicSessionError::InvalidRequest);
+        }
+        PublicHeaderRequestV2 {
+            session_id: self.session_id.clone(),
+            run_id: None,
+            expected_revision: SessionRevision::INITIAL,
+            limits: self.limits,
+        }
+        .validate()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests;

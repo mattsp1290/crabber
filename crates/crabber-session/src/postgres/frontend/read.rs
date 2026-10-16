@@ -51,7 +51,7 @@ pub(super) async fn run(
         || row.try_get::<i64, _>("lease_until").map_err(unknown)?
             != super::super::micros(run.lease_until)
     {
-        return Err(Error::UnknownStoreOutcome.into());
+        return Err(Error::UnknownStoreOutcome);
     }
     Ok(run)
 }
@@ -70,6 +70,7 @@ pub(in super::super) async fn receipt_with_proof(
     id: &ControlId,
     proof: &mut Proof,
 ) -> Result<Option<FrontendStagingReceipt>, ToolReadError> {
+    crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
     super::super::read_proof::charge(
         tx,
         sqlx::query_scalar(RECEIPT_COST)
@@ -79,7 +80,6 @@ pub(in super::super) async fn receipt_with_proof(
     )
     .await
     .map_err(ToolReadError::Budget)?;
-    crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
     let Some(row) = sqlx::query("SELECT CASE WHEN o.kind='frontend_staging' THEN 'frontend_staging' ELSE 'foreign' END AS kind,CASE WHEN octet_length(o.semantic_digest)<=64 THEN o.semantic_digest END AS digest,o.event_seq,CASE WHEN octet_length(o.data_json)<=8192 THEN o.data_json END AS data,CASE WHEN o.kind='frontend_staging' AND octet_length(e.data::text)<=65536 THEN e.data::text END AS event FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2")
         .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(unknown)? else { return Ok(None); };
     if row.try_get::<String, _>("kind").map_err(unknown)? != "frontend_staging" {
@@ -314,11 +314,11 @@ pub(in super::super) async fn binding_with_proof(
     crate::frontend_continuation::verify_assistant_source(request, &message).map_err(Into::into)
 }
 
-const RECEIPT_COST: &str = r###"SELECT CAST(COALESCE(octet_length(o.data_json),0)+COALESCE(octet_length(o.semantic_digest),0)+16+COALESCE(octet_length(e.data::text),0) AS BIGINT) FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2"###;
-const ORIGIN_COST: &str = r###"SELECT CAST(octet_length(session_id)+octet_length(run_id)+octet_length(data_json) AS BIGINT) FROM frontend_tool_origins WHERE call_id=$1"###;
-const MESSAGE_COST: &str = r###"SELECT CAST(octet_length(snapshot_record) AS BIGINT) FROM messages WHERE session_id=$1 AND run_id=$2 AND id=$3"###;
-const CALL_COST: &str = r###"SELECT CAST(octet_length(snapshot_record)+octet_length(status) AS BIGINT) FROM tool_calls WHERE run_id=$1 AND id=$2"###;
-const SOURCE_COST: &str = r###"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT octet_length(data::text) AS bytes FROM events WHERE session_id=$1 AND run_id=$2 AND data->>'encoding'='crabber.event.json-text.v1' AND split_part(data->>'record', ',"payload":',1) ~ ',"kind":"tool_call_pending"$' AND left(split_part(data->>'record', ',"payload":',2),length($3))=$3 ORDER BY seq LIMIT 2) proof_sources"###;
+const RECEIPT_COST: &str = r"SELECT CAST(COALESCE(octet_length(o.data_json),0)+COALESCE(octet_length(o.semantic_digest),0)+16+COALESCE(octet_length(e.data::text),0) AS BIGINT) FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2";
+const ORIGIN_COST: &str = r"SELECT CAST(octet_length(session_id)+octet_length(run_id)+octet_length(data_json) AS BIGINT) FROM frontend_tool_origins WHERE call_id=$1";
+const MESSAGE_COST: &str = r"SELECT CAST(octet_length(snapshot_record) AS BIGINT) FROM messages WHERE session_id=$1 AND run_id=$2 AND id=$3";
+const CALL_COST: &str = r"SELECT CAST(octet_length(snapshot_record)+octet_length(status) AS BIGINT) FROM tool_calls WHERE run_id=$1 AND id=$2";
+const SOURCE_COST: &str = r#"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT octet_length(data::text) AS bytes FROM events WHERE session_id=$1 AND run_id=$2 AND data->>'encoding'='crabber.event.json-text.v1' AND split_part(data->>'record', ',"payload":',1) ~ ',"kind":"tool_call_pending"$' AND left(split_part(data->>'record', ',"payload":',2),length($3))=$3 ORDER BY seq LIMIT 2) proof_sources"#;
 
 /// Validate narrow immutable routing and status coherence, without worker tokens,
 /// lease, checkpoint, error or a fabricated Run.
@@ -328,59 +328,6 @@ pub(in super::super) async fn scope_with_proof(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<FrontendReadScope, ToolReadError> {
-    super::super::read_proof::charge(
-        tx,
-        sqlx::query_scalar(SCOPE_COST).bind(&run.0).bind(&session.0),
-        proof,
-    )
-    .await
-    .map_err(ToolReadError::Budget)?;
-    let row = sqlx::query(SCOPE)
-        .bind(&run.0)
-        .bind(&session.0)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::NotFound)?;
-    let scope = FrontendReadScope::new(session, run)?;
-    if row
-        .try_get::<Option<String>, _>("id")
-        .map_err(unknown)?
-        .as_deref()
-        != Some(&run.0)
-        || row
-            .try_get::<Option<String>, _>("body_id")
-            .map_err(unknown)?
-            .as_deref()
-            != Some(&run.0)
-        || row
-            .try_get::<Option<String>, _>("session")
-            .map_err(unknown)?
-            .as_deref()
-            != Some(&session.0)
-        || row
-            .try_get::<Option<String>, _>("body_session")
-            .map_err(unknown)?
-            .as_deref()
-            != Some(&session.0)
-    {
-        return Err(Error::UnknownStoreOutcome.into());
-    }
-    let status: String = row
-        .try_get::<Option<String>, _>("status")
-        .map_err(unknown)?
-        .ok_or(Error::UnknownStoreOutcome)?;
-    if row
-        .try_get::<Option<String>, _>("body_status")
-        .map_err(unknown)?
-        .as_deref()
-        != Some(status.as_str())
-        || serde_json::from_value::<crabber_core::RunStatus>(serde_json::Value::String(status))
-            .is_err()
-    {
-        return Err(Error::UnknownStoreOutcome.into());
-    }
-    Ok(scope)
+    let facts = super::super::run_facts::read(tx, session, run, proof).await?;
+    Ok(FrontendReadScope::new(&facts.session_id, &facts.run_id)?)
 }
-const SCOPE: &str = r###"SELECT CASE WHEN octet_length(id)<=128 THEN id END AS id,CASE WHEN octet_length(session_id)<=512 THEN session_id END AS session,CASE WHEN octet_length(status)<=32 THEN status END AS status,CASE WHEN octet_length(data->>'id')<=128 THEN data->>'id' END AS body_id,CASE WHEN octet_length(data->>'session_id')<=512 THEN data->>'session_id' END AS body_session,CASE WHEN octet_length(data->>'status')<=32 THEN data->>'status' END AS body_status FROM runs WHERE id=$1 AND session_id=$2"###;
-const SCOPE_COST: &str = r###"SELECT CAST(COALESCE(octet_length(id),0)+COALESCE(octet_length(session_id),0)+COALESCE(octet_length(status),0)+COALESCE(octet_length(data->>'id'),0)+COALESCE(octet_length(data->>'session_id'),0)+COALESCE(octet_length(data->>'status'),0) AS BIGINT) FROM runs WHERE id=$1 AND session_id=$2"###;

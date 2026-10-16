@@ -1,4 +1,4 @@
-//! FIFO public queue projection; never fetches QueueInput or preparation capsules.
+//! FIFO public queue projection; never fetches `QueueInput` or preparation capsules.
 //! Budgets bound client transfer/materialization. Database JSON inspection work
 //! is not a transfer of the enclosing private audit input.
 use super::reads;
@@ -51,7 +51,7 @@ pub(in crate::postgres) async fn pending(
             if sequence <= after {
                 return Err(unknown("queue order"));
             }
-            let bytes: i64 = sqlx::query_scalar(COST)
+            let bytes: i64 = sqlx::query_scalar(&COST.replace("{receipt}", RECEIPT))
                 .bind(&session.0)
                 .bind(&id)
                 .fetch_one(&mut **tx)
@@ -59,7 +59,7 @@ pub(in crate::postgres) async fn pending(
                 .map_err(unknown)?;
             let allowance = proof.budget().remaining();
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
-            let query = reads::SUMMARY.replacen("SELECT ", "SELECT CASE WHEN octet_length(CAST(a.data_json::json->'receipt' AS TEXT))<=16384 AND octet_length(CAST(a.data_json::json->'receipt' AS TEXT))<=$3 THEN CAST(a.data_json::json->'receipt' AS TEXT) END AS immutable_receipt, ", 1);
+            let query = reads::SUMMARY.replacen("SELECT ",&format!("SELECT CASE WHEN octet_length({RECEIPT})<=16384 AND octet_length({RECEIPT})<=$3 THEN {RECEIPT} END AS immutable_receipt, "),1);
             let row = sqlx::query(&query)
                 .bind(&session.0)
                 .bind(&id)
@@ -68,7 +68,7 @@ pub(in crate::postgres) async fn pending(
                 .await
                 .map_err(unknown)?;
             let summary = reads::summary(&row, session).map_err(unknown)?;
-            let source: QueueReceipt = serde_json::from_str(
+            let source: QueueReceipt = projected_receipt(
                 &row.try_get::<Option<String>, _>("immutable_receipt")
                     .map_err(unknown)?
                     .ok_or_else(|| unknown("queue immutable source"))?,
@@ -99,4 +99,93 @@ pub(in crate::postgres) async fn pending(
 }
 const IDS: &str = r"SELECT CAST(octet_length(q.queue_id) AS BIGINT) AS bytes,CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS id,q.sequence FROM future_queue q WHERE q.session_id=$1 AND q.sequence>$2 ORDER BY q.sequence LIMIT 32";
 const SCOPE: &str = r"SELECT EXISTS(SELECT 1 FROM future_queue_audit a WHERE a.session_id=$1 AND NOT EXISTS(SELECT 1 FROM future_queue q WHERE q.session_id=a.session_id AND q.queue_id=a.queue_id) UNION ALL SELECT 1 FROM future_queue q WHERE q.session_id=$1 AND NOT EXISTS(SELECT 1 FROM future_queue_audit a WHERE a.session_id=q.session_id AND a.queue_id=q.queue_id))";
-const COST: &str = r"SELECT CAST(octet_length(q.summary_json)+COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(CAST(ar.data AS TEXT)),0)+octet_length(q.queue_id)+octet_length(q.state)+COALESCE(octet_length(a.operation_id),0)+COALESCE(octet_length(CAST(a.data_json::json->'receipt' AS TEXT)),0) AS BIGINT) AS bytes FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+const COST: &str = r"SELECT CAST(octet_length(q.summary_json)+COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(CAST(ar.data AS TEXT)),0)+octet_length(q.queue_id)+octet_length(q.state)+COALESCE(octet_length(a.operation_id),0)+COALESCE(octet_length({receipt}),0) AS BIGINT) AS bytes FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
+
+// PostgreSQL JSON extraction traverses keys in ignored request values too. The
+// temporary marker lets valid private NUL context remain server-side. A selected
+// receipt containing either decoded marker spelling is rejected before it can
+// authenticate state: replacement must never create an alias for original IDs.
+const RECEIPT: &str = r"CAST(replace(a.data_json, '\u0000', '\u0001')::json->'receipt' AS TEXT)";
+fn projected_receipt(text: &str) -> Result<QueueReceipt, Failure> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(unknown)?;
+    if marked(&value) {
+        return Err(unknown("queue receipt projection marker"));
+    }
+    serde_json::from_value(value).map_err(unknown)
+}
+fn marked(value: &serde_json::Value) -> bool {
+    fn marker(text: &str) -> bool {
+        text.contains('\u{1}') || text.contains("\\u0001")
+    }
+    match value {
+        serde_json::Value::String(text) => marker(text),
+        serde_json::Value::Array(values) => values.iter().any(marked),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| marker(key) || marked(value)),
+        _ => false,
+    }
+}
+#[cfg(test)]
+#[test]
+fn aggregate_queue_projection_marker_cannot_alias_original_receipt() {
+    for depth in 0..5 {
+        let original = format!("original{}u0000", "\\".repeat(depth + 1));
+        let projected =
+            serde_json::to_string(&serde_json::json!({"nested":[{original.clone():original}]}))
+                .unwrap()
+                .replace("\\u0000", "\\u0001");
+        let value = serde_json::from_str(&projected).unwrap();
+        assert!(marked(&value));
+    }
+    assert!(marked(
+        &serde_json::json!({"nested":[{"actual\u{1}":"value"}]})
+    ));
+    assert!(!marked(&serde_json::json!({"literal":"safe\\u0000"})));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
+    use crate::{PublicSessionError, Store};
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let mut f = crate::queue_contract::fixture(&store).await;
+    let original = r"original\u0000";
+    let forged = r"original\u0001";
+    f.enqueue.id = crabber_core::ControlId::from(original);
+    store.mutate_queue(f.enqueue).await.unwrap();
+    let request = crate::public_session::v2::tests::request(&store, &f.session, None).await;
+    // Literal marker spellings may conservatively fail closed even before the
+    // forged index exists; they must never become a different authenticated ID.
+    assert_eq!(
+        store
+            .public_control_header_v2(request.clone())
+            .await
+            .unwrap_err(),
+        PublicSessionError::UnknownStoreOutcome
+    );
+    // Keep the authoritative serialized original body unchanged while changing
+    // both mutable routing indexes and the copied receipt coherently. A plain
+    // replacement projection would now make that different original ID match.
+    let mut tx = store.pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE future_queue_audit SET operation_id=$3 WHERE session_id=$1 AND operation_id=$2",
+    )
+    .bind(&f.session.0)
+    .bind(original)
+    .bind(forged)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE operation_receipts SET operation_id=$3,data_json=CAST(jsonb_set(data_json::jsonb,'{operation_id}',to_jsonb(CAST($3 AS TEXT))) AS TEXT) WHERE session_id=$1 AND operation_id=$2").bind(&f.session.0).bind(original).bind(forged).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        store.public_control_header_v2(request).await.unwrap_err(),
+        PublicSessionError::UnknownStoreOutcome
+    );
+}

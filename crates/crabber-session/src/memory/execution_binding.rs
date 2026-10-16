@@ -1,4 +1,5 @@
 use super::{MemoryStore, State, admit_keyed_transaction, admit_transaction};
+use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{
     AdmitOutcome, BoundAdmitRequest, BoundKeyedAdmitRequest, KeyedAdmitOutcome,
     RetainedExecutionBinding, StoreError,
@@ -10,18 +11,39 @@ pub(super) fn read(
     session: &SessionId,
     id: &RunId,
 ) -> Result<Option<RetainedExecutionBinding>, StoreError> {
+    read_with_proof(state, session, id, &mut Proof::legacy())
+        .map_err(|error| error.into_domain_or(StoreError::AdmissionConflict))
+}
+pub(super) fn read_with_proof(
+    state: &State,
+    session: &SessionId,
+    id: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<RetainedExecutionBinding>, ReadError<StoreError>> {
     let Some(run) = state.runs.get(id).filter(|run| run.session_id == *session) else {
         return Ok(None);
     };
     let Some(encoded) = state.execution_bindings.get(id) else {
         return Ok(None);
     };
+    proof.charge(encoded.len()).map_err(ReadError::Budget)?;
+    proof
+        .measure(&(&run.config_hash, &run.plan_fingerprint))
+        .map_err(ReadError::Budget)?;
     let binding = RetainedExecutionBinding::decode(encoded)?;
     let count = binding
         .capsule
         .input_envelope
         .as_ref()
         .map_or(1, |input| input.messages().len());
+    for message in state
+        .messages
+        .iter()
+        .filter(|m| m.run_id.as_ref() == Some(id) && m.session_id == *session)
+        .take(count)
+    {
+        proof.measure(message).map_err(ReadError::Budget)?;
+    }
     let messages: Vec<_> = state
         .messages
         .iter()

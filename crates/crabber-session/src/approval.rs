@@ -1,8 +1,11 @@
 //! Durable approval of a complete prepared batch, before any call starts.
 mod audit;
 mod boundary;
+mod conclusion;
+pub(crate) use conclusion::at as conclusion_at;
 pub(crate) mod current;
 mod origin;
+pub(crate) use origin::OriginRunFacts;
 mod records;
 mod recovery;
 pub(crate) mod terminal_history;

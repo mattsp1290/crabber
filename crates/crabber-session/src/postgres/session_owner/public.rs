@@ -10,7 +10,7 @@ use sqlx::{Postgres, Row, Transaction};
 
 /// Every current identity must have an immutable Reserve and conversely. Then
 /// authenticate independently latest evidence before applying the Joined filter.
-/// Paging historical joined identities can exhaust ProofBytes, never an unbounded map.
+/// Paging historical joined identities can exhaust `ProofBytes`, never an unbounded map.
 pub(in crate::postgres) async fn registered(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -63,7 +63,7 @@ pub(in crate::postgres) async fn registered(
     }
     Ok(result)
 }
-/// The five carriers and repeated routing fields fetched by reads::current.
+/// The five carriers and repeated routing fields fetched by `reads::current`.
 /// Length-only selection happens before ANY of their private bodies transfer.
 async fn preflight(
     tx: &mut Transaction<'_, Postgres>,

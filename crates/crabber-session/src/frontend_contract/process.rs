@@ -84,6 +84,24 @@ pub(crate) async fn write(store: &impl Store, clock: &ManualClock, directory: &P
 pub(crate) async fn verify(store: &impl Store, directory: &Path) {
     let saved: Saved =
         serde_json::from_slice(&std::fs::read(directory.join("request")).unwrap()).unwrap();
+    let (session, run) = match &saved {
+        Saved::Stage(request, _) => (&request.session_id, &request.run_id),
+        Saved::Suspend(_, receipt) | Saved::Claim(_, receipt) | Saved::Recover(_, receipt) => {
+            (&receipt.session_id, &receipt.run_id)
+        }
+    };
+    let revision = store.session_revision(session).await.unwrap();
+    let request = crate::public_session::v2::tests::request(store, session, Some(run)).await;
+    let PublicHeaderOutcomeV2::Header(header) =
+        store.public_control_header_v2(request).await.unwrap()
+    else {
+        panic!("cold V2 header")
+    };
+    assert_eq!(header.revision, revision);
+    if !matches!(&saved, Saved::Stage(..)) {
+        assert_eq!(header.tool.as_ref().unwrap().frontend.len(), 1);
+    }
+    assert_eq!(store.session_revision(session).await.unwrap(), revision);
     match saved {
         Saved::Stage(request, receipt) => {
             let revision = store.session_revision(&request.session_id).await.unwrap();

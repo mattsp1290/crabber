@@ -62,14 +62,6 @@ pub(in super::super) async fn pending_call(
     }
     Ok(true)
 }
-pub(in super::super) async fn verify_batch(
-    tx: &mut Transaction<'_, Postgres>,
-    record: &ToolContinuationRecord,
-) -> Result<(), Error> {
-    verify_batch_with_proof(tx, record, &mut Proof::legacy())
-        .await
-        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
-}
 pub(in super::super) async fn verify_batch_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     record: &ToolContinuationRecord,

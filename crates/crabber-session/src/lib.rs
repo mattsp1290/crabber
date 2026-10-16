@@ -92,6 +92,8 @@ mod postgres;
 mod public_history;
 mod public_run;
 mod public_session;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod run_facts;
 mod snapshot_profile;
 pub use public_history::{PublicHistoryOutcome, PublicHistoryPage};
 pub use public_session::*;

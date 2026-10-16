@@ -176,14 +176,13 @@ pub(in super::super) async fn origin_cost(
             .checked_add(128)
             .ok_or_else(|| unknown("proof metadata"))?,
     )?;
-    let bytes: i64 = sqlx::query_scalar(
-        "SELECT CAST(octet_length(data::text) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2",
-    )
-    .bind(&record.session_id.0)
-    .bind(&record.run_id.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(unknown)?;
+    let bytes: Option<i64> = sqlx::query_scalar(super::super::run_facts::COST)
+        .bind(&record.run_id.0)
+        .bind(&record.session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unknown)?;
+    let bytes = bytes.ok_or_else(|| unknown("run origin facts"))?;
     proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
     let bytes: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(octet_length(id)+octet_length(call_id)),0) AS BIGINT) FROM (SELECT id,call_id FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded").bind(&record.batch.continuation.id.0).bind(&record.run_id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
     proof.charge(usize::try_from(bytes).map_err(unknown)?)?;

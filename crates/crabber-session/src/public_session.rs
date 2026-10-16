@@ -140,7 +140,7 @@ pub(crate) mod budget;
 pub(crate) mod tests;
 
 #[cfg(test)]
-mod races;
+pub(crate) mod races;
 
 #[cfg(test)]
 pub(crate) mod allocation;

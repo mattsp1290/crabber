@@ -1,4 +1,5 @@
 use super::super::{db, micros};
+use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{
     AttemptError as Error, AttemptMutation, AttemptReceipt, AttemptSnapshot, StoreError,
     attempt::{AttemptRecord, sql},
@@ -241,3 +242,43 @@ pub(super) async fn renew(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Resu
     .map_err(db)?;
     Ok(())
 }
+
+/// Same native verifier, with every actual private projection admitted first.
+pub(in super::super) async fn load_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    id: Option<&AttemptId>,
+    proof: &mut Proof,
+) -> Result<Option<(AttemptRecord, SessionRevision)>, ReadError<Error>> {
+    let cost =
+        format!("SELECT CAST(octet_length(record) AS BIGINT) FROM ({RECORD}) bounded_attempt");
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&run.0)
+            .bind(id.map(|id| id.0.as_str())),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(load(tx, run, id, false).await?)
+}
+pub(in super::super) async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<AttemptReceipt>, ReadError<Error>> {
+    crate::attempt::validate_identifier(&id.0)?;
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(RECEIPT_PROOF_COST)
+            .bind(&session.0)
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(receipt(tx, session, id).await?)
+}
+const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(r.semantic_digest),0)+7+COALESCE(octet_length(e.run_id),0)+CASE WHEN r.kind='attempt' THEN COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";

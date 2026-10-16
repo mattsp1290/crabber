@@ -1,4 +1,5 @@
 //! Native exact-target acceptance and fenced worker boundaries.
+use crate::public_session::v2::proof::{Proof, ReadError};
 pub(super) mod public;
 mod reads;
 pub(super) mod suspension;
@@ -355,3 +356,36 @@ pub(super) async fn verify_original_cancel(
     }
     Ok(())
 }
+
+pub(super) async fn verify_original_cancel_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    accepted: &RunControlReceipt,
+    proof: &mut Proof,
+) -> Result<(), ReadError<Error>> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(CANCEL_PROOF_COST)
+            .bind(&accepted.target.session_id.0)
+            .bind(&accepted.operation_id.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(verify_original_cancel(tx, accepted).await?)
+}
+pub(super) async fn verify_cancelled_target_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    target: &RunControlTarget,
+    proof: &mut Proof,
+) -> Result<(), ReadError<Error>> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(TARGET_PROOF_COST).bind(&target.run_id.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(verify_cancelled_target(tx, target).await?)
+}
+const CANCEL_PROOF_COST: &str = r"SELECT CAST(COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(r.semantic_digest AS BLOB)),0)+11+COALESCE(length(CAST(e.data AS BLOB)),0) AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
+const TARGET_PROOF_COST: &str = r"SELECT CAST(COALESCE(length(CAST(session_id AS BLOB)),0)+COALESCE(length(CAST(json_extract(data,'$.config_hash') AS BLOB)),0)+COALESCE(length(CAST(json_extract(data,'$.plan_fingerprint') AS BLOB)),0)+COALESCE(length(CAST(status AS BLOB)),0) AS BIGINT) FROM runs WHERE id=$1";

@@ -9,6 +9,8 @@
 mod continuation_handoff;
 #[path = "postgres/read_proof.rs"]
 mod read_proof;
+#[path = "postgres/run_facts.rs"]
+mod run_facts;
 
 mod abandon;
 mod admission_execution;
@@ -922,6 +924,21 @@ impl Store for PostgresStore {
         self.owner_receipt(session, id).await
     }
 
+    async fn public_history_v2(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicHistoryOutcome, StoreError> {
+        Ok(self
+            .read_snapshot_profile(request, crate::snapshot_profile::Profile::AggregateV2)
+            .await?
+            .into())
+    }
+    async fn public_control_header_v2(
+        &self,
+        request: crate::PublicHeaderRequestV2,
+    ) -> Result<crate::PublicHeaderOutcomeV2, crate::PublicSessionError> {
+        self.read_public_header_v2(request).await
+    }
     async fn public_control_header(
         &self,
         request: crate::PublicHeaderRequest,
@@ -1025,7 +1042,7 @@ impl Store for PostgresStore {
         &self,
         request: crate::RunControlRequest,
     ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
-        self.control_accept(request).await
+        Box::pin(self.control_accept(request)).await
     }
     async fn lookup_run_control(
         &self,

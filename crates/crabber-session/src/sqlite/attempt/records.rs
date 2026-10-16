@@ -1,4 +1,5 @@
 use super::super::{db, records::micros};
+use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{
     AttemptError as Error, AttemptMutation, AttemptReceipt, AttemptSnapshot, StoreError,
     attempt::{AttemptRecord, sql},
@@ -232,3 +233,44 @@ pub(super) async fn renew(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result
     .map_err(db)?;
     Ok(())
 }
+
+/// Same native verifier, with every actual private projection admitted first.
+pub(in super::super) async fn load_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    id: Option<&AttemptId>,
+    proof: &mut Proof,
+) -> Result<Option<(AttemptRecord, SessionRevision)>, ReadError<Error>> {
+    let cost = format!(
+        "SELECT CAST(length(CAST(record AS BLOB)) AS BIGINT) FROM ({RECORD}) bounded_attempt"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&run.0)
+            .bind(id.map(|id| id.0.as_str())),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(load(tx, run, id, false).await?)
+}
+pub(in super::super) async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<AttemptReceipt>, ReadError<Error>> {
+    crate::attempt::validate_identifier(&id.0)?;
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(RECEIPT_PROOF_COST)
+            .bind(&session.0)
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(receipt(tx, session, id).await?)
+}
+const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(r.semantic_digest AS BLOB)),0)+7+COALESCE(length(CAST(e.run_id AS BLOB)),0)+CASE WHEN r.kind='attempt' THEN COALESCE(length(CAST(e.data AS BLOB)),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";

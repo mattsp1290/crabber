@@ -43,6 +43,19 @@ pub(super) fn base(
     safe: &mut Budget,
     proof: &mut Budget,
 ) -> Result<PublicControlHeader, Failure> {
+    let (mut header, _) = common(state, request, revision, safe)?;
+    let run = request.run_id.as_ref().and_then(|id| state.runs.get(id));
+    let (approval, barrier) = approval(state, run, header.attempt.as_ref(), request, safe, proof)?;
+    header.approval = approval;
+    header.barrier = barrier;
+    Ok(header)
+}
+pub(super) fn common(
+    state: &State,
+    request: &PublicHeaderRequest,
+    revision: SessionRevision,
+    safe: &mut Budget,
+) -> Result<(PublicControlHeader, Option<crabber_core::RunStatus>), Failure> {
     let session = state
         .sessions
         .get(&request.session_id)
@@ -93,17 +106,20 @@ pub(super) fn base(
         .get(&request.session_id)
         .unwrap_or(&baseline);
     safe.measure(contents)?;
-    let (approval, barrier) = approval(state, run, attempt, request, safe, proof)?;
-    Ok(PublicControlHeader {
-        version: 1,
-        revision,
-        session: summary,
-        attempt: attempt.cloned(),
-        approval,
-        barrier,
-        contents: contents.clone(),
-        read_usage: PublicHeaderUsage::default(),
-    })
+
+    Ok((
+        PublicControlHeader {
+            version: 1,
+            revision,
+            session: summary,
+            attempt: attempt.cloned(),
+            approval: None,
+            barrier: None,
+            contents: contents.clone(),
+            read_usage: PublicHeaderUsage::default(),
+        },
+        run.map(|run| run.status),
+    ))
 }
 fn approval(
     state: &State,
@@ -241,3 +257,6 @@ fn oversized_approval_proof_is_not_cloned() {
         f.run.id,
     );
 }
+
+#[path = "public_header/v2.rs"]
+mod v2;

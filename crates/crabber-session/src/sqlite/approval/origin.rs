@@ -1,65 +1,56 @@
 //! Original suspension anchors presentation and Store-clock deadlines.
-use super::{Error, approval, sql};
-use crabber_core::{EventRecord, Run};
-use sqlx::{Row, Sqlite, Transaction};
+use super::{Error, approval};
+use crate::public_session::v2::proof::{ApprovalReadError, Proof};
+use sqlx::{Sqlite, Transaction};
 
+#[cfg(test)]
 pub(in super::super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
-) -> Result<Run, Error> {
-    let suspension = super::receipt(tx, &record.session_id, &record.batch.id)
+) -> Result<crate::run_facts::RunFacts, Error> {
+    verify_with_proof(tx, record, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(in super::super) async fn verify_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    record: &approval::ApprovalRecord,
+    proof: &mut Proof,
+) -> Result<crate::run_facts::RunFacts, ApprovalReadError> {
+    let suspension = super::receipt_with_proof(tx, &record.session_id, &record.batch.id, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     let key = approval::derived_id("suspend-attempt", &record.batch.id);
-    let native = super::super::attempt::records::receipt(tx, &record.session_id, &key)
-        .await
-        .map_err(|_| Error::UnknownStoreOutcome)?
-        .ok_or(Error::UnknownStoreOutcome)?;
-    let row = sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN data END AS data FROM runs WHERE session_id=$1 AND id=$2").bind(&record.session_id.0).bind(&record.run_id.0).fetch_one(&mut **tx).await.map_err(super::super::db).map_err(sql::unknown)?;
-    let run = serde_json::from_str::<Run>(
-        &row.get::<Option<String>, _>("data")
-            .ok_or(Error::UnknownStoreOutcome)?,
+    let native =
+        super::super::attempt::host_receipt_with_proof(tx, &record.session_id, &key, proof)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+    let run = super::super::run_facts::read(tx, &record.session_id, &record.run_id, proof).await?;
+    let audit = super::super::read_proof::event(
+        tx,
+        &record.session_id,
+        suspension.event_cursor,
+        false,
+        proof,
     )
-    .map_err(|_| Error::UnknownStoreOutcome)?;
-    let audit = event(tx, record, suspension.event_cursor.0, false).await?;
-    let native_audit = event(tx, record, native.event_cursor.0, false).await?;
-    let source = event(tx, record, native.event_cursor.0, true).await?;
-    record.verify_origin(&run, &suspension, &audit, &native, &native_audit, &source)?;
+    .await?;
+    let native_audit =
+        super::super::read_proof::event(tx, &record.session_id, native.event_cursor, false, proof)
+            .await?;
+    let source =
+        super::super::read_proof::event(tx, &record.session_id, native.event_cursor, true, proof)
+            .await?;
+    record.verify_origin_at(
+        &crate::approval::OriginRunFacts {
+            session_id: &run.session_id,
+            run_id: &run.run_id,
+            created_at: run.created_at,
+        },
+        &suspension,
+        &audit,
+        &native,
+        &native_audit,
+        &source,
+    )?;
     Ok(run)
-}
-async fn event(
-    tx: &mut Transaction<'_, Sqlite>,
-    record: &approval::ApprovalRecord,
-    cursor: u64,
-    previous: bool,
-) -> Result<EventRecord, Error> {
-    let query = if previous {
-        "SELECT seq,CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,CASE WHEN length(CAST(data AS BLOB))<=65536 THEN data END AS data FROM events WHERE session_id=$1 AND seq<$2 ORDER BY seq DESC LIMIT 1"
-    } else {
-        "SELECT seq,CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,CASE WHEN length(CAST(data AS BLOB))<=65536 THEN data END AS data FROM events WHERE session_id=$1 AND seq=$2"
-    };
-    let row = sqlx::query(query)
-        .bind(&record.session_id.0)
-        .bind(i64::try_from(cursor).map_err(|_| Error::UnknownStoreOutcome)?)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(super::super::db)
-        .map_err(sql::unknown)?
-        .ok_or(Error::UnknownStoreOutcome)?;
-    let mut event = serde_json::from_str::<EventRecord>(
-        &row.get::<Option<String>, _>("data")
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
-    .map_err(|_| Error::UnknownStoreOutcome)?;
-    let cursor = crabber_core::EventCursor(
-        u64::try_from(row.get::<i64, _>("seq")).map_err(|_| Error::UnknownStoreOutcome)?,
-    );
-    if event.cursor.is_some_and(|saved| saved != cursor) {
-        return Err(Error::UnknownStoreOutcome);
-    }
-    event.cursor = Some(cursor);
-    if row.get::<Option<String>, _>("run_id").as_deref() != Some(&record.run_id.0) {
-        return Err(Error::UnknownStoreOutcome);
-    }
-    Ok(event)
 }

@@ -112,6 +112,21 @@ impl Store for SqliteStore {
         self.owner_receipt(session, id).await
     }
 
+    async fn public_history_v2(
+        &self,
+        request: crate::SnapshotRequest,
+    ) -> Result<crate::PublicHistoryOutcome, StoreError> {
+        Ok(self
+            .read_snapshot_profile(request, crate::snapshot_profile::Profile::AggregateV2)
+            .await?
+            .into())
+    }
+    async fn public_control_header_v2(
+        &self,
+        request: crate::PublicHeaderRequestV2,
+    ) -> Result<crate::PublicHeaderOutcomeV2, crate::PublicSessionError> {
+        self.read_public_header_v2(request).await
+    }
     async fn public_control_header(
         &self,
         request: crate::PublicHeaderRequest,

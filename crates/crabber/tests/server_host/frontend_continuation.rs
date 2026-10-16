@@ -271,3 +271,118 @@ async fn waiting_frontend_cancellation_settles_without_fabricating_external_resu
         RunControlOutcome::Replayed(_)
     ));
 }
+
+#[tokio::test]
+async fn aggregate_v2_closed_host_reads_frontend_without_any_dispatch() {
+    use crabber::{
+        PublicContinuationBarrierV2, PublicSessionLimitsV2, PublicSessionOutcomeV2,
+        PublicSessionPollV2, PublicSessionRequestV2, PublicSessionSubscriptionV2,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let producer = FakeProvider::scripted(vec![frontend_calls()]);
+    let protected = Arc::new(AtomicUsize::new(0));
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let original = make(
+        store.clone(),
+        producer.clone(),
+        protected.clone(),
+        dispatches.clone(),
+    );
+    let session = SessionId::new();
+    start(&original, &session).await;
+    original.close_extensions().await.unwrap();
+    drop(original);
+    let provider = FakeProvider::scripted(vec![]);
+    let factories = Arc::new(AtomicUsize::new(0));
+    let reader = Agent::builder()
+        .behavior_version("read-only-v2")
+        .store(store.clone())
+        .provider(Arc::new(provider.clone()))
+        .config(AgentConfig::new(selection("scripted")))
+        .extension_factory(Arc::new(super::management::ForbiddenFactory(
+            factories.clone(),
+        )))
+        .build()
+        .unwrap();
+    reader.close_extensions().await.unwrap();
+    let limits = PublicSessionLimitsV2 {
+        header_bytes: 65536,
+        proof_bytes: 2 * 1024 * 1024,
+        approval_interactions: 64,
+        tool_requirements: 64,
+        queue_entries: 64,
+        registered_owners: 1024,
+        run_controls: 64,
+        history: crabber::session::SnapshotLimits {
+            messages: 64,
+            tool_calls: 64,
+            parts: 1024,
+            text_bytes: 1024 * 1024,
+            encoded_bytes: 2 * 1024 * 1024,
+        },
+    };
+    let revision = store.session_revision(&session).await.unwrap();
+    let PublicSessionOutcomeV2::Page(page) = reader
+        .public_session_snapshot_v2(PublicSessionRequestV2 {
+            session_id: session.clone(),
+            limits,
+            continuation: None,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("V2 page")
+    };
+    assert_eq!(page.header.tool.as_ref().unwrap().frontend.len(), 2);
+    assert!(matches!(
+        page.header.barrier,
+        Some(PublicContinuationBarrierV2::Tool { .. })
+    ));
+    let mut poll = PublicSessionSubscriptionV2::new(session.clone(), limits);
+    assert!(matches!(
+        reader.poll_public_session_v2(&mut poll).await.unwrap(),
+        PublicSessionPollV2::Page { .. }
+    ));
+    assert!(matches!(
+        reader.poll_public_session_v2(&mut poll).await.unwrap(),
+        PublicSessionPollV2::Unchanged { .. }
+    ));
+    assert_eq!(store.session_revision(&session).await.unwrap(), revision);
+    assert_eq!(producer.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 0);
+    assert_eq!(factories.load(Ordering::SeqCst), 0);
+    assert_eq!(protected.load(Ordering::SeqCst), 0);
+    assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+}
+
+async fn aggregate_v2_page(
+    agent: &Agent,
+    session: &SessionId,
+) -> Box<crabber::PublicSessionPageV2> {
+    let request = crabber::PublicSessionRequestV2 {
+        session_id: session.clone(),
+        continuation: None,
+        limits: crabber::PublicSessionLimitsV2 {
+            header_bytes: 65536,
+            proof_bytes: 2 * 1024 * 1024,
+            approval_interactions: 64,
+            tool_requirements: 64,
+            queue_entries: 64,
+            registered_owners: 1024,
+            run_controls: 64,
+            history: crabber::session::SnapshotLimits {
+                messages: 64,
+                tool_calls: 64,
+                parts: 1024,
+                text_bytes: 1024 * 1024,
+                encoded_bytes: 2 * 1024 * 1024,
+            },
+        },
+    };
+    let crabber::PublicSessionOutcomeV2::Page(page) =
+        agent.public_session_snapshot_v2(request).await.unwrap()
+    else {
+        panic!("complete V2 aggregate")
+    };
+    page
+}

@@ -1,4 +1,4 @@
-//! FIFO public queue projection; never fetches QueueInput or preparation capsules.
+//! FIFO public queue projection; never fetches `QueueInput` or preparation capsules.
 //! Budgets bound client transfer/materialization. Database JSON inspection work
 //! is not a transfer of the enclosing private audit input.
 use super::reads;

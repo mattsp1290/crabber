@@ -2,6 +2,8 @@
 //! connecting only verifies a current-version Crabber database already using WAL.
 #[path = "sqlite/read_proof.rs"]
 mod read_proof;
+#[path = "sqlite/run_facts.rs"]
+mod run_facts;
 
 #[path = "sqlite/continuation_handoff.rs"]
 mod continuation_handoff;
