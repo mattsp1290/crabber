@@ -4,6 +4,7 @@ use crate::deletion::Tombstone;
 use crate::{DeletionError as Error, DeletionReceipt, SessionDisposition};
 use crabber_core::{ControlId, InputFingerprint, SessionId, SessionRevision};
 use sqlx::Row;
+mod purge;
 #[cfg(test)]
 mod tests;
 

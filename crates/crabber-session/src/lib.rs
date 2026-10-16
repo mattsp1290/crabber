@@ -264,3 +264,6 @@ mod sql_fork_contract;
 
 #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 mod fork_pending_contract;
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod sql_deletion;
