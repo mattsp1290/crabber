@@ -72,7 +72,12 @@ pub(super) async fn ready_line(child: &mut ChildGuard) {
         Duration::from_secs(10),
         tokio::task::spawn_blocking(move || {
             for line in BufReader::new(stdout).lines() {
-                if line.unwrap() == "CRABBER_SQLITE_FACADE_READY" {
+                // Serial libtest prints the test name before uncaptured output.
+                if matches!(
+                    line.unwrap().as_str(),
+                    "CRABBER_SQLITE_FACADE_READY"
+                        | "test sqlite::abandonment_process_helper ... CRABBER_SQLITE_FACADE_READY"
+                ) {
                     return;
                 }
             }
