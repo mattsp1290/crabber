@@ -146,3 +146,6 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
         Err(Failure::Error(_))
     ));
 }
+
+#[path = "run_history/unkeyed_tests.rs"]
+mod unkeyed;

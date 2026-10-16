@@ -1,4 +1,4 @@
-//! Original keyed input and protected Init/Begin, independently corroborated.
+//! Original keyed journal or explicitly witnessed unkeyed input.
 use super::super::super::super::super::super as backend;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
@@ -16,13 +16,18 @@ pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
+    original: Option<&crate::session_owner::preparation::admission::Witness>,
     proof: &mut Proof,
 ) -> Result<bool> {
     // Bound-provider inputs can be retained without a keyed execution record.
     // Missing legacy binding is unproven, never synthesized from current data.
-    backend::execution_binding::read_with_proof(tx, session, run, proof).await?;
-    let Some(record) = backend::admission_execution::load_record_with_proof(tx, run, proof).await?
-    else {
+    let binding = backend::execution_binding::read_with_proof(tx, session, run, proof).await?;
+    let record = backend::admission_execution::load_record_with_proof(tx, run, proof).await?;
+    if let Some(original) = original.filter(|original| original.is_unkeyed()) {
+        return super::unkeyed::verify(tx, original, binding.as_ref(), record.is_some(), proof)
+            .await;
+    }
+    let Some(record) = record else {
         return Ok(false);
     };
     if record.receipt.session_id != *session || record.receipt.run_id != *run {

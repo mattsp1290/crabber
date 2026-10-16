@@ -155,3 +155,5 @@ async fn unowned(store: &crate::SqliteStore) {
     ));
     tx.rollback().await.unwrap();
 }
+
+mod unkeyed;

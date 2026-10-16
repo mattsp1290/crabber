@@ -422,3 +422,11 @@ that source. Legacy witnesses without the input anchor and bare unowned admissio
 remain unsupported. Lost initial admission ACKs replay only admission metadata;
 a host may then explicitly inspect the current expired native fence and prepare
 recovery using this independently authenticated original source.
+
+History readers authenticate an explicitly unkeyed initial input through its
+original v2 preparation witness, actual RootJoin and first native issuer. They
+compare the complete retained execution capsule with that original digest under
+the caller's proof allowance. A coherent rewrite of the current binding and Run
+hashes fails this check. A missing keyed journal never establishes an unkeyed
+source, and a missing required binding remains unknown. Original input evidence
+is separate from main joins, terminal outcome and whole-run resource policy.

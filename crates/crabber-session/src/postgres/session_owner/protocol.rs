@@ -14,7 +14,7 @@ fn domain(error: impl std::fmt::Debug) -> Read {
 }
 /// Authenticate one original projection without consulting any later owner head.
 /// Legacy metadata remains readable but supplies no publication authority.
-pub(super) async fn selected(
+pub(in crate::postgres) async fn selected(
     tx: &mut Transaction<'_, Postgres>,
     audit: &Audit,
     proof: &mut Proof,

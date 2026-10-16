@@ -43,41 +43,50 @@ fn preparations(state: &State, session: &SessionId, proof: &mut Proof) -> Result
         if indexed != id {
             return Err(unknown("preparation join target"));
         }
-        let initial = state
-            .native_run_issuances
-            .get(&(session.clone(), id.clone(), 1))
-            .ok_or_else(|| unknown("preparation initial issuer"))?;
-        proof.measure(initial)?;
-        let ids = witness.audit_ids().map_err(unknown)?;
-        let mut audits = Vec::with_capacity(5);
-        for operation in &ids {
-            let audit = state
-                .session_owners
-                .source_audit(session, operation)
-                .ok_or_else(|| unknown("preparation original source"))?;
-            proof.measure(audit)?;
-            audits.push(audit);
-        }
-        let current = state
-            .sessions
-            .get(session)
-            .ok_or_else(|| unknown("preparation session"))?;
-        proof.measure(current)?;
-        witness
-            .verify_sources(
-                current,
-                initial,
-                &crate::session_owner::preparation::admission::SourceAudits {
-                    reserve: audits[0],
-                    begin: audits[1],
-                    join: audits[2],
-                    child_reserve: audits[3],
-                    child_begin: audits[4],
-                },
-            )
-            .map_err(unknown)?;
+        original_admission(state, witness, proof)?;
     }
     preparation_indexes(state, session, proof)
+}
+pub(super) fn original_admission(
+    state: &State,
+    witness: &crate::session_owner::preparation::admission::Witness,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    let session = witness.session_id();
+    let initial = state
+        .native_run_issuances
+        .get(&(session.clone(), witness.run_id().clone(), 1))
+        .ok_or_else(|| unknown("preparation initial issuer"))?;
+    proof.measure(initial)?;
+    let ids = witness.audit_ids().map_err(unknown)?;
+    let mut audits = Vec::with_capacity(5);
+    for operation in &ids {
+        let audit = state
+            .session_owners
+            .source_audit(session, operation)
+            .ok_or_else(|| unknown("preparation original source"))?;
+        proof.measure(audit)?;
+        audits.push(audit);
+    }
+    let current = state
+        .sessions
+        .get(session)
+        .ok_or_else(|| unknown("preparation session"))?;
+    proof.measure(current)?;
+    witness
+        .verify_sources(
+            current,
+            initial,
+            &crate::session_owner::preparation::admission::SourceAudits {
+                reserve: audits[0],
+                begin: audits[1],
+                join: audits[2],
+                child_reserve: audits[3],
+                child_begin: audits[4],
+            },
+        )
+        .map_err(unknown)?;
+    Ok(())
 }
 fn preparation_indexes(
     state: &State,

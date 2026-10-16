@@ -1,6 +1,7 @@
 //! Original admission carriers authenticate source history, never resource joins.
 mod admission;
 mod execution;
+mod unkeyed;
 use crate::native_parent::RunIssuance;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::Result;
@@ -14,8 +15,8 @@ pub(super) async fn verify(
     proof: &mut Proof,
 ) -> Result<bool> {
     let owned = admission::verify(tx, session, run, initial, proof).await?;
-    let execution = execution::verify(tx, session, run, proof).await?;
-    Ok(owned && execution)
+    let execution = execution::verify(tx, session, run, owned.as_ref(), proof).await?;
+    Ok(owned.is_some() && execution)
 }
 
 #[cfg(test)]

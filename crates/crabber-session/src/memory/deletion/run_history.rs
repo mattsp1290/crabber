@@ -29,7 +29,7 @@ pub(super) fn verify(
     Ok(unproven)
 }
 fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
-    input(state, run, proof)?;
+    let unkeyed_input = input(state, run, proof)?;
     let (initial_present, claims) = claims::read(state, &run.session_id, &run.id, proof)?;
     let terminal = terminal(state, run, proof)?;
     let approved = approval::verify(state, run, proof)?;
@@ -38,17 +38,25 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
     Ok(RunHistoryReport::sources(
         initial_present
             && state.preparation_admissions.contains_key(&run.id)
-            && state.admission_execution_protocols.contains(&run.id),
+            && (state.admission_execution_protocols.contains(&run.id) || unkeyed_input),
         claims,
         terminal || approved || abandoned || cancelled,
     ))
 }
 
-fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<(), Failure> {
-    super::super::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
-        .map_err(ReadError::public)?;
+fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {
+    let binding =
+        super::super::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
+            .map_err(ReadError::public)?;
+    if let Some(original) = state
+        .preparation_admissions
+        .get(&run.id)
+        .filter(|w| w.is_unkeyed())
+    {
+        return unkeyed_input(state, run, original, binding.as_ref(), proof);
+    }
     let Some(record) = state.admission_executions.get(&run.id) else {
-        return Ok(());
+        return Ok(false);
     };
     proof.measure(record)?;
     proof.measure(&(&run.config_hash, &run.plan_fingerprint, &run.owner))?;
@@ -78,7 +86,40 @@ fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<(), Failure> {
         proof.measure(message)?;
     }
     let messages = selected().cloned().collect::<Vec<_>>();
-    record.validate_messages(run, &messages).map_err(unknown)
+    record.validate_messages(run, &messages).map_err(unknown)?;
+    Ok(false)
+}
+fn unkeyed_input(
+    state: &State,
+    run: &Run,
+    original: &crate::session_owner::preparation::admission::Witness,
+    binding: Option<&crate::RetainedExecutionBinding>,
+    proof: &mut Proof,
+) -> Result<bool, Failure> {
+    proof.measure(original)?;
+    if original.session_id() != &run.session_id || original.run_id() != &run.id {
+        return Err(unknown("original unkeyed input scope"));
+    }
+    super::owned::original_admission(state, original, proof)?;
+    proof.charge(1)?;
+    if state.admission_executions.contains_key(&run.id)
+        || state.admission_execution_protocols.contains(&run.id)
+        || state
+            .admission_execution_sources
+            .keys()
+            .any(|(id, _)| id == &run.id)
+        || state
+            .receipts
+            .values()
+            .any(|receipt| receipt.run_id == run.id)
+    {
+        return Err(unknown("mixed unkeyed/keyed original input"));
+    }
+    let binding = binding.ok_or_else(|| unknown("original unkeyed binding missing"))?;
+    original
+        .verify_unkeyed_binding(&binding.capsule)
+        .map_err(unknown)?;
+    Ok(true)
 }
 fn terminal(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {
     let Some(record) = state

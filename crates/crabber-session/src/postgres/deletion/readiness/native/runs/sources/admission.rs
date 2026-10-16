@@ -12,7 +12,7 @@ pub(super) async fn verify(
     run: &RunId,
     initial: Option<&RunIssuance>,
     proof: &mut Proof,
-) -> Result<bool> {
+) -> Result<Option<Witness>> {
     backend::read_proof::charge(tx, sqlx::query_scalar(COST).bind(&run.0), proof).await?;
     let row = sqlx::query(WITNESS)
         .bind(&run.0)
@@ -23,7 +23,7 @@ pub(super) async fn verify(
         if initial.is_some_and(|i| i.ownership_handoff.is_some()) {
             return Err(unknown("missing owned admission witness"));
         }
-        return Ok(false);
+        return Ok(None);
     };
     let witness: Witness = serde_json::from_str(
         &row.try_get::<Option<String>, _>("record")
@@ -66,12 +66,12 @@ pub(super) async fn verify(
             proof,
         )
         .await?;
-        audits.push(
-            backend::session_owner::source_audit(tx, session, &id)
-                .await
-                .map_err(unknown)?
-                .ok_or_else(|| unknown("original admission audit"))?,
-        );
+        let audit = backend::session_owner::source_audit(tx, session, &id)
+            .await
+            .map_err(unknown)?
+            .ok_or_else(|| unknown("original admission audit"))?;
+        backend::session_owner::authenticate_source_audit(tx, &audit, proof).await?;
+        audits.push(audit);
     }
     let audits = audits
         .try_into()
@@ -79,7 +79,7 @@ pub(super) async fn verify(
     witness
         .verify_sources(&current, initial, &SourceAudits::from_array(&audits))
         .map_err(unknown)?;
-    Ok(true)
+    Ok(Some(witness))
 }
 const COST: &str = "SELECT CAST(octet_length(data_json)+octet_length(session_id)+octet_length(root_join) AS BIGINT) FROM preparation_admission_witnesses WHERE run_id=$1";
 const WITNESS: &str = "SELECT CASE WHEN octet_length(data_json)<=8192 THEN data_json END AS record,CASE WHEN octet_length(session_id)<=512 THEN session_id END AS session,CASE WHEN octet_length(root_join)<=128 THEN root_join END AS root_join FROM preparation_admission_witnesses WHERE run_id=$1";

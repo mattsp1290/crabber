@@ -14,7 +14,7 @@ fn domain(error: impl std::fmt::Debug) -> Read {
 }
 /// Authenticate one original projection without consulting any later owner head.
 /// Legacy metadata remains readable but supplies no publication authority.
-pub(super) async fn selected(
+pub(in crate::sqlite) async fn selected(
     tx: &mut Transaction<'_, Sqlite>,
     audit: &Audit,
     proof: &mut Proof,
