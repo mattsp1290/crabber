@@ -12,6 +12,8 @@ struct Audit {
     semantic_digest: InputFingerprint,
     revision: SessionRevision,
     outcome: ApprovalOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<crate::continuation_handoff::Handoff>,
 }
 fn kind(outcome: &ApprovalOutcome) -> EventKind {
     if matches!(outcome, ApprovalOutcome::Answered { .. }) {
@@ -36,6 +38,7 @@ pub(crate) fn event(
         kind: kind(outcome),
         payload: serde_json::to_value(Audit {
             version: 1,
+            handoff: None,
             operation_id: id.clone(),
             semantic_digest: digest.clone(),
             revision,
@@ -48,9 +51,13 @@ pub(crate) fn event(
     })
 }
 pub(crate) fn verify_receipt(receipt: &ApprovalReceipt, event: &EventRecord) -> Result<(), Error> {
+    crate::continuation_handoff::Handoff::from_event(event)
+        .map_err(|()| Error::UnknownStoreOutcome)?;
     let saved: Audit =
         serde_json::from_value(event.payload.clone()).map_err(|_| Error::UnknownStoreOutcome)?;
-    if saved.version != 1
+    if saved.handoff.as_ref().is_some_and(|h| {
+        h.validate().is_err() || !matches!(saved.outcome, ApprovalOutcome::Suspended { .. })
+    }) || saved.version != 1
         || saved.operation_id != receipt.operation_id
         || saved.semantic_digest != receipt.semantic_digest
         || saved.revision != receipt.revision

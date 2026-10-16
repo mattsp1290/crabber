@@ -111,7 +111,7 @@ async fn preflight(
     }
     Ok(Some(checked))
 }
-async fn receipt_cost(
+pub(in super::super) async fn receipt_cost(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     id: &ControlId,
@@ -139,7 +139,7 @@ async fn receipt_cost(
     ))
 }
 
-pub(super) async fn origin_cost(
+pub(in super::super) async fn origin_cost(
     tx: &mut Transaction<'_, Sqlite>,
     record: &crate::approval::ApprovalRecord,
     proof: &mut Budget,

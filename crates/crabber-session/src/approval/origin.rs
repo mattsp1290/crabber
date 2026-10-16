@@ -27,7 +27,10 @@ impl ApprovalRecord {
             .materialize(run)
             .map_err(|_| Error::UnknownStoreOutcome)?;
         expected.cursor = source.cursor;
-        if self.created_at != audit.created_at
+        if self.handoff
+            != crate::continuation_handoff::Handoff::from_event(audit)
+                .map_err(|()| Error::UnknownStoreOutcome)?
+            || self.created_at != audit.created_at
             || native.attempt.session_id != self.session_id
             || native.attempt.run_id != self.run_id
             || native.revision <= self.batch.expected_revision

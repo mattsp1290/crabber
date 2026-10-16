@@ -162,23 +162,20 @@ pub(crate) fn validate_approval_state(
             }
         }
         crate::ApprovalContinuationState::Released => {
-            let valid_attempt = attempt.is_some_and(|attempt| {
-                attempt.cleanup == crate::AttemptCleanup::Complete
-                    && if record.termination.is_some() {
-                        attempt.target == record.batch.attempt
+            // Shared current-state verification has already authenticated the
+            // immutable release source. A successor can own a live parent now.
+            if barrier {
+                return Err(unknown("released approval barrier"));
+            }
+            if record.termination.is_some()
+                && (!status.is_terminal()
+                    || !attempt.is_some_and(|attempt| {
+                        attempt.cleanup == crate::AttemptCleanup::Complete
+                            && attempt.target == record.batch.attempt
                             && attempt.state == crate::AttemptState::Suspended
-                    } else {
-                        attempt.target == record.batch.next_attempt
-                            && matches!(
-                                attempt.state,
-                                crate::AttemptState::Completed
-                                    | crate::AttemptState::Failed
-                                    | crate::AttemptState::Interrupted
-                            )
-                    }
-            });
-            if barrier || !status.is_terminal() || !valid_attempt {
-                return Err(unknown("released approval"));
+                    }))
+            {
+                return Err(unknown("terminated approval"));
             }
         }
     }

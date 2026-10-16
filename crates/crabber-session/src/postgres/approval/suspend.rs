@@ -39,8 +39,9 @@ impl PostgresExecution {
             validate_batch(&mut tx, &run, &batch).await?;
             let workspace: Option<String> = sqlx::query_scalar("SELECT CASE WHEN octet_length(data->>'workspace_id')<=512 THEN data->>'workspace_id' END FROM sessions WHERE id=$1")
                 .bind(&run.session_id.0).fetch_one(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
-            let record = approval::ApprovalRecord::new(batch.clone(), run.session_id.clone(), run.id.clone(),
+            let mut record = approval::ApprovalRecord::new(batch.clone(), run.session_id.clone(), run.id.clone(),
                 workspace.ok_or(Error::UnknownStoreOutcome)?, now)?;
+            record.handoff=super::super::continuation_handoff::prepare(&mut tx,&run,crate::continuation_handoff::Domain::Approval,&batch.continuation,&batch.id,&digest,&batch.attempt).await?;
             let conclusion = batch.conclusion(&run, now)?;
             let applied = self.apply_attempt(&mut tx, &run, &conclusion.finish, Some(authority), Some(&conclusion))
                 .await.map_err(approval::attempt_error)?;
@@ -49,12 +50,13 @@ impl PostgresExecution {
                 previous.state = ApprovalContinuationState::Released;
                 write::save(&mut tx, &previous).await?;
             }
+            if let Some(proof)=&record.handoff {super::super::continuation_handoff::release(&mut tx,&run,proof).await?;}
             write::insert(&mut tx, &record).await?;
             sqlx::query("INSERT INTO continuation_barriers(session_id,run_id,continuation_id) VALUES($1,$2,$3) ON CONFLICT(session_id) DO UPDATE SET run_id=excluded.run_id,continuation_id=excluded.continuation_id")
                 .bind(&run.session_id.0).bind(&run.id.0).bind(&batch.continuation.id.0)
                 .execute(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
-            let receipt = write::publish(&mut tx, &run, batch.id.clone(), digest,
-                crate::ApprovalOutcome::Suspended { continuation: batch.continuation }, now).await?;
+            let receipt = write::publish_handoff(&mut tx, &run, batch.id.clone(), digest,
+                crate::ApprovalOutcome::Suspended { continuation: batch.continuation }, now, record.handoff.as_ref()).await?;
             sql::before_commit(fault)?;
             Ok((receipt, true))
         }.await;
@@ -75,7 +77,21 @@ async fn predecessor(
     .map_err(db)
     .map_err(sql::unknown)?;
     if !active {
-        if batch.continuation.generation != ContinuationGeneration::INITIAL {
+        let previous = load(tx, &run.session_id, &run.id).await?;
+        let generation = if let Some((previous, _)) = previous {
+            if previous.state != ApprovalContinuationState::Released {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            previous
+                .batch
+                .continuation
+                .generation
+                .next()
+                .map_err(|_| Error::GenerationConflict)?
+        } else {
+            ContinuationGeneration::INITIAL
+        };
+        if batch.continuation.generation != generation {
             return Err(Error::GenerationConflict);
         }
         return Ok(None);

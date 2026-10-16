@@ -10,10 +10,10 @@ pub(super) use scan::pending as pending_in_session;
 mod evidence;
 mod guards;
 mod phases;
-mod read;
+pub(super) mod read;
 mod recover;
 mod suspend;
-mod write;
+pub(super) mod write;
 use super::{SqliteExecution, SqliteStore};
 use crate::tool_continuation::{self as domain, ToolContinuationRecord};
 use crate::{

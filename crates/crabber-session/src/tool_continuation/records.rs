@@ -30,6 +30,8 @@ pub(crate) struct ToolContinuationRecord {
     pub recovery: Option<crate::ToolContinuationRecovery>,
     #[serde(default)]
     pub termination: Option<crate::tool_continuation::ToolContinuationTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<crate::continuation_handoff::Handoff>,
 }
 impl ToolContinuationRecord {
     pub(crate) fn new(
@@ -79,6 +81,7 @@ impl ToolContinuationRecord {
             claim: None,
             recovery: None,
             termination: None,
+            handoff: None,
         })
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {

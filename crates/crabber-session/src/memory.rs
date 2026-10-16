@@ -2,6 +2,8 @@
 mod admission;
 #[path = "memory/approval.rs"]
 mod approval;
+#[path = "memory/continuation_handoff.rs"]
+mod continuation_handoff;
 #[path = "memory/tool_continuation.rs"]
 mod tool_continuation;
 use admission::{admit_keyed_transaction, admit_transaction};

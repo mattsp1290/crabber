@@ -2,7 +2,7 @@ use super::{
     AttemptMutationOutcome, AttemptState, Error, MemoryExecution, Run, State,
     ToolContinuationOutcome, ToolContinuationReceipt, ToolContinuationRecord,
     ToolContinuationState, ToolContinuationSuspension, ToolSuspensionAuthority, after, before,
-    fault, publish, replay, revision,
+    fault, replay, revision,
 };
 use crabber_core::{ContinuationGeneration, RunStatus, ToolCallStatus};
 impl MemoryExecution {
@@ -38,28 +38,18 @@ impl MemoryExecution {
             if authority.phases.len() != batch.phases.len() {
                 return Err(Error::InvalidRequest);
             }
-            let record = new_record(state, &run, batch, now)?;
-            for (index, phase) in batch.phases.iter().enumerate() {
-                let owner = &authority.phases[index];
-                let call = state
-                    .calls
-                    .get(&phase.previous.call_id)
-                    .cloned()
-                    .ok_or(Error::NotFound)?;
-                let native = state
-                    .phases
-                    .get_mut(&phase.previous.id)
-                    .ok_or(Error::NotFound)?;
-                native
-                    .suspend_checkpoint(&run, &parent, &call, phase, owner, now)
-                    .map_err(|_| Error::StaleOwner)?;
-                state.calls.get_mut(&call.id).ok_or(Error::NotFound)?.status =
-                    ToolCallStatus::Waiting;
-                *state
-                    .snapshot_revisions
-                    .entry(run.session_id.clone())
-                    .or_default() += 1;
-            }
+            let mut record = new_record(state, &run, batch, now)?;
+            record.handoff = super::super::continuation_handoff::prepare(
+                state,
+                &run,
+                crate::continuation_handoff::Domain::Tool,
+                &batch.continuation,
+                &batch.id,
+                &digest,
+                &batch.attempt,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+            suspend_phases(state, &run, &parent, batch, authority, now)?;
             let conclusion = batch.conclusion(&run)?;
             if !matches!(
                 self.apply_attempt(
@@ -80,11 +70,10 @@ impl MemoryExecution {
                     .ok_or(Error::UnknownStoreOutcome)?
                     .state = ToolContinuationState::Released;
             }
-            // A consumed pre-effect approval and an explicit tool checkpoint may
-            // hand over the same parent without opening ordinary admission.
-            if state.approval_barriers.contains_key(&run.session_id) {
-                super::super::approval::release_terminal(state, &run, &conclusion.finish)
-                    .map_err(|_| Error::CleanupBlocked)?;
+            let handoff = record.handoff.clone();
+            if let Some(proof) = &handoff {
+                super::super::continuation_handoff::release(state, &run, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
             }
             state
                 .tool_barriers
@@ -92,7 +81,7 @@ impl MemoryExecution {
             state
                 .tool_continuations
                 .insert(batch.continuation.id.clone(), record);
-            let receipt = publish(
+            let receipt = super::publish_handoff(
                 state,
                 &run,
                 batch.id.clone(),
@@ -101,6 +90,7 @@ impl MemoryExecution {
                     continuation: batch.continuation.clone(),
                 },
                 now,
+                handoff.as_ref(),
             )?;
             before(fault)?;
             Ok((receipt, true))
@@ -125,8 +115,21 @@ fn validate(state: &State, run: &Run, batch: &ToolContinuationSuspension) -> Res
         {
             return Err(Error::GenerationConflict);
         }
-    } else if batch.continuation.generation != ContinuationGeneration::INITIAL {
-        return Err(Error::GenerationConflict);
+    } else {
+        let previous = super::scan::run(state, run)?.0;
+        let generation = previous
+            .map(|r| {
+                r.batch
+                    .continuation
+                    .generation
+                    .next()
+                    .map_err(|_| Error::GenerationConflict)
+            })
+            .transpose()?
+            .unwrap_or(ContinuationGeneration::INITIAL);
+        if batch.continuation.generation != generation {
+            return Err(Error::GenerationConflict);
+        }
     }
     let latest = state
         .attempts
@@ -214,4 +217,36 @@ fn new_record(
         batch.clone(),
         now,
     )
+}
+
+fn suspend_phases(
+    state: &mut State,
+    run: &Run,
+    parent: &crate::attempt::AttemptRecord,
+    batch: &ToolContinuationSuspension,
+    authority: &ToolSuspensionAuthority,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    for (index, phase) in batch.phases.iter().enumerate() {
+        let owner = &authority.phases[index];
+        let call = state
+            .calls
+            .get(&phase.previous.call_id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        let native = state
+            .phases
+            .get_mut(&phase.previous.id)
+            .ok_or(Error::NotFound)?;
+        native
+            .suspend_checkpoint(run, parent, &call, phase, owner, now)
+            .map_err(|_| Error::StaleOwner)?;
+        state.calls.get_mut(&call.id).ok_or(Error::NotFound)?.status = ToolCallStatus::Waiting;
+        *state
+            .snapshot_revisions
+            .entry(run.session_id.clone())
+            .or_default() += 1;
+    }
+
+    Ok(())
 }

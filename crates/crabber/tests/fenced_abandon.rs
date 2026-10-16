@@ -1,5 +1,7 @@
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;
+#[path = "../../crabber-session/src/continuation_handoff.rs"]
+mod continuation_handoff;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_rounds;
@@ -966,3 +968,12 @@ impl Drop for OwnerProcess {
 #[cfg(feature = "sqlite")]
 #[path = "fenced_support/sqlite.rs"]
 mod sqlite;
+
+#[path = "server_host/tool_continuation/handoff/journey.rs"]
+mod handoff_journey;
+#[tokio::test]
+async fn memory_cross_kind_handoff_private_source_corruption_and_budget() {
+    let store = Arc::new(MemoryStore::new());
+    let (session, run) = handoff_journey::journey(store.clone()).await;
+    store.test_handoff_corruption(&session, &run);
+}

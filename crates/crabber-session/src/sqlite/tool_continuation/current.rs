@@ -21,7 +21,30 @@ pub(super) async fn verify(
     for event in select(tx, record, "CAST(json_extract({event},'$.payload.outcome.continuation.id') AS TEXT)=$3 AND CAST(json_extract({event},'$.payload.kind') AS TEXT)='tool_continuation' AND CAST(json_extract({event},'$.payload.outcome.operation') AS TEXT)='reclaimed_unstarted'", &record.batch.continuation.id.0, true, 1).await? {
         insert(tx, record, &mut audits, &event).await?;
     }
-    let released = released(tx, record).await?;
+    let cross = super::super::continuation_handoff::verify(
+        tx,
+        &record.session_id,
+        &record.run_id,
+        crate::continuation_handoff::Domain::Tool,
+        &record.batch.continuation,
+        &record.batch.next_attempt,
+        &record.batch.expected_plan,
+    )
+    .await
+    .map_err(unknown)?;
+    if let Some(proof) = &cross {
+        let source = super::super::continuation_handoff::tool_source(tx, record)
+            .await
+            .map_err(unknown)?;
+        if proof.predecessor != source {
+            return Err(Error::UnknownStoreOutcome);
+        }
+    }
+    let native_released = cross.is_none() && released(tx, record).await?;
+    if cross.is_some() && native_released {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    let released = cross.is_some() || native_released;
     let barrier: Option<Option<String>> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(continuation_id AS BLOB))<=128 THEN continuation_id END FROM tool_continuation_barriers WHERE session_id=$1")
         .bind(&record.session_id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
     if matches!(barrier, Some(None))

@@ -1,16 +1,16 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
 mod answer;
 mod claim;
-mod current;
+pub(super) mod current;
 mod guards;
-mod origin;
-mod public_header;
+pub(super) mod origin;
+pub(super) mod public_header;
 pub(super) use public_header::read as public_header;
 mod recover;
 mod suspend;
 mod terminate;
 pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
-mod write;
+pub(super) mod write;
 use super::{PostgresStore, db};
 use crate::{
     ApprovalError as Error, ApprovalReceipt, ApprovalSnapshot, ContinuationTarget,
@@ -87,7 +87,7 @@ impl PostgresStore {
         Ok((tx, saved))
     }
 }
-async fn load(
+pub(super) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
@@ -148,7 +148,7 @@ async fn load_inner(
     }
     Ok(Some((record, revision)))
 }
-async fn receipt(
+pub(super) async fn receipt(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &ControlId,

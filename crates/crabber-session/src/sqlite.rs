@@ -1,6 +1,9 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
 //! connecting only verifies a current-version Crabber database already using WAL.
 
+#[path = "sqlite/continuation_handoff.rs"]
+mod continuation_handoff;
+
 mod abandon;
 mod admission_execution;
 mod approval;

@@ -63,7 +63,7 @@ fn revision(state: &State, session: &SessionId) -> SessionRevision {
         .copied()
         .unwrap_or(SessionRevision::INITIAL)
 }
-fn receipt(
+pub(super) fn receipt(
     state: &State,
     session: &SessionId,
     id: &ControlId,
@@ -105,6 +105,17 @@ fn publish(
     outcome: ToolContinuationOutcome,
     now: OffsetDateTime,
 ) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff(state, run, id, digest, outcome, now, None)
+}
+fn publish_handoff(
+    state: &mut State,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    handoff: Option<&crate::continuation_handoff::Handoff>,
+) -> Result<ToolContinuationReceipt, Error> {
     bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
     let mut receipt = ToolContinuationReceipt {
         session_id: run.session_id.clone(),
@@ -115,22 +126,30 @@ fn publish(
         event_cursor: EventCursor(0),
         outcome,
     };
-    receipt.event_cursor = append_audit(state, domain::audit(&receipt, now))?;
+    let mut event = domain::audit(&receipt, now);
+    if let Some(handoff) = handoff {
+        event.payload["handoff"] =
+            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
+    }
+    receipt.event_cursor = append_audit(state, event)?;
     state.operation_receipts.insert(
         (run.session_id.clone(), id),
         OperationReceipt::ToolContinuation(receipt.clone()),
     );
     Ok(receipt)
 }
-fn checked_record(
+pub(super) fn origin_record(
     state: &State,
     id: &crabber_core::ContinuationId,
 ) -> Result<ToolContinuationRecord, Error> {
-    let record = state
+    let borrowed = state
         .tool_continuations
         .get(id)
-        .cloned()
         .ok_or(Error::UnknownStoreOutcome)?;
+    if crate::snapshot::encoded_bytes(borrowed, 4 * 1024 * 1024).is_none() {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    let record = borrowed.clone();
     record.validate()?;
     let binding = super::execution_binding::read(state, &record.session_id, &record.run_id)
         .map_err(|_| Error::UnknownStoreOutcome)?
@@ -154,7 +173,11 @@ fn checked_record(
         return Err(Error::UnknownStoreOutcome);
     }
     let event = event_at(state, original.event_cursor)?;
-    if event.created_at != record.created_at {
+    if event.created_at != record.created_at
+        || record.handoff
+            != crate::continuation_handoff::Handoff::from_event(event)
+                .map_err(|()| Error::UnknownStoreOutcome)?
+    {
         return Err(Error::UnknownStoreOutcome);
     }
     for question in &record.questions {
@@ -191,6 +214,13 @@ fn checked_record(
             .verify_receipt(&receipt)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
+    Ok(record)
+}
+pub(super) fn checked_record(
+    state: &State,
+    id: &crabber_core::ContinuationId,
+) -> Result<ToolContinuationRecord, Error> {
+    let record = origin_record(state, id)?;
     current::verify(state, &record)?;
     Ok(record)
 }

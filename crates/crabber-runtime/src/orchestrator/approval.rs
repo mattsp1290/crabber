@@ -195,18 +195,19 @@ impl Orchestrator {
             .get_run(run_id)
             .await?
             .ok_or(super::StoreError::NotFound)?;
-        let generation = match run
-            .checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.get("approval"))
-        {
-            Some(value) => serde_json::from_value::<ContinuationTarget>(value.clone())
-                .map_err(|_| ApprovalError::UnknownStoreOutcome)?
-                .generation
-                .next()
-                .map_err(|_| ApprovalError::GenerationConflict)?,
-            None => ContinuationGeneration::INITIAL,
-        };
+        let generation = self
+            .store
+            .approval_snapshot(&run.session_id, &run.id)
+            .await?
+            .map(|previous| {
+                previous
+                    .continuation
+                    .generation
+                    .next()
+                    .map_err(|_| ApprovalError::GenerationConflict)
+            })
+            .transpose()?
+            .unwrap_or(ContinuationGeneration::INITIAL);
         let continuation = ContinuationTarget {
             id: ContinuationId::new(),
             generation,

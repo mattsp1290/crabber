@@ -18,6 +18,7 @@ pub(crate) struct NativeSource {
     pub latest: AttemptSnapshot,
 }
 pub(crate) enum Release {
+    Handoff(crate::continuation_handoff::Handoff),
     Native(NativeSource),
     Successor {
         pub_source: Source,
@@ -147,6 +148,18 @@ impl ApprovalRecord {
         }
         self.verify_claim_source(&proof.latest.receipt)?;
         match proof.release.as_ref().ok_or_else(fail)? {
+            Release::Handoff(handoff) => {
+                if handoff.predecessor.domain != crate::continuation_handoff::Domain::Approval
+                    || handoff.predecessor.continuation != self.batch.continuation
+                    || handoff.predecessor.operation_id != proof.latest.receipt.operation_id
+                    || handoff.predecessor.digest != proof.latest.receipt.semantic_digest
+                    || handoff.predecessor.cursor != proof.latest.receipt.event_cursor
+                    || handoff.parent != self.batch.next_attempt
+                    || handoff.plan != self.batch.expected_plan
+                {
+                    return Err(fail());
+                }
+            }
             Release::Successor {
                 pub_source,
                 attempt,

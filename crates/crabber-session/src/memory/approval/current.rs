@@ -29,7 +29,7 @@ fn belongs(event: &EventRecord, record: &ApprovalRecord) -> bool {
                         == Some(record.batch.continuation.generation.get())
             })
 }
-fn selected<'a>(
+pub(in super::super) fn selected<'a>(
     state: &'a State,
     record: &ApprovalRecord,
     answers: bool,
@@ -56,7 +56,7 @@ fn selected<'a>(
     }
     Ok(events)
 }
-fn source(state: &State, event: &EventRecord) -> Result<Source, Error> {
+pub(in super::super) fn source(state: &State, event: &EventRecord) -> Result<Source, Error> {
     let fail = || Error::UnknownStoreOutcome;
     if crate::snapshot::encoded_bytes(event, 65536).is_none() {
         return Err(fail());
@@ -163,7 +163,16 @@ pub(super) fn verify(
     let release = if record.state == crate::ApprovalContinuationState::Released
         && record.termination.is_none()
     {
-        if let Some((next, event)) = successor(state, record)? {
+        if let Some(proof) = super::super::continuation_handoff::verify(
+            state,
+            run,
+            crate::continuation_handoff::Domain::Approval,
+            &record.batch.continuation,
+            &record.batch.next_attempt,
+            &record.batch.expected_plan,
+        )? {
+            Some(Release::Handoff(proof))
+        } else if let Some((next, event)) = successor(state, record)? {
             super::origin::verify(state, run, next)?;
             Some(Release::Successor {
                 pub_source: source(state, event)?,
@@ -275,7 +284,15 @@ pub(in super::super) fn preflight(
         measure_source(state, event, proof)?;
     }
     if record.state == crate::ApprovalContinuationState::Released && record.termination.is_none() {
-        if let Some((next, event)) = successor(state, record).map_err(unknown)? {
+        if super::super::continuation_handoff::preflight(
+            state,
+            run,
+            crate::continuation_handoff::Domain::Approval,
+            &record.batch.continuation,
+            proof,
+        )? {
+            return Ok(());
+        } else if let Some((next, event)) = successor(state, record).map_err(unknown)? {
             measure_source(state, event, proof)?;
             proof.measure(next)?;
             super::super::public_header::preflight(state, next, proof)?;

@@ -14,7 +14,7 @@ const RECEIPT: &str = r"SELECT CASE WHEN o.kind='tool_continuation' THEN 'tool_c
  CASE WHEN octet_length(e.run_id)<=128 THEN e.run_id END AS event_run_id,
  CASE WHEN o.kind='tool_continuation' AND octet_length(e.data::text)<=65536 THEN e.data::text END AS event
  FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2";
-pub(super) async fn receipt(
+pub(in super::super) async fn receipt(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &ControlId,
@@ -59,7 +59,7 @@ pub(super) async fn receipt(
     domain::verify_receipt(&saved, &event)?;
     Ok(Some((saved, event)))
 }
-pub(super) async fn load(
+pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
@@ -71,7 +71,7 @@ pub(super) async fn load(
     }
     Ok(record)
 }
-pub(super) async fn origin(
+pub(in super::super) async fn origin(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
@@ -137,6 +137,8 @@ async fn verify(
             != (ToolContinuationOutcome::Suspended {
                 continuation: record.batch.continuation.clone(),
             })
+        || record.handoff
+            != crate::continuation_handoff::Handoff::from_event(&event).map_err(unknown)?
         || event.created_at != record.created_at
     {
         return Err(Error::UnknownStoreOutcome);

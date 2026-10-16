@@ -5,7 +5,7 @@ use crate::public_session::budget::{Budget, Failure, unknown};
 use crabber_core::{EventRecord, Run, RunId, SessionId};
 use sqlx::{Row, Sqlite, Transaction};
 #[derive(Clone, Copy)]
-pub(super) enum Select {
+pub(in super::super) enum Select {
     Answers,
     Latest,
     Successor,
@@ -31,7 +31,7 @@ fn query(select: Select) -> &'static str {
         }
     }
 }
-pub(super) async fn rows(
+pub(in super::super) async fn rows(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
     select: Select,
@@ -82,7 +82,7 @@ fn event(row: &sqlx::sqlite::SqliteRow) -> Result<EventRecord, Error> {
     event.cursor = Some(cursor);
     Ok(event)
 }
-fn source(row: &sqlx::sqlite::SqliteRow) -> Result<Source, Error> {
+pub(in super::super) fn source(row: &sqlx::sqlite::SqliteRow) -> Result<Source, Error> {
     let receipt = serde_json::from_str(
         &row.try_get::<Option<String>, _>("receipt")
             .map_err(error)?
@@ -96,7 +96,7 @@ fn source(row: &sqlx::sqlite::SqliteRow) -> Result<Source, Error> {
     source.verify()?;
     Ok(source)
 }
-pub(super) async fn verify(
+pub(in super::super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     record: &approval::ApprovalRecord,
@@ -112,31 +112,45 @@ pub(super) async fn verify(
     let release = if record.state == crate::ApprovalContinuationState::Released
         && record.termination.is_none()
     {
-        let successor = rows(tx, record, Select::Successor, true).await?;
-        if let Some(row) = successor.first() {
-            let source = source(row)?;
-            let target = approval::current::continuation(&source.receipt.outcome);
-            let next = exact(tx, record, target).await?;
-            super::origin::verify(tx, &next).await?;
-            Some(Release::Successor {
-                pub_source: source,
-                attempt: next.batch.attempt,
-            })
+        if let Some(proof) = super::super::continuation_handoff::verify(
+            tx,
+            &record.session_id,
+            &record.run_id,
+            crate::continuation_handoff::Domain::Approval,
+            &record.batch.continuation,
+            &record.batch.next_attempt,
+            &record.batch.expected_plan,
+        )
+        .await?
+        {
+            Some(Release::Handoff(proof))
         } else {
-            let native = rows(tx, record, Select::Native, true).await?;
-            let row = native.first().ok_or(Error::UnknownStoreOutcome)?;
-            let receipt = serde_json::from_str(
-                &row.try_get::<Option<String>, _>("receipt")
-                    .map_err(error)?
-                    .ok_or(Error::UnknownStoreOutcome)?,
-            )
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-            let latest = latest_attempt(tx, record).await?;
-            Some(Release::Native(NativeSource {
-                receipt,
-                event: event(row)?,
-                latest,
-            }))
+            let successor = rows(tx, record, Select::Successor, true).await?;
+            if let Some(row) = successor.first() {
+                let source = source(row)?;
+                let target = approval::current::continuation(&source.receipt.outcome);
+                let next = exact(tx, record, target).await?;
+                super::origin::verify(tx, &next).await?;
+                Some(Release::Successor {
+                    pub_source: source,
+                    attempt: next.batch.attempt,
+                })
+            } else {
+                let native = rows(tx, record, Select::Native, true).await?;
+                let row = native.first().ok_or(Error::UnknownStoreOutcome)?;
+                let receipt = serde_json::from_str(
+                    &row.try_get::<Option<String>, _>("receipt")
+                        .map_err(error)?
+                        .ok_or(Error::UnknownStoreOutcome)?,
+                )
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+                let latest = latest_attempt(tx, record).await?;
+                Some(Release::Native(NativeSource {
+                    receipt,
+                    event: event(row)?,
+                    latest,
+                }))
+            }
         }
     } else {
         None
@@ -161,14 +175,22 @@ pub(super) async fn verify(
     )
 }
 const BARRIER: &str = "SELECT CASE WHEN length(CAST(continuation_id AS BLOB))<=128 THEN continuation_id END FROM continuation_barriers WHERE session_id=$1";
-pub(super) async fn exact(
+pub(in super::super) async fn exact(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
     target: &crate::ContinuationTarget,
 ) -> Result<approval::ApprovalRecord, Error> {
+    exact_scoped(tx, &record.session_id, &record.run_id, target).await
+}
+pub(in super::super) async fn exact_scoped(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    target: &crate::ContinuationTarget,
+) -> Result<approval::ApprovalRecord, Error> {
     let row = sqlx::query(EXACT)
-        .bind(&record.session_id.0)
-        .bind(&record.run_id.0)
+        .bind(&session.0)
+        .bind(&run.0)
         .bind(&target.id.0)
         .bind(i64::try_from(target.generation.get()).map_err(|_| Error::UnknownStoreOutcome)?)
         .fetch_optional(&mut **tx)
@@ -178,8 +200,8 @@ pub(super) async fn exact(
         .ok_or(Error::UnknownStoreOutcome)?;
     let next = sql::decode_record(
         row.try_get("data").map_err(error)?,
-        &record.session_id,
-        &record.run_id,
+        session,
+        run,
         target,
         &row.try_get::<Option<String>, _>("state")
             .map_err(error)?
@@ -215,7 +237,7 @@ async fn latest_attempt(
 }
 const ATTEMPT: &str = "SELECT CASE WHEN length(CAST(value AS BLOB))<=8192 THEN value END FROM (SELECT json_object('session_id',$1,'run_id',run_id,'target',json_object('id',id,'generation',generation),'state',state,'cleanup',cleanup_state) AS value FROM execution_attempts WHERE run_id=$2 ORDER BY generation DESC LIMIT 1) bounded";
 
-pub(super) async fn has_source(
+pub(in super::super) async fn has_source(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: Option<&RunId>,
@@ -269,7 +291,7 @@ fn error<T>(_: T) -> Error {
 }
 
 /// Charge the exact independently selected immutable carriers before the normal loader.
-pub(super) async fn preflight(
+pub(in super::super) async fn preflight(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
     proof: &mut Budget,
@@ -283,6 +305,9 @@ pub(super) async fn preflight(
     }
     proof.charge(128)?; // The separately re-read bounded barrier identifier.
     if record.state == crate::ApprovalContinuationState::Released && record.termination.is_none() {
+        if super::super::continuation_handoff::preflight(tx, record, proof).await? {
+            return Ok(());
+        }
         let selected = rows(tx, record, Select::Successor, false)
             .await
             .map_err(unknown)?;

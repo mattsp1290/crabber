@@ -24,7 +24,30 @@ pub(super) async fn verify(
     for event in select(tx, record, "{event}#>>'{payload,outcome,continuation,id}'=$3 AND {event}#>>'{payload,kind}'='tool_continuation' AND {event}#>>'{payload,outcome,operation}'='reclaimed_unstarted'", &record.batch.continuation.id.0, true, 1).await? {
         insert(tx, record, &mut audits, &event).await?;
     }
-    let released = released(tx, record).await?;
+    let cross = super::super::continuation_handoff::verify(
+        tx,
+        &record.session_id,
+        &record.run_id,
+        crate::continuation_handoff::Domain::Tool,
+        &record.batch.continuation,
+        &record.batch.next_attempt,
+        &record.batch.expected_plan,
+    )
+    .await
+    .map_err(unknown)?;
+    if let Some(proof) = &cross {
+        let source = super::super::continuation_handoff::tool_source(tx, record)
+            .await
+            .map_err(unknown)?;
+        if proof.predecessor != source {
+            return Err(Error::UnknownStoreOutcome);
+        }
+    }
+    let native_released = cross.is_none() && released(tx, record).await?;
+    if cross.is_some() && native_released {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    let released = cross.is_some() || native_released;
     let barrier: Option<Option<String>> = sqlx::query_scalar("SELECT CASE WHEN octet_length(continuation_id)<=128 THEN continuation_id END FROM tool_continuation_barriers WHERE session_id=$1")
         .bind(&record.session_id.0).fetch_optional(&mut **tx).await.map_err(unknown)?;
     if matches!(barrier, Some(None))

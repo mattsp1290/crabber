@@ -1,5 +1,5 @@
 //! Whole-batch suspension and attempt conclusion are one clone-and-publish commit.
-use super::{Error, publish, replay};
+use super::{Error, replay};
 use crate::{
     ApprovalContinuationState, ApprovalOutcome, ApprovalSuspension, AttemptAuthority,
     AttemptMutationOutcome, approval,
@@ -31,7 +31,7 @@ impl super::super::MemoryExecution {
             }
             validate_batch(state, &run, &batch)?;
             let now = self.store.clock.now();
-            let record = approval::ApprovalRecord::new(
+            let mut record = approval::ApprovalRecord::new(
                 batch.clone(),
                 run.session_id.clone(),
                 run.id.clone(),
@@ -42,6 +42,15 @@ impl super::super::MemoryExecution {
                     .workspace_id
                     .clone(),
                 now,
+            )?;
+            record.handoff = super::super::continuation_handoff::prepare(
+                state,
+                &run,
+                crate::continuation_handoff::Domain::Approval,
+                &batch.continuation,
+                &batch.id,
+                &digest,
+                &batch.attempt,
             )?;
             record.validate(&run.session_id, &run.id)?;
             for question in &record.questions {
@@ -72,13 +81,18 @@ impl super::super::MemoryExecution {
                     .ok_or(Error::UnknownStoreOutcome)?
                     .state = ApprovalContinuationState::Released;
             }
+            let handoff = record.handoff.clone();
+            if let Some(proof) = &handoff {
+                super::super::continuation_handoff::release(state, &run, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
+            }
             state
                 .approval_barriers
                 .insert(run.session_id.clone(), batch.continuation.id.clone());
             state
                 .approvals
                 .insert(batch.continuation.id.clone(), record);
-            let receipt = publish(
+            let receipt = super::publish_handoff(
                 state,
                 &run,
                 batch.id.clone(),
@@ -87,6 +101,7 @@ impl super::super::MemoryExecution {
                     continuation: batch.continuation,
                 },
                 now,
+                handoff.as_ref(),
             )?;
             super::before_commit(fault)?;
             Ok((receipt, true))
@@ -111,8 +126,29 @@ fn validate_predecessor(
         {
             return Err(Error::GenerationConflict);
         }
-    } else if batch.continuation.generation != ContinuationGeneration::INITIAL {
-        return Err(Error::GenerationConflict);
+    } else {
+        let previous = state
+            .approvals
+            .values()
+            .filter(|r| r.session_id == run.session_id && r.run_id == run.id)
+            .max_by_key(|r| r.batch.continuation.generation);
+        let generation = if let Some(previous) = previous {
+            super::verify_record(state, run, previous)?;
+            if previous.state != ApprovalContinuationState::Released {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            previous
+                .batch
+                .continuation
+                .generation
+                .next()
+                .map_err(|_| Error::GenerationConflict)?
+        } else {
+            ContinuationGeneration::INITIAL
+        };
+        if batch.continuation.generation != generation {
+            return Err(Error::GenerationConflict);
+        }
     }
     Ok(())
 }

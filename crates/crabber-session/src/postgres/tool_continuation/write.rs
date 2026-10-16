@@ -4,14 +4,14 @@ use super::{
     revision, unknown,
 };
 use crabber_core::EventCursor;
-pub(super) fn state(state: ToolContinuationState) -> &'static str {
+pub(in super::super) fn state(state: ToolContinuationState) -> &'static str {
     match state {
         ToolContinuationState::Waiting => "waiting",
         ToolContinuationState::Claimed => "claimed",
         ToolContinuationState::Released => "released",
     }
 }
-pub(super) async fn save(
+pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Postgres>,
     record: &ToolContinuationRecord,
     insert: bool,
@@ -55,7 +55,7 @@ pub(super) async fn save(
     }
     Ok(())
 }
-pub(super) async fn active(
+pub(in super::super) async fn active(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
@@ -63,7 +63,7 @@ pub(super) async fn active(
         .await
         .map(|records| records.active)
 }
-pub(super) async fn replay(
+pub(in super::super) async fn replay(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     id: &ControlId,
@@ -80,13 +80,24 @@ pub(super) async fn replay(
     }
     Ok(saved)
 }
-pub(super) async fn publish(
+pub(in super::super) async fn publish(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     id: ControlId,
     digest: InputFingerprint,
     outcome: ToolContinuationOutcome,
     now: OffsetDateTime,
+) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff(tx, run, id, digest, outcome, now, None).await
+}
+pub(in super::super) async fn publish_handoff(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ToolContinuationReceipt, Error> {
     super::super::bump_public_revision(tx, &run.session_id)
         .await
@@ -100,7 +111,11 @@ pub(super) async fn publish(
         event_cursor: EventCursor(0),
         outcome,
     };
-    let event = domain::audit(&receipt, now);
+    let mut event = domain::audit(&receipt, now);
+    if let Some(handoff) = handoff {
+        event.payload["handoff"] =
+            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
+    }
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )

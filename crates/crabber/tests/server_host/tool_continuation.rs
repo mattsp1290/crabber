@@ -1,4 +1,6 @@
 //! An explicit state machine survives host reconstruction without reentering start.
+#[path = "tool_continuation/handoff.rs"]
+mod handoff;
 #[path = "tool_continuation/identity.rs"]
 mod identity;
 #[path = "tool_continuation/mixed.rs"]

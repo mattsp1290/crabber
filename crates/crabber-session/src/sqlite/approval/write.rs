@@ -4,7 +4,7 @@ use super::{Error, approval, receipt, sql};
 use crate::ApprovalReceipt;
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run};
 use sqlx::{Row, Sqlite, Transaction};
-pub(super) async fn replay(
+pub(in super::super) async fn replay(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     id: &ControlId,
@@ -19,7 +19,7 @@ pub(super) async fn replay(
     }
     Ok(saved)
 }
-pub(super) async fn active(
+pub(in super::super) async fn active(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {
@@ -34,7 +34,7 @@ pub(super) async fn active(
     }
     Ok(())
 }
-pub(super) async fn save(
+pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {
@@ -53,13 +53,24 @@ pub(super) async fn save(
     }
     Ok(())
 }
-pub(super) async fn publish(
+pub(in super::super) async fn publish(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     id: ControlId,
     digest: InputFingerprint,
     outcome: crate::ApprovalOutcome,
     now: time::OffsetDateTime,
+) -> Result<ApprovalReceipt, Error> {
+    publish_handoff(tx, run, id, digest, outcome, now, None).await
+}
+pub(in super::super) async fn publish_handoff(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: crate::ApprovalOutcome,
+    now: time::OffsetDateTime,
+    handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ApprovalReceipt, Error> {
     super::super::records::bump_public_revision(tx, &run.session_id)
         .await
@@ -71,7 +82,11 @@ pub(super) async fn publish(
         .map_err(db)
         .map_err(sql::unknown)?;
     let revision = crate::attempt::sql::revision(raw).map_err(approval::attempt_error)?;
-    let event = approval::event(run, &id, &digest, revision, &outcome, now)?;
+    let mut event = approval::event(run, &id, &digest, revision, &outcome, now)?;
+    if let Some(handoff) = handoff {
+        event.payload["handoff"] =
+            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
+    }
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )
@@ -98,7 +113,7 @@ pub(super) async fn publish(
     Ok(receipt)
 }
 
-pub(super) async fn revision(
+pub(in super::super) async fn revision(
     tx: &mut Transaction<'_, Sqlite>,
     session: &crabber_core::SessionId,
 ) -> Result<crabber_core::SessionRevision, Error> {
@@ -110,7 +125,7 @@ pub(super) async fn revision(
         .map_err(sql::unknown)?;
     crate::attempt::sql::revision(raw).map_err(approval::attempt_error)
 }
-pub(super) async fn insert(
+pub(in super::super) async fn insert(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {

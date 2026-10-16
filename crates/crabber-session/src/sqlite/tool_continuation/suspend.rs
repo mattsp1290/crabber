@@ -46,37 +46,11 @@ impl SqliteExecution {
                 return Err(Error::InvalidTransition);
             }
 
-            let previous = write::active(&mut tx, &run).await?;
-
-            if let Some(previous) = &previous {
-                if previous.state != ToolContinuationState::Claimed
-                    || previous.batch.next_attempt != batch.attempt
-                    || previous.batch.continuation.generation.next().ok()
-                        != Some(batch.continuation.generation)
-                {
-                    return Err(Error::GenerationConflict);
-                }
-            } else if batch.continuation.generation != ContinuationGeneration::INITIAL {
-                return Err(Error::GenerationConflict);
-            }
+            let previous = predecessor(&mut tx, &run, &batch).await?;
 
             evidence::suspend(&mut tx, &run, &batch).await?;
 
-            let (parent, _) =
-                super::super::attempt::load_host_attempt(&mut tx, &run.id, None, true)
-                    .await
-                    .map_err(unknown)?
-                    .ok_or(Error::NotFound)?;
-
-            if parent.snapshot.target != batch.attempt
-                || parent.snapshot.state != AttemptState::Started
-            {
-                return Err(Error::GenerationConflict);
-            }
-
-            if authority.phases.len() != batch.phases.len() {
-                return Err(Error::InvalidRequest);
-            }
+            let parent = parent(&mut tx, &run, &batch, &authority).await?;
 
             // The pre-effect barrier is consumed before checkpoint handover; its
             // frozen answers/bindings must still match their original receipts.
@@ -84,7 +58,18 @@ impl SqliteExecution {
                 .await
                 .map_err(unknown)?;
 
-            let record = new_record(&mut tx, &run, &batch, now).await?;
+            let mut record = new_record(&mut tx, &run, &batch, now).await?;
+            record.handoff = super::super::continuation_handoff::prepare(
+                &mut tx,
+                &run,
+                crate::continuation_handoff::Domain::Tool,
+                &batch.continuation,
+                &batch.id,
+                &digest,
+                &batch.attempt,
+            )
+            .await
+            .map_err(unknown)?;
 
             super::phases::suspend(&mut tx, &run, &parent, &batch, &authority, now).await?;
 
@@ -110,9 +95,11 @@ impl SqliteExecution {
                 write::save(&mut tx, &previous, false).await?;
             }
 
-            super::super::approval::release_terminal(&mut tx, &run, &conclusion.finish)
-                .await
-                .map_err(unknown)?;
+            if let Some(proof) = &record.handoff {
+                super::super::continuation_handoff::release(&mut tx, &run, proof)
+                    .await
+                    .map_err(unknown)?;
+            }
 
             write::save(&mut tx, &record, true).await?;
 
@@ -124,7 +111,7 @@ impl SqliteExecution {
                 .await
                 .map_err(unknown)?;
 
-            let receipt = write::publish(
+            let receipt = write::publish_handoff(
                 &mut tx,
                 &run,
                 batch.id.clone(),
@@ -133,6 +120,7 @@ impl SqliteExecution {
                     continuation: batch.continuation.clone(),
                 },
                 now,
+                record.handoff.as_ref(),
             )
             .await?;
 
@@ -171,4 +159,61 @@ async fn new_record(
         batch.clone(),
         now,
     )
+}
+
+async fn predecessor(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &crabber_core::Run,
+    batch: &ToolContinuationSuspension,
+) -> Result<Option<ToolContinuationRecord>, Error> {
+    let previous = write::active(tx, run).await?;
+
+    if let Some(previous) = &previous {
+        if previous.state != ToolContinuationState::Claimed
+            || previous.batch.next_attempt != batch.attempt
+            || previous.batch.continuation.generation.next().ok()
+                != Some(batch.continuation.generation)
+        {
+            return Err(Error::GenerationConflict);
+        }
+    } else {
+        let previous = super::read::load(tx, &run.session_id, &run.id, None).await?;
+        let generation = previous
+            .map(|r| {
+                r.batch
+                    .continuation
+                    .generation
+                    .next()
+                    .map_err(|_| Error::GenerationConflict)
+            })
+            .transpose()?
+            .unwrap_or(ContinuationGeneration::INITIAL);
+        if batch.continuation.generation != generation {
+            return Err(Error::GenerationConflict);
+        }
+    }
+
+    Ok(previous)
+}
+
+async fn parent(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &crabber_core::Run,
+    batch: &ToolContinuationSuspension,
+    authority: &ToolSuspensionAuthority,
+) -> Result<crate::attempt::AttemptRecord, Error> {
+    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+        .await
+        .map_err(unknown)?
+        .ok_or(Error::NotFound)?;
+
+    if parent.snapshot.target != batch.attempt || parent.snapshot.state != AttemptState::Started {
+        return Err(Error::GenerationConflict);
+    }
+
+    if authority.phases.len() != batch.phases.len() {
+        return Err(Error::InvalidRequest);
+    }
+
+    Ok(parent)
 }

@@ -24,6 +24,7 @@ pub mod tool_continuation_contract;
 pub use tool_continuation::*;
 mod approval;
 mod approval_termination;
+mod continuation_handoff;
 pub use approval_termination::{ApprovalTermination, ApprovalTerminationKind};
 pub mod approval_contract;
 pub use approval::*;

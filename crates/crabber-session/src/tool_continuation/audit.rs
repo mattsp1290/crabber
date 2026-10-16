@@ -24,14 +24,26 @@ pub(crate) fn verify_receipt(
     receipt: &ToolContinuationReceipt,
     event: &crabber_core::EventRecord,
 ) -> Result<(), Error> {
+    let mut canonical = audit(receipt, event.created_at);
+    if let Some(handoff) = crate::continuation_handoff::Handoff::from_event(event)
+        .map_err(|()| Error::UnknownStoreOutcome)?
+    {
+        if !matches!(
+            receipt.outcome,
+            crate::ToolContinuationOutcome::Suspended { .. }
+        ) {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        canonical.payload["handoff"] =
+            serde_json::to_value(handoff).map_err(|_| Error::UnknownStoreOutcome)?;
+    }
     if event.session_id != receipt.session_id
         || event.run_id != receipt.run_id
         || event.cursor != Some(receipt.event_cursor)
         || event.kind != crabber_core::EventKind::ContinuationChanged
         || event.live_only
         || event.correlation.as_deref() != Some(receipt.operation_id.0.as_str())
-        || event.payload
-            != serde_json::json!({"version":1,"kind":"tool_continuation","operation_id":receipt.operation_id,"semantic_digest":receipt.semantic_digest,"revision":receipt.revision,"outcome":receipt.outcome})
+        || event.payload != canonical.payload
     {
         return Err(Error::UnknownStoreOutcome);
     }

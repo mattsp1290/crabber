@@ -4,9 +4,9 @@ mod answer;
 #[path = "approval/claim.rs"]
 mod claim;
 #[path = "approval/current.rs"]
-mod current;
+pub(super) mod current;
 #[path = "approval/origin.rs"]
-mod origin;
+pub(super) mod origin;
 #[path = "approval/recover.rs"]
 mod recover;
 #[path = "approval/suspend.rs"]
@@ -75,6 +75,17 @@ fn publish(
     outcome: ApprovalOutcome,
     now: OffsetDateTime,
 ) -> Result<ApprovalReceipt, Error> {
+    publish_handoff(state, run, id, digest, outcome, now, None)
+}
+fn publish_handoff(
+    state: &mut State,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ApprovalOutcome,
+    now: OffsetDateTime,
+    handoff: Option<&crate::continuation_handoff::Handoff>,
+) -> Result<ApprovalReceipt, Error> {
     bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
     let receipt = ApprovalReceipt {
         session_id: run.session_id.clone(),
@@ -96,6 +107,10 @@ fn publish(
         &receipt.outcome,
         now,
     )?;
+    if let Some(handoff) = handoff {
+        event.payload["handoff"] =
+            serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
+    }
     event.cursor = Some(receipt.event_cursor);
     state
         .events

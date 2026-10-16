@@ -5,7 +5,35 @@ use super::{
 
 pub(super) fn verify(state: &State, record: &ToolContinuationRecord) -> Result<(), Error> {
     let mut audits = domain::CurrentAudits::default();
-    let mut releases = 0_u8;
+    let run = state
+        .runs
+        .get(&record.run_id)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    let cross = super::super::continuation_handoff::verify(
+        state,
+        run,
+        crate::continuation_handoff::Domain::Tool,
+        &record.batch.continuation,
+        &record.batch.next_attempt,
+        &record.batch.expected_plan,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    if let Some(proof) = &cross {
+        let id = record
+            .recovery
+            .as_ref()
+            .map(|r| &r.id)
+            .or(record.claim.as_ref().map(|c| &c.id))
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let source = receipt(state, &record.session_id, id)?.ok_or(Error::UnknownStoreOutcome)?;
+        if proof.predecessor.operation_id != source.operation_id
+            || proof.predecessor.digest != source.semantic_digest
+            || proof.predecessor.cursor != source.event_cursor
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+    }
+    let mut releases = u8::from(cross.is_some());
     for event in state
         .events
         .iter()
@@ -19,11 +47,11 @@ pub(super) fn verify(state: &State, record: &ToolContinuationRecord) -> Result<(
             }
             audits.insert(saved, record)?;
         }
-        if domain::terminal_candidate(event, record) {
+        if cross.is_none() && domain::terminal_candidate(event, record) {
             verify_native(state, event, record)?;
             releases += 1;
         }
-        if is_successor(event, record) {
+        if cross.is_none() && is_successor(event, record) {
             verify_successor(state, event, record)?;
             releases += 1;
         }

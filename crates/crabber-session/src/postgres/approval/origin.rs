@@ -3,7 +3,7 @@ use super::{Error, approval, sql};
 use crabber_core::{EventRecord, Run};
 use sqlx::{Postgres, Row, Transaction};
 
-pub(super) async fn verify(
+pub(in super::super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,
 ) -> Result<Run, Error> {
