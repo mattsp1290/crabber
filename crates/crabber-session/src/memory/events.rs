@@ -33,6 +33,10 @@ impl EventLog {
     pub(super) fn iter(&self) -> Values<'_, u64, EventRecord> {
         self.records.values()
     }
+    #[cfg(test)]
+    pub(super) fn remove_for_test(&mut self, cursor: EventCursor) -> Option<EventRecord> {
+        self.records.remove(&cursor.0)
+    }
     pub(super) fn remove_session(&mut self, session: &crabber_core::SessionId) {
         self.records.retain(|_, event| &event.session_id != session);
     }

@@ -32,7 +32,8 @@ async fn run_history_report_preserves_noninitial_and_missing_proof() {
     .await
     .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     assert_eq!(report.initial_source, Fact::Authenticated);
-    assert_eq!(report.every_noninitial_claim, Fact::Authenticated);
+    assert_eq!(report.every_noninitial_claim, Fact::Unproven);
+    assert_eq!(report.retained_noninitial_sources, Fact::Authenticated);
     assert_eq!(report.terminal_source, Fact::Unproven);
     assert_eq!(report.main_join, Fact::Unproven);
     assert_eq!(report.resource_policy, Fact::Unproven);
@@ -49,6 +50,7 @@ async fn run_history_report_preserves_noninitial_and_missing_proof() {
     next.version = 1;
     next.sequence = 2;
     next.ownership_handoff = None;
+    next.state.token = crabber_core::InputFingerprint::new("e".repeat(64)).unwrap();
     sqlx::query(
         "INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,2,$3)",
     )
@@ -67,7 +69,7 @@ async fn run_history_report_preserves_noninitial_and_missing_proof() {
     .await
     .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     assert_eq!(
-        claims,
+        claims.retained_sources,
         Fact::Unproven,
         "valid legacy issuer is not a verified native claim"
     );

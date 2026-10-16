@@ -22,7 +22,7 @@ async fn original_input_and_owned_sources_remain_independent_of_current_rows() {
         );
         assert_eq!(
             report.every_noninitial_claim,
-            crate::deletion::history::Fact::Authenticated
+            crate::deletion::history::Fact::Unproven
         );
         assert_eq!(
             report.terminal_source,
@@ -128,6 +128,7 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
     issuer.version = 1;
     issuer.sequence = 2;
     issuer.ownership_handoff = None;
+    issuer.state.token = crabber_core::InputFingerprint::new("e".repeat(64)).unwrap();
     issuer.validate().unwrap();
     state.native_run_issuances.insert(
         (receipt.session_id.clone(), receipt.run_id.clone(), 2),

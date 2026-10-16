@@ -1,5 +1,6 @@
 //! Narrow current fence and the independent immutable issuance chain.
 //! Missing legacy issuance never becomes positive ownership coverage.
+mod claims;
 mod sources;
 mod terminal;
 use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
@@ -59,10 +60,10 @@ async fn journal(
 ) -> Result<(
     Option<RunIssuance>,
     Option<RunState>,
-    crate::deletion::history::Fact,
+    crate::deletion::history::ClaimHistory,
 )> {
     let mut after = 0_i64;
-    let mut latest = None;
+    let mut latest: Option<RunIssuance> = None;
     let mut initial = None;
     let mut claims = NoninitialClaims::default();
     loop {
@@ -76,7 +77,7 @@ async fn journal(
             .map_err(unknown)?;
         if rows.is_empty() {
             let claims = claims.finish(initial.is_some());
-            return Ok((initial, latest, claims));
+            return Ok((initial, latest.map(|issuer| issuer.state), claims));
         }
         for row in &rows {
             proof.charge(
@@ -102,12 +103,15 @@ async fn journal(
             {
                 return Err(unknown("Run issuance scope"));
             }
-            claims.observe(&source);
+            let cursor = Box::pin(claims::source(tx, latest.as_ref(), &source, proof)).await?;
+            claims
+                .observe(latest.as_ref(), &source, cursor)
+                .map_err(unknown)?;
             after = sequence;
-            latest = Some(source.state.clone());
             if sequence == 1 {
-                initial = Some(source);
+                initial = Some(source.clone());
             }
+            latest = Some(source);
         }
     }
 }

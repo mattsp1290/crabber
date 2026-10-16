@@ -260,3 +260,6 @@ pub(crate) mod cancellation;
 pub(crate) mod frontend;
 #[path = "preparation_contract/resources.rs"]
 pub(crate) mod resources;
+
+#[path = "preparation_contract/claim_history.rs"]
+pub(crate) mod claim_history;

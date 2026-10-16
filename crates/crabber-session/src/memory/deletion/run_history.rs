@@ -4,10 +4,12 @@
 mod abandonment;
 #[path = "run_history/approval.rs"]
 mod approval;
+#[path = "run_history/claims.rs"]
+mod claims;
 #[path = "run_history/waiting.rs"]
 mod waiting;
 use super::super::{OperationReceipt, State};
-use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
+use crate::deletion::history::RunHistoryReport;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{EventKind, Run, SessionId};
 
@@ -28,16 +30,7 @@ pub(super) fn verify(
 }
 fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
     input(state, run, proof)?;
-    let mut claims = NoninitialClaims::default();
-    let mut initial_present = false;
-    for ((session, id, sequence), issuance) in &state.native_run_issuances {
-        if session != &run.session_id || id != &run.id {
-            continue;
-        }
-        proof.measure(&(session, id, sequence, issuance))?;
-        claims.observe(issuance);
-        initial_present |= *sequence == 1;
-    }
+    let (initial_present, claims) = claims::read(state, &run.session_id, &run.id, proof)?;
     let terminal = terminal(state, run, proof)?;
     let approved = approval::verify(state, run, proof)?;
     let cancelled = waiting::verify(state, run, proof)?;
@@ -46,7 +39,7 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
         initial_present
             && state.preparation_admissions.contains_key(&run.id)
             && state.admission_execution_protocols.contains(&run.id),
-        claims.finish(initial_present),
+        claims,
         terminal || approved || abandoned || cancelled,
     ))
 }

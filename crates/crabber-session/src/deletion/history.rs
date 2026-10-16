@@ -19,18 +19,20 @@ impl Fact {
 pub(crate) struct RunHistoryReport {
     pub(crate) initial_source: Fact,
     pub(crate) every_noninitial_claim: Fact,
+    pub(crate) retained_noninitial_sources: Fact,
     pub(crate) terminal_source: Fact,
     pub(crate) main_join: Fact,
     pub(crate) resource_policy: Fact,
 }
 impl RunHistoryReport {
-    pub(crate) fn sources(initial: bool, claims: Fact, terminal: bool) -> Self {
+    pub(crate) fn sources(initial: bool, claims: ClaimHistory, terminal: bool) -> Self {
         Self {
             initial_source: Fact::from_verified(initial),
-            every_noninitial_claim: claims,
+            every_noninitial_claim: claims.complete,
+            retained_noninitial_sources: claims.retained_sources,
             terminal_source: Fact::from_verified(terminal),
-            // No independently source-bound post-worker join or fixed whole-Run
-            // library policy is published by the current Runtime.
+            // No verifier here authenticates a complete per-Run join inventory
+            // or a fixed whole-Run library resource policy.
             main_join: Fact::Unproven,
             resource_policy: Fact::Unproven,
         }
@@ -39,6 +41,7 @@ impl RunHistoryReport {
         [
             self.initial_source,
             self.every_noninitial_claim,
+            self.retained_noninitial_sources,
             self.terminal_source,
             self.main_join,
             self.resource_policy,
@@ -47,26 +50,87 @@ impl RunHistoryReport {
         .all(|fact| fact == Fact::Authenticated)
     }
 }
-/// Streaming fold; no history-sized collection. Noninitial issuances require
-/// their original native claim and qualified preparation completion reader.
+/// Retained associations and complete historical membership are independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClaimHistory {
+    pub(crate) retained_sources: Fact,
+    pub(crate) complete: Fact,
+}
+/// Streaming retained-source fold, keeping only the last authenticated cursor.
+/// Present rows cannot prove that the tail or an entire claim was never erased.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NoninitialClaims(Fact);
+pub(crate) struct NoninitialClaims {
+    retained: Fact,
+    last_control: Option<crabber_core::EventCursor>,
+}
 impl Default for NoninitialClaims {
     fn default() -> Self {
-        Self(Fact::Authenticated)
+        Self {
+            retained: Fact::Authenticated,
+            last_control: None,
+        }
     }
 }
 impl NoninitialClaims {
-    pub(crate) fn observe(&mut self, issuance: &crate::native_parent::RunIssuance) {
-        if issuance.sequence > 1 {
-            self.0 = Fact::Unproven;
+    /// `control` comes only from the independently authenticated original native
+    /// receipt/event after `completion_history::verify_control` succeeds.
+    pub(crate) fn observe(
+        &mut self,
+        previous: Option<&crate::native_parent::RunIssuance>,
+        current: &crate::native_parent::RunIssuance,
+        control: Option<crabber_core::EventCursor>,
+    ) -> Result<(), crate::native_parent::Error> {
+        use crate::native_parent::Error;
+        if crate::snapshot::encoded_bytes(current, 2048).is_none() {
+            return Err(Error);
         }
-    }
-    pub(crate) fn finish(self, initial_present: bool) -> Fact {
-        if initial_present {
-            self.0
+        current.validate()?;
+        let Some(previous) = previous else {
+            return if current.sequence == 1 && control.is_none() {
+                Ok(())
+            } else {
+                Err(Error)
+            };
+        };
+        previous.validate()?;
+        if current.sequence != previous.sequence.checked_add(1).ok_or(Error)?
+            || current.state.session_id != previous.state.session_id
+            || current.state.run_id != previous.state.run_id
+            || current.state == previous.state
+        {
+            return Err(Error);
+        }
+        if current.state.token == previous.state.token {
+            // Status-only publications preserve the existing fence. They cannot
+            // acquire or repeat a preparation/native claim association.
+            return if current.completion_source.is_none() && control.is_none() {
+                Ok(())
+            } else {
+                Err(Error)
+            };
+        }
+        if let Some(cursor) = control {
+            if current.completion_source.is_none()
+                || self.last_control.is_some_and(|last| cursor <= last)
+            {
+                return Err(Error);
+            }
+            self.last_control = Some(cursor);
         } else {
-            Fact::Unproven
+            self.retained = Fact::Unproven;
+        }
+        Ok(())
+    }
+    pub(crate) fn finish(self, initial_present: bool) -> ClaimHistory {
+        ClaimHistory {
+            retained_sources: if initial_present {
+                self.retained
+            } else {
+                Fact::Unproven
+            },
+            // No independent monotonic membership/head protocol exists yet.
+            // Even no retained rotations cannot authenticate their absence.
+            complete: Fact::Unproven,
         }
     }
 }

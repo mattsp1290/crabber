@@ -41,6 +41,34 @@ pub(super) async fn event_with_limit(
     proof: &mut Proof,
 ) -> Result<crabber_core::EventRecord, crate::public_session::v2::proof::ReadError<crate::StoreError>>
 {
+    event_record(tx, session, cursor, previous, maximum, proof, false).await
+}
+/// Native continuation audits were atomically stored with cursor zero before
+/// allocation. Only this domain accepts that canonical placeholder; the indexed
+/// cursor, session/run routing and the original receipt are still authenticated.
+pub(super) async fn control_event(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &crabber_core::SessionId,
+    cursor: crabber_core::EventCursor,
+    proof: &mut Proof,
+) -> Result<crabber_core::EventRecord, crate::public_session::v2::proof::ReadError<crate::StoreError>>
+{
+    let event = event_record(tx, session, cursor, false, 65536, proof, true).await?;
+    if event.kind != crabber_core::EventKind::ContinuationChanged {
+        return Err(crate::StoreError::AdmissionConflict.into());
+    }
+    Ok(event)
+}
+async fn event_record(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &crabber_core::SessionId,
+    cursor: crabber_core::EventCursor,
+    previous: bool,
+    maximum: usize,
+    proof: &mut Proof,
+    control_placeholder: bool,
+) -> Result<crabber_core::EventRecord, crate::public_session::v2::proof::ReadError<crate::StoreError>>
+{
     use crate::public_session::v2::proof::ReadError;
     let comparison = if previous { "<" } else { "=" };
     let predicate = format!("session_id=$1 AND seq{comparison}$2 ORDER BY seq DESC LIMIT 1");
@@ -77,7 +105,9 @@ pub(super) async fn event_with_limit(
         crate::public_state::decode_event(sqlx::types::Json(
             serde_json::from_str(&text).map_err(|_| crate::StoreError::AdmissionConflict)?,
         ))?;
-    if event.cursor.is_some_and(|cursor| cursor != actual)
+    if event
+        .cursor
+        .is_some_and(|cursor| cursor != actual && !(control_placeholder && cursor.0 == 0))
         || event.session_id != *session
         || row
             .try_get::<Option<String>, _>("run_id")
