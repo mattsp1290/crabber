@@ -35,6 +35,8 @@ pub enum SessionOwnerError {
     LiveOwner,
     #[error("session owner transition is invalid")]
     InvalidTransition,
+    #[error("session owner cancellation was already requested")]
+    CancellationPending,
     #[error("session ownership capacity exceeded")]
     Capacity,
     #[error("session ownership storage outcome unknown")]
@@ -90,6 +92,8 @@ pub struct SessionOwnerSnapshot {
     pub target: SessionOwnerTarget,
     pub state: SessionOwnerState,
     pub termination: Option<SessionOwnerTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<SessionOwnerCancellation>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -156,6 +160,8 @@ pub enum SessionOwnerOperation {
     MarkUncertain,
     ReclaimUnstarted,
     ResolveJoined,
+    RequestCancel,
+    ObserveCancel,
 }
 /// Original operation metadata. It is never a replacement private grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,5 +338,14 @@ pub enum SessionOwnerParentAuthority {
 
 pub mod preparation;
 
+pub mod cancellation;
+pub use cancellation::{
+    ObserveSessionOwnerCancel, RequestSessionOwnerCancel, SessionOwnerCancelObservation,
+    SessionOwnerCancellation,
+};
+
 #[cfg(test)]
 pub(crate) mod preparation_contract;
+
+#[cfg(test)]
+pub(crate) mod cancellation_contract;

@@ -400,6 +400,38 @@ pub trait Store: Send + Sync {
     > {
         Err(StoreError::HostUnsupported.into())
     }
+    /// Durable signal request/observation support, independent of local registries.
+    fn supports_session_owner_cancellation(&self) -> bool {
+        false
+    }
+    /// Record one exact existing-owner cancellation intent. No execution grant.
+    async fn request_session_owner_cancel(
+        &self,
+        _request: crate::session_owner::RequestSessionOwnerCancel,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Acknowledge the actual local signal; expiry alone cannot imply observation.
+    async fn observe_session_owner_cancel(
+        &self,
+        _request: crate::session_owner::ObserveSessionOwnerCancel,
+        _authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Authenticated current intent only, including an already observed request.
+    /// An expired unchanged authority can read it without renewing/reviving work.
+    async fn pending_session_owner_cancel(
+        &self,
+        _authority: &crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerCancellation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     async fn mutate_session_owner(
         &self,
         _request: crate::session_owner::MutateSessionOwner,

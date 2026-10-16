@@ -656,6 +656,33 @@ impl Store for MemoryStore {
     > {
         self.complete_preparation(&joined)
     }
+    fn supports_session_owner_cancellation(&self) -> bool {
+        true
+    }
+    async fn request_session_owner_cancel(
+        &self,
+        request: crate::session_owner::RequestSessionOwnerCancel,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.request_owner_cancel(&request)
+    }
+    async fn observe_session_owner_cancel(
+        &self,
+        request: crate::session_owner::ObserveSessionOwnerCancel,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.observe_owner_cancel(&request, &authority)
+    }
+    async fn pending_session_owner_cancel(
+        &self,
+        authority: &crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerCancellation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.pending_owner_cancel(authority)
+    }
     async fn mutate_session_owner(
         &self,
         request: crate::session_owner::MutateSessionOwner,

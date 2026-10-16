@@ -122,3 +122,46 @@ currently reports failure correlation and drops its retained completion on
 error; finite runtime resource disposition and recovery remain required
 follow-up work. Native retained-completion tests do not establish runtime
 failure recovery. Descriptors alone grant no cleanup authority.
+
+`Store::supports_session_owner_cancellation()` identifies adapters with durable
+owner cancellation. `RequestSessionOwnerCancel` targets one exact owner and
+generation. `expected_revision: None` requires that the Session is still absent;
+`Some(R)` requires the existing Session at R. The host authenticates its caller
+and supplies a bounded resolver assertion. Storage records that assertion
+privately. One accepted request remains attached to the owner for its lifetime;
+its original key replays metadata, while changed semantics conflict. Requests
+and observations publish a public revision, or advance the immutable absent
+publication clock before a Session exists. Both invalidate preparation lineage,
+including when they target the preparation itself.
+
+`pending_session_owner_cancel` authenticates the retained private authority.
+`ObserveSessionOwnerCancel` acknowledges that the actual supervisor has signalled
+its local cancellation token. It preserves owner state, token and lease. An
+expired but unchanged authority may acknowledge that signal; a rotated token or
+generation refuses it. Observation grants no right to resume effects, renew a
+lease, reclaim ownership or publish a Join. Cancellation also blocks Unstarted
+reclaim. Immutable original request and observation audits supplement current
+proof checks; selected carriers retain the existing 32 KiB cap. Original-key
+receipt replay runs before current-state validation and returns no authority.
+Optional cancellation fields are omitted for uncancelled records. Older strict
+readers reject cancelled records and the new operations instead of silently
+stripping their metadata.
+
+The runtime's retained session-invocation supervisor checks pending cancellation
+after Begin acknowledgement and before calling the task factory, then every five
+seconds while the task or its child cleanup remains outstanding. It cancels the
+actual token before publishing observation and retries an unknown observation
+acknowledgement with the same operation key. Task factories never rerun for that
+retry. Cooperative return still requires actual task and resource joins before
+Join. Noncooperative, killed or remote workers remain durable blockers. A cold
+Agent can request cancellation and read safe owner/receipt metadata, including
+after local extension close; it cannot signal a remote process by itself.
+
+Preparation checks pending cancellation after fresh Begin acknowledgement and
+before its factory task starts. An already pending request returns
+`PreparationIncomplete` with the original descriptor and leaves the owner Active.
+There is no task or local signal at that boundary, so it publishes neither an
+observation nor a Join. Cancellation of already running preparation factories,
+retained preparation resources, and linked services requires the later resource
+ownership integration. This checkpoint establishes no complete coverage or
+deletion readiness.

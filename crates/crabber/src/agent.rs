@@ -16,6 +16,7 @@ mod phase;
 mod preparation;
 mod public_session;
 mod run_control;
+mod session_owner;
 use crate::ExecutionContext;
 pub use approval::Continuation;
 use async_trait::async_trait;

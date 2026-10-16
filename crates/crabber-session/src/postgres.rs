@@ -837,6 +837,33 @@ impl Store for PostgresStore {
     {
         Box::pin(self.reserve_owner(request, parent)).await
     }
+    fn supports_session_owner_cancellation(&self) -> bool {
+        true
+    }
+    async fn request_session_owner_cancel(
+        &self,
+        request: crate::session_owner::RequestSessionOwnerCancel,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.request_owner_cancel(request)).await
+    }
+    async fn observe_session_owner_cancel(
+        &self,
+        request: crate::session_owner::ObserveSessionOwnerCancel,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.observe_owner_cancel(request, authority)).await
+    }
+    async fn pending_session_owner_cancel(
+        &self,
+        authority: &crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerCancellation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Box::pin(self.pending_owner_cancel(authority)).await
+    }
     fn supports_preparation_protocol(&self) -> bool {
         true
     }

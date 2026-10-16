@@ -240,3 +240,150 @@ fn session_owner_deleted_audit_cannot_reuse_independent_publication_key() {
             .contains_key(&(begin.session_id, foreign.binding.id))
     );
 }
+
+#[test]
+fn cancellation_sources_and_absence_are_independently_authenticated() {
+    use crate::session_owner::cancellation_contract::{observe, request};
+    let reservation = crate::session_owner_contract::reservation(SessionId::new());
+    let mut ledger = Ledger::default();
+    let SessionOwnerOutcome::Applied {
+        receipt: reserved,
+        authority: Some(authority),
+    } = ledger
+        .reserve(&reservation, OffsetDateTime::UNIX_EPOCH)
+        .unwrap()
+    else {
+        panic!("reserve")
+    };
+    let request = request(&reserved.owner, None);
+    let revision = RevisionState::Absent(ledger.publication_count(&request.session_id));
+    ledger
+        .request_cancel(&request, revision, OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    let begin = MutateSessionOwner {
+        id: SessionOwnerOperationId::new(),
+        session_id: request.session_id.clone(),
+        target: request.target.clone(),
+        command: SessionOwnerCommand::Begin,
+    };
+    ledger
+        .mutate(&begin, Some(&authority), OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    let key = (request.session_id.clone(), request.target.id.clone());
+    let unobserved = ledger.records[&key].clone();
+    let observation = observe(&request);
+    let revision = RevisionState::Absent(ledger.publication_count(&request.session_id));
+    ledger
+        .observe_cancel(
+            &observation,
+            &authority,
+            revision,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+    assert_eq!(ledger.records[&key].token, unobserved.token);
+    assert_eq!(ledger.records[&key].lease_until, unobserved.lease_until);
+    let renew = MutateSessionOwner {
+        id: SessionOwnerOperationId::new(),
+        session_id: request.session_id.clone(),
+        target: request.target.clone(),
+        command: SessionOwnerCommand::Renew { lease_ms: 100 },
+    };
+    ledger
+        .mutate(&renew, Some(&authority), OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    let correct = ledger.clone();
+    for case in 0..6 {
+        let mut ledger = correct.clone();
+        corrupt_cancellation_evidence(&mut ledger, &key, &request, &observation, &unobserved, case);
+        assert_eq!(
+            ledger.snapshot(&request.session_id, &request.target.id),
+            Err(Error::UnknownStoreOutcome),
+            "case{case}"
+        );
+        assert_eq!(
+            ledger.pending_cancel(&authority),
+            Err(Error::UnknownStoreOutcome),
+            "case{case}"
+        );
+        let before = ledger.publication_count(&request.session_id);
+        let mut fresh = request.clone();
+        fresh.id = SessionOwnerOperationId::new();
+        assert!(
+            matches!(
+                ledger.request_cancel(
+                    &fresh,
+                    RevisionState::Absent(before),
+                    OffsetDateTime::UNIX_EPOCH
+                ),
+                Err(Error::UnknownStoreOutcome)
+            ),
+            "case{case}"
+        );
+        assert_eq!(ledger.publication_count(&request.session_id), before);
+        assert!(
+            matches!(ledger.reserve(&reservation,OffsetDateTime::UNIX_EPOCH).unwrap(),SessionOwnerOutcome::Replayed(receipt) if receipt==reserved)
+        );
+        if case < 3 || case == 4 {
+            assert!(matches!(
+                ledger
+                    .request_cancel(
+                        &request,
+                        RevisionState::Absent(before),
+                        OffsetDateTime::UNIX_EPOCH
+                    )
+                    .unwrap(),
+                SessionOwnerOutcome::Replayed(_)
+            ));
+        }
+    }
+}
+
+fn corrupt_cancellation_evidence(
+    ledger: &mut Ledger,
+    key: &(SessionId, SessionOwnerId),
+    request: &crate::session_owner::RequestSessionOwnerCancel,
+    observation: &crate::session_owner::ObserveSessionOwnerCancel,
+    unobserved: &Record,
+    case: u8,
+) {
+    match case {
+        0 => {
+            let record = ledger.records.get_mut(key).unwrap();
+            record.cancellation = None;
+            record.snapshot.cancellation = None;
+        }
+        1 => ledger
+            .records
+            .get_mut(key)
+            .unwrap()
+            .cancellation
+            .as_mut()
+            .unwrap()
+            .request
+            .claim
+            .authority_claim
+            .push('!'),
+        2 => {
+            ledger.records.insert(key.clone(), unobserved.clone());
+        }
+        3 => {
+            ledger
+                .audits
+                .remove(&(request.session_id.clone(), request.id.clone()));
+        }
+        4 => {
+            ledger
+                .audits
+                .remove(&(request.session_id.clone(), observation.id.clone()));
+        }
+        _ => {
+            ledger
+                .audits
+                .get_mut(&(request.session_id.clone(), request.id.clone()))
+                .unwrap()
+                .record
+                .owner = "x".repeat(1024 * 1024);
+        }
+    }
+}

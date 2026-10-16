@@ -123,3 +123,31 @@ async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
     tx.rollback().await.unwrap();
     crate::session_owner::preparation_contract::absent::relabel_refuses(&store, grant, bound).await;
 }
+
+#[tokio::test]
+async fn owner_cancellation_contract() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    crate::session_owner::cancellation_contract::run(&store, &clock).await;
+    super::cancellation_tests::corruption(&store).await;
+    crate::session_owner::cancellation_contract::faults::run(&store, |point| {
+        store
+            .session_owner_fault
+            .store(point, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await;
+    crate::session_owner_contract::process::run_cancellation(
+        &store,
+        "postgres::session_owner::tests::session_owner_process_helper",
+        None,
+    )
+    .await;
+}

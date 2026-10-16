@@ -1,4 +1,5 @@
 //! SQL ownership transactions. The session gate includes pre-session reservations.
+mod cancellation;
 mod parent;
 mod preflight;
 mod preparation;
@@ -26,6 +27,8 @@ fn operation(value: SessionOwnerOperation) -> &'static str {
         SessionOwnerOperation::MarkUncertain => "MarkUncertain",
         SessionOwnerOperation::ReclaimUnstarted => "ReclaimUnstarted",
         SessionOwnerOperation::ResolveJoined => "ResolveJoined",
+        SessionOwnerOperation::RequestCancel => "RequestCancel",
+        SessionOwnerOperation::ObserveCancel => "ObserveCancel",
     }
 }
 fn state(value: SessionOwnerState) -> &'static str {
@@ -369,3 +372,6 @@ async fn revision(
         )),
     }
 }
+
+#[cfg(test)]
+mod cancellation_tests;

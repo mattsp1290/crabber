@@ -1,4 +1,5 @@
 //! Retained registration and actual joins, independent of the parent run.
+mod cancellation;
 mod registration;
 mod worker;
 use async_trait::async_trait;
@@ -39,6 +40,7 @@ struct Invocation {
     session: SessionId,
     request: Request,
     cancel: CancellationToken,
+    cancel_observation: Mutex<Option<crabber_session::session_owner::ObserveSessionOwnerCancel>>,
     status: Mutex<SessionInvocationStatus>,
     resources: crabber_extension::ToolResourceOwner,
     join: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -211,6 +213,7 @@ impl SessionInvocationSpawner for BoundSpawner {
                     session: self.parent.session.clone(),
                     request: request.clone(),
                     cancel: CancellationToken::new(),
+                    cancel_observation: Mutex::new(None),
                     status: Mutex::new(SessionInvocationStatus::Registering),
                     resources: crabber_extension::ToolResourceOwner::new(),
                     join: tokio::sync::Mutex::new(None),

@@ -79,6 +79,10 @@ impl Audit {
             }
         }
         let valid = match self.receipt.operation {
+            SessionOwnerOperation::RequestCancel | SessionOwnerOperation::ObserveCancel => {
+                crate::session_owner::cancellation::proof::operation(self)?;
+                true
+            }
             SessionOwnerOperation::Reserve => {
                 self.record.sequence == 1
                     && self.record.snapshot.state == SessionOwnerState::ReservedUnstarted

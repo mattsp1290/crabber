@@ -98,10 +98,20 @@ mod session_owner_record;
 #[allow(dead_code)]
 mod session_owner_validation;
 
+#[path = "fenced_support/cancellation.rs"]
+#[allow(dead_code)]
+mod session_owner_cancellation;
+
+#[path = "../../crabber-session/src/session_owner/cancellation_contract.rs"]
+#[allow(dead_code)]
+mod session_owner_cancellation_contract;
+
 mod session_owner {
     pub(crate) use crate::preparation;
     pub(crate) use crate::preparation_contract;
     pub(crate) use crate::session_owner_audit as audit;
+    pub(crate) use crate::session_owner_cancellation as cancellation;
+    pub(crate) use crate::session_owner_cancellation_contract as cancellation_contract;
     pub(crate) use crate::session_owner_ledger::Ledger;
     pub(crate) use crate::session_owner_record as record;
     pub(crate) use crate::session_owner_validation as validation;

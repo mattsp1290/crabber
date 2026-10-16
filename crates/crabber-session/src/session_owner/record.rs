@@ -17,6 +17,8 @@ pub(crate) struct Record {
     pub origin: SessionOwnerOperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<super::preparation::Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
     pub parent: Option<crate::native_parent::Witness>,
     pub sequence: u64,
     pub owner: String,
@@ -42,11 +44,13 @@ impl Record {
                 },
                 state: SessionOwnerState::ReservedUnstarted,
                 termination: None,
+                cancellation: None,
                 created_at: now,
                 updated_at: now,
             },
             origin: request.id.clone(),
             preparation: None,
+            cancellation: None,
             parent,
             sequence: 1,
             owner: request.owner.clone(),
@@ -80,6 +84,14 @@ impl Record {
                 || self.snapshot.binding.kind
                     != crate::session_owner::SessionOwnerKind::Preparation)
         {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if let Some(cancellation) = &self.cancellation {
+            cancellation
+                .validate(self)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
+        if self.snapshot.cancellation != self.cancellation.as_ref().map(|value| value.summary()) {
             return Err(Error::UnknownStoreOutcome);
         }
         match (&self.snapshot.binding.parent, &self.parent) {
@@ -203,6 +215,9 @@ impl Record {
                 true
             }
             SessionOwnerCommand::ReclaimUnstarted { owner, lease_ms } => {
+                if self.cancellation.is_some() {
+                    return Err(Error::CancellationPending);
+                }
                 if self.lease_until > now {
                     return Err(Error::LiveOwner);
                 }
@@ -229,6 +244,14 @@ impl Record {
                 true
             }
         };
+        self.publish_change(now, public_change)?;
+        Ok(public_change)
+    }
+    pub(crate) fn publish_change(
+        &mut self,
+        now: OffsetDateTime,
+        public_change: bool,
+    ) -> Result<(), Error> {
         self.version = 2;
         self.sequence = self
             .sequence
@@ -238,8 +261,7 @@ impl Record {
         if public_change {
             self.snapshot.updated_at = now;
         }
-        self.validate()?;
-        Ok(public_change)
+        self.validate()
     }
     fn join(&mut self, termination: SessionOwnerTermination) {
         self.snapshot.state = SessionOwnerState::Joined;

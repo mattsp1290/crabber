@@ -546,3 +546,5 @@ async fn postgres_detached_job_outlives_parent_and_archival() {
         journey_archived(Arc::new(store.clone()), archived).await;
     }
 }
+#[path = "session_invocations/cancellation.rs"]
+mod cancellation;

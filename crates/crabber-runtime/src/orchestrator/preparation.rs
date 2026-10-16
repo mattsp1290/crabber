@@ -174,9 +174,22 @@ impl Orchestrator {
                 ));
             }
         };
+        self.begin_preparation_owner(&reservation, &authority)
+            .await
+            .map_err(|error| incomplete(descriptor.clone(), error))?;
+        self.ensure_preparation_not_cancelled(&authority)
+            .await
+            .map_err(|error| incomplete(descriptor, error.into()))?;
+        Ok(PreparationGrant::from_fresh_begin(reservation, authority)?)
+    }
+    async fn begin_preparation_owner(
+        &self,
+        reservation: &ReservePreparation,
+        authority: &crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<(), RuntimeError> {
         let begin = MutateSessionOwner {
             id: reservation.reconciliation()?.begin_id,
-            session_id: session.clone(),
+            session_id: reservation.owner.binding.session_id.clone(),
             target: authority.target().clone(),
             command: SessionOwnerCommand::Begin,
         };
@@ -185,16 +198,28 @@ impl Orchestrator {
             .mutate_session_owner(begin, Some(authority.clone()))
             .await
         {
-            Ok(SessionOwnerOutcome::Applied { .. }) => (),
-            Ok(_) => {
-                return Err(incomplete(
-                    descriptor,
-                    StoreError::AdmissionRecoveryRequired.into(),
-                ));
-            }
-            Err(error) => return Err(incomplete(descriptor, error.into())),
+            Ok(SessionOwnerOutcome::Applied { .. }) => Ok(()),
+            Ok(_) => Err(StoreError::AdmissionRecoveryRequired.into()),
+            Err(error) => Err(error.into()),
         }
-        Ok(PreparationGrant::from_fresh_begin(reservation, authority)?)
+    }
+    async fn ensure_preparation_not_cancelled(
+        &self,
+        authority: &crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<(), crabber_session::session_owner::SessionOwnerError> {
+        if self.store.supports_session_owner_cancellation() {
+            // No factory task or real signal exists yet. Preserve the blocker
+            // without inventing Observe or Join evidence.
+            if self
+                .store
+                .pending_session_owner_cancel(authority)
+                .await?
+                .is_some()
+            {
+                return Err(crabber_session::session_owner::SessionOwnerError::CancellationPending);
+            }
+        }
+        Ok(())
     }
     pub(super) async fn finish_durable_preparation<T: Send + 'static>(
         &self,

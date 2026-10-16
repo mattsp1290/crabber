@@ -135,6 +135,7 @@ pub(super) async fn current(
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     verify_current(&record, &origin, &latest)?;
+    verify_cancellation(tx, &record).await?;
     context(
         tx,
         session,
@@ -210,3 +211,31 @@ pub(super) async fn has_preparation(
 
 pub(super) use publications::{preparation_order, publication_count};
 mod publications;
+
+async fn verify_cancellation(
+    tx: &mut Transaction<'_, Sqlite>,
+    record: &Record,
+) -> Result<(), Error> {
+    let Some(cancel) = &record.cancellation else {
+        return Ok(());
+    };
+    let request = audit(tx, &record.snapshot.binding.session_id, &cancel.request.id)
+        .await?
+        .map(Box::new);
+    let observed = if let Some(observed) = &cancel.observed {
+        audit(
+            tx,
+            &record.snapshot.binding.session_id,
+            &observed.request.id,
+        )
+        .await?
+        .map(Box::new)
+    } else {
+        None
+    };
+    crate::session_owner::cancellation::proof::sources(
+        record,
+        request.as_deref(),
+        observed.as_deref(),
+    )
+}

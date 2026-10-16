@@ -1997,6 +1997,9 @@ struct SettlementGate {
     terminal_reads: AtomicUsize,
     reject_run_reads: std::sync::atomic::AtomicBool,
     session_owner_ack_lost: AtomicUsize,
+    session_owner_cancel_on_begin: AtomicUsize,
+    owner_observe_ack_lost: std::sync::atomic::AtomicBool,
+    owner_observe_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
 }
 
 struct DelayedTerminalStore {
@@ -2096,6 +2099,53 @@ impl Store for DelayedTerminalStore {
         Ok(completed)
     }
 
+    fn supports_session_owner_cancellation(&self) -> bool {
+        true
+    }
+    async fn request_session_owner_cancel(
+        &self,
+        request: crabber_session::session_owner::RequestSessionOwnerCancel,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.request_session_owner_cancel(request).await
+    }
+    async fn pending_session_owner_cancel(
+        &self,
+        authority: &crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        Option<crabber_session::session_owner::SessionOwnerCancellation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.pending_session_owner_cancel(authority).await
+    }
+    async fn observe_session_owner_cancel(
+        &self,
+        request: crabber_session::session_owner::ObserveSessionOwnerCancel,
+        authority: crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.gate
+            .owner_observe_keys
+            .lock()
+            .unwrap()
+            .push(request.id.clone());
+        let result = self
+            .inner
+            .observe_session_owner_cancel(request, authority)
+            .await?;
+        if self
+            .gate
+            .owner_observe_ack_lost
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
     fn supports_session_owners(&self) -> bool {
         true
     }
@@ -2138,7 +2188,13 @@ impl Store for DelayedTerminalStore {
             crabber_session::session_owner::SessionOwnerCommand::Join { .. } => 3,
             _ => 0,
         };
+        let scope = request.session_id.clone();
+        let target = request.target.clone();
         let result = self.inner.mutate_session_owner(request, authority).await?;
+        if fault == 2 {
+            self.cancel_before_begin_ack(scope, target, detached)
+                .await?;
+        }
         if detached
             && fault != 0
             && self
@@ -3756,4 +3812,55 @@ async fn interruption_during_provider_backoff_is_prompt_and_never_retries() {
     );
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
     assert_eq!(fake.requests().len(), 1);
+}
+
+impl DelayedTerminalStore {
+    async fn cancel_before_begin_ack(
+        &self,
+        session: SessionId,
+        target: crabber_session::session_owner::SessionOwnerTarget,
+        detached: bool,
+    ) -> Result<(), crabber_session::session_owner::SessionOwnerError> {
+        use crabber_session::session_owner::{
+            RequestSessionOwnerCancel, SessionOwnerError, SessionOwnerResolver,
+        };
+        let mode = if detached { 2 } else { 1 };
+        if self
+            .gate
+            .session_owner_cancel_on_begin
+            .compare_exchange(mode, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let expected_revision = if self
+            .inner
+            .get_session(&session)
+            .await
+            .map_err(|_| SessionOwnerError::UnknownStoreOutcome)?
+            .is_some()
+        {
+            Some(
+                self.inner
+                    .session_revision(&session)
+                    .await
+                    .map_err(|_| SessionOwnerError::UnknownStoreOutcome)?,
+            )
+        } else {
+            None
+        };
+        self.inner
+            .request_session_owner_cancel(RequestSessionOwnerCancel {
+                id: crabber_core::SessionOwnerOperationId::new(),
+                session_id: session,
+                target,
+                expected_revision,
+                claim: SessionOwnerResolver {
+                    resolver_id: "test controller".into(),
+                    authority_claim: "cancel before Begin ACK".into(),
+                },
+            })
+            .await?;
+        Ok(())
+    }
 }

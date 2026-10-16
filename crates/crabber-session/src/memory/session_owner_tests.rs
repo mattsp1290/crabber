@@ -194,3 +194,14 @@ async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
         .relabel_renew_for_test(&bound.binding.request.session_id, &join);
     crate::session_owner::preparation_contract::absent::relabel_refuses(&store, grant, bound).await;
 }
+
+#[tokio::test]
+async fn owner_cancellation_contract() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let store = super::MemoryStore::with_clock(clock.clone());
+    crate::session_owner::cancellation_contract::run(&store, &clock).await;
+    crate::session_owner::cancellation_contract::faults::run(&store, |value| {
+        store.session_owner_fault.store(value, Ordering::SeqCst);
+    })
+    .await;
+}

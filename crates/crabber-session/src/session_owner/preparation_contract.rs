@@ -251,3 +251,6 @@ mod retry;
 
 #[path = "preparation_contract/absent.rs"]
 pub(crate) mod absent;
+
+#[path = "preparation_contract/cancellation.rs"]
+pub(crate) mod cancellation;

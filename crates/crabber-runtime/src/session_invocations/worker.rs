@@ -36,6 +36,7 @@ pub(super) async fn run(
         }
     };
     invocation.status(SessionInvocationStatus::Active);
+    super::cancellation::poll(&*store, &invocation, &authority).await;
     let resources = invocation.resources.clone();
     let context = crabber_extension::SessionInvocationContext {
         cancel: invocation.cancel.clone(),
@@ -152,6 +153,7 @@ pub(super) fn discard_panic(error: tokio::task::JoinError) {
     }
 }
 async fn renew(store: &dyn Store, invocation: &Invocation, authority: &SessionOwnerAuthority) {
+    super::cancellation::poll(store, invocation, authority).await;
     let renew = MutateSessionOwner {
         id: crabber_core::SessionOwnerOperationId::new(),
         session_id: authority.session_id().clone(),

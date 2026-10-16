@@ -1,4 +1,6 @@
 //! Session owner controls under the ordinary Memory mutation gate.
+#[path = "session_owner/cancellation.rs"]
+mod cancellation;
 #[path = "session_owner/preparation.rs"]
 mod preparation;
 use super::{MemoryStore, State, bump_public_revision};

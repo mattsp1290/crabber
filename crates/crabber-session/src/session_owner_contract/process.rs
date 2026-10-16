@@ -8,6 +8,12 @@ use std::{
 };
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Operation {
+    RequestCancel(crate::session_owner::RequestSessionOwnerCancel),
+    ActiveUntilKilled(ReserveSessionOwner),
+    VerifyCancel {
+        request: crate::session_owner::RequestSessionOwnerCancel,
+        committed: bool,
+    },
     Reserve(ReserveSessionOwner),
     Preparation(crate::session_owner::preparation::ReservePreparation),
     VerifyPreparation {
@@ -36,6 +42,52 @@ pub(crate) fn pause(point: &str) {
 }
 pub(crate) async fn execute(store: &impl Store, command: Operation) {
     match command {
+        Operation::RequestCancel(request) => {
+            store.request_session_owner_cancel(request).await.unwrap();
+        }
+        Operation::ActiveUntilKilled(request) => {
+            let (receipt, authority) =
+                applied(store.reserve_session_owner(request, None).await.unwrap());
+            store
+                .mutate_session_owner(
+                    mutation(&receipt.owner, SessionOwnerCommand::Begin),
+                    authority,
+                )
+                .await
+                .unwrap();
+            pause("active");
+        }
+        Operation::VerifyCancel { request, committed } => {
+            let receipt = store
+                .lookup_session_owner(&request.session_id, &request.id)
+                .await
+                .unwrap();
+            assert_eq!(receipt.is_some(), committed);
+            if let Some(receipt) = receipt {
+                assert!(
+                    matches!(store.request_session_owner_cancel(request.clone()).await.unwrap(),SessionOwnerOutcome::Replayed(saved) if saved==receipt)
+                );
+            }
+            let owner = store
+                .get_session_owner(&request.session_id, &request.target.id)
+                .await
+                .unwrap();
+            assert_ne!(owner.state, SessionOwnerState::Joined);
+            assert_eq!(owner.cancellation.is_some(), committed);
+            assert!(
+                owner
+                    .cancellation
+                    .is_none_or(|cancel| cancel.observed.is_none())
+            );
+            assert!(
+                store
+                    .get_session(&request.session_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
         Operation::Reserve(request) => {
             store.reserve_session_owner(request, None).await.unwrap();
         }
@@ -259,4 +311,68 @@ async fn run_preparation(_store: &impl Store, helper: &str, path: Option<&Path>)
         );
         joined(&mut cold).await;
     }
+}
+
+/// Both request commit boundaries survive process death, and a genuinely killed
+/// Active worker never supplies signal acknowledgement or cleanup evidence.
+pub(crate) async fn run_cancellation(store: &impl Store, helper: &str, path: Option<&Path>) {
+    use crate::session_owner::cancellation_contract as contract;
+    for committed in [false, true] {
+        let (owner, _) = contract::reserve(store).await;
+        let request = contract::request(&owner, None);
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join("cancel");
+        let mut child = spawn(
+            helper,
+            &Operation::RequestCancel(request.clone()),
+            path,
+            Some(if committed { "after" } else { "before" }),
+            &marker_path,
+        );
+        marker(&marker_path).await;
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let mut cold = spawn(
+            helper,
+            &Operation::VerifyCancel { request, committed },
+            path,
+            None,
+            &marker_path,
+        );
+        joined(&mut cold).await;
+    }
+    let reserve = reservation(SessionId::new());
+    let dir = tempfile::tempdir().unwrap();
+    let marker_path = dir.path().join("active");
+    let mut child = spawn(
+        helper,
+        &Operation::ActiveUntilKilled(reserve.clone()),
+        path,
+        Some("active"),
+        &marker_path,
+    );
+    marker(&marker_path).await;
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let owner = store
+        .get_session_owner(&reserve.binding.session_id, &reserve.binding.id)
+        .await
+        .unwrap();
+    assert_eq!(owner.state, SessionOwnerState::Active);
+    let request = contract::request(&owner, None);
+    store
+        .request_session_owner_cancel(request.clone())
+        .await
+        .unwrap();
+    let mut cold = spawn(
+        helper,
+        &Operation::VerifyCancel {
+            request,
+            committed: true,
+        },
+        path,
+        None,
+        &marker_path,
+    );
+    joined(&mut cold).await;
 }

@@ -1,5 +1,7 @@
 //! In-memory ledger used by the native Memory adapter. Audit entries are the
 //! immutable source; current rows never select their own alleged latest proof.
+#[path = "ledger/cancellation.rs"]
+mod cancellation;
 use crate::session_owner::audit::{Audit, Publication, RevisionState, verify_current};
 use crate::session_owner::record::Record;
 use crate::session_owner::{
@@ -121,6 +123,17 @@ impl Ledger {
             .get(&(session.clone(), record.origin.clone()))
             .ok_or(Error::UnknownStoreOutcome)?;
         verify_current(record, origin, latest)?;
+        let request = record.cancellation.as_ref().map(|value| &value.request.id);
+        let observation = record
+            .cancellation
+            .as_ref()
+            .and_then(|value| value.observed.as_ref().map(|observed| &observed.request.id));
+        crate::session_owner::cancellation::proof::sources(
+            record,
+            request.and_then(|id| self.audits.get(&(session.clone(), id.clone()))),
+            observation.and_then(|id| self.audits.get(&(session.clone(), id.clone()))),
+        )?;
+
         self.context(
             session,
             &record.snapshot.binding.workspace_id,

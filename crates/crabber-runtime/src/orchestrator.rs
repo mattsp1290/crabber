@@ -28,6 +28,8 @@ mod management;
 #[path = "orchestrator/queue.rs"]
 mod queue;
 mod run_control;
+#[path = "orchestrator/session_owner.rs"]
+mod session_owner;
 pub use queue::QueueControl;
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
