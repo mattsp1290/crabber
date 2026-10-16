@@ -88,7 +88,10 @@ pub(crate) fn verify<'a>(
         }
         expected = Some(publication.after);
     }
-    if !began || child_sequence != 2 || expected != Some(revision) {
+    if !began
+        || child_sequence != if child.owned_scope.is_some() { 3 } else { 2 }
+        || expected != Some(revision)
+    {
         return Err(Error::RevisionConflict);
     }
     let effective_revision = match revision {
@@ -153,6 +156,13 @@ fn child_publication(
             if audit.receipt.operation_id == ids.reserve && audit.record.sequence == 1 => {}
         (Operation::Begin, 1)
             if audit.receipt.operation_id == ids.begin && audit.record.sequence == 2 => {}
+        (Operation::ActivateScope, 2)
+            if audit.record.owned_scope.as_ref().is_some_and(|scope| {
+                scope.id == audit.receipt.operation_id
+                    && scope.source.reserve == ids.reserve
+                    && scope.source.begin == ids.begin
+                    && scope.source.target == audit.record.snapshot.target
+            }) => {}
         _ => return Err(Error::InvalidTransition),
     }
     *sequence += 1;

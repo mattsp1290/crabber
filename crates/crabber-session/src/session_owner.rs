@@ -164,6 +164,7 @@ pub enum SessionOwnerOperation {
     ResolveJoined,
     RequestCancel,
     ObserveCancel,
+    ActivateScope,
 }
 /// Original operation metadata. It is never a replacement private grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +325,7 @@ redacted_debug!(
     SessionOwnerOutcome
 );
 
+pub mod owned_scope;
 pub(crate) mod validation;
 use validation::{digest, identifier, lease, resolver};
 pub(crate) mod audit;

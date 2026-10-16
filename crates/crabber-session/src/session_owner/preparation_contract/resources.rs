@@ -1,7 +1,15 @@
 //! Linked resource capacity survives native preparation handoff and replay.
 use super::*;
+#[path = "resources/activation.rs"]
+mod activation;
+#[path = "resources/activation_faults.rs"]
+mod activation_faults;
+#[path = "resources/activation_guards.rs"]
+mod activation_guards;
 #[path = "resources/guards.rs"]
 pub(crate) mod guards;
+#[path = "resources/scope_integrity.rs"]
+pub(crate) mod scope_integrity;
 use crate::session_owner::preparation::{
     OWNED_PREPARATION_COMPONENT, PreparationResourceLink, PreparationResourceOutcome,
 };
@@ -27,6 +35,8 @@ pub(crate) async fn run(store: &impl Store) {
     for existing in [false, true] {
         successful(store, existing).await;
     }
+    activation::run(store).await;
+    activation_guards::run(store).await;
     labels_are_not_proof(store).await;
     unrelated_and_cancel_refuse(store).await;
     cleanup_is_not_handoff(store).await;
@@ -219,6 +229,7 @@ pub(crate) async fn faults(
     owner_fault: impl Fn(u8),
     native_fault: impl Fn(u8),
 ) {
+    activation_faults::run(store, &owner_fault).await;
     for point in [1, 2] {
         let (original, bound) = setup(store, true).await;
         let session = bound.binding.request.session_id.clone();

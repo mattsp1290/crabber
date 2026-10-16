@@ -6,6 +6,11 @@ pub use contextual::{ContextualPlanProvider, ExtensionFactory, FactoryContext, F
 mod model_middleware;
 pub use model_middleware::*;
 mod plan;
+mod preparation_resources;
+pub use preparation_resources::{
+    PREPARATION_RESOURCE_CONTRACT_VERSION, PreparationCleanup, PreparationResourceContext,
+    PreparationResourceContract, PreparationResourceLease,
+};
 mod prompt_contribution;
 mod registry;
 mod result_transform;

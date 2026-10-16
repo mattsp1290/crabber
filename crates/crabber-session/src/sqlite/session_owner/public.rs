@@ -101,7 +101,15 @@ async fn preflight(
             .ok_or_else(|| unknown("owner source absent"))?;
         proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
     }
-    for field in ["request_bytes", "observed_bytes"] {
+    for field in [
+        "request_bytes",
+        "observed_bytes",
+        "resource_reserve_bytes",
+        "resource_begin_bytes",
+        "scope_reserve_bytes",
+        "scope_begin_bytes",
+        "scope_activation_bytes",
+    ] {
         if let Some(bytes) = row.try_get::<Option<i64>, _>(field).map_err(unknown)? {
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
         }
@@ -116,13 +124,24 @@ const COST: &str = r"SELECT length(CAST(c.data_json AS BLOB)) AS current_bytes,l
  length(CAST(f.data_json AS BLOB))+length(CAST(f.owner_id AS BLOB))+length(CAST(f.operation_id AS BLOB))+length(CAST(f.operation AS BLOB))+length(CAST(f.state AS BLOB)) AS first_bytes,
  length(CAST(r.data_json AS BLOB))+length(CAST(r.owner_id AS BLOB))+length(CAST(r.operation_id AS BLOB))+length(CAST(r.operation AS BLOB))+length(CAST(r.state AS BLOB)) AS request_bytes,
  length(CAST(v.data_json AS BLOB))+length(CAST(v.owner_id AS BLOB))+length(CAST(v.operation_id AS BLOB))+length(CAST(v.operation AS BLOB))+length(CAST(v.state AS BLOB)) AS observed_bytes
- FROM session_owner_current c
+,
+ CAST(length(CAST(rr.data_json AS BLOB))+length(CAST(rr.owner_id AS BLOB))+length(CAST(rr.operation_id AS BLOB))+length(CAST(rr.operation AS BLOB))+length(CAST(rr.state AS BLOB)) AS INTEGER) AS resource_reserve_bytes,
+ CAST(length(CAST(rb.data_json AS BLOB))+length(CAST(rb.owner_id AS BLOB))+length(CAST(rb.operation_id AS BLOB))+length(CAST(rb.operation AS BLOB))+length(CAST(rb.state AS BLOB)) AS INTEGER) AS resource_begin_bytes,
+ CAST(length(CAST(sr.data_json AS BLOB))+length(CAST(sr.owner_id AS BLOB))+length(CAST(sr.operation_id AS BLOB))+length(CAST(sr.operation AS BLOB))+length(CAST(sr.state AS BLOB)) AS INTEGER) AS scope_reserve_bytes,
+ CAST(length(CAST(sb.data_json AS BLOB))+length(CAST(sb.owner_id AS BLOB))+length(CAST(sb.operation_id AS BLOB))+length(CAST(sb.operation AS BLOB))+length(CAST(sb.state AS BLOB)) AS INTEGER) AS scope_begin_bytes,
+ CAST(length(CAST(sa.data_json AS BLOB))+length(CAST(sa.owner_id AS BLOB))+length(CAST(sa.operation_id AS BLOB))+length(CAST(sa.operation AS BLOB))+length(CAST(sa.state AS BLOB)) AS INTEGER) AS scope_activation_bytes FROM session_owner_current c
  LEFT JOIN session_owner_audits l ON l.session_id=c.session_id AND l.owner_id=c.owner_id AND l.sequence=(SELECT MAX(a.sequence) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.owner_id=c.owner_id)
  LEFT JOIN session_owner_audits o ON o.session_id=c.session_id AND o.operation_id=json_extract(c.data_json,'$.origin')
  LEFT JOIN session_owner_contexts x ON x.session_id=c.session_id
  LEFT JOIN session_owner_audits f ON f.session_id=c.session_id AND f.ordinal=(SELECT MIN(a.ordinal) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.operation='Reserve')
  LEFT JOIN session_owner_audits r ON r.session_id=c.session_id AND r.operation_id=json_extract(c.data_json,'$.cancellation.request.id')
  LEFT JOIN session_owner_audits v ON v.session_id=c.session_id AND v.operation_id=json_extract(c.data_json,'$.cancellation.observed.request.id')
+
+ LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=json_extract(c.data_json,'$.resource.root_reserve')
+ LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=json_extract(c.data_json,'$.resource.root_begin')
+ LEFT JOIN session_owner_audits sr ON sr.session_id=c.session_id AND sr.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.source.reserve'),json_extract(c.data_json,'$.owned_join.activation.source.reserve'))
+ LEFT JOIN session_owner_audits sb ON sb.session_id=c.session_id AND sb.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.source.begin'),json_extract(c.data_json,'$.owned_join.activation.source.begin'))
+ LEFT JOIN session_owner_audits sa ON sa.session_id=c.session_id AND sa.operation_id=COALESCE(json_extract(c.data_json,'$.owned_scope.id'),json_extract(c.data_json,'$.owned_join.activation.id'))
  WHERE c.session_id=$1 AND c.owner_id=$2";
 
 #[cfg(test)]

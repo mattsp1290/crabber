@@ -101,7 +101,15 @@ async fn preflight(
             .ok_or_else(|| unknown("owner source absent"))?;
         proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
     }
-    for field in ["request_bytes", "observed_bytes"] {
+    for field in [
+        "request_bytes",
+        "observed_bytes",
+        "resource_reserve_bytes",
+        "resource_begin_bytes",
+        "scope_reserve_bytes",
+        "scope_begin_bytes",
+        "scope_activation_bytes",
+    ] {
         if let Some(bytes) = row.try_get::<Option<i64>, _>(field).map_err(unknown)? {
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
         }
@@ -116,13 +124,24 @@ const COST: &str = r"SELECT CAST(octet_length(c.data_json) AS BIGINT) AS current
  CAST(octet_length(f.data_json)+octet_length(f.owner_id)+octet_length(f.operation_id)+octet_length(f.operation)+octet_length(f.state) AS BIGINT) AS first_bytes,
  CAST(octet_length(r.data_json)+octet_length(r.owner_id)+octet_length(r.operation_id)+octet_length(r.operation)+octet_length(r.state) AS BIGINT) AS request_bytes,
  CAST(octet_length(v.data_json)+octet_length(v.owner_id)+octet_length(v.operation_id)+octet_length(v.operation)+octet_length(v.state) AS BIGINT) AS observed_bytes
- FROM session_owner_current c
+,
+ CAST(octet_length(rr.data_json)+octet_length(rr.owner_id)+octet_length(rr.operation_id)+octet_length(rr.operation)+octet_length(rr.state) AS BIGINT) AS resource_reserve_bytes,
+ CAST(octet_length(rb.data_json)+octet_length(rb.owner_id)+octet_length(rb.operation_id)+octet_length(rb.operation)+octet_length(rb.state) AS BIGINT) AS resource_begin_bytes,
+ CAST(octet_length(sr.data_json)+octet_length(sr.owner_id)+octet_length(sr.operation_id)+octet_length(sr.operation)+octet_length(sr.state) AS BIGINT) AS scope_reserve_bytes,
+ CAST(octet_length(sb.data_json)+octet_length(sb.owner_id)+octet_length(sb.operation_id)+octet_length(sb.operation)+octet_length(sb.state) AS BIGINT) AS scope_begin_bytes,
+ CAST(octet_length(sa.data_json)+octet_length(sa.owner_id)+octet_length(sa.operation_id)+octet_length(sa.operation)+octet_length(sa.state) AS BIGINT) AS scope_activation_bytes FROM session_owner_current c
  LEFT JOIN session_owner_audits l ON l.session_id=c.session_id AND l.owner_id=c.owner_id AND l.sequence=(SELECT MAX(a.sequence) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.owner_id=c.owner_id)
  LEFT JOIN session_owner_audits o ON o.session_id=c.session_id AND o.operation_id=c.data_json::json->>'origin'
  LEFT JOIN session_owner_contexts x ON x.session_id=c.session_id
  LEFT JOIN session_owner_audits f ON f.session_id=c.session_id AND f.ordinal=(SELECT MIN(a.ordinal) FROM session_owner_audits a WHERE a.session_id=c.session_id AND a.operation='Reserve')
  LEFT JOIN session_owner_audits r ON r.session_id=c.session_id AND r.operation_id=c.data_json::json#>>'{cancellation,request,id}'
  LEFT JOIN session_owner_audits v ON v.session_id=c.session_id AND v.operation_id=c.data_json::json#>>'{cancellation,observed,request,id}'
+
+ LEFT JOIN session_owner_audits rr ON rr.session_id=c.session_id AND rr.operation_id=c.data_json::json#>>'{resource,root_reserve}'
+ LEFT JOIN session_owner_audits rb ON rb.session_id=c.session_id AND rb.operation_id=c.data_json::json#>>'{resource,root_begin}'
+ LEFT JOIN session_owner_audits sr ON sr.session_id=c.session_id AND sr.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,source,reserve}',c.data_json::json#>>'{owned_join,activation,source,reserve}')
+ LEFT JOIN session_owner_audits sb ON sb.session_id=c.session_id AND sb.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,source,begin}',c.data_json::json#>>'{owned_join,activation,source,begin}')
+ LEFT JOIN session_owner_audits sa ON sa.session_id=c.session_id AND sa.operation_id=COALESCE(c.data_json::json#>>'{owned_scope,id}',c.data_json::json#>>'{owned_join,activation,id}')
  WHERE c.session_id=$1 AND c.owner_id=$2";
 
 #[cfg(test)]

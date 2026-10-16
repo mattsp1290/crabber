@@ -107,7 +107,10 @@ mod session_owner_cancellation;
 #[allow(dead_code)]
 mod session_owner_cancellation_contract;
 
+#[path = "fenced_support/owned_scope.rs"]
+mod owned_scope;
 mod session_owner {
+    pub(crate) use crate::owned_scope;
     pub(crate) use crate::preparation;
     pub(crate) use crate::preparation_contract;
     pub(crate) use crate::session_owner_audit as audit;

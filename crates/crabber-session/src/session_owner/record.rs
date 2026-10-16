@@ -25,6 +25,10 @@ pub(crate) struct Record {
     pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_scope: Option<super::owned_scope::OwnedScopeActivation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_join: Option<super::owned_scope::JoinSource>,
     pub parent: Option<crate::native_parent::Witness>,
     pub sequence: u64,
     pub owner: String,
@@ -60,6 +64,8 @@ impl Record {
             retained_resources: None,
             cancellation: None,
             parent,
+            owned_scope: None,
+            owned_join: None,
             sequence: 1,
             owner: request.owner.clone(),
             token: uuid::Uuid::new_v4().to_string(),
@@ -95,6 +101,21 @@ impl Record {
             return Err(Error::UnknownStoreOutcome);
         }
         resources::validate(self)?;
+        if let Some(scope) = &self.owned_scope {
+            super::owned_scope::source::matches_record(&scope.source, self)?;
+            scope
+                .fingerprint()
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+            if scope.source.session != self.snapshot.binding.session_id
+                || scope.source.target != self.snapshot.target
+                || !self.ever_began
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
+        }
+        if let Some(source) = &self.owned_join {
+            super::owned_scope::join_verify::verify_record(source, self)?;
+        }
         if let Some(cancellation) = &self.cancellation {
             cancellation
                 .validate(self)

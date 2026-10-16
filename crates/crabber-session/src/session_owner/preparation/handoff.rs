@@ -53,6 +53,9 @@ pub(crate) fn record_fingerprint(
     record: &Record,
     id: &SessionOwnerOperationId,
 ) -> Result<InputFingerprint, Error> {
+    if record.owned_join.is_some() {
+        return crate::session_owner::owned_scope::join_verify::record_fingerprint(record, id);
+    }
     let command = MutateSessionOwner {
         id: id.clone(),
         session_id: record.snapshot.binding.session_id.clone(),

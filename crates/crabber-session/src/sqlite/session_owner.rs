@@ -1,5 +1,6 @@
 //! SQL ownership transactions. The session gate includes pre-session reservations.
 mod cancellation;
+mod owned_scope;
 mod parent;
 mod preflight;
 mod preparation;
@@ -31,6 +32,7 @@ fn operation(value: SessionOwnerOperation) -> &'static str {
         SessionOwnerOperation::ResolveJoined => "ResolveJoined",
         SessionOwnerOperation::RequestCancel => "RequestCancel",
         SessionOwnerOperation::ObserveCancel => "ObserveCancel",
+        SessionOwnerOperation::ActivateScope => "ActivateScope",
     }
 }
 fn state(value: SessionOwnerState) -> &'static str {

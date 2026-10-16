@@ -149,6 +149,21 @@ pub(super) async fn current(
         )?;
     }
 
+    if let Some(scope) = crate::session_owner::owned_scope::source::context(&record) {
+        let reserve = audit(tx, session, &scope.source.reserve)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let begin = audit(tx, session, &scope.source.begin)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let activated = audit(tx, session, &scope.id).await?;
+        crate::session_owner::owned_scope::source::current(
+            &record,
+            &reserve,
+            &begin,
+            activated.as_ref(),
+        )?;
+    }
     verify_cancellation(tx, &record).await?;
     context(
         tx,

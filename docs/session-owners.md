@@ -199,3 +199,32 @@ optional fields preserve legacy records when absent and refuse incompatible
 new records in older readers. This Store protocol does not yet change Runtime
 factory ownership or implement its retained completion registry, shared service
 leases, or complete session coverage.
+
+The owned-scope primitives register a waiting `FnOnce` task before storage
+activation. `activate_owned_scope` independently authenticates the original
+Reserve/Begin sources, exact generation, live owner and any native parent, then
+publishes `ActivateScope` as a public revision change. Only freshly acknowledged
+Applied produces the nonserializable, single-use local dispatch permit. Receipt
+replay and unknown acknowledgement cannot open a gate. The preparation guard
+accepts only its authenticated child's exact activation as an additional own
+publication; foreign controls remain revision conflicts.
+
+Main-task and cleanup-task observations retain their actual join handles across
+interrupted observation. `join_owned_scope` accepts the opaque observation only
+after both the main task and the trusted host's sealed-resource cleanup task
+have actually joined. Cleanup must include every child and independent dependency
+release acknowledgement. Its source-bound digest distinguishes this conclusion
+from generic cleanup. Failed cleanup remains an error and retained responsibility;
+no timeout, returned value, plan disposal or lease expiry supplies join evidence.
+An observed never-opened gate can record exact NoDispatch cleanup after either
+activation rollback or committed-but-unacknowledged activation.
+
+These primitives are structural evidence, not retroactive ownership coverage.
+They do not establish that a legacy Begin never dispatched earlier work, that a
+provider declared a scoped bridge in its frozen binding, or that every shared
+service was tracked. Generic reservations and cleanup remain coverage-unknown.
+Runtime adoption, frozen bridge provenance, resource transfer, failed-native-
+completion retention, queue disposal, generic recovery and callback/service
+ownership are still required before claiming whole-session coverage or enabling
+deletion. The extension's optional preparation resource declaration and lease
+signal are bridge primitives only; their presence does not establish cleanup.

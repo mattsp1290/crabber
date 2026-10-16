@@ -468,6 +468,84 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Typed registered dispatch and observed-resource-join support. Legacy
+    /// owner receipts alone do not advertise this stronger protocol.
+    fn supports_owned_scopes(&self) -> bool {
+        false
+    }
+    /// Activate only an already registered exact local gate. Fresh Applied is
+    /// the sole source of a dispatch permit; replay and unknown ACK never grant.
+    async fn activate_owned_scope(
+        &self,
+        request: crate::session_owner::owned_scope::OwnedScopeActivation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+        parent: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<
+        crate::session_owner::owned_scope::OwnedScopeActivationOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        use crate::session_owner::owned_scope::{OwnedDispatchPermit, OwnedScopeActivationOutcome};
+        use crate::session_owner::{
+            SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerOutcome,
+            SessionOwnerState,
+        };
+        if !self.supports_owned_scopes() {
+            return Err(Error::Unsupported);
+        }
+        let digest = request.fingerprint()?;
+        let result = self
+            .publish_owned_scope_activation(request.clone(), authority, parent)
+            .await?;
+        let (receipt, fresh) = match result {
+            SessionOwnerOutcome::Applied {
+                receipt,
+                authority: None,
+            } => (receipt, true),
+            SessionOwnerOutcome::Replayed(receipt) => (receipt, false),
+            SessionOwnerOutcome::Applied { .. } => return Err(Error::UnknownStoreOutcome),
+        };
+        if receipt.operation != SessionOwnerOperation::ActivateScope
+            || receipt.operation_id != *request.operation_id()
+            || receipt.session_id != *request.session_id()
+            || receipt.owner.target != *request.target()
+            || receipt.owner.state != SessionOwnerState::Active
+            || receipt.semantic_digest != digest
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok(if fresh {
+            OwnedScopeActivationOutcome::Applied {
+                receipt,
+                permit: Box::new(OwnedDispatchPermit::applied(request)),
+            }
+        } else {
+            OwnedScopeActivationOutcome::Replayed(receipt)
+        })
+    }
+    /// Trusted Store adapter SPI: atomically authenticate original Reserve/Begin,
+    /// exact current authority/lease/cancellation and native parent, then publish
+    /// activation and its public revision. Only the actual fresh commit returns
+    /// Applied. Replays are metadata; uncertain commits must return an error.
+    /// The default activation wrapper alone mints a fresh local dispatch permit.
+    async fn publish_owned_scope_activation(
+        &self,
+        _request: crate::session_owner::owned_scope::OwnedScopeActivation,
+        _authority: crate::session_owner::SessionOwnerAuthority,
+        _parent: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Report exact observed main and sealed resource joins. Receipt replay
+    /// never grants work and no lease expiry, timeout or Drop supplies proof.
+    async fn join_owned_scope(
+        &self,
+        _proof: crate::session_owner::owned_scope::JoinedOwnedScope,
+        _authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     async fn mutate_session_owner(
         &self,
         _request: crate::session_owner::MutateSessionOwner,

@@ -18,7 +18,7 @@ time = "0.3"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
 default = []

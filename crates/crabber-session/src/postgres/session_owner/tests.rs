@@ -247,3 +247,72 @@ async fn preparation_handoff_marker_is_bound_to_original_join_digest() {
         guards::handoff_refuses(&store, grant, bound).await;
     }
 }
+
+#[tokio::test]
+async fn owned_scope_sources_and_join_hash_are_independent() {
+    use crate::session_owner::preparation_contract::resources::scope_integrity as check;
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    for original_begin in [false, true] {
+        let fixture = check::fixture(&store).await;
+        let key = if original_begin {
+            &fixture.activation.source.begin
+        } else {
+            fixture.activation.operation_id()
+        };
+        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+            .bind(&fixture.child.session_id().0)
+            .bind(&key.0)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        check::source_refuses(&store, fixture, original_begin).await;
+    }
+    for owned in [false, true] {
+        let fixture = check::fixture(&store).await;
+        check::join_source(&store, &fixture, owned).await;
+        let join = fixture.proof.request().unwrap();
+        for (table, column, identity) in [
+            (
+                "session_owner_current",
+                "owner_id",
+                fixture.child.target().id.0.clone(),
+            ),
+            ("session_owner_audits", "operation_id", join.id.0),
+        ] {
+            let text: String = sqlx::query_scalar(&format!(
+                "SELECT data_json FROM {table} WHERE session_id=$1 AND {column}=$2"
+            ))
+            .bind(&fixture.child.session_id().0)
+            .bind(&identity)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let record = if table == "session_owner_audits" {
+                &mut value["record"]
+            } else {
+                &mut value
+            };
+            if owned {
+                record.as_object_mut().unwrap().remove("owned_join");
+            } else {
+                record["owned_join"] = serde_json::to_value(fixture.proof.inspection()).unwrap();
+            }
+            sqlx::query(&format!(
+                "UPDATE {table} SET data_json=$1 WHERE session_id=$2 AND {column}=$3"
+            ))
+            .bind(value.to_string())
+            .bind(&fixture.child.session_id().0)
+            .bind(&identity)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        check::marker_refuses(&store, fixture).await;
+    }
+}

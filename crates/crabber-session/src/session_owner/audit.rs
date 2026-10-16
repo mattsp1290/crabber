@@ -79,6 +79,13 @@ impl Audit {
             }
         }
         let valid = match self.receipt.operation {
+            SessionOwnerOperation::ActivateScope => {
+                self.record.owned_scope.as_ref().is_some_and(|scope| {
+                    scope.id == self.receipt.operation_id
+                        && scope.fingerprint().ok().as_ref() == Some(&self.receipt.semantic_digest)
+                        && self.record.snapshot.state == SessionOwnerState::Active
+                })
+            }
             SessionOwnerOperation::RequestCancel | SessionOwnerOperation::ObserveCancel => {
                 crate::session_owner::cancellation::proof::operation(self)?;
                 true
@@ -114,6 +121,10 @@ impl Audit {
                         > crabber_core::SessionOwnerGeneration::INITIAL
             }
         };
+        if self.record.owned_join.is_some() && self.receipt.operation != SessionOwnerOperation::Join
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
         if self.record.retained_resources.is_some()
             && self.receipt.operation != SessionOwnerOperation::Join
         {

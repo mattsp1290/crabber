@@ -1,5 +1,7 @@
 //! Physical controller death before commit and after commit, then cold replay.
 use super::*;
+#[path = "process/owned_scope.rs"]
+mod owned_scope;
 #[path = "process/resources.rs"]
 mod resources;
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,14 @@ use std::{
 };
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Operation {
+    OwnedScope {
+        request: ReserveSessionOwner,
+        joining: bool,
+    },
+    VerifyOwnedScope {
+        metadata: owned_scope::Metadata,
+        committed: bool,
+    },
     Resources(crate::session_owner::preparation::ReservePreparation),
     VerifyResources {
         request: crate::session_owner::preparation::ReservePreparation,
@@ -49,6 +59,13 @@ pub(crate) fn pause(point: &str) {
 }
 pub(crate) async fn execute(store: &impl Store, command: Operation) {
     match command {
+        Operation::OwnedScope { request, joining } => {
+            owned_scope::act(store, request, joining).await;
+        }
+        Operation::VerifyOwnedScope {
+            metadata,
+            committed,
+        } => owned_scope::verify(store, metadata, committed).await,
         Operation::Resources(request) => resources::retain(store, request).await,
         Operation::VerifyResources { request, committed } => {
             resources::verify(store, request, committed).await;
@@ -69,34 +86,7 @@ pub(crate) async fn execute(store: &impl Store, command: Operation) {
             pause("active");
         }
         Operation::VerifyCancel { request, committed } => {
-            let receipt = store
-                .lookup_session_owner(&request.session_id, &request.id)
-                .await
-                .unwrap();
-            assert_eq!(receipt.is_some(), committed);
-            if let Some(receipt) = receipt {
-                assert!(
-                    matches!(store.request_session_owner_cancel(request.clone()).await.unwrap(),SessionOwnerOutcome::Replayed(saved) if saved==receipt)
-                );
-            }
-            let owner = store
-                .get_session_owner(&request.session_id, &request.target.id)
-                .await
-                .unwrap();
-            assert_ne!(owner.state, SessionOwnerState::Joined);
-            assert_eq!(owner.cancellation.is_some(), committed);
-            assert!(
-                owner
-                    .cancellation
-                    .is_none_or(|cancel| cancel.observed.is_none())
-            );
-            assert!(
-                store
-                    .get_session(&request.session_id)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            verify_cancel(store, request, committed).await;
         }
 
         Operation::Reserve(request) => {
@@ -205,6 +195,7 @@ async fn joined(child: &mut Guard) {
 pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
     run_preparation(store, helper, path).await;
     resources::run(helper, path).await;
+    owned_scope::run(helper, path).await;
     for mutate in [false, true] {
         for committed in [false, true] {
             let reserve = reservation(SessionId::new());
@@ -387,4 +378,39 @@ pub(crate) async fn run_cancellation(store: &impl Store, helper: &str, path: Opt
         &marker_path,
     );
     joined(&mut cold).await;
+}
+
+async fn verify_cancel(
+    store: &impl Store,
+    request: crate::session_owner::RequestSessionOwnerCancel,
+    committed: bool,
+) {
+    let receipt = store
+        .lookup_session_owner(&request.session_id, &request.id)
+        .await
+        .unwrap();
+    assert_eq!(receipt.is_some(), committed);
+    if let Some(receipt) = receipt {
+        assert!(
+            matches!(store.request_session_owner_cancel(request.clone()).await.unwrap(),SessionOwnerOutcome::Replayed(saved) if saved==receipt)
+        );
+    }
+    let owner = store
+        .get_session_owner(&request.session_id, &request.target.id)
+        .await
+        .unwrap();
+    assert_ne!(owner.state, SessionOwnerState::Joined);
+    assert_eq!(owner.cancellation.is_some(), committed);
+    assert!(
+        owner
+            .cancellation
+            .is_none_or(|cancel| cancel.observed.is_none())
+    );
+    assert!(
+        store
+            .get_session(&request.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

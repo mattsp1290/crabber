@@ -1,5 +1,7 @@
 //! Actual native Begin provenance for detached ownership handoff.
 use super::*;
+#[path = "parent/owned_scope.rs"]
+mod owned_scope;
 use crate::{
     PhaseCommand, PhaseMutation, PhaseStart, PhaseWriteAuthority,
     session_owner::{SessionOwnerParent, SessionOwnerParentAuthority},
@@ -81,6 +83,7 @@ pub(crate) async fn fixture(
     (request, parent, admitted, execution)
 }
 pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
+    owned_scope::run(store, clock).await;
     let (request, parent, admitted, execution) = fixture(store).await;
     let (receipt, authority) = applied(
         store

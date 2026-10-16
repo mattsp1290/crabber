@@ -949,6 +949,30 @@ impl Store for PostgresStore {
     > {
         Box::pin(self.complete_preparation(joined)).await
     }
+    fn supports_owned_scopes(&self) -> bool {
+        true
+    }
+    /// Activate only an already registered exact local gate. Fresh Applied is
+    /// the sole source of a dispatch permit; replay and unknown ACK never grant.
+    async fn publish_owned_scope_activation(
+        &self,
+        request: crate::session_owner::owned_scope::OwnedScopeActivation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+        parent: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.publish_owned_scope_activation(request, authority, parent)).await
+    }
+    /// Report exact observed main and sealed resource joins. Receipt replay
+    /// never grants work and no lease expiry, timeout or Drop supplies proof.
+    async fn join_owned_scope(
+        &self,
+        proof: crate::session_owner::owned_scope::JoinedOwnedScope,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.join_owned_scope(proof, authority)).await
+    }
     async fn mutate_session_owner(
         &self,
         request: crate::session_owner::MutateSessionOwner,

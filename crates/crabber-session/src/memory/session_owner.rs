@@ -1,6 +1,8 @@
 //! Session owner controls under the ordinary Memory mutation gate.
 #[path = "session_owner/cancellation.rs"]
 mod cancellation;
+#[path = "session_owner/owned_scope.rs"]
+mod owned_scope;
 #[path = "session_owner/preparation.rs"]
 mod preparation;
 #[path = "session_owner/resources.rs"]

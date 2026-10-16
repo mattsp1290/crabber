@@ -265,3 +265,40 @@ async fn preparation_handoff_marker_is_bound_to_original_join_digest() {
         guards::handoff_refuses(&store, grant, bound).await;
     }
 }
+
+#[tokio::test]
+async fn owned_scope_sources_and_join_hash_are_independent() {
+    use crate::session_owner::preparation_contract::resources::scope_integrity as check;
+    let store = super::MemoryStore::new();
+    for original_begin in [false, true] {
+        let fixture = check::fixture(&store).await;
+        let key = if original_begin {
+            &fixture.activation.source.begin
+        } else {
+            fixture.activation.operation_id()
+        };
+        store
+            .state
+            .lock()
+            .unwrap()
+            .session_owners
+            .erase_historical_audit_for_test(fixture.child.session_id(), key);
+        check::source_refuses(&store, fixture, original_begin).await;
+    }
+    for owned in [false, true] {
+        let fixture = check::fixture(&store).await;
+        check::join_source(&store, &fixture, owned).await;
+        let marker = if owned {
+            None
+        } else {
+            Some(fixture.proof.inspection().clone())
+        };
+        store
+            .state
+            .lock()
+            .unwrap()
+            .session_owners
+            .replace_scope_join_for_test(&fixture.child, marker);
+        check::marker_refuses(&store, fixture).await;
+    }
+}
