@@ -221,47 +221,59 @@ pub(crate) async fn mutation_races(
                 };
                 let (deleted, renamed) =
                     tokio::join!(delete(request), store.manage_session(mutation));
-                assert!(matches!(
-                    (deleted, renamed),
-                    (
-                        Ok(DeletionOutcome::Applied(_)),
-                        Err(crate::ManagementError::Deleted)
-                    ) | (Err(DeletionError::RevisionConflict), Ok(_))
-                ));
+                assert!(
+                    matches!(
+                        (&deleted, &renamed),
+                        (
+                            Ok(DeletionOutcome::Applied(_)),
+                            Err(crate::ManagementError::Deleted)
+                        ) | (Err(DeletionError::RevisionConflict), Ok(_))
+                    ),
+                    "rename race at revision {revision:?}: delete={deleted:?}, rename={renamed:?}"
+                );
             }
             1 => {
-                let (deleted, admitted) = tokio::join!(
-                    delete(request),
-                    store.admit_bound_keyed_run(fixture.prepared)
+                // The queue fixture's original proposal predates Enqueue and
+                // Cancel. This ordinary admission needs a fresh canonical R.
+                let prepared = crate::queue_contract::entry(store, fixture.session.clone())
+                    .await
+                    .prepared;
+                let (deleted, admitted) =
+                    tokio::join!(delete(request), store.admit_bound_keyed_run(prepared));
+                assert!(
+                    matches!(
+                        (&deleted, &admitted),
+                        (
+                            Ok(DeletionOutcome::Applied(_)),
+                            Err(crate::StoreError::SessionDeleted)
+                        ) | (Err(DeletionError::RevisionConflict), Ok(_))
+                    ),
+                    "admission race at revision {revision:?}: delete={deleted:?}, admission={admitted:?}"
                 );
-                assert!(matches!(
-                    (deleted, admitted),
-                    (
-                        Ok(DeletionOutcome::Applied(_)),
-                        Err(crate::StoreError::SessionDeleted)
-                    ) | (Err(DeletionError::RevisionConflict), Ok(_))
-                ));
             }
             _ => {
-                let reservation =
-                    crate::session_owner_contract::reservation(fixture.session.clone());
+                let reservation = owner_reservation(store, &fixture.session).await;
                 let (deleted, reserved) = tokio::join!(
                     delete(request),
                     store.reserve_session_owner(reservation, None)
                 );
-                assert!(matches!(
-                    (deleted, reserved),
-                    (
-                        Ok(DeletionOutcome::Applied(_)),
-                        Err(crate::session_owner::SessionOwnerError::Deleted)
-                    ) | (
-                        Ok(DeletionOutcome::Blocked(DeletionBlocker::SessionOwner)),
-                        Ok(_)
-                    )
-                ));
+                assert!(
+                    matches!(
+                        (&deleted, &reserved),
+                        (
+                            Ok(DeletionOutcome::Applied(_)),
+                            Err(crate::session_owner::SessionOwnerError::Deleted)
+                        ) | (
+                            Err(DeletionError::RevisionConflict),
+                            Ok(crate::session_owner::SessionOwnerOutcome::Applied { .. })
+                        )
+                    ),
+                    "owner race at revision {revision:?}: delete={deleted:?}, reserve={reserved:?}"
+                );
             }
         }
     }
+    owner_orderings(store, &delete).await;
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
@@ -329,4 +341,93 @@ pub(crate) async fn forks(
         delete(request).await.unwrap(),
         DeletionOutcome::Replayed(receipt)
     );
+}
+
+async fn owner_reservation(
+    store: &impl Store,
+    session: &SessionId,
+) -> crate::session_owner::ReserveSessionOwner {
+    let summary = store.session_summary(session).await.unwrap();
+    let mut reservation = crate::session_owner_contract::reservation(session.clone());
+    reservation.binding.workspace_id = summary.workspace_id;
+    reservation.binding.directory = summary.directory;
+    reservation
+}
+
+// Establish both serialized winners deterministically in addition to the
+// uncontrolled concurrent race above. Owner publication MUST advance CAS.
+async fn owner_orderings(
+    store: &impl Store,
+    delete: &impl AsyncFn(DeleteSession) -> Result<DeletionOutcome, DeletionError>,
+) {
+    use crate::session_owner::{SessionOwnerError, SessionOwnerOutcome};
+    for reserve_first in [true, false] {
+        let fixture = crate::deletion::contract::cancelled_queue(store).await;
+        let revision = store.session_revision(&fixture.session).await.unwrap();
+        let request = DeleteSession {
+            id: ControlId::new(),
+            session_id: fixture.session.clone(),
+            expected_revision: revision,
+        };
+        let reservation = owner_reservation(store, &fixture.session).await;
+        if reserve_first {
+            let reserved = store
+                .reserve_session_owner(reservation, None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(reserved, SessionOwnerOutcome::Applied { .. }),
+                "fresh reserve winner: {reserved:?}"
+            );
+            let published = store.session_revision(&fixture.session).await.unwrap();
+            assert_eq!(
+                published,
+                revision.next().unwrap(),
+                "Reserve publishes exactly one public revision"
+            );
+            assert_eq!(
+                delete(request.clone()).await.unwrap_err(),
+                DeletionError::RevisionConflict
+            );
+            assert!(
+                store
+                    .lookup_session_deletion(&fixture.session, &request.id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let current = DeleteSession {
+                id: ControlId::new(),
+                expected_revision: published,
+                ..request
+            };
+            assert_eq!(
+                delete(current).await.unwrap(),
+                DeletionOutcome::Blocked(DeletionBlocker::SessionOwner)
+            );
+            assert_eq!(
+                store.session_revision(&fixture.session).await.unwrap(),
+                published
+            );
+        } else {
+            let DeletionOutcome::Applied(receipt) = delete(request).await.unwrap() else {
+                panic!("fresh delete winner")
+            };
+            assert_eq!(receipt.final_revision, revision.next().unwrap());
+            assert_eq!(
+                store
+                    .reserve_session_owner(reservation, None)
+                    .await
+                    .unwrap_err(),
+                SessionOwnerError::Deleted
+            );
+            assert_eq!(
+                store.session_disposition(&fixture.session).await.unwrap(),
+                crate::SessionDisposition::Deleted {
+                    final_revision: receipt.final_revision,
+                    deleted_at: receipt.deleted_at
+                }
+            );
+        }
+    }
 }
