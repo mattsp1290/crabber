@@ -81,6 +81,8 @@ delegate! {
         fn reserve_preparation(_request: s::session_owner::preparation::ReservePreparation, ) -> Result< s::session_owner::SessionOwnerOutcome, s::session_owner::SessionOwnerError, >;
         fn lookup_preparation(_session: &SessionId, _key: &s::session_owner::preparation::PreparationKey, ) -> Result< Option<s::session_owner::preparation::PreparationReconciliation>, s::session_owner::SessionOwnerError, >;
         fn retain_preparation_resources(_grant: s::session_owner::preparation::PreparationGrant, ) -> Result< s::session_owner::preparation::PreparationResourceOutcome, s::session_owner::SessionOwnerError, >;
+        fn register_session_service_dependency(request: s::session_owner::service::RegisterSessionServiceDependency) -> Result<s::session_owner::service::SessionServiceDependencyOutcome, s::session_owner::SessionOwnerError>;
+        fn check_session_service_dependency_access(request: s::session_owner::service::SessionServiceDependencyAccess) -> Result<(), s::session_owner::SessionOwnerError>;
         fn complete_preparation(_joined: s::session_owner::preparation::JoinedPreparation, ) -> Result< s::session_owner::preparation::PreparationCompletion, s::session_owner::preparation::PreparationCommitError, >;
         fn request_session_owner_cancel(_request: s::session_owner::RequestSessionOwnerCancel, ) -> Result< s::session_owner::SessionOwnerOutcome, s::session_owner::SessionOwnerError, >;
         fn observe_session_owner_cancel(_request: s::session_owner::ObserveSessionOwnerCancel, _authority: s::session_owner::SessionOwnerAuthority, ) -> Result< s::session_owner::SessionOwnerOutcome, s::session_owner::SessionOwnerError, >;
@@ -160,6 +162,7 @@ delegate! {
         fn supports_session_owners() -> bool;
         fn supports_preparation_protocol() -> bool;
         fn supports_preparation_resources() -> bool;
+        fn supports_session_service_dependencies() -> bool;
         fn supports_session_owner_cancellation() -> bool;
         fn supports_owned_scopes() -> bool;
         fn supports_owned_attempts() -> bool;

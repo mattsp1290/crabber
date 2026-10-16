@@ -692,6 +692,24 @@ impl Store for MemoryStore {
     fn supports_preparation_resources(&self) -> bool {
         true
     }
+    fn supports_session_service_dependencies(&self) -> bool {
+        true
+    }
+    async fn register_session_service_dependency(
+        &self,
+        request: crate::session_owner::service::RegisterSessionServiceDependency,
+    ) -> Result<
+        crate::session_owner::service::SessionServiceDependencyOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_service(&request)
+    }
+    async fn check_session_service_dependency_access(
+        &self,
+        request: crate::session_owner::service::SessionServiceDependencyAccess,
+    ) -> Result<(), crate::session_owner::SessionOwnerError> {
+        self.check_service_access(&request)
+    }
     async fn retain_preparation_resources(
         &self,
         grant: crate::session_owner::preparation::PreparationGrant,

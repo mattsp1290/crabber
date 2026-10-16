@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 /// This bridge owns only the session dependency and its actual joins. The
 /// physical generation's cleanup policy does not confer whole-service coverage.
 pub const RUNTIME_SESSION_SERVICE_COMPONENT: &str = "crabber.runtime.session-service-dependency.v1";
+/// One captured generation for each Shared, Workspace and Session scope.
+pub const MAX_SESSION_SERVICES_PER_PREPARATION: usize = 3;
 
 fn resource_contract() -> Result<InputFingerprint, Error> {
     digest(&(
@@ -40,6 +42,7 @@ pub enum SessionServiceGenerationScope {
 pub enum SessionServiceCleanupPolicy {
     LegacySharedMount,
     SealedFactoryLegacyMount,
+    FullySealedFactory,
 }
 
 /// Bounded captured generation metadata; correlation never grants dispatch.
@@ -52,7 +55,11 @@ pub struct SessionServiceGeneration {
     pub cleanup_policy: SessionServiceCleanupPolicy,
 }
 impl SessionServiceGeneration {
-    pub(crate) fn validate_scope(
+    /// Validate captured identity against an exact immutable session context.
+    /// This is a metadata check and never grants service access or dispatch.
+    /// # Errors
+    /// Rejects mismatched scope, unsupported cleanup policy or oversized metadata.
+    pub fn validate_scope(
         &self,
         session: &SessionId,
         workspace: &str,
@@ -70,7 +77,11 @@ impl SessionServiceGeneration {
                 !workspace_id.is_empty()
                     && workspace_id == workspace
                     && root == directory
-                    && self.cleanup_policy == SessionServiceCleanupPolicy::SealedFactoryLegacyMount
+                    && matches!(
+                        self.cleanup_policy,
+                        SessionServiceCleanupPolicy::SealedFactoryLegacyMount
+                            | SessionServiceCleanupPolicy::FullySealedFactory
+                    )
             }
             SessionServiceGenerationScope::Session {
                 session_id,
@@ -80,7 +91,11 @@ impl SessionServiceGeneration {
                 session_id == session
                     && workspace_id == workspace
                     && root == directory
-                    && self.cleanup_policy == SessionServiceCleanupPolicy::SealedFactoryLegacyMount
+                    && matches!(
+                        self.cleanup_policy,
+                        SessionServiceCleanupPolicy::SealedFactoryLegacyMount
+                            | SessionServiceCleanupPolicy::FullySealedFactory
+                    )
             }
         };
         if !matches || crate::snapshot::encoded_bytes(self, 8192).is_none() {
@@ -209,4 +224,106 @@ pub struct SessionServiceIds {
     pub reserve: SessionOwnerOperationId,
     pub begin: SessionOwnerOperationId,
     pub join: SessionOwnerOperationId,
+}
+
+/// The private original preparation capability is revalidated in the same
+/// transaction as Reserve/Begin. It is never serialized into a receipt.
+#[derive(Clone)]
+pub struct RegisterSessionServiceDependency {
+    pub grant: PreparationGrant,
+    pub generation: SessionServiceGeneration,
+}
+
+impl RegisterSessionServiceDependency {
+    /// Validate borrowed generation bounds before copying captured metadata.
+    /// This derives an original source only and grants no service authority.
+    /// # Errors
+    /// Rejects unbounded metadata or another immutable session context.
+    pub fn source(&self) -> Result<SessionServiceLink, Error> {
+        let binding = &self.grant.original_reservation().owner.binding;
+        self.generation.validate_scope(
+            &binding.session_id,
+            &binding.workspace_id,
+            &binding.directory,
+        )?;
+        SessionServiceLink::for_grant(&self.grant, self.generation.clone())
+    }
+}
+
+/// Current access checks retain the first registration's source and authority.
+/// A later preparation may validate access without registering or dispatching a
+/// second task, rotating authority, or rewriting the original source.
+#[derive(Clone)]
+pub struct SessionServiceDependencyAccess {
+    pub grant: PreparationGrant,
+    pub source: SessionServiceLink,
+    pub authority: super::SessionOwnerAuthority,
+}
+
+/// Original operation metadata; replay contains no dispatch or owner authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionServiceDependencyReceipt {
+    pub source: SessionServiceLink,
+    pub reserved: super::SessionOwnerReceipt,
+    pub began: super::SessionOwnerReceipt,
+}
+impl SessionServiceDependencyReceipt {
+    /// Verify original metadata only. Adapters additionally authenticate both
+    /// immutable audits and the original root before returning this receipt.
+    /// # Errors
+    /// Rejects changed scope, binding, operation identity or semantic digest.
+    pub fn verify(&self) -> Result<(), Error> {
+        use super::{
+            MutateSessionOwner, SessionOwnerCommand, SessionOwnerOperation, SessionOwnerState,
+        };
+        let ids = self.source.identities()?;
+        let reserved = &self.reserved;
+        let began = &self.began;
+        let request = ReserveSessionOwner {
+            id: ids.reserve.clone(),
+            binding: reserved.owner.binding.clone(),
+            owner: "metadata".into(),
+            lease_ms: 1,
+        };
+        let command = MutateSessionOwner {
+            id: ids.begin.clone(),
+            session_id: self.source.root.session_id.clone(),
+            target: began.owner.target.clone(),
+            command: SessionOwnerCommand::Begin,
+        };
+        if reserved.session_id != self.source.root.session_id
+            || began.session_id != reserved.session_id
+            || reserved.operation != SessionOwnerOperation::Reserve
+            || began.operation != SessionOwnerOperation::Begin
+            || reserved.operation_id != ids.reserve
+            || began.operation_id != ids.begin
+            || reserved.owner.target != began.owner.target
+            || began.owner.target.id != ids.owner
+            || began.owner.target.generation != crabber_core::SessionOwnerGeneration::INITIAL
+            || reserved.owner.binding != began.owner.binding
+            || reserved.owner.created_at != began.owner.created_at
+            || reserved.owner.state != SessionOwnerState::ReservedUnstarted
+            || began.owner.state != SessionOwnerState::Active
+            || reserved.owner.cancellation.is_some()
+            || began.owner.cancellation.is_some()
+            || reserved.owner.termination.is_some()
+            || began.owner.termination.is_some()
+            || reserved.semantic_digest != self.source.fingerprint(&request)?
+            || began.semantic_digest != command.fingerprint()?
+            || crate::snapshot::encoded_bytes(self, 32768).is_none()
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum SessionServiceDependencyOutcome {
+    Applied {
+        receipt: Box<SessionServiceDependencyReceipt>,
+        authority: super::SessionOwnerAuthority,
+    },
+    Replayed(Box<SessionServiceDependencyReceipt>),
 }

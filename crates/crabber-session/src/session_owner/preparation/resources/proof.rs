@@ -1,4 +1,6 @@
 //! Bounded two-owner publication lineage, with no label-only exemptions.
+#[path = "proof/services.rs"]
+mod services;
 use super::PreparationResourceLink;
 use crate::session_owner::preparation::{PreparationGrant, proof::VerifiedPreparation};
 use crate::session_owner::{
@@ -15,6 +17,7 @@ pub(crate) fn verify<'a>(
     audits: &[Audit],
     revision: RevisionState,
     now: OffsetDateTime,
+    services: crate::session_owner::preparation::proof::ServiceRequirement<'_>,
 ) -> Result<VerifiedPreparation<'a>, Error> {
     super::proof::authenticate_root(grant, root, now)?;
     let authority = grant
@@ -37,6 +40,8 @@ pub(crate) fn verify<'a>(
         return Err(Error::Capacity);
     }
     let ids = link.identities()?;
+    let mut services =
+        services::Services::new(grant, services.records(), services.activating(), now)?;
     let find = |id: &crabber_core::SessionOwnerOperationId| {
         audits
             .iter()
@@ -83,11 +88,14 @@ pub(crate) fn verify<'a>(
             root_publication(grant, root, audit, &mut root_sequence, &mut began)?;
         } else if audit.record.snapshot.target.id == ids.owner && began {
             child_publication(&link, audit, &mut child_sequence)?;
+        } else if began {
+            services.advance(audit)?;
         } else {
             return Err(Error::InvalidTransition);
         }
         expected = Some(publication.after);
     }
+    services.finish()?;
     if !began
         || child_sequence != if child.owned_scope.is_some() { 3 } else { 2 }
         || expected != Some(revision)

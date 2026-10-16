@@ -302,3 +302,7 @@ mod races;
 #[cfg(test)]
 #[path = "session_owner_contract/capacity.rs"]
 pub(crate) mod capacity;
+
+#[cfg(test)]
+#[path = "session_owner_contract/services.rs"]
+pub(crate) mod services;

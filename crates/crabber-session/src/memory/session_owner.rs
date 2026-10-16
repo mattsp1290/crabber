@@ -7,6 +7,8 @@ mod owned_scope;
 mod preparation;
 #[path = "session_owner/resources.rs"]
 mod resources;
+#[path = "session_owner/services.rs"]
+mod services;
 use super::{MemoryStore, State, bump_public_revision};
 use crate::session_owner::audit::RevisionState;
 use crate::session_owner::{

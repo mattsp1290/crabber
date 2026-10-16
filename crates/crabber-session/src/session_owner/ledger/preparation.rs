@@ -57,6 +57,7 @@ impl Ledger {
     ) -> Result<(), Error> {
         let request = grant.original_reservation();
         let session = &request.owner.binding.session_id;
+        let services = self.preparation_services(grant)?;
         let (origin, owner) = self
             .publications
             .get(&(session.clone(), request.owner.id.clone()))
@@ -74,6 +75,9 @@ impl Ledger {
                     && grant
                         .retained_resources_authority()
                         .is_none_or(|child| owner != &child.target().id)
+                    && !services
+                        .iter()
+                        .any(|service| owner == &service.snapshot.target.id)
             })
         {
             return Err(Error::RevisionConflict);
@@ -120,6 +124,24 @@ impl Ledger {
         revision: RevisionState,
         now: OffsetDateTime,
     ) -> Result<crate::session_owner::preparation::proof::VerifiedPreparation<'a>, Error> {
+        self.verify_preparation_requirement(grant, revision, now, None)
+    }
+    pub fn verify_service_activation<'a>(
+        &self,
+        grant: &'a crate::session_owner::preparation::PreparationGrant,
+        revision: RevisionState,
+        now: OffsetDateTime,
+        target: &crate::session_owner::SessionOwnerTarget,
+    ) -> Result<crate::session_owner::preparation::proof::VerifiedPreparation<'a>, Error> {
+        self.verify_preparation_requirement(grant, revision, now, Some(target))
+    }
+    fn verify_preparation_requirement<'a>(
+        &self,
+        grant: &'a crate::session_owner::preparation::PreparationGrant,
+        revision: RevisionState,
+        now: OffsetDateTime,
+        activating: Option<&crate::session_owner::SessionOwnerTarget>,
+    ) -> Result<crate::session_owner::preparation::proof::VerifiedPreparation<'a>, Error> {
         let session = &grant.original_reservation().owner.binding.session_id;
         let id = &grant.original_reservation().owner.binding.id;
         let record = self.checked(session, id)?;
@@ -130,8 +152,18 @@ impl Ledger {
             .transpose()?;
         let audits =
             self.preparation_audits(session, id, child.map(|value| &value.snapshot.target.id))?;
-        crate::session_owner::preparation::proof::verify_with_resources(
-            grant, record, child, &audits, revision, now,
+        let services = self.preparation_services(grant)?;
+        let services = match activating {
+            Some(target) => {
+                crate::session_owner::preparation::proof::ServiceRequirement::Activate {
+                    records: &services,
+                    target,
+                }
+            }
+            None => crate::session_owner::preparation::proof::ServiceRequirement::Ready(&services),
+        };
+        crate::session_owner::preparation::proof::verify_with_services(
+            grant, record, child, &audits, revision, now, services,
         )
     }
 }

@@ -20,7 +20,12 @@ impl Ledger {
             .filter(|((scope, _), audit)| {
                 scope == session
                     && (audit.receipt.owner.target.id == *root
-                        || child == Some(&audit.receipt.owner.target.id))
+                        || child == Some(&audit.receipt.owner.target.id)
+                        || audit
+                            .record
+                            .service
+                            .as_ref()
+                            .is_some_and(|link| link.root.root.id == *root))
                     && audit.receipt.operation != SessionOwnerOperation::Renew
             })
             .map(|(_, audit)| audit)
@@ -57,7 +62,13 @@ impl Ledger {
         let SessionOwnerOutcome::Applied {
             receipt: reserved,
             authority: Some(authority),
-        } = self.reserve_with_source(&request, None, now, revision, None, Some(link.clone()))?
+        } = self.reserve_with_source(
+            &request,
+            None,
+            now,
+            revision,
+            super::ReservationSource::Resource(link.clone()),
+        )?
         else {
             return Err(Error::UnknownStoreOutcome);
         };

@@ -24,6 +24,7 @@ pub const RUNTIME_DETACHED_RESOURCE_CONTRACT_V1: &str =
 #[derive(Clone)]
 pub enum OwnedScopeParentAuthority {
     Preparation(Box<super::preparation::PreparationGrant>),
+    ServicePreparation(Box<super::preparation::PreparationGrant>),
     Native(super::SessionOwnerParentAuthority),
 }
 

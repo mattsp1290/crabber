@@ -8,6 +8,7 @@ pub(super) fn validate(record: &Record) -> Result<(), Error> {
             || record.resource.is_some()
             || record.retained_resources.is_some()
             || record.parent.is_some()
+            || record.snapshot.target.generation != SessionOwnerGeneration::INITIAL
         {
             return Err(Error::UnknownStoreOutcome);
         }

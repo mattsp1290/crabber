@@ -11,6 +11,30 @@ use time::OffsetDateTime;
 
 pub(crate) const MAX_PUBLICATIONS: usize = 64;
 
+/// Fresh service activation permits only its exact target to await dispatch;
+/// normal preparation completion requires every service already activated.
+#[derive(Clone, Copy)]
+pub(crate) enum ServiceRequirement<'a> {
+    Ready(&'a [Record]),
+    Activate {
+        records: &'a [Record],
+        target: &'a crate::session_owner::SessionOwnerTarget,
+    },
+}
+impl ServiceRequirement<'_> {
+    pub(crate) fn records(&self) -> &[Record] {
+        match self {
+            Self::Ready(records) | Self::Activate { records, .. } => records,
+        }
+    }
+    pub(crate) fn activating(&self) -> Option<&crate::session_owner::SessionOwnerTarget> {
+        match self {
+            Self::Ready(_) => None,
+            Self::Activate { target, .. } => Some(target),
+        }
+    }
+}
+
 /// This proof never escapes the transaction that authenticated it.
 #[derive(Clone)]
 pub(crate) struct VerifiedPreparation<'a> {
@@ -38,6 +62,20 @@ impl VerifiedResourceHandoff {
 }
 
 impl VerifiedPreparation<'_> {
+    pub(crate) fn require_resource_activation(&self) -> Result<(), Error> {
+        if self
+            .grant
+            .original_reservation()
+            .resource_contract
+            .is_none()
+            || self
+                .resource_handoff()
+                .is_none_or(|handoff| handoff.activation.is_none())
+        {
+            return Err(Error::StaleOwner);
+        }
+        Ok(())
+    }
     pub(crate) fn verify_observation(
         &self,
         joined: &super::JoinedPreparation,
@@ -153,6 +191,7 @@ pub(crate) fn authenticate_root(
     }
     Ok(())
 }
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn verify_with_resources<'a>(
     grant: &'a PreparationGrant,
     record: &Record,
@@ -161,10 +200,34 @@ pub(crate) fn verify_with_resources<'a>(
     revision: RevisionState,
     now: OffsetDateTime,
 ) -> Result<VerifiedPreparation<'a>, Error> {
+    verify_with_services(
+        grant,
+        record,
+        child,
+        audits,
+        revision,
+        now,
+        ServiceRequirement::Ready(&[]),
+    )
+}
+
+pub(crate) fn verify_with_services<'a>(
+    grant: &'a PreparationGrant,
+    record: &Record,
+    child: Option<&Record>,
+    audits: &[Audit],
+    revision: RevisionState,
+    now: OffsetDateTime,
+    services: ServiceRequirement<'_>,
+) -> Result<VerifiedPreparation<'a>, Error> {
     if let Some(child) = child {
-        return super::resource_proof::verify(grant, record, child, audits, revision, now);
+        return super::resource_proof::verify(
+            grant, record, child, audits, revision, now, services,
+        );
     }
-    if grant.retained_resources_authority().is_some()
+    if !services.records().is_empty()
+        || services.activating().is_some()
+        || grant.retained_resources_authority().is_some()
         || record.snapshot.binding.component_id == super::OWNED_PREPARATION_COMPONENT
     {
         return Err(Error::StaleOwner);

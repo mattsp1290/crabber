@@ -1,62 +1,6 @@
 use super::*;
-use crate::session_owner::preparation::{PreparationKey, PreparationPurpose, ReservePreparation};
-use crate::session_owner::{MutateSessionOwner, SessionOwnerCommand, SessionOwnerOutcome};
-use crate::{MemoryStore, Store};
-use crabber_core::{ControlId, SessionRevision};
-
-async fn grant() -> PreparationGrant {
-    let store = MemoryStore::new();
-    let mut owner = crate::session_owner_contract::reservation(SessionId::new());
-    owner.binding.component_id = super::super::preparation::OWNED_PREPARATION_COMPONENT.into();
-    let key = PreparationKey::Unkeyed(ControlId::new());
-    let request = ReservePreparation {
-        owner,
-        key: key.clone(),
-        source: None,
-        resource_contract: Some(InputFingerprint::new("a".repeat(64)).unwrap()),
-        expected_revision: SessionRevision::INITIAL,
-        purpose: PreparationPurpose::OrdinaryAdmission,
-        intent: InputFingerprint::new("b".repeat(64)).unwrap(),
-    }
-    .bind_key(key)
-    .unwrap();
-    let SessionOwnerOutcome::Applied {
-        authority: Some(authority),
-        ..
-    } = store.reserve_preparation(request.clone()).await.unwrap()
-    else {
-        panic!("fresh root");
-    };
-    store
-        .mutate_session_owner(
-            MutateSessionOwner {
-                id: request.reconciliation().unwrap().begin_id,
-                session_id: request.owner.binding.session_id.clone(),
-                target: authority.target().clone(),
-                command: SessionOwnerCommand::Begin,
-            },
-            Some(authority.clone()),
-        )
-        .await
-        .unwrap();
-    let grant = PreparationGrant::from_fresh_begin(request, authority).unwrap();
-    let super::super::preparation::PreparationResourceOutcome::Applied { grant, .. } =
-        store.retain_preparation_resources(grant).await.unwrap()
-    else {
-        panic!("fresh resources");
-    };
-    *grant
-}
-
-fn generation() -> SessionServiceGeneration {
-    SessionServiceGeneration {
-        id: "actual-local-generation".into(),
-        scope: SessionServiceGenerationScope::Shared,
-        registration_fingerprint: InputFingerprint::new("c".repeat(64)).unwrap(),
-        cleanup_policy: SessionServiceCleanupPolicy::LegacySharedMount,
-    }
-}
-
+use crate::Store;
+use crate::session_owner_contract::services::{activated_setup, generation, grant, setup};
 #[tokio::test]
 async fn stable_service_keys_do_not_rebind_changed_original_root_or_choice() {
     let grant = grant().await;
@@ -151,4 +95,236 @@ async fn removing_current_service_source_cannot_turn_typed_origin_into_generic_o
         verify_current(&record, &origin, &rolled_back_latest),
         Err(Error::UnknownStoreOutcome)
     ));
+}
+
+#[tokio::test]
+async fn service_register_requires_resource_activation_and_replays_original_receipts() {
+    let (store, grant, _) = setup().await;
+    let request = RegisterSessionServiceDependency {
+        grant,
+        generation: generation(),
+    };
+    assert!(matches!(
+        store.register_session_service_dependency(request).await,
+        Err(Error::StaleOwner)
+    ));
+    let (store, grant) = activated_setup().await;
+    let request = RegisterSessionServiceDependency {
+        grant,
+        generation: generation(),
+    };
+    let SessionServiceDependencyOutcome::Applied { receipt, .. } = store
+        .register_session_service_dependency(request.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("fresh service")
+    };
+    receipt.verify().unwrap();
+    let SessionServiceDependencyOutcome::Replayed(replayed) = store
+        .register_session_service_dependency(request.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("metadata replay only")
+    };
+    assert_eq!(receipt, replayed);
+    let mut changed = request;
+    changed.generation.registration_fingerprint = InputFingerprint::new("e".repeat(64)).unwrap();
+    assert!(matches!(
+        store.register_session_service_dependency(changed).await,
+        Err(Error::SemanticConflict)
+    ));
+}
+
+#[tokio::test]
+async fn only_exact_service_activation_enters_preparation_lineage() {
+    use crate::session_owner::owned_scope::{
+        OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedScopeSource,
+        OwnedTaskRegistration,
+    };
+    let (store, grant) = activated_setup().await;
+    let request = RegisterSessionServiceDependency {
+        grant: grant.clone(),
+        generation: generation(),
+    };
+    let SessionServiceDependencyOutcome::Applied { receipt, authority } = store
+        .register_session_service_dependency(request)
+        .await
+        .unwrap()
+    else {
+        panic!("fresh service")
+    };
+    let access = SessionServiceDependencyAccess {
+        grant: grant.clone(),
+        source: receipt.source.clone(),
+        authority: authority.clone(),
+    };
+    assert!(
+        store
+            .check_session_service_dependency_access(access.clone())
+            .await
+            .is_err()
+    );
+    let effects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = effects.clone();
+    let mut task = OwnedTaskRegistration::register(
+        OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began).unwrap(),
+        move || async move {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        store
+            .activate_owned_scope(task.activation().clone(), authority.clone(), None)
+            .await,
+        Err(Error::InvalidRequest)
+    ));
+    let OwnedScopeActivationOutcome::Applied { permit, .. } = store
+        .activate_owned_scope(
+            task.activation().clone(),
+            authority,
+            Some(OwnedScopeParentAuthority::ServicePreparation(Box::new(
+                grant,
+            ))),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("fresh service activation")
+    };
+    task.dispatch(*permit).unwrap();
+    task.join().await.unwrap();
+    store
+        .check_session_service_dependency_access(access.clone())
+        .await
+        .unwrap();
+    store
+        .check_session_service_dependency_access(access.clone())
+        .await
+        .unwrap();
+    store
+        .request_session_owner_cancel(crate::session_owner::RequestSessionOwnerCancel {
+            id: SessionOwnerOperationId::new(),
+            session_id: receipt.source.root.session_id.clone(),
+            target: access.authority.target().clone(),
+            expected_revision: None,
+            claim: crate::session_owner::SessionOwnerResolver {
+                resolver_id: "host".into(),
+                authority_claim: "cancel this exact retained dependency".into(),
+            },
+        })
+        .await
+        .unwrap();
+    // Sharing the original preparation is not permission to absorb an external
+    // cancellation into its own revision lineage or expose the service again.
+    assert!(
+        store
+            .check_session_service_dependency_access(access)
+            .await
+            .is_err()
+    );
+    assert_eq!(effects.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn oversized_service_generation_is_refused_before_copying() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (store, grant) = runtime.block_on(activated_setup());
+    let mut generation = generation();
+    generation.id = "x".repeat(8 * 1024 * 1024);
+    let request = RegisterSessionServiceDependency { grant, generation };
+    let measured = allocation_counter::measure(|| {
+        assert!(matches!(
+            runtime.block_on(store.register_session_service_dependency(request)),
+            Err(Error::InvalidRequest)
+        ));
+    });
+    assert!(
+        measured.bytes_max < 131_072,
+        "generation copied before bounds: {measured:?}"
+    );
+}
+
+#[tokio::test]
+async fn fully_sealed_policy_is_metadata_for_workspace_and_session_dependencies() {
+    let grant = grant().await;
+    let binding = &grant.original_reservation().owner.binding;
+    let mut generation = generation();
+    generation.cleanup_policy = SessionServiceCleanupPolicy::FullySealedFactory;
+    assert!(SessionServiceLink::for_grant(&grant, generation.clone()).is_err());
+    for scope in [
+        SessionServiceGenerationScope::Workspace {
+            workspace_id: binding.workspace_id.clone(),
+            directory: binding.directory.clone(),
+        },
+        SessionServiceGenerationScope::Session {
+            session_id: binding.session_id.clone(),
+            workspace_id: binding.workspace_id.clone(),
+            directory: binding.directory.clone(),
+        },
+    ] {
+        generation.scope = scope;
+        // Accepting captured policy does not classify physical service cleanup.
+        SessionServiceLink::for_grant(&grant, generation.clone()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cancelled_service_activation_is_known_nondispatch() {
+    use crate::session_owner::owned_scope::{
+        OwnedScopeParentAuthority, OwnedScopeSource, OwnedTaskRegistration,
+    };
+    let (store, grant) = activated_setup().await;
+    let request = RegisterSessionServiceDependency {
+        grant: grant.clone(),
+        generation: generation(),
+    };
+    let SessionServiceDependencyOutcome::Applied { receipt, authority } = store
+        .register_session_service_dependency(request)
+        .await
+        .unwrap()
+    else {
+        panic!("fresh service")
+    };
+    store
+        .request_session_owner_cancel(crate::session_owner::RequestSessionOwnerCancel {
+            id: SessionOwnerOperationId::new(),
+            session_id: receipt.source.root.session_id.clone(),
+            target: authority.target().clone(),
+            expected_revision: None,
+            claim: crate::session_owner::SessionOwnerResolver {
+                resolver_id: "host".into(),
+                authority_claim: "stop this exact dependency before dispatch".into(),
+            },
+        })
+        .await
+        .unwrap();
+    let effects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = effects.clone();
+    let mut task = OwnedTaskRegistration::register(
+        OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began).unwrap(),
+        move || async move {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        store
+            .activate_owned_scope(
+                task.activation().clone(),
+                authority,
+                Some(OwnedScopeParentAuthority::ServicePreparation(Box::new(
+                    grant
+                )))
+            )
+            .await,
+        Err(Error::CancellationPending)
+    ));
+    assert_eq!(
+        task.join().await.unwrap().disposition(),
+        crate::session_owner::owned_scope::OwnedMainDisposition::NoDispatch
+    );
+    assert_eq!(effects.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

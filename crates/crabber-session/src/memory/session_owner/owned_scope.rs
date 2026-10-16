@@ -92,6 +92,9 @@ fn scope_context(
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
     use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
+    if record.service.is_some() {
+        return service_context(state, record, authority, now);
+    }
     if record.resource.is_some() {
         let Some(OwnedScopeParentAuthority::Preparation(grant)) = authority else {
             return Err(Error::InvalidRequest);
@@ -131,4 +134,39 @@ fn scope_context(
         return Err(Error::StaleOwner);
     }
     Ok(())
+}
+
+fn service_context(
+    state: &super::super::State,
+    record: &crate::session_owner::record::Record,
+    authority: Option<&crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    let Some(crate::session_owner::owned_scope::OwnedScopeParentAuthority::ServicePreparation(
+        grant,
+    )) = authority
+    else {
+        return Err(Error::InvalidRequest);
+    };
+    let root = crate::session_owner::preparation::PreparationResourceLink::for_grant(grant)?;
+    if record
+        .service
+        .as_ref()
+        .is_none_or(|source| source.root != root)
+    {
+        return Err(Error::InvalidRequest);
+    }
+    if record.cancellation.is_some() {
+        return Err(Error::CancellationPending);
+    }
+    super::validate_preparation_source(state, grant.original_reservation(), now)?;
+    state
+        .session_owners
+        .verify_service_activation(
+            grant,
+            revision(state, &record.snapshot.binding.session_id),
+            now,
+            &record.snapshot.target,
+        )?
+        .require_resource_activation()
 }

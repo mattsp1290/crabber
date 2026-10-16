@@ -414,6 +414,31 @@ pub trait Store: Send + Sync {
     fn supports_preparation_resources(&self) -> bool {
         false
     }
+
+    /// Exact preparation-linked session dependency registration/access. Legacy
+    /// adapters must refuse before a service factory or generation exposure.
+    fn supports_session_service_dependencies(&self) -> bool {
+        false
+    }
+
+    async fn register_session_service_dependency(
+        &self,
+        _request: crate::session_owner::service::RegisterSessionServiceDependency,
+    ) -> Result<
+        crate::session_owner::service::SessionServiceDependencyOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+
+    /// Pure coherent validation of a later preparation and an already-live
+    /// original dependency. Success grants no authority or fresh dispatch.
+    async fn check_session_service_dependency_access(
+        &self,
+        _request: crate::session_owner::service::SessionServiceDependencyAccess,
+    ) -> Result<(), crate::session_owner::SessionOwnerError> {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Atomically authenticate the exact root and reserve/begin its independent
     /// resource owner before factory dispatch. An identical retry grants nothing.
     async fn retain_preparation_resources(

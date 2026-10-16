@@ -11,6 +11,8 @@ mod publications;
 #[cfg(test)]
 #[path = "ledger/purge_tests.rs"]
 mod purge_tests;
+#[path = "ledger/services.rs"]
+mod services;
 use crate::session_owner::audit::{Audit, Publication, RevisionState, verify_current};
 use crate::session_owner::record::Record;
 use crate::session_owner::{
@@ -35,6 +37,12 @@ pub(crate) struct Ledger {
     // Independent append-only public publication routing; never a current-row pointer.
     publications: BTreeMap<(SessionId, SessionOwnerOperationId), (u64, SessionOwnerId)>,
     next_publication: u64,
+}
+enum ReservationSource {
+    Plain,
+    Preparation(super::preparation::Origin),
+    Resource(super::preparation::PreparationResourceLink),
+    Service(Box<super::service::SessionServiceLink>),
 }
 impl Ledger {
     pub(crate) fn source_audit(
@@ -284,7 +292,13 @@ impl Ledger {
         revision: RevisionState,
         preparation: Option<super::preparation::Origin>,
     ) -> Result<SessionOwnerOutcome, Error> {
-        self.reserve_with_source(request, parent, now, revision, preparation, None)
+        self.reserve_with_source(
+            request,
+            parent,
+            now,
+            revision,
+            preparation.map_or(ReservationSource::Plain, ReservationSource::Preparation),
+        )
     }
     fn reserve_with_source(
         &mut self,
@@ -292,17 +306,14 @@ impl Ledger {
         parent: Option<crate::native_parent::Witness>,
         now: OffsetDateTime,
         revision: RevisionState,
-        preparation: Option<super::preparation::Origin>,
-        resource: Option<super::preparation::PreparationResourceLink>,
+        source: ReservationSource,
     ) -> Result<SessionOwnerOutcome, Error> {
-        let digest = if let Some(resource) = &resource {
-            resource.fingerprint(request)?
-        } else {
-            preparation.as_ref().map_or_else(
-                || request.fingerprint(),
-                |origin| origin.fingerprint(request),
-            )?
-        };
+        let digest = match &source {
+            ReservationSource::Plain => request.fingerprint(),
+            ReservationSource::Preparation(origin) => origin.fingerprint(request),
+            ReservationSource::Resource(link) => link.fingerprint(request),
+            ReservationSource::Service(link) => link.fingerprint(request),
+        }?;
         let session = &request.binding.session_id;
         if let Some(saved) = self.receipt(session, &request.id)? {
             if saved.semantic_digest != digest {
@@ -345,8 +356,12 @@ impl Ledger {
             return Err(Error::Capacity);
         }
         let mut record = Record::reserve(request, parent, now)?;
-        record.preparation = preparation;
-        record.resource = resource;
+        match source {
+            ReservationSource::Plain => {}
+            ReservationSource::Preparation(origin) => record.preparation = Some(origin),
+            ReservationSource::Resource(link) => record.resource = Some(link),
+            ReservationSource::Service(link) => record.service = Some(link),
+        }
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);
         self.contexts
