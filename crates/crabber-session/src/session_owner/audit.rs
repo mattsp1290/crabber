@@ -148,6 +148,7 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
         || origin.record.preparation != record.preparation
         || origin.record.resource != record.resource
         || origin.record.service != record.service
+        || origin.record.driver != record.driver
         || origin.record.snapshot.binding != record.snapshot.binding
         || origin.record.snapshot.created_at != record.snapshot.created_at
     {
@@ -163,6 +164,8 @@ pub(crate) fn verify_current(record: &Record, origin: &Audit, latest: &Audit) ->
         preparation.fingerprint(&request)?
     } else if let Some(resource) = &record.resource {
         resource.fingerprint(&request)?
+    } else if let Some(driver) = &record.driver {
+        driver.fingerprint(&request)?
     } else if let Some(service) = &record.service {
         service.fingerprint(&request)?
     } else {

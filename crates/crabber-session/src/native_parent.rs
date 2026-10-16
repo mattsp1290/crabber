@@ -211,7 +211,7 @@ impl Witness {
         Ok(())
     }
 }
-fn issuance_digest(issuance: &RunIssuance) -> Result<InputFingerprint, Error> {
+pub(crate) fn issuance_digest(issuance: &RunIssuance) -> Result<InputFingerprint, Error> {
     crate::session_owner::validation::digest(&(
         "crabber.native-parent.original-issuer.v2",
         issuance,

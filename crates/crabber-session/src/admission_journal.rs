@@ -80,6 +80,26 @@ impl Init {
         }
         Ok(())
     }
+    pub(crate) fn driver_key(&self) -> &AdmissionKey {
+        &self.key
+    }
+    pub(crate) fn verify_driver_origin(
+        &self,
+        receipt: &AdmissionReceipt,
+        issuance: &RunIssuance,
+    ) -> Result<(), StoreError> {
+        self.issuance.validate().map_err(|_| invalid())?;
+        if self.version != 1
+            || &self.receipt != receipt
+            || &self.issuance != issuance
+            || issuance.sequence != 1
+            || issuance.state.session_id != receipt.session_id
+            || issuance.state.run_id != receipt.run_id
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
     pub fn digest(&self) -> Result<InputFingerprint, StoreError> {
         let bytes = serde_json::to_vec(&("crabber.admission-execution-init.v1", self))
             .map_err(|_| invalid())?;

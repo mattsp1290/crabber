@@ -9,6 +9,20 @@ impl MemoryStore {
         authority: &SessionOwnerAuthority,
         parent: Option<&crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
     ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
+        // The stable namespace only selects stricter validation. It never grants
+        // authority, including when a mutable source link has been erased.
+        if request.target().id.0.starts_with("driver-owner-")
+            || matches!(
+                parent,
+                Some(
+                    crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(
+                        _
+                    )
+                )
+            )
+        {
+            return self.publish_driver_activation(request, authority, parent);
+        }
         let outcome = self.transact(|state| {
             super::super::deletion::ensure_live(state, request.session_id())
                 .map_err(crate::deletion::owner_error)?;
@@ -46,6 +60,83 @@ impl MemoryStore {
             return Err(Error::UnknownStoreOutcome);
         }
         Ok(outcome)
+    }
+    fn publish_driver_activation(
+        &self,
+        request: &OwnedScopeActivation,
+        authority: &SessionOwnerAuthority,
+        parent: Option<&crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
+        use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
+        let mut guard = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
+        super::super::deletion::ensure_live(&guard, request.session_id())
+            .map_err(crate::deletion::owner_error)?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(
+            crate::deletion::coverage::MAX_PROOF_BYTES,
+        );
+        if let Some(receipt) = guard
+            .session_owners
+            .driver_activation_receipt_bounded(request, &mut proof)?
+        {
+            return Ok(crate::session_owner::SessionOwnerOutcome::Replayed(receipt));
+        }
+        guard
+            .session_owners
+            .validate_driver_membership(request.session_id(), &mut proof)?;
+        let record = guard
+            .session_owners
+            .driver_activation_record_bounded(request, &mut proof)?;
+        let source = record.driver.as_deref().ok_or(Error::UnknownStoreOutcome)?;
+        let Some(OwnedScopeParentAuthority::ExecutionDriver(grant)) = parent else {
+            return Err(Error::InvalidRequest);
+        };
+        if &source.identity()? != grant.source_identity()
+            || grant.authority().target() != &record.snapshot.target
+        {
+            return Err(Error::SemanticConflict);
+        }
+        if record.cancellation.is_some() {
+            return Err(Error::CancellationPending);
+        }
+        let fresh = super::drivers::fresh(
+            &guard,
+            grant.original_request(),
+            self.clock.now(),
+            &mut proof,
+        )?;
+        if &fresh != source {
+            return Err(Error::StaleOwner);
+        }
+        // All borrowed source checks precede the inherited Memory transaction
+        // clone; unrelated stored history is not covered by this proof budget.
+        crate::session_owner::owned_scope::source::validate_activation(
+            record,
+            request,
+            authority,
+            self.clock.now(),
+        )?;
+        let original = record.clone();
+        let mut next = guard.clone();
+        let current = revision(&next, request.session_id());
+        let receipt = next.session_owners.activate_scope(
+            original,
+            request,
+            authority,
+            current,
+            self.clock.now(),
+        )?;
+        bump_public_revision(&mut next, request.session_id())
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let boundary = fault(self);
+        before(boundary)?;
+        *guard = next;
+        if boundary == 2 {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok(crate::session_owner::SessionOwnerOutcome::Applied {
+            receipt,
+            authority: None,
+        })
     }
     pub(in crate::memory) fn join_owned_scope(
         &self,
@@ -92,6 +183,9 @@ fn scope_context(
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
     use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
+    if record.driver.is_some() {
+        return Err(Error::InvalidRequest);
+    }
     if record.service.is_some() {
         return service_context(state, record, authority, now);
     }

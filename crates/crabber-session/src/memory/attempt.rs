@@ -491,3 +491,11 @@ mod tests {
 #[cfg(test)]
 #[path = "attempt/terminal_tests.rs"]
 mod terminal_tests;
+
+pub(super) fn pristine_for_driver(
+    state: &super::State,
+    run: &crabber_core::Run,
+    binding: &crate::RetainedExecutionBinding,
+) -> Result<(), crate::AttemptError> {
+    pristine::check_with_binding(state, run, binding)
+}

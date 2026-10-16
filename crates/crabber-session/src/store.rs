@@ -410,6 +410,21 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Whether the native adapter can own an initial outer execution worker.
+    fn supports_execution_drivers(&self) -> bool {
+        false
+    }
+    /// Atomically register and begin an exact first prepared-admission driver.
+    /// Original replay returns metadata and never a dispatch authority.
+    async fn register_execution_driver(
+        &self,
+        _request: crate::session_owner::driver::RegisterExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::ExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Whether independently linked preparation resource capacity is durable.
     fn supports_preparation_resources(&self) -> bool {
         false

@@ -23,6 +23,7 @@ pub const RUNTIME_DETACHED_RESOURCE_CONTRACT_V1: &str =
 /// detached scopes revalidate their actual native parent immediately at activation.
 #[derive(Clone)]
 pub enum OwnedScopeParentAuthority {
+    ExecutionDriver(Box<super::driver::ExecutionDriverGrant>),
     Preparation(Box<super::preparation::PreparationGrant>),
     ServicePreparation(Box<super::preparation::PreparationGrant>),
     Native(super::SessionOwnerParentAuthority),

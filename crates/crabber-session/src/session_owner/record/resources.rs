@@ -2,8 +2,28 @@
 use super::{Error, Record, ReserveSessionOwner, SessionOwnerGeneration, SessionOwnerState};
 use crate::session_owner::preparation;
 pub(super) fn validate(record: &Record) -> Result<(), Error> {
+    if let Some(driver) = &record.driver {
+        if record.version != 2
+            || record.preparation.is_some()
+            || record.resource.is_some()
+            || record.service.is_some()
+            || record.retained_resources.is_some()
+            || record.parent.is_some()
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        driver
+            .fingerprint(&ReserveSessionOwner {
+                id: record.origin.clone(),
+                binding: record.snapshot.binding.clone(),
+                owner: record.owner.clone(),
+                lease_ms: 1,
+            })
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
     if let Some(service) = &record.service {
         if record.version != 2
+            || record.driver.is_some()
             || record.preparation.is_some()
             || record.resource.is_some()
             || record.retained_resources.is_some()
@@ -22,7 +42,11 @@ pub(super) fn validate(record: &Record) -> Result<(), Error> {
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
     if let Some(resource) = &record.resource {
-        if record.version != 2 || record.preparation.is_some() || record.parent.is_some() {
+        if record.version != 2
+            || record.driver.is_some()
+            || record.preparation.is_some()
+            || record.parent.is_some()
+        {
             return Err(Error::UnknownStoreOutcome);
         }
         resource

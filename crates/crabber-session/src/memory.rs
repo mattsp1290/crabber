@@ -689,6 +689,18 @@ impl Store for MemoryStore {
         deletion::ensure_live(&state, session).map_err(crate::deletion::owner_error)?;
         state.session_owners.preparation_metadata(session, key)
     }
+    fn supports_execution_drivers(&self) -> bool {
+        true
+    }
+    async fn register_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::ExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_driver(&request)
+    }
     fn supports_preparation_resources(&self) -> bool {
         true
     }

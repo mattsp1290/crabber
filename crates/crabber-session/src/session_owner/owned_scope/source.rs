@@ -28,6 +28,7 @@ pub(crate) fn verify(
         || record.parent != begin.record.parent
         || record.resource != begin.record.resource
         || record.service != begin.record.service
+        || record.driver != begin.record.driver
     {
         return Err(Error::UnknownStoreOutcome);
     }
@@ -99,6 +100,17 @@ pub(crate) fn activate(
     authority: &crate::session_owner::SessionOwnerAuthority,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
+    validate_activation(record, request, authority, now)?;
+    record.owned_scope = Some(request.clone());
+    record.publish_change(now, true)
+}
+
+pub(crate) fn validate_activation(
+    record: &Record,
+    request: &OwnedScopeActivation,
+    authority: &crate::session_owner::SessionOwnerAuthority,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
     record.validate()?;
     if request.source.session != record.snapshot.binding.session_id
         || request.source.target != record.snapshot.target
@@ -118,8 +130,7 @@ pub(crate) fn activate(
         return Err(Error::CancellationPending);
     }
     request.fingerprint()?;
-    record.owned_scope = Some(request.clone());
-    record.publish_change(now, true)
+    Ok(())
 }
 
 pub(crate) fn activation_key(

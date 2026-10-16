@@ -7,7 +7,14 @@ pub(super) fn check(state: &State, run: &Run) -> Result<(), Error> {
     let binding = execution_binding::read(state, &run.session_id, &run.id)
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::InvalidTransition)?;
-    let count = attempt::pristine::input_count(run, &binding)?;
+    check_with_binding(state, run, &binding)
+}
+pub(super) fn check_with_binding(
+    state: &State,
+    run: &Run,
+    binding: &crate::RetainedExecutionBinding,
+) -> Result<(), Error> {
+    let count = attempt::pristine::input_count(run, binding)?;
     if state
         .messages
         .iter()

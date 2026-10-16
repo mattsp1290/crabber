@@ -59,7 +59,7 @@ impl Ledger {
             unclassified,
         })
     }
-    fn checked_for_read(
+    pub(super) fn checked_for_read(
         &self,
         session: &SessionId,
         id: &crabber_core::SessionOwnerId,

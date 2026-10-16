@@ -24,6 +24,8 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<Box<super::service::SessionServiceLink>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<Box<super::driver::DriverLink>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<Box<crate::session_owner::cancellation::Cancellation>>,
@@ -64,6 +66,7 @@ impl Record {
             preparation: None,
             resource: None,
             service: None,
+            driver: None,
             retained_resources: None,
             cancellation: None,
             parent,
@@ -129,6 +132,12 @@ impl Record {
         }
         match (&self.snapshot.binding.parent, &self.parent) {
             (None, None) => (),
+            (Some(binding), None)
+                if self.driver.as_ref().is_some_and(|source| {
+                    source.run_id() == &binding.run_id
+                        && binding.call_id.is_none()
+                        && binding.phase.is_none()
+                }) => {}
             (Some(binding), Some(witness)) => {
                 witness.validate().map_err(|_| Error::UnknownStoreOutcome)?;
                 if witness.source.session_id != self.snapshot.binding.session_id

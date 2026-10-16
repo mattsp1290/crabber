@@ -2,6 +2,8 @@
 //! immutable source; current rows never select their own alleged latest proof.
 #[path = "ledger/cancellation.rs"]
 mod cancellation;
+#[path = "ledger/drivers.rs"]
+mod drivers;
 #[path = "ledger/owned_scope.rs"]
 mod owned_scope;
 #[path = "ledger/public.rs"]
@@ -43,6 +45,7 @@ enum ReservationSource {
     Preparation(super::preparation::Origin),
     Resource(super::preparation::PreparationResourceLink),
     Service(Box<super::service::SessionServiceLink>),
+    Driver(Box<super::driver::DriverLink>),
 }
 impl Ledger {
     pub(crate) fn source_audit(
@@ -313,6 +316,7 @@ impl Ledger {
             ReservationSource::Preparation(origin) => origin.fingerprint(request),
             ReservationSource::Resource(link) => link.fingerprint(request),
             ReservationSource::Service(link) => link.fingerprint(request),
+            ReservationSource::Driver(link) => link.fingerprint(request),
         }?;
         let session = &request.binding.session_id;
         if let Some(saved) = self.receipt(session, &request.id)? {
@@ -361,6 +365,7 @@ impl Ledger {
             ReservationSource::Preparation(origin) => record.preparation = Some(origin),
             ReservationSource::Resource(link) => record.resource = Some(link),
             ReservationSource::Service(link) => record.service = Some(link),
+            ReservationSource::Driver(link) => record.driver = Some(link),
         }
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);

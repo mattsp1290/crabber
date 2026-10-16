@@ -346,6 +346,7 @@ pub enum SessionOwnerParentAuthority {
     Phase(crate::PhaseAuthority),
 }
 
+pub mod driver;
 pub mod preparation;
 pub mod service;
 

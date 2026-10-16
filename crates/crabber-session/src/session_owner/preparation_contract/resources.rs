@@ -388,3 +388,44 @@ async fn cleanup_is_not_handoff(store: &impl Store) {
             .is_err()
     );
 }
+
+/// A genuine admitted first Run whose activated acquisition owner remains live.
+pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
+    use crate::session_owner::owned_scope::{
+        OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedScopeSource,
+        OwnedTaskRegistration,
+    };
+    let (root, bound) = declaration::setup(store).await;
+    let PreparationResourceOutcome::Applied { receipt, grant } =
+        store.retain_preparation_resources(root).await.unwrap()
+    else {
+        panic!("fresh child")
+    };
+    let mut task = OwnedTaskRegistration::register(
+        OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began).unwrap(),
+        || async move { Ok::<_, ()>(((), PreparedOperation::AdmitKeyed(Box::new(bound)))) },
+    )
+    .unwrap();
+    let OwnedScopeActivationOutcome::Applied { permit, .. } = store
+        .activate_owned_scope(
+            task.activation().clone(),
+            grant.retained_resources_authority().unwrap().clone(),
+            Some(OwnedScopeParentAuthority::preparation((*grant).clone())),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("fresh scope")
+    };
+    task.dispatch(*permit).unwrap();
+    let ((), joined) = JoinedPreparation::observe_registered(*grant, &mut task)
+        .await
+        .unwrap()
+        .unwrap();
+    let PreparationCompletion::Keyed(KeyedAdmitOutcome::Started { admitted, .. }) =
+        store.complete_preparation(joined).await.unwrap()
+    else {
+        panic!("fresh admission")
+    };
+    *admitted
+}
