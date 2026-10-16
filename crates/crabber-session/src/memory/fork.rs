@@ -57,6 +57,16 @@ impl MemoryStore {
                 }
                 return Ok(ForkOutcome::Replayed(saved));
             }
+            if !state.sessions.contains_key(&request.target_session_id)
+                && (state
+                    .ownership_origins
+                    .contains_key(&request.target_session_id)
+                    || state
+                        .ownership_protocol_sessions
+                        .contains(&request.target_session_id))
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
             let source = state
                 .sessions
                 .get(&request.source_session_id)

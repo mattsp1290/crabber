@@ -16,6 +16,32 @@ async fn creation_protocol_is_not_retrofitted() {
         .await
         .unwrap();
     assert_eq!(protocol, 1);
+    // An empty pre-protocol session has no dependent rows to make REPLACE
+    // fail incidentally. Its immutable cohort must reject the replacement.
+    let mut empty = store
+        .get_session(&managed.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    empty.id = crabber_core::SessionId::new();
+    sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
+        .bind(&empty.id.0)
+        .bind(serde_json::to_string(&empty).unwrap())
+        .execute(&store.writer)
+        .await
+        .unwrap();
+    for query in [
+        "INSERT OR REPLACE INTO sessions(id,data,ownership_protocol) SELECT id,data,1 FROM sessions WHERE id=$1",
+        "INSERT OR IGNORE INTO sessions(id,data,ownership_protocol) SELECT id,data,1 FROM sessions WHERE id=$1",
+    ] {
+        assert!(
+            sqlx::query(query)
+                .bind(&empty.id.0)
+                .execute(&store.writer)
+                .await
+                .is_err()
+        );
+    }
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM session_ownership_origins WHERE session_id=$1")
             .bind(&managed.session_id.0)

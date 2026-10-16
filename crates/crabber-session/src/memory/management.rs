@@ -47,6 +47,14 @@ impl MemoryStore {
     pub(super) fn manage(&self, request: ManageSession) -> Result<ManagementReceipt, Error> {
         let digest = request.fingerprint()?;
         let result = self.transact(|state| {
+            if !state.sessions.contains_key(&request.session_id)
+                && (state.ownership_origins.contains_key(&request.session_id)
+                    || state
+                        .ownership_protocol_sessions
+                        .contains(&request.session_id))
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
             if let Some(saved) = receipt(state, &request.session_id, &request.id)? {
                 if saved.semantic_digest != digest {
                     return Err(Error::SemanticConflict);

@@ -51,3 +51,9 @@ CREATE TRIGGER session_owner_audits_deleted_guard_0 BEFORE INSERT ON session_own
 CREATE TRIGGER session_owner_audits_deleted_guard_1 BEFORE UPDATE OF session_id ON session_owner_audits
  WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=NEW.session_id)
  BEGIN SELECT RAISE(ABORT,'crabber_session_deleted'); END;
+
+-- REPLACE may delete an existing row instead of executing UPDATE triggers.
+-- All upserts must carry the existing cohort into their proposed insert.
+CREATE TRIGGER sessions_ownership_protocol_insert_immutable BEFORE INSERT ON sessions
+WHEN EXISTS(SELECT 1 FROM sessions WHERE id=NEW.id AND ownership_protocol<>NEW.ownership_protocol)
+BEGIN SELECT RAISE(ABORT,'crabber_ownership_protocol_immutable'); END;

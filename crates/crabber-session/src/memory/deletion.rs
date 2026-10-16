@@ -1,19 +1,9 @@
 //! Permanent identity checks under the ordinary Memory session gate.
 use super::{MemoryStore, State};
-use crate::deletion::coverage::{self, VerifiedDeletionCoverage};
+use crate::deletion::coverage::{self, CoverageRead};
 use crate::deletion::origin::OriginKind;
 use crate::{DeletionError, DeletionReceipt, SessionDisposition, StoreError};
 use crabber_core::{ControlId, SessionId, SessionRevision};
-
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "guarded erasure coordinator is being integrated")
-)]
-pub(super) enum CoverageRead {
-    Unknown,
-    Limited,
-    Verified(VerifiedDeletionCoverage),
-}
 
 #[cfg_attr(
     not(test),
@@ -241,6 +231,28 @@ mod tests {
         assert_eq!(proof.session_id(), id);
         assert_eq!(proof.revision(), revision);
         assert!(proof.proof_bytes() > 0);
+    }
+    #[tokio::test]
+    async fn dangling_creation_origin_cannot_be_overwritten() {
+        let store = super::MemoryStore::new();
+        let mut create = crate::management_contract::create();
+        store.manage_session(create.clone()).await.unwrap();
+        let original = store.state.lock().unwrap().ownership_origins[&create.session_id].clone();
+        store
+            .state
+            .lock()
+            .unwrap()
+            .sessions
+            .remove(&create.session_id);
+        create.id = crabber_core::ControlId::new();
+        assert_eq!(
+            store.manage_session(create.clone()).await.unwrap_err(),
+            crate::ManagementError::UnknownStoreOutcome
+        );
+        assert_eq!(
+            store.state.lock().unwrap().ownership_origins[&create.session_id],
+            original
+        );
     }
     #[tokio::test]
     async fn permanent_identity_guards() {
