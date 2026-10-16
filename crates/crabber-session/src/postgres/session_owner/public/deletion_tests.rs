@@ -138,3 +138,38 @@ async fn corrupt_all_owner_parent_copies(store: &PostgresStore, session: &Sessio
         Err(Failure::Error(_))
     ));
 }
+
+#[tokio::test]
+async fn legacy_native_parent_remains_usable_but_unclassified() {
+    use crate::session_owner::coverage::contract::{fixture_from_parent, native_parent};
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let (request, parent) = native_parent(&store).await;
+    let session = request.binding.session_id.clone();
+    let original: String = sqlx::query_scalar(
+        "SELECT data_json FROM native_parent_witnesses WHERE session_id=$1 AND kind='phase'",
+    )
+    .bind(&session.0)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    let mut old: serde_json::Value = serde_json::from_str(&original).unwrap();
+    old["version"] = serde_json::json!(1);
+    old.as_object_mut().unwrap().remove("run_issuance_digest");
+    sqlx::query(
+        "UPDATE native_parent_witnesses SET data_json=$1 WHERE session_id=$2 AND kind='phase'",
+    )
+    .bind(old.to_string())
+    .bind(&session.0)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    fixture_from_parent(&store, Mode::Declared, request, parent).await;
+    let owners = check(&store, &session, 32 * 1024 * 1024).await.0.unwrap();
+    assert_eq!(owners.live.len(), 0);
+    assert!(owners.unclassified);
+}

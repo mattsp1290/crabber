@@ -79,3 +79,28 @@ async fn detached_owner_coverage_requires_original_declaration_activation_and_pa
         }
     }
 }
+
+#[tokio::test]
+async fn legacy_native_parent_remains_usable_but_unclassified() {
+    use crate::session_owner::coverage::contract::{fixture_from_parent, native_parent};
+    let store = MemoryStore::new();
+    let (request, parent) = native_parent(&store).await;
+    let session = request.binding.session_id.clone();
+    {
+        let mut state = store.state.lock().unwrap();
+        let witness = state
+            .native_parent_witnesses
+            .values_mut()
+            .find(|w| {
+                w.source.session_id == session && w.source.kind == crate::native_parent::Kind::Phase
+            })
+            .unwrap();
+        witness.version = 1;
+        witness.run_issuance_digest = None;
+    }
+    fixture_from_parent(&store, Mode::Declared, request, parent).await;
+    let state = store.state.lock().unwrap();
+    let owners = check(&state, &session, 32 * 1024 * 1024).unwrap();
+    assert_eq!(owners.live.len(), 0);
+    assert!(owners.unclassified);
+}

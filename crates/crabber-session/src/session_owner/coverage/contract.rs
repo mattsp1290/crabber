@@ -21,7 +21,15 @@ pub(crate) enum Mode {
     ActivatedNoDispatch,
 }
 pub(crate) async fn fixture(store: &impl Store, mode: Mode) -> (SessionId, SessionOwnerId) {
-    let (mut request, parent) = native_parent(store).await;
+    let (request, parent) = native_parent(store).await;
+    fixture_from_parent(store, mode, request, parent).await
+}
+pub(crate) async fn fixture_from_parent(
+    store: &impl Store,
+    mode: Mode,
+    mut request: ReserveSessionOwner,
+    parent: SessionOwnerParentAuthority,
+) -> (SessionId, SessionOwnerId) {
     request.lease_ms = 60_000;
     request.binding.resource_contract = match mode {
         Mode::Legacy => None,
@@ -130,7 +138,9 @@ async fn observed_join(
     store.join_owned_scope(proof, authority).await.unwrap();
 }
 
-async fn native_parent(store: &impl Store) -> (ReserveSessionOwner, SessionOwnerParentAuthority) {
+pub(crate) async fn native_parent(
+    store: &impl Store,
+) -> (ReserveSessionOwner, SessionOwnerParentAuthority) {
     let (admitted, execution, attempt, claim) = crate::phase_contract::fixture(store).await;
     let (receipt, authority) = crate::phase_contract::applied(
         execution
