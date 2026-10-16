@@ -105,6 +105,44 @@ pub(crate) async fn termination_fixture(
     let termination_id = crate::tool_continuation::derived_id("host-cancel", &request.id);
     (request, termination_id, f.suspension.continuation.id)
 }
+#[cfg(test)]
+pub(crate) struct WaitingTerminalFixture {
+    pub request: RunControlRequest,
+    pub usage: crabber_core::Usage,
+    pub turn: Option<TurnId>,
+    pub earlier: Option<RunControlRequest>,
+}
+#[cfg(test)]
+pub(crate) async fn waiting_terminal_fixture(
+    store: &impl Store,
+    clock: &ManualClock,
+    tool: bool,
+    previous: bool,
+) -> WaitingTerminalFixture {
+    let (target, usage, turn, earlier) = if tool {
+        let f = crate::tool_continuation_contract::fixture::fixture(store).await;
+        let usage = f.suspension.usage.clone();
+        let turn = f.suspension.source_turn_id.clone();
+        f.execution
+            .suspend_tool_continuation(f.suspension.clone(), f.authority)
+            .await
+            .unwrap();
+        (RunControlTarget::of(&f.admitted.run), usage, turn, None)
+    } else {
+        let (target, earlier) = checkpoint::paused(store, clock, previous).await;
+        let original = store.get_run(&target.run_id).await.unwrap().unwrap();
+        let turn = crate::run_control::source_turn(&original).unwrap();
+        (target, original.usage, turn, earlier)
+    };
+    let request = request(store, &target, cancel_action()).await;
+    accept(store, request.clone()).await;
+    WaitingTerminalFixture {
+        request,
+        usage,
+        turn,
+        earlier,
+    }
+}
 /// All adapters preserve exact retries, ordering, target binding and worker fences.
 /// # Panics
 /// Panics if the adapter violates durable control semantics.

@@ -162,3 +162,18 @@ async fn corrupted_termination(store: &PostgresStore) {
         }
     }
 }
+
+#[tokio::test]
+async fn original_waiting_cancel_terminal_source() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock.clone());
+    crate::run_control::terminal::contract::run(&store, &clock).await;
+}

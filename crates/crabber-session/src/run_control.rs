@@ -1,6 +1,7 @@
 //! Durable, exactly targeted host cancellation and next-turn input.
 mod fingerprint;
 mod suspension;
+pub(crate) mod terminal;
 pub(crate) use suspension::*;
 mod records;
 use crabber_core::{

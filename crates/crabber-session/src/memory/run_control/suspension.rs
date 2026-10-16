@@ -44,11 +44,15 @@ pub(in super::super) fn apply_verified(
     }
     let mut event = run_control::terminal_event(&terminal, now)?;
     event.turn_id = turn.source;
-    super::super::insert_event(state, run, event).map_err(run_control::unknown)?;
+    event.cursor = Some(
+        super::super::insert_event_captured(state, run, event.clone())
+            .map_err(run_control::unknown)?,
+    );
     super::super::native_parent::record_run(state, Some(run), &terminal)
         .map_err(run_control::unknown)?;
     state.runs.insert(run.id.clone(), terminal.clone());
-    super::finalize(state, &terminal, now).map_err(run_control::unknown)?;
+    super::finalize_extra(state, &terminal, now, Some((request, &event)))
+        .map_err(run_control::unknown)?;
     Ok(())
 }
 fn verify(state: &State, run: &Run) -> Result<Vec<crabber_core::ToolCallId>, Error> {

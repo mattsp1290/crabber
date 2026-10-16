@@ -155,3 +155,11 @@ async fn corrupted_termination(store: &SqliteStore) {
         }
     }
 }
+
+#[tokio::test]
+async fn original_waiting_cancel_terminal_source() {
+    let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
+    let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
+    let store = store.with_clock(clock.clone());
+    crate::run_control::terminal::contract::run(&store, &clock).await;
+}

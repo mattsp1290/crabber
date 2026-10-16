@@ -23,13 +23,21 @@ fn publish(
     record: &mut Record,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
+    publish_extra(state, run, record, now, None)
+}
+fn publish_extra(
+    state: &mut State,
+    run: &Run,
+    record: &mut Record,
+    now: time::OffsetDateTime,
+    source: Option<(&RunControlRequest, &crabber_core::EventRecord)>,
+) -> Result<(), Error> {
     super::bump_public_revision(state, &run.session_id).map_err(unknown)?;
     record.summary.revision = revision(state, &run.session_id);
     record.summary.event_cursor = state.events.next_cursor().map_err(unknown)?;
-    state
-        .events
-        .append(event(run, &record.summary, now)?)
-        .map_err(unknown)?;
+    let mut audit = event(run, &record.summary, now)?;
+    crate::run_control::terminal::attach(&mut audit, &record.summary, source)?;
+    state.events.append(audit).map_err(unknown)?;
     state.run_control_audits.insert(
         (
             run.session_id.clone(),
@@ -254,14 +262,28 @@ pub(super) fn finalize(
     run: &Run,
     now: time::OffsetDateTime,
 ) -> Result<(), crate::StoreError> {
+    finalize_extra(state, run, now, None)
+}
+pub(super) fn finalize_extra(
+    state: &mut State,
+    run: &Run,
+    now: time::OffsetDateTime,
+    source: Option<(&RunControlRequest, &crabber_core::EventRecord)>,
+) -> Result<(), crate::StoreError> {
     if !run.status.is_terminal() {
         return Ok(());
     }
+    let mut matched = source.is_none();
     for mut record in records(state, &RunControlTarget::of(run)).map_err(control_store_error)? {
         if let Some(status) = terminal_status(&record, run.status) {
             record.summary.status = status;
-            publish(state, run, &mut record, now).map_err(control_store_error)?;
+            let selected = source.filter(|(request, _)| **request == record.request);
+            matched |= selected.is_some();
+            publish_extra(state, run, &mut record, now, selected).map_err(control_store_error)?;
         }
+    }
+    if !matched {
+        return Err(control_store_error(Error::UnknownStoreOutcome));
     }
     Ok(())
 }
@@ -386,6 +408,15 @@ pub(super) fn public_controls(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn original_waiting_cancel_terminal_source() {
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = super::MemoryStore::with_clock(clock.clone());
+        crate::run_control::terminal::contract::run(&store, &clock).await;
+    }
+
     #[tokio::test]
     async fn durable_run_control_contract() {
         crate::run_control_contract::run_contract(|clock| super::MemoryStore::with_clock(clock))

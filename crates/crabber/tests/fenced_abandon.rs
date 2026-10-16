@@ -183,10 +183,13 @@ mod run_control_records;
 #[path = "../../crabber-session/src/run_control/suspension.rs"]
 #[allow(dead_code)]
 mod run_control_suspension;
+#[path = "../../crabber-session/src/run_control/terminal.rs"]
+pub(crate) mod run_control_terminal;
 #[allow(unused_imports)]
 mod run_control {
     pub(crate) use crate::run_control_records::*;
     pub(crate) use crate::run_control_suspension::*;
+    pub(crate) use crate::run_control_terminal as terminal;
     pub(crate) use crabber::session::{
         RunControlAction, RunControlBoundary, RunControlError, RunControlKind, RunControlOutcome,
         RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus, RunControlSummary,

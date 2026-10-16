@@ -26,6 +26,16 @@ async fn publish(
     fresh: bool,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
+    publish_extra(tx, run, record, fresh, now, None).await
+}
+async fn publish_extra(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    record: &mut Record,
+    fresh: bool,
+    now: time::OffsetDateTime,
+    source: Option<(&RunControlRequest, &crabber_core::EventRecord)>,
+) -> Result<(), Error> {
     super::records::bump_public_revision(tx, &run.session_id)
         .await
         .map_err(unknown)?;
@@ -46,7 +56,8 @@ async fn publish(
     }
     record.summary.event_cursor = cursor;
     record.summary.revision = revision;
-    let event = event(run, &record.summary, now)?;
+    let mut event = event(run, &record.summary, now)?;
+    crate::run_control::terminal::attach(&mut event, &record.summary, source)?;
     sqlx::query("UPDATE events SET data=$2 WHERE seq=$1")
         .bind(seq)
         .bind(serde_json::to_string(&event).map_err(unknown)?)
@@ -304,14 +315,28 @@ pub(super) async fn finalize(
     run: &Run,
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
+    finalize_extra(tx, run, now, None).await
+}
+pub(super) async fn finalize_extra(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    now: time::OffsetDateTime,
+    source: Option<(&RunControlRequest, &crabber_core::EventRecord)>,
+) -> Result<(), Error> {
     if !run.status.is_terminal() {
         return Ok(());
     }
+    let mut matched = source.is_none();
     for mut record in reads::records(tx, &RunControlTarget::of(run)).await? {
         if let Some(status) = terminal_status(&record, run.status) {
             record.summary.status = status;
-            publish(tx, run, &mut record, false, now).await?;
+            let selected = source.filter(|(request, _)| **request == record.request);
+            matched |= selected.is_some();
+            publish_extra(tx, run, &mut record, false, now, selected).await?;
         }
+    }
+    if !matched {
+        return Err(Error::UnknownStoreOutcome);
     }
     Ok(())
 }

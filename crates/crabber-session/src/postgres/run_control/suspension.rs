@@ -66,13 +66,15 @@ pub(in super::super) async fn apply_verified(
     }
     let mut event = run_control::terminal_event(&terminal, now)?;
     event.turn_id = turn.source;
-    super::super::insert_event(tx, run, &event)
-        .await
-        .map_err(unknown)?;
+    event.cursor = Some(
+        super::super::insert_event_captured(tx, run, &event)
+            .await
+            .map_err(unknown)?,
+    );
     super::super::save_run(tx, &terminal)
         .await
         .map_err(unknown)?;
-    super::finalize(tx, &terminal, now).await
+    super::finalize_extra(tx, &terminal, now, Some((request, &event))).await
 }
 async fn verify(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<Vec<ToolCallId>, Error> {
     let data: Option<String> = sqlx::query_scalar("SELECT CASE WHEN octet_length(data_json)<=4227072 THEN data_json END FROM run_suspension_proofs WHERE run_id=$1")

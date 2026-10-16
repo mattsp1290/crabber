@@ -105,7 +105,7 @@ pub(crate) fn verify_event(
             }
         || event.live_only
         || event.correlation.as_deref() != Some(&summary.receipt.operation_id.0)
-        || event.payload != serde_json::to_value(summary).map_err(unknown)?
+        || event.payload != crate::run_control::terminal::canonical_payload(summary, event)?
     {
         return Err(RunControlError::UnknownStoreOutcome);
     }
