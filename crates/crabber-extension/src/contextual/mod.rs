@@ -16,8 +16,8 @@ pub use generation::{
 use profile::SharedRegistration;
 
 use crate::{
-    CleanupOwner, CleanupTracker, ComponentIdentity, Extension, ExtensionError, MountHandle,
-    Registry, RunPlan, RunPlanProvider, Scope, WorkspaceContext,
+    CleanupOwner, CleanupTracker, ComponentIdentity, Extension, ExtensionError, Registry, RunPlan,
+    RunPlanProvider, Scope, WorkspaceContext,
 };
 use async_trait::async_trait;
 use crabber_core::{SessionContext, SessionId};
@@ -94,7 +94,8 @@ struct FactoryRegistration {
     factory: Arc<dyn ExtensionFactory>,
 }
 
-const FACTORY_RESOURCE_CONTRACT: &str = "crabber.contextual-factory.v2";
+const FACTORY_RESOURCE_CONTRACT: &str = "crabber.contextual-factory.v3";
+const FACTORY_MOUNT_CONTRACT: &str = "crabber.registry.mount.sealed.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Owner {
@@ -106,7 +107,8 @@ tokio::task_local! { static INITIALIZING: Owner; }
 
 struct Record {
     cleanup: Arc<cleanup::RecordCleanup>,
-    mount: Option<MountHandle>,
+    mount: Option<cleanup::RecordMount>,
+    failed_cleanup: bool,
 }
 #[derive(Default)]
 struct SlotState {

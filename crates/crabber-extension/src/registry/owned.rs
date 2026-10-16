@@ -48,6 +48,13 @@ impl OwnedMountHandle {
         self.check_close_allowed()?;
         close(&self.inner.mount, bound).await
     }
+    pub(crate) fn signal_close(&self) {
+        self.inner.deactivate();
+        signal(&self.inner.mount);
+    }
+    pub(crate) async fn close_registered(&self) -> Result<OwnedMountJoin, ExtensionError> {
+        self.close(self.inner.mount.close_timeout).await
+    }
     /// Current cleanup observations, without asserting an actual close join.
     #[must_use]
     pub fn cleanup_snapshot(&self) -> ResourceDrain {
@@ -228,3 +235,28 @@ fn observe_timeout(mount: &Mount, bound: Duration) {
 
 #[cfg(test)]
 mod tests;
+
+/// Owned failed installation retains the actual blocking rollback join in its
+/// caller (the contextual initializer is itself independently join-owned).
+pub(super) async fn rollback_install(mut registrar: super::Registrar) -> bool {
+    match tokio::task::spawn_blocking(move || {
+        let mut complete = true;
+        while let Some(cleanup) = registrar.cleanups.pop() {
+            if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(cleanup)) {
+                dispatch::discard_panic_payload(payload);
+                complete = false;
+            }
+        }
+        complete
+    })
+    .await
+    {
+        Ok(complete) => complete,
+        Err(error) => {
+            if error.is_panic() {
+                dispatch::discard_panic_payload(error.into_panic());
+            }
+            false
+        }
+    }
+}

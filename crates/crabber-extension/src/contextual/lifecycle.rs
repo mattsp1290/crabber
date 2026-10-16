@@ -127,29 +127,17 @@ impl ContextualPlanProvider {
                 for slot in &slots {
                     super::initialization::join_slot(slot).await?;
                 }
-                let (dependency_result, results) = tokio::join!(
+                let (dependency_result, results, records) = tokio::join!(
                     super::dependencies::join(&dependencies, bound),
-                    join_all(mounts.iter().rev().map(MountHandle::close))
+                    join_all(mounts.iter().rev().map(MountHandle::close)),
+                    join_all(slots.iter().map(|slot| async {
+                        let _gate = slot.gate.lock().await;
+                        provider.clean_records(slot).await
+                    })),
                 );
                 dependency_result?;
-                let cleanup: Vec<_> = slots
-                    .iter()
-                    .flat_map(|slot| {
-                        slot.state
-                            .lock()
-                            .unwrap()
-                            .records
-                            .iter()
-                            .map(|record| record.cleanup.clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                let cleanup = join_all(cleanup.iter().map(|owner| owner.wait_drained())).await;
                 results.into_iter().collect::<Result<Vec<_>, _>>()?;
-                cleanup.into_iter().collect::<Result<Vec<_>, _>>()?;
-                for slot in slots {
-                    slot.state.lock().unwrap().records.clear();
-                }
+                records.into_iter().collect::<Result<Vec<_>, _>>()?;
                 Ok(())
             })
         };
@@ -177,7 +165,7 @@ impl ContextualPlanProvider {
         for record in &state.records {
             record.cleanup.close();
             if let Some(mount) = &record.mount {
-                mount.deactivate();
+                mount.signal();
             }
         }
     }
@@ -186,7 +174,7 @@ impl ContextualPlanProvider {
         for record in &slot.state.lock().unwrap().records {
             record.cleanup.close();
             if let Some(mount) = &record.mount {
-                mount.deactivate();
+                mount.signal();
             }
         }
     }
@@ -198,28 +186,38 @@ impl ContextualPlanProvider {
             .unwrap()
             .records
             .iter()
-            .map(|record| (record.cleanup.clone(), record.mount.clone()))
+            .map(|record| {
+                (
+                    record.cleanup.clone(),
+                    record.mount.clone(),
+                    record.failed_cleanup,
+                )
+            })
             .collect();
-        for (cleanup, mount) in &records {
+        for (cleanup, mount, _) in &records {
             cleanup.close();
             if let Some(mount) = mount {
-                mount.deactivate();
+                mount.signal();
             }
         }
-        let results = join_all(
-            records
-                .into_iter()
-                .rev()
-                .map(|(cleanup, mount)| async move {
-                    let result = if let Some(mount) = mount {
+        let results = join_all(records.into_iter().rev().map(
+            |(cleanup, mount, failed)| async move {
+                let closing = async {
+                    if let Some(mount) = mount {
                         mount.close().await
                     } else {
                         Ok(())
-                    };
-                    cleanup.wait_drained().await?;
-                    result
-                }),
-        )
+                    }
+                };
+                let (mount, cleanup) = tokio::join!(closing, cleanup.wait_drained());
+                mount?;
+                cleanup?;
+                if failed {
+                    return Err(ExtensionError::ContextCleanupIncomplete);
+                }
+                Ok(())
+            },
+        ))
         .await;
         results.into_iter().collect::<Result<Vec<_>, _>>()?;
         slot.state.lock().unwrap().records.clear();

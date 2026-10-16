@@ -94,6 +94,7 @@ pub(super) fn declarations(
                 r.identity,
                 crate::plan::registration_config(&r.config_hash),
                 super::FACTORY_RESOURCE_CONTRACT,
+                super::FACTORY_MOUNT_CONTRACT,
                 crate::TOOL_RESOURCE_CONTRACT_VERSION,
                 crate::MAX_TOOL_RESOURCE_TASKS,
             ])

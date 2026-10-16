@@ -551,7 +551,8 @@ impl Registry {
         extension: Arc<dyn Extension>,
         scope: Scope,
     ) -> Result<MountHandle, ExtensionError> {
-        self.mount_with_cleanup(extension, scope, false).await
+        self.mount_with_cleanup(extension, scope, false, || {})
+            .await
     }
     /// Mount with sealed cleanup registration and retained actual cleanup and
     /// close-task joins. This covers this mount, not a whole Runtime Run.
@@ -560,7 +561,16 @@ impl Registry {
         extension: Arc<dyn Extension>,
         scope: Scope,
     ) -> Result<OwnedMountHandle, ExtensionError> {
-        self.mount_with_cleanup(extension, scope, true)
+        self.mount_owned_with_failure_signal(extension, scope, || {})
+            .await
+    }
+    pub(crate) async fn mount_owned_with_failure_signal(
+        &self,
+        extension: Arc<dyn Extension>,
+        scope: Scope,
+        before_failure: impl FnOnce() + Send,
+    ) -> Result<OwnedMountHandle, ExtensionError> {
+        self.mount_with_cleanup(extension, scope, true, before_failure)
             .await
             .map(OwnedMountHandle::new)
     }
@@ -569,6 +579,7 @@ impl Registry {
         extension: Arc<dyn Extension>,
         scope: Scope,
         sealed: bool,
+        before_failure: impl FnOnce() + Send,
     ) -> Result<MountHandle, ExtensionError> {
         if self.inner.lock().unwrap().closed {
             return Err(ExtensionError::RegistryClosed);
@@ -577,19 +588,44 @@ impl Registry {
         let installation = AssertUnwindSafe(extension.install(&mut registrar))
             .catch_unwind()
             .await
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|payload| {
+                crate::dispatch::discard_panic_payload(payload);
                 Err(ExtensionError::Plan(
                     "extension initialization panicked".into(),
                 ))
             });
-        if let Err(error) = installation {
-            registrar.rollback();
-            return Err(error);
+        let result = match installation {
+            Err(error) => Err(error),
+            Ok(()) => self.publish_mount(extension.clone(), scope, &mut registrar, sealed),
+        };
+        match result {
+            Ok(handle) => Ok(handle),
+            Err(error) if sealed => {
+                before_failure();
+                if owned::rollback_install(registrar).await {
+                    Err(error)
+                } else {
+                    Err(ExtensionError::MountCleanupIncomplete {
+                        extension: extension.id().into(),
+                    })
+                }
+            }
+            Err(error) => {
+                registrar.rollback();
+                Err(error)
+            }
         }
+    }
+    fn publish_mount(
+        &self,
+        extension: Arc<dyn Extension>,
+        scope: Scope,
+        registrar: &mut Registrar,
+        sealed: bool,
+    ) -> Result<MountHandle, ExtensionError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             drop(inner);
-            registrar.rollback();
             return Err(ExtensionError::RegistryClosed);
         }
         let mut seen = HashSet::new();
@@ -609,12 +645,10 @@ impl Registry {
         });
         if let Some(name) = collision {
             drop(inner);
-            registrar.rollback();
             return Err(ExtensionError::ToolCollision(name));
         }
-        if let Some(error) = validate_contributors(&registrar, &inner, &scope) {
+        if let Some(error) = validate_contributors(registrar, &inner, &scope) {
             drop(inner);
-            registrar.rollback();
             return Err(error);
         }
         inner.next_id += 1;
@@ -641,7 +675,7 @@ impl Registry {
             seq: id,
             scope,
             extension,
-            registrar: Mutex::new(registrar),
+            registrar: Mutex::new(std::mem::replace(registrar, Registrar::new())),
             active: Mutex::new(true),
             closing: Mutex::new(false),
             closed: Mutex::new(false),

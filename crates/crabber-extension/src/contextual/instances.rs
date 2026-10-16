@@ -1,4 +1,4 @@
-use super::cleanup::RecordCleanup;
+use super::cleanup::{FactoryCleanup, RecordCleanup, RecordMount};
 use super::{
     ContextualPlanProvider, FactoryContext, FactoryRegistration, FactoryScope, Owner, Record, Slot,
 };
@@ -164,7 +164,7 @@ impl ContextualPlanProvider {
         let cleanup = Arc::new(match slot.owner {
             Owner::Shared => RecordCleanup::Shared(crate::CleanupOwner::new()),
             Owner::Workspace(_) | Owner::Session(_) => {
-                RecordCleanup::Factory(crate::ToolResourceOwner::new())
+                RecordCleanup::Factory(FactoryCleanup::new())
             }
         });
         let mut state = slot.state.lock().unwrap();
@@ -175,6 +175,7 @@ impl ContextualPlanProvider {
         state.records.push(Record {
             cleanup: cleanup.clone(),
             mount: None,
+            failed_cleanup: false,
         });
         Ok((index, cleanup))
     }
@@ -208,7 +209,7 @@ impl ContextualPlanProvider {
                 let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
                 return Err(ExtensionError::ContextInitializationFailed { component });
             };
-            slot.state.lock().unwrap().records[index].mount = Some(mount);
+            slot.state.lock().unwrap().records[index].mount = Some(RecordMount::Legacy(mount));
         }
         Ok(())
     }
@@ -243,12 +244,18 @@ impl ContextualPlanProvider {
             let extension = AssertUnwindSafe(registration.factory.create(factory_context))
                 .catch_unwind()
                 .await
-                .map_err(|_| failed())?
+                .map_err(|payload| {
+                    crate::dispatch::discard_panic_payload(payload);
+                    failed()
+                })?
                 .map_err(|_| failed())?;
             let frozen = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 freeze(registration, extension.clone())
             }))
-            .map_err(|_| failed())
+            .map_err(|payload| {
+                crate::dispatch::discard_panic_payload(payload);
+                failed()
+            })
             .and_then(|result| result);
             let frozen = match frozen.and_then(|frozen| {
                 self.check_slot(slot)?;
@@ -257,7 +264,7 @@ impl ContextualPlanProvider {
                 Ok(frozen) => frozen,
                 Err(error) => {
                     Self::signal_records(slot);
-                    let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
+                    Self::shutdown_factory(slot, index, &extension).await;
                     return Err(error);
                 }
             };
@@ -269,14 +276,41 @@ impl ContextualPlanProvider {
                 },
             };
             let extension: Arc<dyn Extension> = Arc::new(frozen);
-            let Ok(mount) = self.inner.registry.mount(extension.clone(), scope).await else {
-                Self::signal_records(slot);
-                let _ = AssertUnwindSafe(extension.shutdown()).catch_unwind().await;
-                return Err(failed());
+            let mount = match self
+                .inner
+                .registry
+                .mount_owned_with_failure_signal(extension.clone(), scope, || {
+                    Self::signal_records(slot);
+                })
+                .await
+            {
+                Ok(mount) => mount,
+                Err(error) => {
+                    if matches!(error, ExtensionError::MountCleanupIncomplete { .. }) {
+                        slot.state.lock().unwrap().records[index].failed_cleanup = true;
+                    }
+                    Self::signal_records(slot);
+                    Self::shutdown_factory(slot, index, &extension).await;
+                    return Err(failed());
+                }
             };
-            slot.state.lock().unwrap().records[index].mount = Some(mount);
+            slot.state.lock().unwrap().records[index].mount = Some(RecordMount::Owned(mount));
         }
         Ok(())
+    }
+    async fn shutdown_factory(slot: &Slot, index: usize, extension: &Arc<dyn Extension>) {
+        let cleanup = slot.state.lock().unwrap().records[index].cleanup.clone();
+        let (shutdown, joined) = tokio::join!(
+            AssertUnwindSafe(extension.shutdown()).catch_unwind(),
+            cleanup.wait_drained(),
+        );
+        if let Err(payload) = shutdown {
+            crate::dispatch::discard_panic_payload(payload);
+            slot.state.lock().unwrap().records[index].failed_cleanup = true;
+        }
+        if joined.is_err() {
+            slot.state.lock().unwrap().records[index].failed_cleanup = true;
+        }
     }
 }
 
@@ -299,6 +333,7 @@ fn freeze(
     }
     let mut config = serde_json::json!({
         "contract":super::FACTORY_RESOURCE_CONTRACT, "factory":registration.identity,
+        "mount_contract":super::FACTORY_MOUNT_CONTRACT,
         "resource_contract":crate::TOOL_RESOURCE_CONTRACT_VERSION,
         "resource_capacity":crate::MAX_TOOL_RESOURCE_TASKS,
         "factory_config":config_value(&registration.config_hash),

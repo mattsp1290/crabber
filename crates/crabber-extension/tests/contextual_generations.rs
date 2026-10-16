@@ -87,9 +87,11 @@ async fn generations_are_shared_by_real_owner_without_changing_plan_fingerprints
             .count(),
         1
     );
-    assert!(created.iter().all(|g| {
-        g.cleanup_policy() == ServiceGenerationCleanupPolicy::SealedFactoryLegacyMount
-    }));
+    assert!(
+        created
+            .iter()
+            .all(|g| { g.cleanup_policy() == ServiceGenerationCleanupPolicy::FullySealedFactory })
+    );
     plan_a.release();
     provider
         .close_session(&a, Duration::from_secs(1))

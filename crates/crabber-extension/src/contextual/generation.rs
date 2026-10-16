@@ -29,12 +29,15 @@ pub enum ServiceGenerationScope {
     },
 }
 
-/// Both policies retain legacy mount cleanup registration. A sealed factory
-/// tracker alone cannot certify the entire generation's physical cleanup.
+/// Registration policy of this component only; declaration is not join proof.
+/// Shared/base services and escaped callbacks retain independent lifetimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ServiceGenerationCleanupPolicy {
     LegacySharedMount,
     SealedFactoryLegacyMount,
+    /// Factory cleanup and mounted handler cleanup are sealed and retain joins.
+    /// Actual initializer/factory/mount joins must still succeed before close.
+    FullySealedFactory,
 }
 
 /// Frozen local generation metadata, separate from each session's dependency.
@@ -150,9 +153,10 @@ impl ContextualPlanProvider {
                     .collect::<Vec<_>>();
                 (
                     scope,
-                    ServiceGenerationCleanupPolicy::SealedFactoryLegacyMount,
+                    ServiceGenerationCleanupPolicy::FullySealedFactory,
                     serde_json::json!([
                         super::FACTORY_RESOURCE_CONTRACT,
+                        super::FACTORY_MOUNT_CONTRACT,
                         crate::TOOL_RESOURCE_CONTRACT_VERSION,
                         crate::MAX_TOOL_RESOURCE_TASKS,
                         factories,
