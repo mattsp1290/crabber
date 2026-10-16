@@ -13,6 +13,7 @@ mod execution_binding;
 #[cfg(test)]
 mod lock_order_tests;
 mod management;
+mod native_parent;
 mod phase;
 mod public_header;
 mod public_run;
@@ -136,6 +137,7 @@ async fn lock_session(
     Ok(())
 }
 async fn save_run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), StoreError> {
+    native_parent::record_run(tx, run, false).await?;
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
         .bind(&run.id.0)
         .bind(status(run.status))
@@ -698,6 +700,7 @@ impl PostgresStore {
         }
         sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data) VALUES($1,$2,$3,$4,$5,$6)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
+        native_parent::record_run(tx, &run, true).await?;
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)

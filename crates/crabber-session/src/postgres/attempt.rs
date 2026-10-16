@@ -240,11 +240,7 @@ impl PostgresExecution {
             }
             (record, grant)
         };
-        let authority = if grant {
-            Some(record.authority()?)
-        } else {
-            None
-        };
+        let authority = grant.then(|| record.authority()).transpose()?;
         apply_run_transition(tx, run, request, conclusion, now).await?;
         let revision = records::revision(tx, &run.session_id)
             .await?
@@ -265,6 +261,7 @@ impl PostgresExecution {
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
+        super::native_parent::record_attempt(tx, run, request, &record, &receipt).await?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }

@@ -53,6 +53,7 @@ pub(super) async fn save_run(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
 ) -> Result<(), StoreError> {
+    super::native_parent::record_run(tx, run, false).await?;
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",

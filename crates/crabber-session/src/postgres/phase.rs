@@ -268,6 +268,7 @@ impl PostgresStore {
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, now).await?;
+        super::native_parent::record_phase(tx, run, &record, &receipt).await?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }

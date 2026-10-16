@@ -214,6 +214,7 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+        super::native_parent::record_run(tx, &run, true).await?;
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)

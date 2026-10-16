@@ -8,6 +8,7 @@ mod attempt;
 mod execution;
 mod execution_binding;
 mod management;
+mod native_parent;
 mod phase;
 mod public_header;
 mod public_run;
