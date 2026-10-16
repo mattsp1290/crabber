@@ -50,8 +50,9 @@ pub use registry::{
 pub use state::{StateSink, current_state_sink, with_state_sink};
 
 pub use plan::{
-    ComponentIdentity, ExtensionError, JsonToolExecutor, PlanFingerprint, PromptSection, RunPlan,
-    RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor, compute_fingerprint,
+    ComponentIdentity, ExtensionError, JsonToolExecutor, PlanFingerprint, PlanReleaseObserver,
+    PromptSection, RunPlan, RunPlanProvider, StaticPlanProvider, ToolDefinition, ToolExecutor,
+    compute_fingerprint,
 };
 
 /// Retained for the workspace scaffold's smoke test.

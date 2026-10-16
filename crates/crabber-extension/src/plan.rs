@@ -220,14 +220,35 @@ pub struct RunPlan {
     pub components: Vec<ComponentIdentity>,
     pub providers: Vec<Arc<dyn ProviderAdapter>>,
     pub host_services: HostServices,
-    _lease: Option<Arc<PlanLease>>,
+    lease: Option<Arc<PlanLease>>,
     preparation_lease: Option<crate::PreparationResourceLease>,
 }
 
-struct PlanLease(Box<dyn Fn() + Send + Sync>);
+struct PlanLease(Option<Box<dyn FnOnce() + Send + Sync>>);
 impl Drop for PlanLease {
     fn drop(&mut self) {
-        (self.0)();
+        if let Some(release) = self.0.take() {
+            release();
+        }
+    }
+}
+
+/// Observes disposal of one acquired plan's lease reference and its clones.
+/// This does not prove that shared components or preparation resources stopped.
+/// Keeping an observer alive does not retain the plan lease.
+#[derive(Clone, Debug)]
+pub struct PlanReleaseObserver {
+    released: tokio_util::sync::CancellationToken,
+}
+
+impl PlanReleaseObserver {
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        self.released.is_cancelled()
+    }
+
+    pub async fn released(&self) {
+        self.released.cancelled().await;
     }
 }
 
@@ -257,13 +278,32 @@ impl RunPlan {
             providers,
             components,
             host_services,
-            _lease: Some(Arc::new(PlanLease(Box::new(release)))),
+            lease: Some(Arc::new(PlanLease(Some(Box::new(release))))),
             preparation_lease: None,
         }
     }
     #[must_use]
     pub fn fingerprint(&self) -> &PlanFingerprint {
         &self.fingerprint
+    }
+
+    /// Observe this acquisition without retaining it. Clones made from the
+    /// returned plan share the observation. Previously existing clones retain
+    /// their own references to the underlying lease and shared components.
+    /// The observation fires after dropping this acquisition's lease reference;
+    /// a panic from its final release callback leaves it unacknowledged.
+    #[must_use]
+    pub fn observe_release(mut self) -> (Self, PlanReleaseObserver) {
+        let observer = PlanReleaseObserver {
+            released: tokio_util::sync::CancellationToken::new(),
+        };
+        let signal = observer.released.clone();
+        let lease = self.lease.take();
+        self.lease = Some(Arc::new(PlanLease(Some(Box::new(move || {
+            drop(lease);
+            signal.cancel();
+        })))));
+        (self, observer)
     }
 
     /// Attach the retained preparation lifetime without replacing an earlier
@@ -386,7 +426,7 @@ impl StaticPlanProvider {
                 components: identities,
                 providers: Vec::new(),
                 host_services: HostServices::default(),
-                _lease: None,
+                lease: None,
                 preparation_lease: None,
             },
         }
@@ -423,3 +463,7 @@ impl RunPlanProvider for StaticPlanProvider {
 #[cfg(test)]
 #[path = "plan/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "plan/release_tests.rs"]
+mod release_tests;
