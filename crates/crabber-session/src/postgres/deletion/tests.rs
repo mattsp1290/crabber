@@ -238,3 +238,52 @@ async fn deleted_payload_guards_precede_retained_rows_without_mutation() {
         .unwrap();
     assert_eq!(current, i64::try_from(revision.get()).unwrap());
 }
+
+#[tokio::test]
+async fn deleted_queue_guards_precede_retained_and_erased_history() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url).await.unwrap();
+    let cold = PostgresStore::connect(&url).await.unwrap();
+    let fixture = crate::deletion::contract::cancelled_queue(&store).await;
+    let session = &fixture.session;
+    let revision = store.session_revision(session).await.unwrap();
+    let tombstone = crate::deletion::contract::deleted_at_revision(session, revision);
+    let before: String = sqlx::query_scalar(
+        "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
+    )
+    .bind(&session.0)
+    .bind(&fixture.queue.0)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    insert_tombstone(&store, &tombstone).await;
+    crate::deletion::contract::queue_guards(&cold, session, Some(&fixture)).await;
+    let after: String = sqlx::query_scalar(
+        "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
+    )
+    .bind(&session.0)
+    .bind(&fixture.queue.0)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, before);
+    let mut tx = store.pool.begin().await.unwrap();
+    super::purge::purge(
+        &mut tx,
+        &crate::sql_deletion::VerifiedScope::fixture(session.clone(), revision),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    crate::deletion::contract::queue_guards(&cold, session, Some(&fixture)).await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM future_queue WHERE session_id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}

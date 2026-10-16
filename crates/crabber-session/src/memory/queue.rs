@@ -10,6 +10,7 @@ use crate::{
 };
 use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 fn revision(state: &State, session: &SessionId) -> Result<SessionRevision, StoreError> {
+    super::deletion::ensure_live(state, session)?;
     if !state.sessions.contains_key(session) {
         return Err(StoreError::NotFound);
     }
@@ -24,6 +25,7 @@ fn receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<QueueReceipt>, StoreError> {
+    super::deletion::ensure_live(state, session)?;
     match state.operation_receipts.get(&(session.clone(), id.clone())) {
         None => Ok(None),
         Some(OperationReceipt::Queue(saved)) => {
@@ -38,6 +40,7 @@ fn receipt(
     }
 }
 fn record(state: &State, session: &SessionId, id: &QueueId) -> Result<Record, StoreError> {
+    super::deletion::ensure_live(state, session)?;
     let record = state
         .queue
         .get(&(session.clone(), id.clone()))
@@ -119,6 +122,7 @@ impl MemoryStore {
     ) -> Result<crate::SessionSummary, StoreError> {
         scope(id, &ControlId("session".into()))?;
         let state = self.state.lock().unwrap();
+        super::deletion::ensure_live(&state, id)?;
         let session = state.sessions.get(id).ok_or(StoreError::NotFound)?;
         let metadata = state.management.get(id).cloned().unwrap_or_default();
         crate::queue::validate_session(session, &metadata)?;
@@ -154,6 +158,7 @@ impl MemoryStore {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
         let state = self.state.lock().unwrap();
+        super::deletion::ensure_live(&state, session)?;
         let record = state
             .queue
             .get(&(session.clone(), id.clone()))
@@ -223,6 +228,7 @@ impl MemoryStore {
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
+        super::deletion::ensure_live(state, &request.session_id)?;
         let session = state
             .sessions
             .get(&request.session_id)

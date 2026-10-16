@@ -9,10 +9,13 @@ pub(crate) fn deleted() -> Tombstone {
     deleted_for(&SessionId::new())
 }
 pub(crate) fn deleted_for(session: &SessionId) -> Tombstone {
+    deleted_at_revision(session, SessionRevision::INITIAL)
+}
+pub(crate) fn deleted_at_revision(session: &SessionId, revision: SessionRevision) -> Tombstone {
     let request = DeleteSession {
         id: ControlId::new(),
         session_id: session.clone(),
-        expected_revision: SessionRevision::INITIAL,
+        expected_revision: revision,
     };
     Tombstone {
         format_version: 1,
@@ -29,6 +32,7 @@ pub(crate) fn deleted_for(session: &SessionId) -> Tombstone {
 
 pub(crate) async fn metadata(store: &dyn Store, tombstone: &Tombstone) {
     payload_guards(store, &tombstone.receipt.session_id).await;
+    queue_guards(store, &tombstone.receipt.session_id, None).await;
     let receipt = &tombstone.receipt;
     assert_eq!(
         store
@@ -266,4 +270,77 @@ pub(crate) async fn seed_payloads(store: &dyn Store, session: &SessionId) -> Ses
         .await
         .unwrap();
     store.session_revision(session).await.unwrap()
+}
+
+pub(crate) async fn queue_guards(
+    store: &dyn Store,
+    session: &SessionId,
+    fixture: Option<&crate::queue_contract::Fixture>,
+) {
+    let queue = fixture.map_or_else(crabber_core::QueueId::new, |f| f.queue.clone());
+    let operation = fixture.map_or_else(ControlId::new, |f| f.enqueue.id.clone());
+    assert_eq!(
+        store.lookup_queue(session, &operation).await.unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    assert_eq!(
+        store.get_queue(session, &queue).await.unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    assert_eq!(
+        store.retained_queue(session, &queue).await.unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    assert_eq!(
+        store.queue_preparation_snapshot(session).await.unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    assert_eq!(
+        store
+            .list_queue(crate::QueuePageRequest {
+                session_id: session.clone(),
+                limit: 2,
+                after_sequence: None,
+                expected_revision: None
+            })
+            .await
+            .unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    let request = fixture.map_or_else(
+        || crate::QueueMutation {
+            session_id: session.clone(),
+            id: ControlId::new(),
+            expected_revision: SessionRevision::INITIAL,
+            action: crate::QueueAction::Cancel { queue_id: queue },
+        },
+        |f| f.enqueue.clone(),
+    );
+    assert_eq!(
+        store.mutate_queue(request).await.unwrap_err(),
+        StoreError::SessionDeleted
+    );
+    let missing = SessionId::new();
+    assert!(
+        store
+            .lookup_queue(&missing, &ControlId::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+pub(crate) async fn cancelled_queue(store: &dyn Store) -> crate::queue_contract::Fixture {
+    let fixture = crate::queue_contract::fixture(store).await;
+    store.mutate_queue(fixture.enqueue.clone()).await.unwrap();
+    let cancel = crate::queue_contract::mutation(
+        store,
+        &fixture,
+        crate::QueueAction::Cancel {
+            queue_id: fixture.queue.clone(),
+        },
+    )
+    .await;
+    store.mutate_queue(cancel).await.unwrap();
+    fixture
 }

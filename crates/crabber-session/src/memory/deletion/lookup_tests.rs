@@ -132,3 +132,58 @@ async fn deleted_payload_guards_precede_retained_rows_without_mutation() {
     assert_eq!(inbox_after, inbox_before);
     assert_eq!(state.public_revisions.get(&session), Some(&revision));
 }
+
+#[tokio::test]
+async fn deleted_queue_guards_precede_retained_and_erased_history() {
+    let store = MemoryStore::new();
+    let fixture = crate::deletion::contract::cancelled_queue(&store).await;
+    let session = &fixture.session;
+    let revision = store.session_revision(session).await.unwrap();
+    let tombstone = crate::deletion::contract::deleted_at_revision(session, revision);
+    store
+        .state
+        .lock()
+        .unwrap()
+        .tombstones
+        .insert(session.clone(), tombstone);
+    let before = serde_json::to_value(
+        store
+            .state
+            .lock()
+            .unwrap()
+            .queue
+            .get(&(session.clone(), fixture.queue.clone()))
+            .unwrap(),
+    )
+    .unwrap();
+    crate::deletion::contract::queue_guards(&store, session, Some(&fixture)).await;
+    assert_eq!(
+        serde_json::to_value(
+            store
+                .state
+                .lock()
+                .unwrap()
+                .queue
+                .get(&(session.clone(), fixture.queue.clone()))
+                .unwrap()
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        store.state.lock().unwrap().public_revisions.get(session),
+        Some(&revision)
+    );
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    super::purge::purge(&mut store.state.lock().unwrap(), session, &mut proof).unwrap();
+    crate::deletion::contract::queue_guards(&store, session, Some(&fixture)).await;
+    assert!(
+        !store
+            .state
+            .lock()
+            .unwrap()
+            .queue
+            .keys()
+            .any(|(id, _)| id == session)
+    );
+}

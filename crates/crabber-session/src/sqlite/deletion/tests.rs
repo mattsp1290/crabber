@@ -258,3 +258,50 @@ async fn deleted_payload_guards_precede_retained_rows_without_mutation() {
         .unwrap();
     assert_eq!(current, i64::try_from(revision.get()).unwrap());
 }
+
+#[tokio::test]
+async fn deleted_queue_guards_precede_retained_and_erased_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("queue.db");
+    SqliteStore::migrate(&path).await.unwrap();
+    let store = SqliteStore::connect(&path).await.unwrap();
+    let cold = SqliteStore::connect(&path).await.unwrap();
+    let fixture = crate::deletion::contract::cancelled_queue(&store).await;
+    let session = &fixture.session;
+    let revision = store.session_revision(session).await.unwrap();
+    let tombstone = crate::deletion::contract::deleted_at_revision(session, revision);
+    let before: String = sqlx::query_scalar(
+        "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
+    )
+    .bind(&session.0)
+    .bind(&fixture.queue.0)
+    .fetch_one(&store.readers)
+    .await
+    .unwrap();
+    insert_tombstone(&store, &tombstone).await;
+    crate::deletion::contract::queue_guards(&cold, session, Some(&fixture)).await;
+    let after: String = sqlx::query_scalar(
+        "SELECT data_json FROM future_queue WHERE session_id=$1 AND queue_id=$2",
+    )
+    .bind(&session.0)
+    .bind(&fixture.queue.0)
+    .fetch_one(&store.readers)
+    .await
+    .unwrap();
+    assert_eq!(after, before);
+    let mut tx = store.begin_write().await.unwrap();
+    super::purge::purge(
+        &mut tx,
+        &crate::sql_deletion::VerifiedScope::fixture(session.clone(), revision),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    crate::deletion::contract::queue_guards(&cold, session, Some(&fixture)).await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM future_queue WHERE session_id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.readers)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}

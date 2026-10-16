@@ -16,6 +16,7 @@ pub(super) async fn record(
     session: &SessionId,
     id: &QueueId,
 ) -> Result<Option<Record>, StoreError> {
+    super::super::deletion::ensure_live(tx, session).await?;
     let Some(row) = sqlx::query(RECORD)
         .bind(&session.0)
         .bind(&id.0)
@@ -139,6 +140,7 @@ async fn audited_receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
+    super::super::deletion::ensure_live(tx, session).await?;
     let Some(row) = sqlx::query("SELECT CASE WHEN length(CAST(r.kind AS BLOB))<=64 THEN r.kind END AS kind,CASE WHEN length(CAST(r.semantic_digest AS BLOB))<=64 THEN r.semantic_digest END AS semantic_digest,r.event_seq,CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS receipt,CASE WHEN length(CAST(a.data_json AS BLOB))<=33554432 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2")
         .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
     if row
@@ -237,14 +239,18 @@ impl SqliteStore {
     ) -> Result<QueueSummary, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
+        let mut tx = self.readers.begin().await.map_err(db)?;
+        super::super::deletion::ensure_live(&mut tx, session).await?;
         let row = sqlx::query(SUMMARY)
             .bind(&session.0)
             .bind(&id.0)
-            .fetch_optional(&self.readers)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
             .ok_or(StoreError::NotFound)?;
-        summary(&row, session)
+        let result = summary(&row, session)?;
+        tx.commit().await.map_err(db)?;
+        Ok(result)
     }
     pub(in crate::sqlite) async fn queue_list(
         &self,
@@ -259,6 +265,7 @@ impl SqliteStore {
         )?;
         let mut tx = self.readers.begin().await.map_err(db)?;
 
+        super::super::deletion::ensure_live(&mut tx, &request.session_id).await?;
         let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
             .bind(&request.session_id.0)
             .fetch_optional(&mut *tx)
@@ -290,6 +297,7 @@ pub(super) async fn current(
     )>,
     StoreError,
 > {
+    super::super::deletion::ensure_live(tx, session).await?;
     let Some(row) = sqlx::query("SELECT CASE WHEN length(CAST(CAST(s.data AS TEXT) AS BLOB))<=32768 THEN CAST(s.data AS TEXT) END AS session_data,s.public_revision,m.workspace_id,m.archived,m.format_version,CASE WHEN length(CAST(m.data_json AS BLOB))<=2048 THEN m.data_json END AS metadata FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&session.0).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
     let stored: crabber_core::Session = decode(
         &row.try_get::<Option<String>, _>("session_data")
