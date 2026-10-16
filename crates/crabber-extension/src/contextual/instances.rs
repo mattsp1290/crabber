@@ -96,6 +96,16 @@ impl ContextualPlanProvider {
         if slot.state.lock().unwrap().ready {
             return Ok(());
         }
+        if slot
+            .state
+            .lock()
+            .unwrap()
+            .producer
+            .as_ref()
+            .is_some_and(|p| p.blocked())
+        {
+            return Err(ExtensionError::ContextInitializationIncomplete);
+        }
         // A failed attempt's resources remain reachable until cleanup really ends.
         self.clean_records(&slot).await?;
         self.check_slot(&slot)?;
@@ -125,20 +135,37 @@ impl ContextualPlanProvider {
                 .await?;
             self.check_slot(&slot)?;
         }
-        let result = AssertUnwindSafe(async {
-            match &slot.owner {
-                Owner::Shared => self.install_shared(&slot).await,
-                Owner::Workspace(_) => self.install_factories(&slot, FactoryScope::Workspace).await,
-                Owner::Session(_) => self.install_factories(&slot, FactoryScope::Session).await,
+        let result = if let Some(host) = self
+            .inner
+            .generation_host
+            .as_ref()
+            .filter(|_| !matches!(slot.owner, Owner::Shared))
+        {
+            let (registration, release) = super::producer::Registration::new(
+                self.clone(),
+                slot.clone(),
+                generation,
+                host.clone(),
+            )?;
+            let open = {
+                let mut state = slot.state.lock().unwrap();
+                state.producer = Some(registration.clone());
+                if state.closed || self.is_closed() {
+                    registration.close();
+                    false
+                } else {
+                    true
+                }
+            };
+            if open {
+                let _ = release.send(());
+            } else {
+                drop(release);
             }
-        })
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|_| {
-            Err(ExtensionError::ContextInitializationFailed {
-                component: "contextual-profile".into(),
-            })
-        });
+            registration.run(self, &slot).await
+        } else {
+            self.construct_slot(&slot).await
+        };
         if let Err(error) = result {
             self.clean_records(&slot).await?;
             return Err(error);
@@ -151,7 +178,25 @@ impl ContextualPlanProvider {
         Ok(())
     }
 
-    fn check_slot(&self, slot: &Slot) -> Result<(), ExtensionError> {
+    pub(super) async fn construct_slot(&self, slot: &Arc<Slot>) -> Result<(), ExtensionError> {
+        AssertUnwindSafe(async {
+            match &slot.owner {
+                Owner::Shared => self.install_shared(slot).await,
+                Owner::Workspace(_) => self.install_factories(slot, FactoryScope::Workspace).await,
+                Owner::Session(_) => self.install_factories(slot, FactoryScope::Session).await,
+            }
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|payload| {
+            crate::dispatch::discard_panic_payload(payload);
+            Err(ExtensionError::ContextInitializationFailed {
+                component: "contextual-profile".into(),
+            })
+        })
+    }
+
+    pub(super) fn check_slot(&self, slot: &Slot) -> Result<(), ExtensionError> {
         self.check_open()?;
         if slot.state.lock().unwrap().closed {
             Err(ExtensionError::ContextOwnerClosed)

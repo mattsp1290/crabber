@@ -7,8 +7,13 @@ mod initialization;
 mod instances;
 mod lifecycle;
 mod native_dependency;
+mod producer;
 mod profile;
 mod provider_service;
+pub use producer::{
+    ContextualGenerationAdmission, ContextualGenerationHost, ContextualGenerationMember,
+    ContextualGenerationWork,
+};
 pub use provider_service::{ContextualServiceBorrowLease, ContextualServiceBorrowSource};
 mod selection;
 pub use generation::{
@@ -125,6 +130,7 @@ struct SlotState {
     records: Vec<Record>,
     initialization: Option<Arc<Initialization>>,
     generation: Option<ServiceGenerationDescriptor>,
+    producer: Option<Arc<producer::Registration>>,
 }
 #[derive(Default)]
 struct Initialization {
@@ -155,6 +161,7 @@ struct Inner {
     reapers: CleanupOwner,
     initialization_timeout: Duration,
     dependencies: dependencies::Dependencies,
+    generation_host: Option<Arc<dyn ContextualGenerationHost>>,
 }
 
 /// A frozen profile with real instances and retained initialization/cleanup owners.
@@ -227,8 +234,28 @@ impl ContextualPlanProvider {
                 reapers: CleanupOwner::new(),
                 initialization_timeout,
                 dependencies: dependencies::Dependencies::default(),
+                generation_host: None,
             }),
         })
+    }
+
+    /// Opt into local scheduling of actual Workspace/Session constructors.
+    /// The host is fixed before readiness/acquisition; Shared inputs retain
+    /// their legacy lifecycle. This grants no native permission or coverage.
+    /// # Errors
+    /// Returns the same metadata/profile validation errors as `new`.
+    pub fn new_with_generation_host(
+        registry: Registry,
+        shared: Vec<(Arc<dyn Extension>, Scope)>,
+        factories: Vec<Arc<dyn ExtensionFactory>>,
+        initialization_timeout: Duration,
+        host: Arc<dyn ContextualGenerationHost>,
+    ) -> Result<Self, ExtensionError> {
+        let mut provider = Self::new(registry, shared, factories, initialization_timeout)?;
+        Arc::get_mut(&mut provider.inner)
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?
+            .generation_host = Some(host);
+        Ok(provider)
     }
 
     #[must_use]
@@ -289,7 +316,12 @@ impl RunPlanProvider for ContextualPlanProvider {
             .for_context(context);
         let declarations =
             profile::declarations(&self.inner.shared, &self.inner.factories, context)?;
-        crate::plan::registration_hash(serde_json::json!(["contextual", base, declarations]))
+        let value = serde_json::json!(["contextual", base, declarations]);
+        crate::plan::registration_hash(if self.inner.generation_host.is_some() {
+            serde_json::json!(["contextual.local-generation-host.v1", value])
+        } else {
+            value
+        })
     }
 
     async fn acquire_plan(&self, _session: &SessionId) -> Result<RunPlan, ExtensionError> {

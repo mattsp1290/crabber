@@ -183,6 +183,9 @@ impl ContextualPlanProvider {
     fn signal_slot(slot: &Slot) {
         let mut state = slot.state.lock().unwrap();
         state.closed = true;
+        if let Some(producer) = &state.producer {
+            producer.close();
+        }
         for record in &state.records {
             record.cleanup.close();
             if let Some(mount) = &record.mount {
@@ -241,6 +244,10 @@ impl ContextualPlanProvider {
         ))
         .await;
         results.into_iter().collect::<Result<Vec<_>, _>>()?;
+        let producer = slot.state.lock().unwrap().producer.clone();
+        if let Some(producer) = producer {
+            producer.cleanup().await?;
+        }
         slot.state.lock().unwrap().records.clear();
         Ok(())
     }
