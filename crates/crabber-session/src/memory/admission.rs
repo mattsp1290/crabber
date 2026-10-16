@@ -92,9 +92,9 @@ pub(super) fn admit_transaction_guarded(
         message.run_id = Some(run_id.clone());
         insert_message(state, &run, message)?;
     }
+    let new_session = !state.sessions.contains_key(&session_id);
+    record_ownership(state, &session, &run, new_session, guard)?;
     state.sessions.insert(session_id.clone(), session.clone());
-    super::native_parent::record_run(state, None, &run)
-        .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
     state.runs.insert(run_id.clone(), run.clone());
     state.run_order.push(run_id.clone());
     let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);
@@ -273,4 +273,48 @@ pub(super) fn admit_keyed_guarded(
         receipt,
         admitted: Box::new(admitted),
     })
+}
+
+fn record_ownership(
+    state: &mut State,
+    session: &Session,
+    run: &Run,
+    new_session: bool,
+    guard: crate::queue::AdmissionGuard<'_>,
+) -> Result<(), StoreError> {
+    let invalid = |_| StoreError::Validation("preparation admission evidence unavailable".into());
+    let witness = guard
+        .preparation()
+        .map(|preparation| {
+            let revision = state
+                .public_revisions
+                .get(&session.id)
+                .copied()
+                .unwrap_or(crabber_core::SessionRevision::INITIAL);
+            crate::session_owner::preparation::admission::Witness::from_preparation(
+                preparation,
+                session,
+                run,
+                revision,
+            )
+        })
+        .transpose()
+        .map_err(invalid)?
+        .flatten();
+    if let Some(witness) = witness {
+        let origin = if new_session {
+            Some(crate::deletion::origin::OwnershipOrigin::prepared(&witness).map_err(invalid)?)
+        } else {
+            None
+        };
+        super::native_parent::record_owned_admission(state, run, witness)
+            .map_err(|_| StoreError::Conflict)?;
+        if let Some(origin) = origin {
+            state.ownership_protocol_sessions.insert(session.id.clone());
+            state.ownership_origins.insert(session.id.clone(), origin);
+        }
+    } else {
+        super::native_parent::record_run(state, None, run).map_err(|_| StoreError::Conflict)?;
+    }
+    Ok(())
 }

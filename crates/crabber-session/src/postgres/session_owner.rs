@@ -402,3 +402,12 @@ async fn revision(
 
 #[cfg(test)]
 mod cancellation_tests;
+
+/// Original immutable bounded audit; no authority is returned.
+pub(super) async fn source_audit(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+) -> Result<Option<Audit>, Error> {
+    reads::audit(tx, session, id).await
+}

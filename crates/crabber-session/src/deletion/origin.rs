@@ -9,6 +9,7 @@ pub(crate) const MAX_ORIGIN_BYTES: usize = 8192;
 pub(crate) enum OriginKind {
     ManagedCreate,
     Fork,
+    PreparedAdmission,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +51,18 @@ impl OwnershipOrigin {
             kind: OriginKind::Fork,
         }
     }
+    pub(crate) fn prepared(
+        witness: &crate::session_owner::preparation::admission::Witness,
+    ) -> Result<Self, crate::session_owner::SessionOwnerError> {
+        Ok(Self {
+            format_version: 1,
+            session_id: witness.session_id().clone(),
+            created_revision: witness.admitted_revision(),
+            operation_id: ControlId(witness.run_id().0.clone()),
+            semantic_digest: witness.fingerprint()?,
+            kind: OriginKind::PreparedAdmission,
+        })
+    }
     pub(crate) fn validate(
         &self,
         session: &SessionId,
@@ -59,10 +72,8 @@ impl OwnershipOrigin {
             .map_err(|_| crate::DeletionError::UnknownStoreOutcome)?;
         if self.format_version != 1
             || self.session_id != *session
-            || self.created_revision
-                != SessionRevision::INITIAL
-                    .next()
-                    .map_err(|_| crate::DeletionError::UnknownStoreOutcome)?
+            || self.created_revision == SessionRevision::INITIAL
+            || (self.kind != OriginKind::PreparedAdmission && self.created_revision.get() != 1)
             || revision < self.created_revision
             || crate::snapshot::encoded_bytes(self, MAX_ORIGIN_BYTES).is_none()
         {

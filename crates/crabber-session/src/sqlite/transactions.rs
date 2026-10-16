@@ -204,9 +204,10 @@ impl SqliteStore {
             next_policy: previous.and_then(|value| value.next_policy),
         };
         if !had_session {
-            sqlx::query("INSERT INTO sessions(id,data) VALUES($1,$2)")
+            sqlx::query("INSERT INTO sessions(id,data,ownership_protocol) VALUES($1,$2,$3)")
                 .bind(&session.id.0)
                 .bind(text(&session)?)
+                .bind(i32::from(guard.has_owned_resources()))
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
@@ -224,7 +225,9 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(db)?;
-        super::native_parent::record_run(tx, &run, true).await?;
+        if !guard.has_owned_resources() {
+            super::native_parent::record_run(tx, &run, true).await?;
+        }
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
             .bind(&session_id.0)
@@ -240,6 +243,7 @@ impl SqliteStore {
             message.run_id = Some(run_id.clone());
             insert_message(tx, &run, &message).await?;
         }
+        super::ownership_origin::record_admission(tx, &session, &run, !had_session, guard).await?;
         Ok(AdmitOutcome {
             session,
             run,

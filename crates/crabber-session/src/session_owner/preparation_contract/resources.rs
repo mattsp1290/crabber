@@ -31,7 +31,10 @@ pub(crate) async fn run(store: &impl Store) {
     unrelated_and_cancel_refuse(store).await;
     cleanup_is_not_handoff(store).await;
 }
-async fn successful(store: &impl Store, existing: bool) {
+pub(crate) async fn successful(
+    store: &impl Store,
+    existing: bool,
+) -> crabber_core::AdmissionReceipt {
     let (original, bound) = setup(store, existing).await;
     let session = bound.binding.request.session_id.clone();
     assert!(
@@ -126,6 +129,7 @@ async fn successful(store: &impl Store, existing: bool) {
         resources.link.identities().unwrap().join,
     )
     .await;
+    receipt
 }
 async fn labels_are_not_proof(store: &impl Store) {
     let (original, bound) = setup(store, false).await;

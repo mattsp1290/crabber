@@ -143,6 +143,33 @@ pub(super) fn record_run(
     let previous = previous.map(RunState::from_run).transpose()?;
     record_run_states(state, previous.as_ref(), RunState::from_run(updated)?)
 }
+pub(super) fn record_owned_admission(
+    state: &mut State,
+    run: &Run,
+    witness: crate::session_owner::preparation::admission::Witness,
+) -> Result<(), Error> {
+    let issuance = witness.initial_issuance(run).map_err(|_| Error)?;
+    let key = (run.session_id.clone(), run.id.clone(), 1);
+    let join = (
+        run.session_id.clone(),
+        witness.join_id().map_err(|_| Error)?,
+    );
+    if state.preparation_admission_joins.contains_key(&join)
+        || state.preparation_admissions.contains_key(&run.id)
+        || state
+            .native_run_issuances
+            .keys()
+            .any(|(_, id, _)| id == &run.id)
+    {
+        return Err(Error);
+    }
+    state
+        .preparation_admission_joins
+        .insert(join, run.id.clone());
+    state.preparation_admissions.insert(run.id.clone(), witness);
+    state.native_run_issuances.insert(key, issuance);
+    Ok(())
+}
 pub(super) fn record_run_states(
     state: &mut State,
     previous: Option<&RunState>,

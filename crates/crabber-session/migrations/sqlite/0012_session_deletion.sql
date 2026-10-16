@@ -57,3 +57,21 @@ CREATE TRIGGER session_owner_audits_deleted_guard_1 BEFORE UPDATE OF session_id 
 CREATE TRIGGER sessions_ownership_protocol_insert_immutable BEFORE INSERT ON sessions
 WHEN EXISTS(SELECT 1 FROM sessions WHERE id=NEW.id AND ownership_protocol<>NEW.ownership_protocol)
 BEGIN SELECT RAISE(ABORT,'crabber_ownership_protocol_immutable'); END;
+
+-- Both records commit with the actual admission; the independent first native
+-- issuance anchors this witness fingerprint. No Session shell or fake Run.
+CREATE UNIQUE INDEX IF NOT EXISTS runs_ownership_scope ON runs(id,session_id);
+CREATE TABLE IF NOT EXISTS preparation_admission_witnesses (
+ run_id TEXT PRIMARY KEY NOT NULL,
+ session_id TEXT NOT NULL REFERENCES sessions(id),
+ root_join TEXT NOT NULL CHECK(length(CAST(root_join AS BLOB)) BETWEEN 1 AND 128),
+ data_json TEXT NOT NULL CHECK(length(CAST(data_json AS BLOB))<=8192),
+ UNIQUE(session_id,root_join),
+ FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id)
+);
+
+CREATE TRIGGER preparation_admission_immutable BEFORE UPDATE ON preparation_admission_witnesses
+BEGIN SELECT RAISE(ABORT,'crabber_preparation_admission_immutable'); END;
+CREATE TRIGGER preparation_admission_no_replace BEFORE INSERT ON preparation_admission_witnesses
+WHEN EXISTS(SELECT 1 FROM preparation_admission_witnesses WHERE run_id=NEW.run_id OR (session_id=NEW.session_id AND root_join=NEW.root_join))
+BEGIN SELECT RAISE(ABORT,'crabber_preparation_admission_immutable'); END;

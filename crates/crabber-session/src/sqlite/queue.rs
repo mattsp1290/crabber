@@ -81,7 +81,16 @@ impl SqliteStore {
         let admitted = if let Some(proof) = &change.admission {
             let bound = proof.bound();
             let outcome = self
-                .admit_keyed_guarded(tx, bound.keyed.clone(), AdmissionGuard::Queue(proof))
+                .admit_keyed_guarded(
+                    tx,
+                    bound.keyed.clone(),
+                    preparation.map_or(AdmissionGuard::Queue(proof), |preparation| {
+                        AdmissionGuard::PreparedQueue {
+                            queue: proof,
+                            preparation,
+                        }
+                    }),
+                )
                 .await?;
             let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {
                 return Err(StoreError::AdmissionConflict);

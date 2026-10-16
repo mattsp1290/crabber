@@ -129,3 +129,36 @@ fn same_session(session: &crabber_core::Session, original: &crate::SessionSummar
         && session.directory == original.directory
         && session.created_at == original.created_at
 }
+
+/// Creation association only; live resources and every retained Run still need
+/// independent readiness proofs before physical deletion is possible.
+pub(crate) fn prepared(
+    origin: &OwnershipOrigin,
+    session: &crabber_core::Session,
+    revision: SessionRevision,
+    witness: &crate::session_owner::preparation::admission::Witness,
+    initial: &crate::native_parent::RunIssuance,
+    sources: &crate::session_owner::preparation::admission::SourceAudits<'_>,
+    proof_bytes: usize,
+) -> Result<VerifiedDeletionCoverage, DeletionError> {
+    origin.validate(&session.id, revision)?;
+    witness
+        .verify_sources(session, initial, sources)
+        .map_err(|_| DeletionError::UnknownStoreOutcome)?;
+    if origin.kind != OriginKind::PreparedAdmission
+        || origin.operation_id.0 != witness.run_id().0
+        || origin.semantic_digest
+            != witness
+                .fingerprint()
+                .map_err(|_| DeletionError::UnknownStoreOutcome)?
+        || origin.created_revision != witness.admitted_revision()
+        || proof_bytes > MAX_PROOF_BYTES
+    {
+        return Err(DeletionError::UnknownStoreOutcome);
+    }
+    Ok(VerifiedDeletionCoverage {
+        session_id: session.id.clone(),
+        revision,
+        proof_bytes,
+    })
+}

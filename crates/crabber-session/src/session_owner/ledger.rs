@@ -28,6 +28,14 @@ pub(crate) struct Ledger {
     next_publication: u64,
 }
 impl Ledger {
+    pub(crate) fn source_audit(
+        &self,
+        session: &SessionId,
+        id: &SessionOwnerOperationId,
+    ) -> Option<&Audit> {
+        self.audits.get(&(session.clone(), id.clone()))
+    }
+
     /// A fork target must be a fresh identity, including pre-session ownership.
     /// This is a collision check, never a quiescence or deletion-readiness proof.
     pub(crate) fn contains_scope(&self, session: &SessionId) -> bool {

@@ -61,6 +61,7 @@ pub use completion::{
     PreparedOperation,
 };
 
+pub(crate) mod admission;
 pub(crate) mod handoff;
 pub(crate) mod proof;
 

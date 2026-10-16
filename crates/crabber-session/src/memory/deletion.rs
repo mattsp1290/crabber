@@ -55,6 +55,52 @@ pub(super) fn coverage(state: &State, session: &SessionId) -> Result<CoverageRea
             }
             coverage::fork(origin, session, revision, audit, receipt, bytes)?
         }
+        (OriginKind::PreparedAdmission, _) => {
+            let run = crabber_core::RunId(origin.operation_id.0.clone());
+            let witness = state
+                .preparation_admissions
+                .get(&run)
+                .ok_or(DeletionError::UnknownStoreOutcome)?;
+            let initial = state
+                .native_run_issuances
+                .get(&(session.id.clone(), run, 1))
+                .ok_or(DeletionError::UnknownStoreOutcome)?;
+            if !charge(witness, 8192, &mut bytes) || !charge(initial, 2048, &mut bytes) {
+                return Ok(CoverageRead::Limited);
+            }
+            let join = witness
+                .join_id()
+                .map_err(|_| DeletionError::UnknownStoreOutcome)?;
+            if state
+                .preparation_admission_joins
+                .get(&(session.id.clone(), join))
+                != Some(witness.run_id())
+            {
+                return Err(DeletionError::UnknownStoreOutcome);
+            }
+            let ids = witness
+                .audit_ids()
+                .map_err(|_| DeletionError::UnknownStoreOutcome)?;
+            let mut audits = Vec::with_capacity(5);
+            for id in &ids {
+                let audit = state
+                    .session_owners
+                    .source_audit(&session.id, id)
+                    .ok_or(DeletionError::UnknownStoreOutcome)?;
+                if !charge(audit, 32768, &mut bytes) {
+                    return Ok(CoverageRead::Limited);
+                }
+                audits.push(audit);
+            }
+            let sources = crate::session_owner::preparation::admission::SourceAudits {
+                reserve: audits[0],
+                begin: audits[1],
+                join: audits[2],
+                child_reserve: audits[3],
+                child_begin: audits[4],
+            };
+            coverage::prepared(origin, session, revision, witness, initial, &sources, bytes)?
+        }
         _ => return Err(DeletionError::UnknownStoreOutcome),
     };
     Ok(CoverageRead::Verified(proof))
@@ -287,4 +333,39 @@ mod tests {
             crate::DeletionError::UnknownStoreOutcome
         );
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn prepared_admission_origin_authenticates_independent_sources() {
+    let store = MemoryStore::new();
+    let receipt =
+        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
+    let mut state = store.state.lock().unwrap();
+    let CoverageRead::Verified(proof) = coverage(&state, &receipt.session_id).unwrap() else {
+        panic!("original owned admission");
+    };
+    assert_eq!(proof.session_id(), &receipt.session_id);
+    assert!(proof.proof_bytes() > 0);
+    let original = state.preparation_admissions[&receipt.run_id].clone();
+    let mut witness = serde_json::to_value(&state.preparation_admissions[&receipt.run_id]).unwrap();
+    witness["session"]["directory"] = serde_json::json!("other-directory");
+    state.preparation_admissions.insert(
+        receipt.run_id.clone(),
+        serde_json::from_value(witness).unwrap(),
+    );
+    assert!(matches!(
+        coverage(&state, &receipt.session_id),
+        Err(DeletionError::UnknownStoreOutcome)
+    ));
+    state
+        .preparation_admissions
+        .insert(receipt.run_id.clone(), original);
+    state
+        .native_run_issuances
+        .remove(&(receipt.session_id.clone(), receipt.run_id, 1));
+    assert!(matches!(
+        coverage(&state, &receipt.session_id),
+        Err(DeletionError::UnknownStoreOutcome)
+    ));
 }

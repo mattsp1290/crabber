@@ -44,6 +44,31 @@ impl OriginEvidence {
     pub(crate) fn operation(&self) -> &str {
         &self.origin.operation_id.0
     }
+    pub(crate) fn prepared(
+        self,
+        witness: &crate::session_owner::preparation::admission::Witness,
+        initial: &crate::native_parent::RunIssuance,
+        audits: &[crate::session_owner::audit::Audit; 5],
+        bytes: usize,
+    ) -> Result<CoverageRead, Error> {
+        let bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        if bytes > MAX_PROOF_BYTES {
+            return Ok(CoverageRead::Limited);
+        }
+        super::prepared(
+            &self.origin,
+            &self.session,
+            self.revision,
+            witness,
+            initial,
+            &crate::session_owner::preparation::admission::SourceAudits::from_array(audits),
+            bytes,
+        )
+        .map(CoverageRead::Verified)
+    }
     pub(crate) fn verify(
         self,
         kind: &str,

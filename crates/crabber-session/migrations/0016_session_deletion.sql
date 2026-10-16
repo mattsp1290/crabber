@@ -71,3 +71,22 @@ DROP TRIGGER IF EXISTS session_owner_audits_deleted_guard ON session_owner_audit
 CREATE TRIGGER session_owner_audits_deleted_guard BEFORE INSERT OR UPDATE OF session_id ON session_owner_audits
  FOR EACH ROW EXECUTE FUNCTION crabber_guard_deleted_session();
 INSERT INTO schema_version(version) VALUES(16) ON CONFLICT DO NOTHING;
+
+-- Both records commit with the actual admission; the independent first native
+-- issuance anchors this witness fingerprint. No Session shell or fake Run.
+CREATE UNIQUE INDEX IF NOT EXISTS runs_ownership_scope ON runs(id,session_id);
+CREATE TABLE IF NOT EXISTS preparation_admission_witnesses (
+ run_id text PRIMARY KEY,
+ session_id text NOT NULL REFERENCES sessions(id),
+ root_join text NOT NULL CHECK(octet_length(root_join) BETWEEN 1 AND 128),
+ data_json text NOT NULL CHECK(octet_length(data_json)<=8192),
+ UNIQUE(session_id,root_join),
+ FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id)
+);
+
+CREATE OR REPLACE FUNCTION crabber_immutable_preparation_admission() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'crabber_preparation_admission_immutable'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS preparation_admission_immutable ON preparation_admission_witnesses;
+CREATE TRIGGER preparation_admission_immutable BEFORE UPDATE ON preparation_admission_witnesses
+ FOR EACH ROW EXECUTE FUNCTION crabber_immutable_preparation_admission();

@@ -12,11 +12,31 @@ pub(crate) struct VerifiedAdmission {
 pub(crate) enum AdmissionGuard<'a> {
     Ordinary,
     Queue(&'a VerifiedAdmission),
+    PreparedQueue {
+        queue: &'a VerifiedAdmission,
+        preparation: &'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>,
+    },
     Preparation(&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>),
 }
-impl AdmissionGuard<'_> {
+impl<'a> AdmissionGuard<'a> {
     pub fn is_ordinary(self) -> bool {
-        !matches!(self, Self::Queue(_))
+        !matches!(self, Self::Queue(_) | Self::PreparedQueue { .. })
+    }
+    pub(crate) fn preparation(
+        self,
+    ) -> Option<&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>> {
+        match self {
+            Self::Preparation(proof)
+            | Self::PreparedQueue {
+                preparation: proof, ..
+            } => Some(proof),
+            _ => None,
+        }
+    }
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    pub(crate) fn has_owned_resources(self) -> bool {
+        self.preparation()
+            .is_some_and(|proof| proof.resource_handoff().is_some())
     }
     pub fn expected_revision(
         self,
@@ -31,7 +51,7 @@ impl AdmissionGuard<'_> {
         if let Self::Preparation(proof) = self {
             proof.verify_admission(request)?;
         }
-        if let Self::Queue(proof) = self {
+        if let Self::Queue(proof) | Self::PreparedQueue { queue: proof, .. } = self {
             let original = &proof.bound.keyed.request;
             if original.session_id != request.session_id
                 || original.expected_revision != request.expected_revision
@@ -71,14 +91,14 @@ fn live(
     }
     Ok(())
 }
-pub(crate) fn apply_guarded(
+pub(crate) fn apply_guarded<'a>(
     request: &QueueMutation,
     summary: &crate::SessionSummary,
     head: Option<&QueueSummary>,
     original: Option<Record>,
     sequence: u64,
     now: OffsetDateTime,
-    preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    preparation: Option<&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>>,
 ) -> Result<Change, StoreError> {
     let expected = if let Some(proof) = preparation {
         proof.verify_queue(request)?;

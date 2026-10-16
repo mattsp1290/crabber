@@ -18,3 +18,6 @@ pub(crate) mod resource_source;
 
 #[path = "../../../crabber-session/src/session_owner/preparation/handoff.rs"]
 pub(crate) mod handoff;
+
+#[path = "../../../crabber-session/src/session_owner/preparation/admission.rs"]
+pub(crate) mod admission;

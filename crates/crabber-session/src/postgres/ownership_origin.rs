@@ -1,5 +1,8 @@
-//! New creation coverage is committed with its independent original receipt.
+//! Creation coverage is committed with its independent original source.
+#[path = "ownership_origin/admission.rs"]
+mod admission;
 use crate::deletion::origin::OwnershipOrigin;
+pub(super) use admission::record_admission;
 pub(super) async fn record(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     origin: &OwnershipOrigin,
@@ -65,6 +68,7 @@ async fn original(
     let query = match evidence.kind() {
         OriginKind::ManagedCreate => MANAGED,
         OriginKind::Fork => FORK,
+        OriginKind::PreparedAdmission => return admission::coverage(tx, session, evidence).await,
     };
     let row = sqlx::query(query)
         .bind(&session.0)
@@ -215,3 +219,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ownership_origin/tests.rs"]
+mod prepared_tests;

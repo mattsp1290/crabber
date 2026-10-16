@@ -100,6 +100,9 @@ pub struct MemoryStore {
 struct State {
     tombstones: BTreeMap<SessionId, crate::deletion::Tombstone>,
     ownership_origins: BTreeMap<SessionId, crate::deletion::origin::OwnershipOrigin>,
+    preparation_admissions: BTreeMap<RunId, crate::session_owner::preparation::admission::Witness>,
+    preparation_admission_joins:
+        BTreeMap<(SessionId, crabber_core::SessionOwnerOperationId), RunId>,
     ownership_protocol_sessions: BTreeSet<SessionId>,
     native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
