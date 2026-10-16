@@ -15,6 +15,8 @@ mod publications;
 mod purge_tests;
 #[path = "ledger/services.rs"]
 mod services;
+#[path = "ledger/successors.rs"]
+mod successors;
 use crate::session_owner::audit::{Audit, Publication, RevisionState, verify_current};
 use crate::session_owner::record::Record;
 use crate::session_owner::{

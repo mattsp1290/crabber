@@ -7,7 +7,7 @@ use crate::session_owner::{
     },
     preparation::PreparationResourceOutcome,
 };
-pub(super) async fn observe(
+pub(crate) async fn observe(
     store: &impl Store,
     root: PreparationGrant,
     operation: PreparedOperation,

@@ -142,7 +142,7 @@ async fn pristine(
     }
     Ok(())
 }
-async fn keyed_journal(
+pub(super) async fn keyed_journal(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,

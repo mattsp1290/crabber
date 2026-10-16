@@ -27,15 +27,6 @@ pub(super) async fn record(
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     crate::session_owner::owned_scope::source::verify(&request.source, &record, &reserve, &begin)?;
-    let actual = record.driver.as_deref().ok_or(Error::UnknownStoreOutcome)?;
-    let Some(OwnedScopeParentAuthority::ExecutionDriver(grant)) = parent else {
-        return Err(Error::InvalidRequest);
-    };
-    if actual.identity()? != *grant.source_identity()
-        || grant.authority().target() != &record.snapshot.target
-    {
-        return Err(Error::SemanticConflict);
-    }
     if record.cancellation.is_some() {
         return Err(Error::CancellationPending);
     }
@@ -44,16 +35,49 @@ pub(super) async fn record(
     else {
         return Err(Error::UnknownStoreOutcome);
     };
-    let fresh = Box::pin(fresh::fresh(
-        tx,
-        grant.original_request(),
-        Some(expected),
-        now,
-        budget,
-    ))
-    .await?;
-    if &fresh != actual {
-        return Err(Error::StaleOwner);
+    match parent {
+        Some(OwnedScopeParentAuthority::ExecutionDriver(grant)) => {
+            let actual = record.driver.as_deref().ok_or(Error::UnknownStoreOutcome)?;
+            if actual.identity()? != *grant.source_identity()
+                || grant.authority().target() != &record.snapshot.target
+            {
+                return Err(Error::SemanticConflict);
+            }
+            let fresh = Box::pin(fresh::fresh(
+                tx,
+                grant.original_request(),
+                Some(expected),
+                now,
+                budget,
+            ))
+            .await?;
+            if &fresh != actual {
+                return Err(Error::StaleOwner);
+            }
+        }
+        Some(OwnedScopeParentAuthority::SuccessorExecutionDriver(grant)) => {
+            let actual = record
+                .successor_driver
+                .as_deref()
+                .ok_or(Error::UnknownStoreOutcome)?;
+            if actual.identity()? != *grant.source_identity()
+                || grant.authority().target() != &record.snapshot.target
+            {
+                return Err(Error::SemanticConflict);
+            }
+            let fresh = Box::pin(super::successor::fresh::fresh(
+                tx,
+                grant.original_request(),
+                Some(expected),
+                now,
+                budget,
+            ))
+            .await?;
+            if &fresh != actual {
+                return Err(Error::StaleOwner);
+            }
+        }
+        _ => return Err(Error::InvalidRequest),
     }
     crate::session_owner::owned_scope::source::activate(&mut record, request, authority, now)?;
     Ok(record)

@@ -1,6 +1,8 @@
 //! First-worker registration and native source checks share the actual lock.
 #[path = "drivers/history.rs"]
 mod history;
+#[path = "drivers/successor.rs"]
+pub(super) mod successor;
 pub(in crate::memory) use history::classified;
 #[cfg(test)]
 #[path = "drivers/tests.rs"]

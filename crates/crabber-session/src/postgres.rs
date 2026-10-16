@@ -1040,6 +1040,18 @@ impl Store for PostgresStore {
     > {
         Box::pin(self.complete_preparation(joined)).await
     }
+    fn supports_successor_execution_drivers(&self) -> bool {
+        true
+    }
+    async fn register_successor_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterSuccessorExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::SuccessorExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.register_successor_driver(request).await
+    }
     fn supports_execution_drivers(&self) -> bool {
         true
     }

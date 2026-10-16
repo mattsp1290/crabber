@@ -26,6 +26,8 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<Box<super::driver::DriverLink>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor_driver: Option<Box<super::driver::SuccessorDriverLink>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_resources: Option<SessionOwnerTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unkeyed_input: Option<InputFingerprint>,
@@ -69,6 +71,7 @@ impl Record {
             resource: None,
             service: None,
             driver: None,
+            successor_driver: None,
             retained_resources: None,
             unkeyed_input: None,
             cancellation: None,
@@ -137,6 +140,10 @@ impl Record {
             (None, None) => (),
             (Some(binding), None)
                 if self.driver.as_ref().is_some_and(|source| {
+                    source.run_id() == &binding.run_id
+                        && binding.call_id.is_none()
+                        && binding.phase.is_none()
+                }) || self.successor_driver.as_ref().is_some_and(|source| {
                     source.run_id() == &binding.run_id
                         && binding.call_id.is_none()
                         && binding.phase.is_none()

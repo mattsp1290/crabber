@@ -425,6 +425,21 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Whether exact prepared noninitial native claims can own distinct workers.
+    fn supports_successor_execution_drivers(&self) -> bool {
+        false
+    }
+    /// Atomically Reserve/Begin one actual noninitial native claim's worker.
+    /// Original receipt replay is metadata only and never remints dispatch authority.
+    async fn register_successor_execution_driver(
+        &self,
+        _request: crate::session_owner::driver::RegisterSuccessorExecutionDriver,
+    ) -> Result<
+        crate::session_owner::driver::SuccessorExecutionDriverOutcome,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Whether independently linked preparation resource capacity is durable.
     fn supports_preparation_resources(&self) -> bool {
         false

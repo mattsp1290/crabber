@@ -29,3 +29,12 @@ pub(crate) mod recovery;
 pub(crate) mod binding_digest;
 #[path = "preparation_expired.rs"]
 pub(crate) mod expired;
+
+pub(crate) mod intent {
+    pub(crate) fn execution_binding_digest(
+        binding: &crate::ExecutionBindingCapsule,
+    ) -> Result<crabber_core::InputFingerprint, crate::session_owner::SessionOwnerError> {
+        super::AdmissionRecoveryPreparation::fingerprint_binding(binding)
+            .map_err(|_| crate::session_owner::SessionOwnerError::InvalidRequest)
+    }
+}

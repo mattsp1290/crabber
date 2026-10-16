@@ -5,6 +5,7 @@ mod history;
 pub(in crate::postgres) use history::classified;
 mod proof;
 mod source;
+mod successor;
 use super::{
     Audit, Error, PostgresStore, Record, SessionOwnerOperation, SessionOwnerOutcome, before, fault,
     finish, publish_revision, reads, unknown,

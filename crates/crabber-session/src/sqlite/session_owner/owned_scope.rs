@@ -174,6 +174,6 @@ fn is_driver_activation(
     request.target().id.0.starts_with("driver-owner-")
         || matches!(
             parent,
-            Some(crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(_))
+            Some(crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(_) | crate::session_owner::owned_scope::OwnedScopeParentAuthority::SuccessorExecutionDriver(_))
         )
 }

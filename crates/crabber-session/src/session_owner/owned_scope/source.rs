@@ -29,6 +29,7 @@ pub(crate) fn verify(
         || record.resource != begin.record.resource
         || record.service != begin.record.service
         || record.driver != begin.record.driver
+        || record.successor_driver != begin.record.successor_driver
     {
         return Err(Error::UnknownStoreOutcome);
     }

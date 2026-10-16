@@ -51,3 +51,30 @@ mod protection;
 mod source_budget;
 
 mod publications;
+
+#[tokio::test]
+async fn successor_driver_contract() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("successor.db");
+    crate::SqliteStore::migrate(&path).await.unwrap();
+    let clock = Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = Arc::new(
+        crate::SqliteStore::connect(&path)
+            .await
+            .unwrap()
+            .with_clock(clock.clone()),
+    );
+    crate::successor_driver_contract::run(store.clone(), &clock).await;
+    let fault = store.session_owner_fault.clone();
+    crate::successor_driver_contract::faults(store.clone(), &clock, move |value| {
+        fault.store(value, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await;
+    successor_budget::run(store.as_ref(), &clock).await;
+}
+
+mod successor_budget;
+
+mod successor_process;

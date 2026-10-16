@@ -514,3 +514,30 @@ The parent remains pending while the Run fence rotates. A worker must obtain a
 fresh actual Unstarted reclaim and Begin before execution; no parent outcome,
 resource cleanup or replay authority is synthesized. Continuation reservations
 remain subject to their own barriers and dedicated recovery contracts.
+
+Successor worker registration is a separate Store capability. Its first supported
+sources are actual prepared admission recovery and expired-Run recovery. The
+caller supplies an original issuer sequence and RootJoin identifier as selection
+metadata; the Store authenticates the protected native19 issuer and predecessor,
+original preparation Reserve/Begin/Join and linked child, and the original native
+operation sources. Legacy or unsupported sources grant no worker. Initial Driver
+identities and receipts retain their existing formats.
+
+Fresh successor registration requires that exact claim to remain current, its
+native fence and lease to remain live, the frozen resource declaration to match,
+and the retained acquisition child to remain active, activated and uncancelled.
+The source revision comes from the actual RootJoin publication. Activation checks
+the exact successor's own Begin publication instead; unrelated public changes
+refuse dispatch. Later same-worker status advances are not inferred from token
+equality in this component. Each successor has distinct stable operation IDs and
+an opaque grant that cannot be substituted for an initial Driver grant.
+
+One 32 MiB proof allowance follows the selected native/domain/owner closure and
+new publications, including repeated SQL transfers. Memory checks borrowed
+carriers before private cloning; its inherited whole-State transaction clone is
+outside that bound. Original metadata replay authenticates the original sources
+without requiring a later head, lease or current revision, and never supplies a
+dispatch grant. Unknown registration/activation ACKs cannot invoke `FnOnce`.
+Actual main and independently retained resource joins remain required for Join.
+This Store component does not adopt Runtime successor dispatch, enable Static
+ownership defaults, or establish whole-Run resource coverage.

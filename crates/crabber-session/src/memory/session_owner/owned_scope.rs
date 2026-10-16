@@ -11,13 +11,11 @@ impl MemoryStore {
     ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
         // The stable namespace only selects stricter validation. It never grants
         // authority, including when a mutable source link has been erased.
-        if request.target().id.0.starts_with("driver-owner-")
+        if request.target().id.0.starts_with("driver-owner-") || request.target().id.0.starts_with("successor-owner-")
             || matches!(
                 parent,
                 Some(
-                    crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(
-                        _
-                    )
+                    crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(_) | crate::session_owner::owned_scope::OwnedScopeParentAuthority::SuccessorExecutionDriver(_)
                 )
             )
         {
@@ -86,15 +84,6 @@ impl MemoryStore {
         let record = guard
             .session_owners
             .driver_activation_record_bounded(request, &mut proof)?;
-        let source = record.driver.as_deref().ok_or(Error::UnknownStoreOutcome)?;
-        let Some(OwnedScopeParentAuthority::ExecutionDriver(grant)) = parent else {
-            return Err(Error::InvalidRequest);
-        };
-        if &source.identity()? != grant.source_identity()
-            || grant.authority().target() != &record.snapshot.target
-        {
-            return Err(Error::SemanticConflict);
-        }
         if record.cancellation.is_some() {
             return Err(Error::CancellationPending);
         }
@@ -104,15 +93,47 @@ impl MemoryStore {
             .and_then(|audit| audit.publication)
             .map(|publication| publication.after)
             .ok_or(Error::UnknownStoreOutcome)?;
-        let fresh = super::drivers::fresh(
-            &guard,
-            grant.original_request(),
-            self.clock.now(),
-            &mut proof,
-            Some(activation_revision),
-        )?;
-        if &fresh != source {
-            return Err(Error::StaleOwner);
+        match parent {
+            Some(OwnedScopeParentAuthority::ExecutionDriver(grant)) => {
+                let source = record.driver.as_deref().ok_or(Error::UnknownStoreOutcome)?;
+                if &source.identity()? != grant.source_identity()
+                    || grant.authority().target() != &record.snapshot.target
+                {
+                    return Err(Error::SemanticConflict);
+                }
+                if &super::drivers::fresh(
+                    &guard,
+                    grant.original_request(),
+                    self.clock.now(),
+                    &mut proof,
+                    Some(activation_revision),
+                )? != source
+                {
+                    return Err(Error::StaleOwner);
+                }
+            }
+            Some(OwnedScopeParentAuthority::SuccessorExecutionDriver(grant)) => {
+                let source = record
+                    .successor_driver
+                    .as_deref()
+                    .ok_or(Error::UnknownStoreOutcome)?;
+                if &source.identity()? != grant.source_identity()
+                    || grant.authority().target() != &record.snapshot.target
+                {
+                    return Err(Error::SemanticConflict);
+                }
+                if &super::drivers::successor::fresh(
+                    &guard,
+                    grant.original_request(),
+                    Some(activation_revision),
+                    self.clock.now(),
+                    &mut proof,
+                )? != source
+                {
+                    return Err(Error::StaleOwner);
+                }
+            }
+            _ => return Err(Error::InvalidRequest),
         }
         // All borrowed source checks precede the inherited Memory transaction
         // clone; unrelated stored history is not covered by this proof budget.

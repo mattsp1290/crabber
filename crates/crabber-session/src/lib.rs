@@ -277,3 +277,6 @@ mod sql_deletion;
 
 #[cfg(test)]
 mod driver_contract;
+
+#[cfg(test)]
+mod successor_driver_contract;

@@ -433,7 +433,7 @@ pub(crate) async fn initial_unkeyed_driver(store: &impl Store) -> crate::AdmitOu
     };
     admitted
 }
-async fn initial_driver_completion(
+pub(crate) async fn initial_driver_completion(
     store: &impl Store,
     root: PreparationGrant,
     operation: PreparedOperation,

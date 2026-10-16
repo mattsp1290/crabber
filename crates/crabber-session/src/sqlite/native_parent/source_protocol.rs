@@ -9,7 +9,7 @@ fn bad(_: impl std::fmt::Debug) -> ReadError<Error> {
     ReadError::Domain(Error)
 }
 
-pub(super) async fn protocol(
+pub(in super::super) async fn protocol(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: &RunId,

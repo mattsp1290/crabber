@@ -24,6 +24,7 @@ pub const RUNTIME_DETACHED_RESOURCE_CONTRACT_V1: &str =
 #[derive(Clone)]
 pub enum OwnedScopeParentAuthority {
     ExecutionDriver(Box<super::driver::ExecutionDriverGrant>),
+    SuccessorExecutionDriver(Box<super::driver::SuccessorExecutionDriverGrant>),
     Preparation(Box<super::preparation::PreparationGrant>),
     ServicePreparation(Box<super::preparation::PreparationGrant>),
     Native(super::SessionOwnerParentAuthority),

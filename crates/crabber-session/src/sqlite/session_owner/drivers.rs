@@ -5,6 +5,7 @@ mod history;
 pub(in crate::sqlite) use history::classified;
 mod proof;
 mod source;
+mod successor;
 use super::{
     Audit, Error, Record, SessionOwnerOperation, SessionOwnerOutcome, SqliteStore, before, fault,
     finish, publish_revision, reads, unknown,

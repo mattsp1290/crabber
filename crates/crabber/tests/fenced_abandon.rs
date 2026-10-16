@@ -1184,3 +1184,7 @@ async fn memory_waiting_cancel_rejects_coherent_ordinary_terminal_output_replace
     }
 }
 use crabber::session::session_owner::*;
+
+#[path = "../../crabber-session/src/successor_driver_contract.rs"]
+#[allow(dead_code)]
+mod successor_driver_contract;

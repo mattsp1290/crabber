@@ -1,6 +1,6 @@
 //! Actual source reads, retained task joins and atomic native claims.
 #[path = "expired/owned.rs"]
-mod owned;
+pub(crate) mod owned;
 #[path = "expired/owned_admission.rs"]
 mod owned_admission;
 #[path = "expired/unkeyed.rs"]
@@ -234,7 +234,7 @@ pub(crate) fn begin_request(
         command: SessionOwnerCommand::Begin,
     }
 }
-async fn prepare(
+pub(crate) async fn prepare(
     store: &impl Store,
     source: &ExpiredRunPreparation,
     binding: crate::ExecutionBindingCapsule,

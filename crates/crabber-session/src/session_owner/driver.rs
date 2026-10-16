@@ -5,12 +5,18 @@
 #[cfg(test)]
 pub(crate) mod history_fixture;
 mod source;
+pub(crate) mod successor;
 use super::{SessionOwnerError as Error, identifier};
 use crabber_core::{
     InputFingerprint, RunId, SessionContext, SessionId, SessionOwnerId, SessionOwnerOperationId,
 };
 use serde::{Deserialize, Serialize};
 pub(crate) use source::DriverLink;
+pub(crate) use successor::SuccessorDriverLink;
+pub use successor::{
+    NativeClaimLocator, RegisterSuccessorExecutionDriver, SuccessorExecutionDriverGrant,
+    SuccessorExecutionDriverOutcome, SuccessorExecutionDriverReceipt,
+};
 
 pub const RUNTIME_DRIVER_COMPONENT: &str = "crabber.runtime.outer-worker.v1";
 /// Fixed main-task and sealed-cleanup declaration. This marker proves no join.
