@@ -19,6 +19,7 @@ pub(super) fn purge(
     if !proof.active() {
         return Err(unknown("deletion requires bounded proof"));
     }
+    super::owned::verify(state, session, proof)?;
     let (runs, calls) = preflight::routes(state, session, proof)?;
     preflight::native(state, session, &runs, &calls, proof)?;
     preflight::continuations(state, session, &runs, &calls, proof)?;
@@ -85,6 +86,16 @@ fn erase(
             $map.retain(|id, _| !runs.contains(id));
         };
     }
+    remove_runs!(state.preparation_admissions);
+    state
+        .preparation_admission_joins
+        .retain(|(scope, _), _| scope != session);
+    state
+        .admission_execution_protocols
+        .retain(|id| !runs.contains(id));
+    state
+        .admission_execution_sources
+        .retain(|(id, _), _| !runs.contains(id));
     remove_runs!(state.suspension_proofs);
     remove_runs!(state.abandonments);
     remove_runs!(state.admission_executions);

@@ -72,6 +72,7 @@ fn verify(
         }
         super::super::native_parent::verify_run(state, run).map_err(unknown)?;
     }
+    super::owned::verify(state, session, proof)?;
     if native_attempts(state, session, proof)? {
         return Ok(Some(Blocker::Attempt));
     }

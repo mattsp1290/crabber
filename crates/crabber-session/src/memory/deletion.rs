@@ -17,6 +17,11 @@ mod journey_purge_tests;
 mod lookup_tests;
 #[path = "deletion/native.rs"]
 mod native;
+#[path = "deletion/owned.rs"]
+mod owned;
+#[cfg(test)]
+#[path = "deletion/owned_tests.rs"]
+mod owned_tests;
 #[path = "deletion/purge.rs"]
 mod purge;
 #[cfg(test)]

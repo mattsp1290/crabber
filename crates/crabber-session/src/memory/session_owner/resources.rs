@@ -29,14 +29,14 @@ impl MemoryStore {
                             .map_err(|_| Error::UnknownStoreOutcome)?;
                     }
                 }
-                #[cfg(test)]
+                #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
                 crate::session_owner_contract::process::pause("resources-before");
                 before(fault(self))?;
             }
             Ok(outcome)
         })?;
         if matches!(outcome, PreparationResourceOutcome::Applied { .. }) {
-            #[cfg(test)]
+            #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
             crate::session_owner_contract::process::pause("resources-after");
             if fault(self) == 2 {
                 return Err(Error::UnknownStoreOutcome);

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) const MAX_BYTES: usize = 8192;
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) enum Kind {
     Init,
     Begin,
@@ -111,7 +111,6 @@ impl Begin {
     }
 }
 impl Source {
-    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub fn kind(&self) -> Kind {
         match self {
             Self::Init(_) => Kind::Init,
