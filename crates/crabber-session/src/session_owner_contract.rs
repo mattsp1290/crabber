@@ -270,6 +270,7 @@ pub(crate) mod parent;
 
 #[cfg(test)]
 #[path = "session_owner_contract/process.rs"]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod process;
 
 #[path = "session_owner_contract/races.rs"]

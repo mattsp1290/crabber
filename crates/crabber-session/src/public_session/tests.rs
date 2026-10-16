@@ -314,6 +314,7 @@ async fn pagination(store: &impl Store) {
     ));
 }
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn cross_connection(reader: &impl Store, writer: &impl Store) {
     let session = SessionId::new();
     let created = writer
