@@ -321,3 +321,60 @@ async fn process_helper() {
     tx.commit().await.unwrap();
     // No acknowledgment receipt crosses the process boundary.
 }
+
+#[tokio::test]
+async fn scoped_purge_removes_only_owned_admission_witness() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let store = PostgresStore::connect(&url)
+        .await
+        .unwrap()
+        .with_clock(clock());
+
+    let target =
+        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
+    let survivor =
+        crate::session_owner::preparation_contract::resources::successful(&store, false).await;
+    let request = DeleteSession {
+        id: ControlId::new(),
+        session_id: target.session_id.clone(),
+        expected_revision: store.session_revision(&target.session_id).await.unwrap(),
+    };
+    let before: String =
+        sqlx::query_scalar("SELECT data_json FROM preparation_admission_witnesses WHERE run_id=$1")
+            .bind(&survivor.run_id.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let mut tx = store.pool.begin().await.unwrap();
+    tombstone(&mut tx, &request).await;
+    // This private fixture tests physical routing, not lifecycle readiness.
+    super::purge(
+        &mut tx,
+        &VerifiedScope::fixture(request.session_id.clone(), request.expected_revision),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let remains: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM preparation_admission_witnesses WHERE run_id=$1 OR session_id=$2)")
+        .bind(&target.run_id.0).bind(&target.session_id.0).fetch_one(&store.pool).await.unwrap();
+    assert!(!remains);
+    let after: String =
+        sqlx::query_scalar("SELECT data_json FROM preparation_admission_witnesses WHERE run_id=$1")
+            .bind(&survivor.run_id.0)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    assert!(
+        store
+            .get_session(&target.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.get_run(&survivor.run_id).await.unwrap().is_some());
+}

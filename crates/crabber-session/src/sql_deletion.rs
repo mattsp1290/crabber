@@ -73,6 +73,7 @@ pub(crate) const PURGE: &[&str] = &[
     "DELETE FROM imported_tool_calls WHERE session_id=$1",
     "DELETE FROM run_execution_bindings WHERE run_id IN (SELECT id FROM runs WHERE session_id=$1)",
     "DELETE FROM run_suspension_proofs WHERE run_id IN (SELECT id FROM runs WHERE session_id=$1)",
+    "DELETE FROM preparation_admission_witnesses WHERE session_id=$1",
     "DELETE FROM native_run_issuances WHERE session_id=$1",
     "DELETE FROM runs WHERE session_id=$1",
     "DELETE FROM extension_state WHERE session_id=$1",
