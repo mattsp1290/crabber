@@ -80,6 +80,7 @@ impl ContextualPlanProvider {
             }
             self.inner.reapers.tracker().spawn(async move {
                 let results = join_all(slots.iter().map(|slot| async {
+                    super::initialization::join_slot(slot).await?;
                     let _gate = slot.gate.lock().await;
                     provider.clean_records(slot).await
                 }))
@@ -115,6 +116,9 @@ impl ContextualPlanProvider {
             }
             self.inner.reapers.tracker().spawn(async move {
                 provider.inner.initializers.wait_drained().await;
+                for slot in &slots {
+                    super::initialization::join_slot(slot).await?;
+                }
                 let results = join_all(mounts.iter().rev().map(MountHandle::close)).await;
                 let cleanup: Vec<_> = slots
                     .iter()

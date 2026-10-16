@@ -1,4 +1,5 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
+mod initialization;
 mod instances;
 mod lifecycle;
 mod profile;
@@ -18,7 +19,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::Mutex as AsyncMutex;
 
 /// The owner of a newly instantiated component, rather than a filter on one Arc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,20 +95,7 @@ struct SlotState {
 #[derive(Default)]
 struct Initialization {
     result: Mutex<Option<Result<(), ExtensionError>>>,
-    finished: Notify,
-}
-impl Initialization {
-    async fn wait(&self) -> Result<(), ExtensionError> {
-        loop {
-            let notified = self.finished.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if let Some(result) = self.result.lock().unwrap().clone() {
-                return result;
-            }
-            notified.await;
-        }
-    }
+    task: AsyncMutex<initialization::Task>,
 }
 struct Slot {
     owner: Owner,

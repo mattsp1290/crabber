@@ -41,7 +41,7 @@ impl ContextualPlanProvider {
         owner: Owner,
         context: Option<SessionContext>,
     ) -> Result<(), ExtensionError> {
-        let initialization = {
+        let (slot, initialization) = {
             let mut owners = self.inner.owners.lock().unwrap();
             self.check_open()?;
             if let Some(context) = &context {
@@ -66,10 +66,10 @@ impl ContextualPlanProvider {
             if state.closed {
                 return Err(ExtensionError::ContextOwnerClosed);
             }
-            if state.ready {
+            if state.ready && state.initialization.is_none() {
                 return Ok(());
             }
-            if let Some(initialization) = &state.initialization {
+            let initialization = if let Some(initialization) = &state.initialization {
                 initialization.clone()
             } else {
                 let initialization = Arc::new(Initialization::default());
@@ -78,7 +78,7 @@ impl ContextualPlanProvider {
                 let slot = slot.clone();
                 let ticket = initialization.clone();
                 // Registered under the owners lock: global close cannot miss setup.
-                self.inner.initializers.tracker().spawn(async move {
+                let task = self.inner.initializers.tracker().spawn(async move {
                     let result = INITIALIZING
                         .scope(owner, async {
                             AssertUnwindSafe(provider.initialize_slot(slot.clone()))
@@ -92,13 +92,29 @@ impl ContextualPlanProvider {
                         })
                         .await;
                     *ticket.result.lock().unwrap() = Some(result);
-                    slot.state.lock().unwrap().initialization = None;
-                    ticket.finished.notify_waiters();
                 });
+                initialization.retain(task);
                 initialization
-            }
+            };
+            (slot.clone(), initialization)
         };
-        initialization.wait().await
+        initialization.join().await?;
+        {
+            let mut state = slot.state.lock().unwrap();
+            if state
+                .initialization
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &initialization))
+            {
+                state.initialization = None;
+            }
+        }
+        initialization
+            .result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Err(ExtensionError::ContextInitializationIncomplete))
     }
 
     async fn initialize_slot(&self, slot: Arc<Slot>) -> Result<(), ExtensionError> {
