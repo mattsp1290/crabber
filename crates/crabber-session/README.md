@@ -403,7 +403,7 @@ retries and `lookup_attempt_mutation` reconcile without restoring authority.
 These controls do not implement durable cancel requests or orderly host close.
 
 `Store::public_run_state(session, max_bytes)` reads the latest admitted run's
-public identity, status, usage and timestamps with the session revision captured
+public identity, status, usage and creation time with the session revision captured
 in the same native read. It returns `run: None` for an existing empty session,
 `NotFound` for a missing session, and `Limited` when the complete metadata JSON
 exceeds the supplied budget (at most 8 KiB). SQL formatting overhead may require
@@ -420,3 +420,8 @@ still consume the requested allocation budget and may produce `Limited`.
 Runtime `snapshot` remains the raw inspection path. The public history page
 retains its authenticated captured revision and history cutoff; it is a history
 projection, not a coherent session/control metadata snapshot.
+
+The public run summary omits the mutable `Run.updated_at` timestamp: lease
+renewals and ownership updates can change it without a public revision. A private
+heartbeat therefore cannot change a revision-captured public run summary or
+invalidate history pagination.

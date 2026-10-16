@@ -13,7 +13,6 @@ pub struct PublicRunSummary {
     pub status: RunStatus,
     pub usage: Usage,
     pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
 }
 /// One coherent native metadata read. A missing run is distinct from a missing
 /// session. Combine with other metadata/history only at the same revision.

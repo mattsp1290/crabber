@@ -53,6 +53,19 @@ pub(crate) async fn run(store: &dyn Store) {
     let current = read(store, session).await;
     assert_eq!(current.run.as_ref().unwrap().run_id, first.run.id);
     assert_eq!(current.run.unwrap().status, first.run.status);
+    let before_lease_update = read(store, session).await;
+    let renewed = first.run.lease_until + time::Duration::seconds(60);
+    execution.renew_lease(renewed).await.unwrap();
+    assert_eq!(
+        store
+            .get_run(&first.run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lease_until,
+        renewed
+    );
+    assert_eq!(read(store, session).await, before_lease_update);
     let usage = Usage {
         input_tokens: 13,
         output_tokens: 8,

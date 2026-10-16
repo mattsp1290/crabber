@@ -10,7 +10,6 @@ struct RunView<'a> {
     status: crabber_core::RunStatus,
     usage: &'a crabber_core::Usage,
     created_at: time::OffsetDateTime,
-    updated_at: time::OffsetDateTime,
 }
 impl<'a> From<&'a Run> for RunView<'a> {
     fn from(run: &'a Run) -> Self {
@@ -20,7 +19,6 @@ impl<'a> From<&'a Run> for RunView<'a> {
             status: run.status,
             usage: &run.usage,
             created_at: run.created_at,
-            updated_at: run.updated_at,
         }
     }
 }
@@ -82,7 +80,6 @@ impl MemoryStore {
                 status: run.status,
                 usage: run.usage.clone(),
                 created_at: run.created_at,
-                updated_at: run.updated_at,
             }),
         }))
     }
