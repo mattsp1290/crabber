@@ -92,6 +92,7 @@ pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
     super::preparation_contract::cancellation::run(store).await;
 }
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) async fn source_fixture(
     store: &impl Store,
 ) -> (

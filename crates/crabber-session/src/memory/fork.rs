@@ -186,6 +186,6 @@ fn publish(
     Ok(ForkOutcome::Applied(saved))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 #[path = "fork/test_support.rs"]
 mod test_support;
