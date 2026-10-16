@@ -43,12 +43,12 @@ impl SqliteStore {
             let authority = record.grant()?;
             let reserve = record.receipt(reservation.id.clone(),link.fingerprint(&reservation)?,SessionOwnerOperation::Reserve);
             let publication = publish_revision(&mut tx,request.context.session_id(),true).await?;
-            reads::publish(&mut tx,&Audit{version:2,receipt:reserve.clone(),record:record.clone(),publication:Some(publication)},true).await?;
+            reads::publish_with_proof(&mut tx,&Audit{version:2,receipt:reserve.clone(),record:record.clone(),publication:Some(publication)},true,&mut proof).await?;
             let command = crate::session_owner::MutateSessionOwner { id:request.identities()?.begin, session_id:request.context.session_id().clone(),target:authority.target().clone(),command:crate::session_owner::SessionOwnerCommand::Begin };
             record.mutate(&command,Some(&authority),self.clock.now())?;
             let begin = record.receipt(command.id.clone(),command.fingerprint()?,SessionOwnerOperation::Begin);
             let publication = publish_revision(&mut tx,request.context.session_id(),true).await?;
-            reads::publish(&mut tx,&Audit{version:2,receipt:begin.clone(),record,publication:Some(publication)},false).await?;
+            reads::publish_with_proof(&mut tx,&Audit{version:2,receipt:begin.clone(),record,publication:Some(publication)},false,&mut proof).await?;
             let receipt = ExecutionDriverReceipt { session_id:request.context.session_id().clone(),run_id:request.fence.run_id.clone(),request_digest:request.fingerprint()?,reserve,begin };
             let grant = ExecutionDriverGrant::from_fresh_begin(receipt.clone(),authority,request.clone(),link.identity()?)?;
             before(self)?;
@@ -103,7 +103,7 @@ impl SqliteStore {
                 SessionOwnerOperation::ActivateScope,
             );
             let publication = publish_revision(&mut tx, request.session_id(), true).await?;
-            reads::publish(
+            reads::publish_with_proof(
                 &mut tx,
                 &Audit {
                     version: 2,
@@ -112,6 +112,7 @@ impl SqliteStore {
                     publication: Some(publication),
                 },
                 false,
+                &mut proof,
             )
             .await?;
             before(self)?;

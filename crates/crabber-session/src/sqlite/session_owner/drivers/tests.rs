@@ -49,3 +49,5 @@ async fn sql_unkeyed_driver_contract() {
 mod protection;
 
 mod source_budget;
+
+mod publications;

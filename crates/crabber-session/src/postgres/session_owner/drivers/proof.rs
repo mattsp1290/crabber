@@ -40,8 +40,9 @@ pub(super) async fn audit(
     id: &SessionOwnerOperationId,
     proof: &mut Proof,
 ) -> Result<Option<Audit>, Error> {
-    charge(tx, AUDIT, &session.0, &id.0, proof).await?;
-    reads::audit(tx, session, id).await
+    read_audit(tx, session, id, proof)
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
 pub(super) async fn read_audit(
     tx: &mut Transaction<'_, Postgres>,
@@ -50,7 +51,11 @@ pub(super) async fn read_audit(
     proof: &mut Proof,
 ) -> Result<Option<Audit>, ReadError<Error>> {
     read_charge(tx, AUDIT, &session.0, &id.0, proof).await?;
-    Ok(reads::audit(tx, session, id).await?)
+    let audit = reads::audit(tx, session, id).await?;
+    if let Some(audit) = &audit {
+        super::super::protocol::selected(tx, audit, proof).await?;
+    }
+    Ok(audit)
 }
 pub(super) async fn current(
     tx: &mut Transaction<'_, Postgres>,

@@ -396,3 +396,12 @@ The current inspection and reconciliation limits apply to individual carriers.
 They do not establish one aggregate 32 MiB proof budget or bound the complete
 Memory State clone. A future aggregate/history consumer must thread its shared
 caller proof budget through every selected source before transfer or cloning.
+
+SQL execution-driver registration and activation carry one bounded proof allowance
+through their selected original sources, owner-history checks and publications.
+Original audit metadata is compared with its independently protected publication;
+a validly encoded replacement or a version downgrade cannot substitute for it.
+Reading that original metadata does not validate later current owner state or its
+head and cannot issue a grant. Fresh registration additionally requires the
+protected preparation-root and child cohorts; activation requires the driver
+cohort and the original Begin revision fence.

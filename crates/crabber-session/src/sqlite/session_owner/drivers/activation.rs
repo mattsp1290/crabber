@@ -16,6 +16,9 @@ pub(super) async fn record(
     budget: &mut Proof,
 ) -> Result<Record, Error> {
     proof::membership(tx, request.session_id(), budget).await?;
+    super::super::protocol::require(tx, request.session_id(), &request.target().id, budget)
+        .await
+        .map_err(super::super::unknown)?;
     let mut record = proof::current(tx, request.session_id(), &request.target().id, budget).await?;
     let reserve = proof::audit(tx, request.session_id(), &request.source.reserve, budget)
         .await?

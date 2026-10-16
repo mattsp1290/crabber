@@ -1,8 +1,8 @@
 //! Exact original source and native-parent proof precede fresh activation.
 mod context;
 use super::{
-    Audit, Error, SessionOwnerAuthority, SessionOwnerOperation, SqliteStore, before, fault, finish,
-    publish_revision, reads, unknown,
+    Audit, Error, SessionOwnerAuthority, SessionOwnerOperation, SessionOwnerOutcome, SqliteStore,
+    before, fault, finish, publish_revision, reads, unknown,
 };
 use crate::session_owner::owned_scope::{OwnedScopeActivation, source};
 impl SqliteStore {
@@ -11,17 +11,8 @@ impl SqliteStore {
         request: OwnedScopeActivation,
         authority: SessionOwnerAuthority,
         parent_authority: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
-    ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
-        if request.target().id.0.starts_with("driver-owner-")
-            || matches!(
-                &parent_authority,
-                Some(
-                    crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(
-                        _
-                    )
-                )
-            )
-        {
+    ) -> Result<SessionOwnerOutcome, Error> {
+        if is_driver_activation(&request, parent_authority.as_ref()) {
             return self
                 .activate_driver(request, authority, parent_authority)
                 .await;
@@ -43,9 +34,7 @@ impl SqliteStore {
                 {
                     return Err(Error::SemanticConflict);
                 }
-                return Ok(crate::session_owner::SessionOwnerOutcome::Replayed(
-                    audit.receipt,
-                ));
+                return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
             }
             reads::scope(&mut tx, request.session_id()).await?;
             context::preflight(&mut tx, &request, &mut proof).await?;
@@ -97,7 +86,7 @@ impl SqliteStore {
             #[cfg(test)]
             crate::session_owner_contract::process::pause("scope-before");
             before(self)?;
-            Ok(crate::session_owner::SessionOwnerOutcome::Applied {
+            Ok(SessionOwnerOutcome::Applied {
                 receipt,
                 authority: None,
             })
@@ -105,17 +94,10 @@ impl SqliteStore {
         .await;
         let outcome = finish(tx, result).await?;
         #[cfg(test)]
-        if matches!(
-            outcome,
-            crate::session_owner::SessionOwnerOutcome::Applied { .. }
-        ) {
+        if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
             crate::session_owner_contract::process::pause("scope-after");
         }
-        if matches!(
-            outcome,
-            crate::session_owner::SessionOwnerOutcome::Applied { .. }
-        ) && fault(self) == 2
-        {
+        if matches!(outcome, SessionOwnerOutcome::Applied { .. }) && fault(self) == 2 {
             return Err(Error::UnknownStoreOutcome);
         }
         Ok(outcome)
@@ -124,7 +106,7 @@ impl SqliteStore {
         &self,
         proof: crate::session_owner::owned_scope::JoinedOwnedScope,
         authority: SessionOwnerAuthority,
-    ) -> Result<crate::session_owner::SessionOwnerOutcome, Error> {
+    ) -> Result<SessionOwnerOutcome, Error> {
         let request = proof.request()?;
         let digest = proof.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
@@ -135,9 +117,7 @@ impl SqliteStore {
                 {
                     return Err(Error::SemanticConflict);
                 }
-                return Ok(crate::session_owner::SessionOwnerOutcome::Replayed(
-                    audit.receipt,
-                ));
+                return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
             }
             reads::scope(&mut tx, &request.session_id).await?;
             let mut record =
@@ -169,7 +149,7 @@ impl SqliteStore {
             #[cfg(test)]
             crate::session_owner_contract::process::pause("scope-join-before");
             before(self)?;
-            Ok(crate::session_owner::SessionOwnerOutcome::Applied {
+            Ok(SessionOwnerOutcome::Applied {
                 receipt,
                 authority: None,
             })
@@ -177,19 +157,23 @@ impl SqliteStore {
         .await;
         let outcome = finish(tx, result).await?;
         #[cfg(test)]
-        if matches!(
-            outcome,
-            crate::session_owner::SessionOwnerOutcome::Applied { .. }
-        ) {
+        if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
             crate::session_owner_contract::process::pause("scope-join-after");
         }
-        if matches!(
-            outcome,
-            crate::session_owner::SessionOwnerOutcome::Applied { .. }
-        ) && fault(self) == 2
-        {
+        if matches!(outcome, SessionOwnerOutcome::Applied { .. }) && fault(self) == 2 {
             return Err(Error::UnknownStoreOutcome);
         }
         Ok(outcome)
     }
+}
+
+fn is_driver_activation(
+    request: &OwnedScopeActivation,
+    parent: Option<&crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
+) -> bool {
+    request.target().id.0.starts_with("driver-owner-")
+        || matches!(
+            parent,
+            Some(crate::session_owner::owned_scope::OwnedScopeParentAuthority::ExecutionDriver(_))
+        )
 }

@@ -12,6 +12,36 @@ type Read = ReadError<Error>;
 fn domain(error: impl std::fmt::Debug) -> Read {
     ReadError::Domain(unknown(error))
 }
+/// Authenticate one original projection without consulting any later owner head.
+/// Legacy metadata remains readable but supplies no publication authority.
+pub(super) async fn selected(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: &Audit,
+    proof: &mut Proof,
+) -> Result<(), Read> {
+    let session = &audit.receipt.session_id;
+    let id = &audit.record.snapshot.target.id;
+    proof.charge(8).map_err(ReadError::Budget)?;
+    let protocol: Option<i64> = sqlx::query_scalar("SELECT CAST(source_protocol AS BIGINT) FROM session_owner_current WHERE session_id=$1 AND owner_id=$2")
+        .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(domain)?;
+    if audit.version < 3 && protocol == Some(0) {
+        return Ok(());
+    }
+    let original = source(
+        tx,
+        session,
+        id,
+        i64::try_from(audit.record.sequence).map_err(domain)?,
+        proof,
+    )
+    .await?;
+    if crate::session_owner::publication::digest(audit).map_err(domain)?
+        != crate::session_owner::publication::digest(&original).map_err(domain)?
+    {
+        return Err(domain("selected owner publication differs"));
+    }
+    Ok(())
+}
 pub(super) async fn require(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

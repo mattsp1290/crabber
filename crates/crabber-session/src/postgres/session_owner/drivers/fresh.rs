@@ -68,6 +68,11 @@ pub(super) async fn fresh(
         .ok_or(Error::Unsupported)?;
     Box::pin(pristine(tx, &run, &binding, budget)).await?;
     let original = source::original(tx, session, id, budget).await?;
+    for audit in [&original.audits[0], &original.audits[4]] {
+        super::super::protocol::require(tx, session, &audit.record.snapshot.target.id, budget)
+            .await
+            .map_err(unknown)?;
+    }
     let declared = original.audits[0]
         .record
         .preparation
@@ -80,8 +85,7 @@ pub(super) async fn fresh(
     {
         return Err(Error::Unsupported);
     }
-    // SQL17 has no independent per-owner publication roster. This strict fresh
-    // revision fence detects erased late cancellation plus restored current rows.
+    // The strict fresh revision fence also detects erased native dispatch evidence.
     // Metadata replay bypasses this gate; unrelated public mutations may refuse.
     revision(
         tx,
