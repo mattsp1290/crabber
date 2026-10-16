@@ -17,6 +17,8 @@ pub enum SessionOwnerError {
     ToolSource(crate::ToolContinuationError),
     #[error("session owner not found")]
     NotFound,
+    #[error("session was permanently deleted")]
+    Deleted,
     #[error("invalid session ownership request")]
     InvalidRequest,
     #[error("session ownership semantics conflict")]

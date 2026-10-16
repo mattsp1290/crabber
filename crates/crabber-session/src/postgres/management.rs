@@ -172,7 +172,7 @@ impl PostgresStore {
             .map_err(db)
             .map_err(management::unknown)?;
         let result = async {
-            super::lock_session(&mut tx, &request.session_id).await.map_err(management::unknown)?;
+            super::lock_session(&mut tx, &request.session_id).await.map_err(crate::deletion::management_error)?;
             if let Some(saved) = receipt(&mut tx, &request.session_id, &request.id).await? {
                 if saved.semantic_digest != digest { return Err(Error::SemanticConflict); }
                 return Ok((saved, false));

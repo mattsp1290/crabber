@@ -4,6 +4,8 @@ mod admission;
 mod approval;
 #[path = "memory/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "memory/deletion.rs"]
+mod deletion;
 #[path = "memory/fork.rs"]
 mod fork;
 #[path = "memory/frontend.rs"]
@@ -96,6 +98,7 @@ pub struct MemoryStore {
 
 #[derive(Clone, Default)]
 struct State {
+    tombstones: BTreeMap<SessionId, crate::deletion::Tombstone>,
     native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,
@@ -691,6 +694,19 @@ impl Store for MemoryStore {
             .receipt(session, id)
     }
 
+    async fn lookup_session_deletion(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::DeletionReceipt>, crate::DeletionError> {
+        self.deletion_receipt(session, id)
+    }
+    async fn session_disposition(
+        &self,
+        session: &SessionId,
+    ) -> Result<crate::SessionDisposition, crate::DeletionError> {
+        self.disposition(session)
+    }
     async fn fork_session(
         &self,
         request: crate::ForkSession,
@@ -941,6 +957,7 @@ impl Store for MemoryStore {
         session: &SessionId,
     ) -> Result<crabber_core::SessionRevision, StoreError> {
         let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
         if !state.sessions.contains_key(session) {
             return Err(StoreError::NotFound);
         }
@@ -986,13 +1003,9 @@ impl Store for MemoryStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .receipts
-            .get(&(session.clone(), key.clone()))
-            .cloned())
+        let state = self.state.lock().expect("memory store poisoned");
+        deletion::ensure_live(&state, session)?;
+        Ok(state.receipts.get(&(session.clone(), key.clone())).cloned())
     }
 
     async fn load_admission_execution(

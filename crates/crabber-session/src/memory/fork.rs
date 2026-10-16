@@ -15,6 +15,7 @@ fn receipt(
     target: &SessionId,
     id: &ControlId,
 ) -> Result<Option<ForkReceipt>, Error> {
+    super::deletion::ensure_live(state, target).map_err(crate::deletion::fork_error)?;
     match state.operation_receipts.get(&(target.clone(), id.clone())) {
         None => Ok(None),
         Some(OperationReceipt::Fork(saved)) => {

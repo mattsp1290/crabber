@@ -109,3 +109,13 @@ impl DeleteSession {
             .map_err(|_| DeletionError::InvalidRequest)
     }
 }
+
+mod records;
+pub(crate) use records::Tombstone;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) use records::timestamp;
+#[cfg(test)]
+pub(crate) mod contract;
+
+mod validation;
+pub(crate) use validation::{fork_error, management_error, owner_error, validate_session};

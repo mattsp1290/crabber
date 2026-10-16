@@ -37,6 +37,8 @@ impl MemoryStore {
         )?;
         let fault = fault(self);
         let outcome = self.transact(|state| {
+            super::deletion::ensure_live(state, &request.binding.session_id)
+                .map_err(crate::deletion::owner_error)?;
             if let Some(saved) = state
                 .session_owners
                 .receipt(&request.binding.session_id, &request.id)?
@@ -96,6 +98,8 @@ impl MemoryStore {
         request.fingerprint()?;
         let fault = fault(self);
         let outcome = self.transact(|state| {
+            super::deletion::ensure_live(state, &request.session_id)
+                .map_err(crate::deletion::owner_error)?;
             let revision = revision(state, &request.session_id);
             let (outcome, public_change) = state.session_owners.mutate_at_revision(
                 request,

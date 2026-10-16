@@ -8,6 +8,7 @@ fn current(
     state: &State,
     id: &SessionId,
 ) -> Result<(crabber_core::Session, management::Metadata, SessionRevision), Error> {
+    super::deletion::ensure_live(state, id).map_err(crate::deletion::management_error)?;
     let session = state.sessions.get(id).ok_or(Error::NotFound)?;
     let metadata = state.management.get(id).cloned().unwrap_or_default();
     management::validate_stored(session, &metadata).map_err(management::unknown)?;
@@ -26,6 +27,7 @@ fn receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<ManagementReceipt>, Error> {
+    super::deletion::ensure_live(state, session).map_err(crate::deletion::management_error)?;
     match state.operation_receipts.get(&(session.clone(), id.clone())) {
         None => Ok(None),
         Some(OperationReceipt::Management(saved)) => {

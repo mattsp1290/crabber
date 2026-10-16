@@ -155,7 +155,8 @@ impl SqliteStore {
         let digest = request.fingerprint()?;
         let mut tx = self.begin_write().await.map_err(management::unknown)?;
         let result = async {
-
+            super::deletion::ensure_live(&mut tx, &request.session_id)
+                .await.map_err(crate::deletion::management_error)?;
             if let Some(saved) = receipt(&mut tx, &request.session_id, &request.id).await? {
                 if saved.semantic_digest != digest { return Err(Error::SemanticConflict); }
                 return Ok((saved, false));
