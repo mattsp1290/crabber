@@ -3,6 +3,7 @@ mod cancellation;
 mod parent;
 mod preflight;
 mod preparation;
+pub(super) mod public;
 mod reads;
 mod run;
 use super::PostgresStore;

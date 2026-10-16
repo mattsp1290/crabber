@@ -387,3 +387,145 @@ fn corrupt_cancellation_evidence(
         }
     }
 }
+
+#[test]
+fn aggregate_owner_membership_authenticates_joined_filter_and_sentinel() {
+    use crate::public_session::{
+        budget::Budget,
+        v2::proof::{Failure, Proof},
+    };
+    use crate::{PublicSessionLimit, PublicSessionLimitV2};
+    let request = crate::session_owner_contract::reservation(SessionId::new());
+    let mut ledger = Ledger::default();
+    let SessionOwnerOutcome::Applied { receipt, authority } = ledger
+        .reserve(&request, OffsetDateTime::UNIX_EPOCH)
+        .unwrap()
+    else {
+        panic!("fresh")
+    };
+    let read = |ledger: &Ledger, limit, cap| {
+        let mut safe = Budget::new(65536, PublicSessionLimit::HeaderBytes);
+        let mut proof = Proof::bounded(cap);
+        ledger.public_registered(&request.binding.session_id, limit, &mut safe, &mut proof)
+    };
+    assert_eq!(
+        read(&ledger, 1, 65536).unwrap()[0].target,
+        receipt.owner.target
+    );
+    assert!(matches!(
+        read(&ledger, 0, 65536),
+        Err(Failure::Limited(PublicSessionLimitV2::RegisteredOwners))
+    ));
+    assert!(matches!(
+        read(&ledger, 1, 1),
+        Err(Failure::Limited(PublicSessionLimitV2::ProofBytes))
+    ));
+    let valid = ledger.clone();
+    let key = (
+        request.binding.session_id.clone(),
+        request.binding.id.clone(),
+    );
+    let row = ledger.records.get_mut(&key).unwrap();
+    row.snapshot.state = SessionOwnerState::Joined;
+    row.snapshot.termination = Some(SessionOwnerTermination::Returned);
+    row.token.clear();
+    // Even a zero-count caller must authenticate this alleged Joined sentinel.
+    assert!(matches!(
+        read(&ledger, 0, 65536),
+        Err(Failure::Error(
+            crate::PublicSessionError::UnknownStoreOutcome
+        ))
+    ));
+    ledger = valid.clone();
+    ledger.records.remove(&key);
+    assert!(matches!(
+        read(&ledger, 1, 65536),
+        Err(Failure::Error(
+            crate::PublicSessionError::UnknownStoreOutcome
+        ))
+    ));
+    ledger = valid;
+    ledger
+        .mutate(
+            &MutateSessionOwner {
+                id: SessionOwnerOperationId::new(),
+                session_id: request.binding.session_id.clone(),
+                target: receipt.owner.target,
+                command: SessionOwnerCommand::Join {
+                    termination: SessionOwnerTermination::Cancelled,
+                },
+            },
+            authority.as_ref(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+    assert!(read(&ledger, 0, 65536).unwrap().is_empty());
+}
+
+#[test]
+fn aggregate_owner_proof_is_charged_before_private_clone() {
+    use crate::public_session::{
+        budget::Budget,
+        v2::proof::{Failure, Proof},
+    };
+    let request = crate::session_owner_contract::reservation(SessionId::new());
+    let mut ledger = Ledger::default();
+    ledger
+        .reserve(&request, OffsetDateTime::UNIX_EPOCH)
+        .unwrap();
+    ledger
+        .records
+        .get_mut(&(
+            request.binding.session_id.clone(),
+            request.binding.id.clone(),
+        ))
+        .unwrap()
+        .owner = "private-carrier-marker".repeat(100_000);
+    let allocations = allocation_counter::measure(|| {
+        let mut safe = Budget::new(65536, crate::PublicSessionLimit::HeaderBytes);
+        let mut proof = Proof::bounded(128);
+        assert!(matches!(
+            ledger.public_registered(&request.binding.session_id, 1, &mut safe, &mut proof),
+            Err(Failure::Limited(crate::PublicSessionLimitV2::ProofBytes))
+        ));
+    });
+    assert!(
+        allocations.bytes_total < 8192,
+        "{}",
+        allocations.bytes_total
+    );
+}
+
+#[test]
+fn aggregate_owner_invalid_sentinel_does_not_become_limited() {
+    use crate::public_session::{
+        budget::Budget,
+        v2::proof::{Failure, Proof},
+    };
+    let session = SessionId::new();
+    let mut ledger = Ledger::default();
+    let mut requests = Vec::new();
+    for id in ["owner-a", "owner-b"] {
+        let mut request = crate::session_owner_contract::reservation(session.clone());
+        request.binding.id = crabber_core::SessionOwnerId::from(id);
+        ledger
+            .reserve(&request, OffsetDateTime::UNIX_EPOCH)
+            .unwrap();
+        requests.push(request);
+    }
+    let record = ledger
+        .records
+        .get_mut(&(session.clone(), requests[1].binding.id.clone()))
+        .unwrap();
+    record.snapshot.state = SessionOwnerState::Joined;
+    record.snapshot.termination = Some(SessionOwnerTermination::Cancelled);
+    record.token.clear();
+    let mut safe = Budget::new(65536, crate::PublicSessionLimit::HeaderBytes);
+    let mut proof = Proof::bounded(65536);
+    assert!(matches!(
+        ledger.public_registered(&session, 1, &mut safe, &mut proof),
+        Err(Failure::Error(
+            crate::PublicSessionError::UnknownStoreOutcome
+        ))
+    ));
+}

@@ -1,4 +1,6 @@
 //! Bounded public metadata and history at one authenticated session revision.
+pub(crate) mod v2;
+pub use v2::*;
 pub(crate) mod compose;
 mod poll;
 use crate::{
