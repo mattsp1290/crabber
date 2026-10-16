@@ -1753,7 +1753,7 @@ impl Orchestrator {
                 }
                 Ok(()) | Err(_) => resumed_work.as_mut().await,
             },
-            control = self_.wait_durable_cancel(failure_execution.as_ref()) => {
+            control = self_.wait_durable_cancel(failure_execution.as_ref(), &fence) => {
                 match control {
                     Ok(()) => { cancellation.cancel(); resumed_work.as_mut().await }
                     Err(error) => {
@@ -2792,7 +2792,7 @@ impl Orchestrator {
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
-                    control = self_.wait_durable_cancel(execution.as_ref()) => {
+                    control = self_.wait_durable_cancel(execution.as_ref(), &fence) => {
                         match control {
                             Ok(()) => { cancellation.cancel(); break run_future.as_mut().await; }
                             Err(error) => {

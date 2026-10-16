@@ -104,6 +104,7 @@ impl Orchestrator {
     pub(super) async fn wait_durable_cancel(
         &self,
         execution: &dyn ExecutionStore,
+        fence: &crabber_core::RunFence,
     ) -> Result<(), RuntimeError> {
         if !self.store.supports_run_controls() {
             return std::future::pending().await;
@@ -122,7 +123,24 @@ impl Orchestrator {
             match observed {
                 Ok(boundary) if boundary.cancel_observed => return Ok(()),
                 Ok(_) => (),
-                Err(RunControlError::StaleOwner) => return Err(RuntimeError::LeaseLost),
+                Err(RunControlError::StaleOwner) => {
+                    // Our terminal commit can win the Store gate while its original
+                    // ACK is still pending. It revokes control polling too, but does
+                    // not supersede that retained completion future. A replacement
+                    // token must still report loss, including a terminal replacement.
+                    let settled = self.store.get_run(&fence.run_id).await;
+                    if !self.observation_lifetime.active() {
+                        return std::future::pending().await;
+                    }
+                    if settled.ok().flatten().is_some_and(|run| {
+                        run.id == fence.run_id
+                            && run.claim_token == fence.claim_token
+                            && run.status.is_terminal()
+                    }) {
+                        return std::future::pending().await;
+                    }
+                    return Err(RuntimeError::LeaseLost);
+                }
                 Err(error) => return Err(error.into()),
             }
         }

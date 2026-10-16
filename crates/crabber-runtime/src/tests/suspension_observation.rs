@@ -7,6 +7,11 @@ use std::sync::atomic::AtomicBool;
 pub(super) struct ObservationGate {
     pub(super) lose_ack: bool,
     heartbeat_probe: bool,
+    owner_read_probe: bool,
+    owner_read_armed: AtomicBool,
+    owner_read_entered: Notify,
+    release_owner_read: Notify,
+    owner_read_returned: Notify,
     observe_calls: AtomicUsize,
     renew_armed: AtomicBool,
     model_calls: AtomicUsize,
@@ -44,6 +49,12 @@ impl ObservationGate {
             }
             return inner.observe_run_controls(turn).await;
         }
+        if self.owner_read_probe {
+            // PG maps a fenced read refusal to StaleOwner; the Runtime's
+            // follow-up owner read must respect a later quiescent boundary.
+            self.owner_read_armed.store(true, Ordering::SeqCst);
+            return Err(RunControlError::StaleOwner);
+        }
         self.observer_entered.notify_one();
         self.release_observer.notified().await;
         let result = inner.observe_run_controls(turn).await;
@@ -51,6 +62,22 @@ impl ObservationGate {
             self.stale_observations.fetch_add(1, Ordering::SeqCst);
         }
         self.observer_returned.notify_one();
+        result
+    }
+    pub(super) async fn read_run(
+        &self,
+        store: &dyn Store,
+        id: &RunId,
+    ) -> Result<Option<Run>, StoreError> {
+        let held = self.owner_read_armed.swap(false, Ordering::SeqCst);
+        if held {
+            self.owner_read_entered.notify_one();
+            self.release_owner_read.notified().await;
+        }
+        let result = store.get_run(id).await;
+        if held {
+            self.owner_read_returned.notify_one();
+        }
         result
     }
     pub(super) async fn renew(
@@ -452,4 +479,46 @@ async fn worker_join_retains_original_heartbeat_renewal_after_main_returns() {
     assert_eq!(joined.pending.len(), 0);
     assert_eq!(gate.stale_renewals.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn owner_read_finishing_after_quiescent_pause_waits_for_original_ack() {
+    for lose_ack in [false, true] {
+        let inner = Arc::new(MemoryStore::new());
+        let gate = Arc::new(ObservationGate {
+            lose_ack,
+            owner_read_probe: true,
+            ..Default::default()
+        });
+        let provider =
+            FakeProvider::scripted(vec![call_script(ToolCallId::new(), r#"{"text":"once"}"#)]);
+        let runtime = runtime(
+            Boundary::Generic,
+            inner.clone(),
+            gate.clone(),
+            Arc::new(AtomicUsize::new(0)),
+            provider,
+        );
+        let handle = runtime.start(request()).await.unwrap();
+        let (session, run) = (handle.session_id().clone(), handle.run_id().clone());
+        let done = handle.done();
+        tokio::pin!(done);
+        wait(&gate.model_entered, "held model").await;
+        wait(&gate.owner_read_entered, "active observer owner read").await;
+        gate.release_model.notify_one();
+        wait(&gate.committed, "real quiescent pause commit").await;
+        gate.release_owner_read.notify_one();
+        wait(&gate.owner_read_returned, "read after quiescence").await;
+        let early = tokio::time::timeout(std::time::Duration::from_millis(40), done.as_mut()).await;
+        gate.release_ack.notify_one();
+        assert!(
+            early.is_err(),
+            "obsolete owner read superseded original ACK: {early:?}"
+        );
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), done)
+            .await
+            .unwrap();
+        assert_ack_result(Boundary::Generic, lose_ack, result);
+        assert_native_suspension(inner.as_ref(), &session, &run, Boundary::Generic).await;
+    }
 }

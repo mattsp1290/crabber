@@ -1842,6 +1842,9 @@ struct SettlementGate {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Notify,
     terminal_reads: AtomicUsize,
+    terminal_controls: bool,
+    terminal_control_ack_lost: bool,
+    terminal_control_seen: Notify,
     reject_run_reads: std::sync::atomic::AtomicBool,
     session_owner_ack_lost: AtomicUsize,
     session_owner_cancel_on_begin: AtomicUsize,
@@ -1862,7 +1865,7 @@ struct DelayedTerminalExecution {
 #[async_trait]
 impl Store for DelayedTerminalStore {
     fn supports_run_controls(&self) -> bool {
-        self.gate.observation.is_some()
+        self.gate.observation.is_some() || self.gate.terminal_controls
     }
     async fn run_control_binding(
         &self,
@@ -2657,7 +2660,11 @@ impl Store for DelayedTerminalStore {
             !self.gate.reject_run_reads.load(Ordering::SeqCst),
             "metadata replay attempted a full private Run read"
         );
-        let mut run = self.inner.get_run(id).await?;
+        let mut run = if let Some(gate) = &self.gate.observation {
+            gate.read_run(self.inner.as_ref(), id).await?
+        } else {
+            self.inner.get_run(id).await?
+        };
         if let Some(checkpoint) = self.gate.checkpoint_override.lock().unwrap().clone()
             && let Some(run) = &mut run
         {
@@ -2740,7 +2747,13 @@ impl ExecutionStore for DelayedTerminalExecution {
         if let Some(gate) = &self.gate.observation {
             return gate.observe(self.inner.as_ref(), turn).await;
         }
-        self.inner.observe_run_controls(turn).await
+        let result = self.inner.observe_run_controls(turn).await;
+        if self.gate.terminal_controls
+            && matches!(result, Err(crabber_session::RunControlError::StaleOwner))
+        {
+            self.gate.terminal_control_seen.notify_one();
+        }
+        result
     }
 
     async fn suspend_tool_continuation(
@@ -2885,6 +2898,9 @@ impl ExecutionStore for DelayedTerminalExecution {
                 let _ = sender.send(());
             }
             self.gate.release.notified().await;
+            if self.gate.terminal_control_ack_lost {
+                return Err(AttemptError::UnknownStoreOutcome);
+            }
         }
         result
     }
@@ -4041,3 +4057,6 @@ impl DelayedTerminalStore {
         Ok(())
     }
 }
+
+#[path = "tests/terminal_control.rs"]
+mod terminal_control;
