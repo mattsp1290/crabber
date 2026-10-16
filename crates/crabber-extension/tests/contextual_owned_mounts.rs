@@ -191,7 +191,8 @@ async fn factory_and_mount_cleanup_are_sealed_and_both_actual_joins_are_required
     }
     phase.close();
     seen.mount_release.notify_one();
-    assert_eq!(phase.drain(BOUND).await.joined, 1);
+    // Actual callback-main join observer plus the registered mount cleanup.
+    assert_eq!(phase.drain(BOUND).await.joined, 2);
     assert!(
         provider
             .close_session(&context, Duration::ZERO)

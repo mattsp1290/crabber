@@ -20,6 +20,9 @@ use async_trait::async_trait;
 use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
+pub(crate) use owned::InvocationSource;
+pub(crate) use owned::current_callback_invocations;
+pub use owned::{CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations};
 pub use owned::{OwnedMountHandle, OwnedMountJoin};
 pub(crate) use profile::RegistrationSnapshot;
 use serde::Serialize;
@@ -827,6 +830,7 @@ impl Registry {
         let mut guards = vec![];
         let mut restrictions = vec![];
         let mut handlers = vec![];
+        let mut invocations = vec![];
         let mut providers = vec![];
         let mut components = vec![];
         let mut services = HostServices::default();
@@ -849,6 +853,9 @@ impl Registry {
             guards.extend(r.guards.iter().cloned());
             restrictions.extend(r.restrictions.iter().cloned());
             handlers.extend(r.handlers.iter().cloned());
+            if mount.owned.is_some() {
+                invocations.push((mount.id, InvocationSource::new(mount)));
+            }
             providers.extend(r.providers.iter().cloned());
             services = services.with_overrides(&r.services);
             append_mount_components(mount, &r, plan_sequence, &mut components);
@@ -863,7 +870,7 @@ impl Registry {
             contributors,
             guards,
             restrictions,
-            Dispatcher::new(handlers),
+            Dispatcher::from_registry(handlers, invocations),
             providers,
             components,
             services,

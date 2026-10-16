@@ -181,6 +181,9 @@ impl CleanupTracker {
     pub(crate) fn is_phase_scoped(&self) -> bool {
         self.resources.is_some()
     }
+    pub(crate) fn invocation_resources(&self) -> Option<crate::ToolResources> {
+        self.resources.clone()
+    }
     pub(crate) fn for_handler_mount(&self, mount: &Self) -> Self {
         let mut tracker = self.clone();
         tracker.mount_tasks = Some(mount.tasks.clone());

@@ -1,7 +1,13 @@
 //! Explicit sealed mount cleanup; completion is an observed actual task join.
+mod invocations;
 use super::{ExtensionError, Mount, MountCloseTimeout, MountHandle, dispatch};
 use crate::{ComponentIdentity, ResourceDrain, ResourceFailure, ToolResourceOwner};
 use futures::FutureExt;
+pub(crate) use invocations::Source as InvocationSource;
+pub(crate) use invocations::current as current_callback_invocations;
+pub use invocations::{
+    CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
+};
 use std::{
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
@@ -12,6 +18,7 @@ pub(super) struct State {
     pub(super) cleanup: ToolResourceOwner,
     close_task: ToolResourceOwner,
     started: Mutex<bool>,
+    invocations: invocations::State,
 }
 impl State {
     pub(super) fn new() -> Self {
@@ -19,14 +26,16 @@ impl State {
             cleanup: ToolResourceOwner::new(),
             close_task: ToolResourceOwner::new(),
             started: Mutex::new(false),
+            invocations: invocations::State::default(),
         }
     }
 }
 /// Explicit owned mount handle. Retain it after a timeout; work and its actual
 /// joins remain owned. This contract covers this mount's registered cleanup,
 /// bounded by [`crate::MAX_TOOL_RESOURCE_TASKS`] retained tasks over its lifetime.
-/// Escaped dispatcher clones and caller-driven callback main futures need their
-/// own lifecycle ownership; a plan lease or this handle does not certify them.
+/// Dispatcher callbacks sourced from this concrete owned mount retain their
+/// actual main joins independently of extracted dispatcher clones and waiters.
+/// Other escaped interfaces still require their own lifecycle ownership.
 #[derive(Clone)]
 pub struct OwnedMountHandle {
     inner: MountHandle,
@@ -107,12 +116,17 @@ pub(super) fn append_contract(mount: &Mount, components: &mut Vec<ComponentIdent
             id: "registry.mount.cleanup".into(),
             version: "crabber.registry.mount.sealed.v1".into(),
         });
+        components.push(ComponentIdentity {
+            id: "registry.mount.callbacks".into(),
+            version: "crabber.registry.mount.invocations.v1".into(),
+        });
     }
 }
 pub(super) fn signal(mount: &Mount) {
     mount.cleanup.close();
     if let Some(owned) = &mount.owned {
         owned.cleanup.close();
+        owned.invocations.close();
     }
 }
 pub(super) async fn close(
@@ -173,6 +187,13 @@ fn start(mount: &Arc<Mount>, owned: &State) -> Result<(), ExtensionError> {
     Ok(())
 }
 async fn finish(mount: Arc<Mount>) -> Result<(), ResourceFailure> {
+    let invocations = mount
+        .owned
+        .as_ref()
+        .expect("owned close task")
+        .invocations
+        .join()
+        .await;
     mount.leases_released().await;
     let cleanup = mount
         .owned
@@ -185,7 +206,7 @@ async fn finish(mount: Arc<Mount>) -> Result<(), ResourceFailure> {
     // Deferred callbacks may block; retain and await their actual blocking join
     // without preventing the caller's bounded Tokio timer from progressing.
     let deferred = tokio::task::spawn_blocking(move || rollback_all(&rollback)).await;
-    let mut failed = !cleanup.failures.is_empty() || !matches!(deferred, Ok(true));
+    let mut failed = !invocations || !cleanup.failures.is_empty() || !matches!(deferred, Ok(true));
     if let Err(payload) = AssertUnwindSafe(mount.extension.shutdown())
         .catch_unwind()
         .await

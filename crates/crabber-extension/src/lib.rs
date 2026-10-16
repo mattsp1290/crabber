@@ -19,6 +19,9 @@ pub use preparation_resources::{
 };
 mod prompt_contribution;
 mod registry;
+pub use registry::{
+    CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
+};
 mod result_transform;
 pub use prompt_contribution::*;
 mod input_tool;

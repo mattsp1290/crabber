@@ -117,6 +117,20 @@ enum Owner {
     Session(SessionId),
 }
 tokio::task_local! { static INITIALIZING: Owner; }
+/// Propagate only an actual existing initializer identity into retained owned
+/// callback tasks. This is a local reentry guard, never native authority.
+pub(crate) struct InitializationContext(Option<Owner>);
+impl InitializationContext {
+    pub(crate) fn capture() -> Self {
+        Self(INITIALIZING.try_with(Clone::clone).ok())
+    }
+    pub(crate) async fn scope<T>(self, future: impl std::future::Future<Output = T>) -> T {
+        match self.0 {
+            Some(owner) => INITIALIZING.scope(owner, future).await,
+            None => future.await,
+        }
+    }
+}
 
 struct Record {
     cleanup: Arc<cleanup::RecordCleanup>,

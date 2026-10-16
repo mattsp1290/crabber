@@ -100,6 +100,7 @@ impl Handler {
 #[derive(Clone)]
 pub struct Dispatcher {
     handlers: Arc<Vec<Handler>>,
+    owned: Arc<std::collections::HashMap<u64, crate::registry::InvocationSource>>,
 }
 impl Dispatcher {
     #[must_use]
@@ -107,7 +108,16 @@ impl Dispatcher {
         handlers.sort_by_key(Handler::sort_key);
         Self {
             handlers: Arc::new(handlers),
+            owned: Arc::new(std::collections::HashMap::new()),
         }
+    }
+    pub(crate) fn from_registry(
+        handlers: Vec<Handler>,
+        owned: Vec<(u64, crate::registry::InvocationSource)>,
+    ) -> Self {
+        let mut dispatcher = Self::new(handlers);
+        dispatcher.owned = Arc::new(owned.into_iter().collect());
+        dispatcher
     }
     fn matching(&self, point: &'static str, mode: Mode) -> impl Iterator<Item = &Handler> {
         self.handlers
@@ -122,10 +132,10 @@ impl Dispatcher {
                 let callback = Arc::clone(callback);
                 let mount_id = handler.mount_id;
                 let input = value.clone();
-                let _ =
-                    AssertUnwindSafe(async move { with_mount(mount_id, callback(input)).await })
-                        .catch_unwind()
-                        .await;
+                let source = self.owned.get(&mount_id).cloned();
+                let _ = AssertUnwindSafe(invoke(source, mount_id, move || callback(input)))
+                    .catch_unwind()
+                    .await;
             }
         }
     }
@@ -133,7 +143,14 @@ impl Dispatcher {
     pub async fn hook<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Hook) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
-                with_mount(handler.mount_id, callback(value.clone())).await?;
+                let callback = callback.clone();
+                let input = value.clone();
+                invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.mount_id,
+                    move || callback(input),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -157,7 +174,13 @@ impl Dispatcher {
         after(&mut value)?;
         for handler in self.matching(point, Mode::Transform) {
             if let HandlerFn::Ordinary(callback) = &handler.callback {
-                value = with_mount(handler.mount_id, callback(value)).await?;
+                let callback = callback.clone();
+                value = invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.mount_id,
+                    move || callback(value),
+                )
+                .await?;
                 after(&mut value)?;
             }
         }
@@ -204,8 +227,36 @@ impl Dispatcher {
     /// cancellation was observed, in which case it is `Interrupted` and the
     /// in-flight handler is dropped, final redactors included.
     // One driver loop: its states share the accepted value and the deadline.
-    #[allow(clippy::too_many_lines)]
     pub async fn transform_tool_result(
+        &self,
+        context: ToolResultContext,
+        seed: TransformOutput,
+    ) -> ToolResultOutcome {
+        if context.cancellation().is_cancelled() {
+            return ToolResultOutcome::Interrupted { redacted: None };
+        }
+        let first_handler = self
+            .matching(ToolResultTransform::ID, Mode::Transform)
+            .find(|handler| self.owned.contains_key(&handler.mount_id));
+        if let (Some(handler), Some(resources)) =
+            (first_handler, context.cleanup().invocation_resources())
+        {
+            let Ok(owner) = crate::CallbackInvocationOwner::attach(resources) else {
+                return ToolResultOutcome::Failed {
+                    handler: handler.id.clone(),
+                };
+            };
+            crate::with_callback_invocations(
+                owner.capability(),
+                self.transform_tool_result_inner(context, seed),
+            )
+            .await
+        } else {
+            self.transform_tool_result_inner(context, seed).await
+        }
+    }
+    #[allow(clippy::too_many_lines)]
+    async fn transform_tool_result_inner(
         &self,
         context: ToolResultContext,
         seed: TransformOutput,
@@ -273,8 +324,12 @@ impl Dispatcher {
             handler_context.set_phase(handler.phase);
             handler_context.set_is_error(is_error);
             let current = accepted.as_ref().unwrap_or(&seed.result).clone();
-            let mut future =
-                InFlight::new(invoke_result_handler(handler, handler_context, current));
+            let mut future = InFlight::new(invoke_result_handler(
+                handler.clone(),
+                self.owned.get(&handler.mount_id).cloned(),
+                handler_context,
+                current,
+            ));
             let mut result = None;
             let closing = handler.cleanup.closing();
             tokio::pin!(closing);
@@ -354,11 +409,19 @@ impl Dispatcher {
     /// Gate callbacks reject on the first false result.
     pub async fn gate<P: Point>(&self, value: Value) -> Result<(), ExtensionError> {
         for handler in self.matching(P::ID, Mode::Gate) {
-            if let HandlerFn::Ordinary(callback) = &handler.callback
-                && with_mount(handler.mount_id, callback(value.clone())).await?
+            if let HandlerFn::Ordinary(callback) = &handler.callback {
+                let callback = callback.clone();
+                let input = value.clone();
+                if invoke(
+                    self.owned.get(&handler.mount_id).cloned(),
+                    handler.mount_id,
+                    move || callback(input),
+                )
+                .await?
                     == Value::Bool(false)
-            {
-                return Err(ExtensionError::Rejected(P::ID));
+                {
+                    return Err(ExtensionError::Rejected(P::ID));
+                }
             }
         }
         Ok(())
@@ -372,7 +435,7 @@ impl Dispatcher {
             .matching(P::ID, Mode::Around)
             .cloned()
             .collect::<Vec<_>>();
-        around_at(Arc::new(handlers), 0, value, terminal).await
+        around_at(Arc::new(handlers), self.owned.clone(), 0, value, terminal).await
     }
 }
 
@@ -431,7 +494,8 @@ async fn finish_before<T>(
 /// D2 failure (error, panic or envelope violation); handler-authored error
 /// text is discarded here so it can never reach the outcome.
 async fn invoke_result_handler(
-    handler: &Handler,
+    handler: Handler,
+    source: Option<crate::registry::InvocationSource>,
     context: ToolResultContext,
     value: crabber_core::ToolOutput,
 ) -> Option<TransformOutput> {
@@ -441,9 +505,23 @@ async fn invoke_result_handler(
         HandlerFn::Ordinary(callback) => json_result_transform(Arc::clone(callback)),
         HandlerFn::Around(_) => return None,
     };
-    AssertUnwindSafe(with_mount(handler.mount_id, async move {
-        callback(context, value).await
-    }))
+    AssertUnwindSafe(async move {
+        match source {
+            Some(source) => {
+                source
+                    .invoke(move || Box::pin(async move { callback(context, value).await }))
+                    .await?
+            }
+            // Legacy result handlers constructed inside their mount frame.
+            None => {
+                with_mount(
+                    handler.mount_id,
+                    async move { callback(context, value).await },
+                )
+                .await
+            }
+        }
+    })
     .catch_unwind()
     .await
     .ok()?
@@ -517,6 +595,7 @@ impl Next {
 }
 fn around_at(
     handlers: Arc<Vec<Handler>>,
+    owned: Arc<std::collections::HashMap<u64, crate::registry::InvocationSource>>,
     index: usize,
     value: Value,
     terminal: Callback,
@@ -542,6 +621,7 @@ fn around_at(
         let _revoke = RevokeOnDrop(Arc::clone(&shared));
         let next_handlers = Arc::clone(&handlers);
         let next_terminal = Arc::clone(&terminal);
+        let next_owned = owned.clone();
         let callback_token = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let next = Next {
             shared: Arc::clone(&shared),
@@ -549,15 +629,29 @@ fn around_at(
             invoke: Arc::new(move |v| {
                 around_at(
                     Arc::clone(&next_handlers),
+                    Arc::clone(&next_owned),
                     index + 1,
                     v,
                     Arc::clone(&next_terminal),
                 )
             }),
         };
-        let result = ACTIVE_NEXT
-            .scope(callback_token, with_mount(mount_id, callback(value, next)))
-            .await;
+        let result = match owned.get(&mount_id).cloned() {
+            Some(source) => {
+                ACTIVE_NEXT
+                    .scope(
+                        callback_token,
+                        invoke(Some(source), mount_id, move || callback(value, next)),
+                    )
+                    .await
+            }
+            // Preserve legacy construction before both task-local frames.
+            None => {
+                ACTIVE_NEXT
+                    .scope(callback_token, with_mount(mount_id, callback(value, next)))
+                    .await
+            }
+        };
         shared.revoke();
         loop {
             let notified = shared.done.notified();
@@ -582,6 +676,64 @@ static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 mod phase_cleanup_tests;
 tokio::task_local! { static ACTIVE_NEXT: u64; }
 tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
+/// Explicit propagation for actual owned callback tasks; Tokio does not inherit
+/// task locals. Preserve ancestor mounts and the exact around continuation.
+pub(crate) struct CallbackTaskContext {
+    mounts: Vec<u64>,
+    next: Option<u64>,
+    initialization: crate::contextual::InitializationContext,
+    state: Option<Arc<dyn crate::StateSink>>,
+    callbacks: Option<crate::CallbackInvocationCapability>,
+}
+impl CallbackTaskContext {
+    pub(crate) fn capture(mount: u64) -> Self {
+        let mut mounts = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
+        mounts.push(mount);
+        Self {
+            mounts,
+            next: ACTIVE_NEXT.try_with(|next| *next).ok(),
+            initialization: crate::contextual::InitializationContext::capture(),
+            state: crate::current_state_sink(),
+            callbacks: crate::registry::current_callback_invocations(),
+        }
+    }
+    pub(crate) async fn scope<T>(self, future: impl Future<Output = T>) -> T {
+        ACTIVE_MOUNTS
+            .scope(
+                self.mounts,
+                self.initialization.scope(async move {
+                    let next = async move {
+                        match self.next {
+                            Some(next) => ACTIVE_NEXT.scope(next, future).await,
+                            None => future.await,
+                        }
+                    };
+                    let state = async move {
+                        match self.state {
+                            Some(state) => crate::with_state_sink(state, next).await,
+                            None => next.await,
+                        }
+                    };
+                    match self.callbacks {
+                        Some(callbacks) => crate::with_callback_invocations(callbacks, state).await,
+                        None => state.await,
+                    }
+                }),
+            )
+            .await
+    }
+}
+async fn invoke<T: Send + 'static>(
+    owned: Option<crate::registry::InvocationSource>,
+    mount_id: u64,
+    construct: impl FnOnce() -> BoxFuture<'static, Result<T, ExtensionError>> + Send + 'static,
+) -> Result<T, ExtensionError> {
+    match owned {
+        Some(source) => source.invoke(construct).await?,
+        // Legacy ordinary constructors were evaluated before with_mount.
+        None => with_mount(mount_id, construct()).await,
+    }
+}
 pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {
     let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
     stack.push(id);

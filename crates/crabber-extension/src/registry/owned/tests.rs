@@ -103,7 +103,8 @@ async fn owned_mount_and_phase_retain_the_same_join_and_reject_late_poll() {
         .unwrap();
     let phase = ToolResourceOwner::new();
     invoke(&registry, Some(&phase)).await;
-    assert_eq!(phase.snapshot().pending, 1);
+    // The actual callback-join observer is separate from its cleanup task.
+    assert_eq!(phase.snapshot().pending, 2);
     assert_eq!(handle.cleanup_snapshot().pending, 1);
     assert!(matches!(
         handle.close(Duration::ZERO).await,
@@ -124,7 +125,7 @@ async fn owned_mount_and_phase_retain_the_same_join_and_reject_late_poll() {
     assert_eq!(polls.load(Ordering::SeqCst), 0);
     probe.release.notify_one();
     let phase_join = phase.drain(BOUND).await;
-    assert_eq!((phase_join.joined, phase_join.pending), (1, 0));
+    assert_eq!((phase_join.joined, phase_join.pending), (2, 0));
     let observed = handle.close(BOUND).await.unwrap();
     assert_eq!(
         (observed.cleanup().joined, observed.close_task().joined),
