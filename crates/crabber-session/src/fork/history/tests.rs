@@ -112,6 +112,13 @@ fn parallel_group_never_forks_a_partial_result_prefix() {
     else {
         panic!("complete group")
     };
+    let retained = [
+        SourceCall::Native(&first),
+        SourceCall::UnquiescentNative(&second),
+    ];
+    assert!(
+        matches!(prepare(&request("result-second"), &messages, &retained, &closed).unwrap(), Decision::Unsafe(ForkBoundary::AfterMessage { message_id }) if message_id == MessageId::from("user"))
+    );
     assert_eq!(copied.calls.len(), 2);
     assert!(
         copied

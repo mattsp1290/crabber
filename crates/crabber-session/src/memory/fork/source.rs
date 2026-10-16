@@ -92,15 +92,26 @@ pub(super) fn prepare(
             }
         }
     }
-    match crate::fork::history::select(request, messages, &calls, &committed)? {
-        Selection::Ready(plan) => {
-            for call in &calls {
-                if let SourceCall::Native(call) = call {
-                    terminal_call(state, request, call, &mut proof)?;
-                }
-            }
-            plan.copy().map(Decision::Ready).map_err(Failure::from)
+    // Bound every borrowed logical carrier before terminal proof validation can
+    // materialize even its derived comparison output. No copy is made here.
+    if let Selection::Limited(limit) =
+        crate::fork::history::select(request, messages, &calls, &committed)?
+    {
+        return Ok(Decision::Limited(limit));
+    }
+    for source in &mut calls {
+        if let SourceCall::Native(call) = source
+            && matches!(
+                call.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed
+            )
+            && terminal_call(state, request, call, &mut proof)? != crate::PhaseQuiescence::Complete
+        {
+            *source = SourceCall::UnquiescentNative(call);
         }
+    }
+    match crate::fork::history::select(request, messages, &calls, &committed)? {
+        Selection::Ready(plan) => plan.copy().map(Decision::Ready).map_err(Failure::from),
         Selection::Unsafe(boundary) => Ok(Decision::Unsafe(boundary)),
         Selection::Limited(limit) => Ok(Decision::Limited(limit)),
     }
@@ -206,7 +217,7 @@ fn terminal_call(
     request: &ForkSession,
     call: &ToolCallRecord,
     proof: &mut Proof,
-) -> Result<(), Failure> {
+) -> Result<crate::PhaseQuiescence, Failure> {
     if !matches!(
         call.status,
         ToolCallStatus::Completed | ToolCallStatus::Failed
@@ -227,6 +238,7 @@ fn terminal_call(
     proof.measure(&(&phase.snapshot, &phase.output, &phase.token))?;
     proof.measure(call)?;
     let mut terminal = None;
+    let mut sources = Vec::with_capacity(2);
     for only_terminal in [false, true] {
         let event = state
             .events
@@ -261,6 +273,7 @@ fn terminal_call(
             return Err(unknown("phase receipt"));
         };
         proof.measure(receipt)?;
+        sources.push((receipt, event));
         if only_terminal {
             terminal = event.cursor;
         }
@@ -274,7 +287,16 @@ fn terminal_call(
         })
         .ok_or_else(|| unknown("settled source"))?;
     proof.measure(settled)?;
-    super::super::phase::terminal_history::validate(state, run, phase, call).map_err(unknown)
+    crate::phase::terminal_history::verify_history_scope(
+        &run.session_id,
+        &run.id,
+        phase,
+        call,
+        sources[0],
+        sources[1],
+        settled,
+    )
+    .map_err(unknown)
 }
 
 fn imported(
