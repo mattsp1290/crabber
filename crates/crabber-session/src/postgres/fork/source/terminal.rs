@@ -4,7 +4,7 @@ pub(super) async fn terminal(
     tx: &mut Transaction<'_, Postgres>,
     request: &ForkSession,
     call: &ToolCallRecord,
-    proof: &mut Proof,
+    proof: &mut Proof<'_>,
 ) -> Result<crate::PhaseQuiescence, Failure> {
     let raw = proof
         .read(

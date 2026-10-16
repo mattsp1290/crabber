@@ -8,7 +8,7 @@ pub(super) async fn original_input(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ForkSession,
     run: &RunId,
-    proof: &mut Proof,
+    proof: &mut Proof<'_>,
     committed: &mut BTreeSet<MessageId>,
     admitted: &mut BTreeSet<MessageId>,
 ) -> Result<(), Failure> {

@@ -8,6 +8,7 @@ use crate::{ForkBoundary, ForkError as Error, ForkOutcome, ForkReceipt, ForkSess
 use crabber_core::{ControlId, Session, SessionId, SessionRevision};
 use sqlx::{Row, Sqlite, Transaction};
 mod source;
+pub(super) use source::verify_imported_history;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }

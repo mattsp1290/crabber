@@ -1,72 +1,25 @@
-use super::{
-    Audit, Error, Failure, ForkSession, ImportedHistory, MESSAGE, MessageId, Proof, unknown,
-};
+use super::{Audit, Error, Failure, ImportedHistory, MESSAGE, MessageId, Proof, unknown};
 use crabber_core::{ImportedMessageProvenance, ImportedToolCall};
 use sqlx::{Postgres, Transaction};
 use std::collections::BTreeSet;
 pub(super) async fn imported(
     tx: &mut Transaction<'_, Postgres>,
-    request: &ForkSession,
-    proof: &mut Proof,
+    session: &crabber_core::SessionId,
+    proof: &mut Proof<'_>,
     committed: &mut BTreeSet<MessageId>,
 ) -> Result<ImportedHistory, Failure> {
-    let audit = import_origin(tx, request, proof).await?;
-    let origins: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM imported_message_provenance WHERE session_id=$1")
-            .bind(&request.source_session_id.0)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(unknown)?;
-    if usize::try_from(origins).ok() != Some(audit.receipt.messages) {
-        return Err(Error::UnknownStoreOutcome.into());
-    }
-    let mut history = ImportedHistory::default();
-    let ids = proof
-        .identities(
-            tx,
-            IMPORTED_MESSAGE_IDS,
-            &request.source_session_id.0,
-            "",
-            audit.receipt.messages,
-        )
-        .await?;
-    if ids.len() != audit.receipt.messages {
-        return Err(Error::UnknownStoreOutcome.into());
-    }
-    for id in ids {
-        crate::fork::history::validate_id(&id)?;
-        let raw = proof
-            .read(
-                tx,
-                MESSAGE,
-                &request.source_session_id.0,
-                &id,
-                32 * 1024 * 1024,
-            )
-            .await?
-            .ok_or(Error::UnknownStoreOutcome)?;
-        history
-            .messages
-            .push(serde_json::from_str(&raw).map_err(unknown)?);
-        let raw = proof
-            .read(
-                tx,
-                IMPORT_PROVENANCE,
-                &request.source_session_id.0,
-                &id,
-                8 * 1024 * 1024,
-            )
-            .await?
-            .ok_or(Error::UnknownStoreOutcome)?;
-        history
-            .provenance
-            .push(serde_json::from_str::<ImportedMessageProvenance>(&raw).map_err(unknown)?);
-    }
+    let audit = import_origin(tx, session, proof).await?;
+    let (messages, provenance) = message_prefix(tx, session, proof, audit.receipt.messages).await?;
+    let mut history = ImportedHistory {
+        messages,
+        provenance,
+        calls: Vec::new(),
+    };
     let ids = proof
         .identities(
             tx,
             IMPORTED_CALL_IDS,
-            &request.source_session_id.0,
+            &session.0,
             "",
             audit.receipt.imported_calls + 1,
         )
@@ -77,17 +30,11 @@ pub(super) async fn imported(
     for id in ids {
         crate::fork::history::validate_id(&id)?;
         let raw = proof
-            .read(
-                tx,
-                IMPORT_CALL,
-                &request.source_session_id.0,
-                &id,
-                8 * 1024 * 1024,
-            )
+            .read(tx, IMPORT_CALL, &session.0, &id, 8 * 1024 * 1024)
             .await?
             .ok_or(Error::UnknownStoreOutcome)?;
         let call: ImportedToolCall = serde_json::from_str(&raw).map_err(unknown)?;
-        if call.id.0 != id || call.session_id != request.source_session_id {
+        if call.id.0 != id || call.session_id != *session {
             return Err(Error::UnknownStoreOutcome.into());
         }
         history.calls.push(call);
@@ -95,7 +42,7 @@ pub(super) async fn imported(
     if history
         .messages
         .iter()
-        .any(|m| m.run_id.is_some() || m.session_id != request.source_session_id)
+        .any(|m| m.run_id.is_some() || m.session_id != *session)
         || history.digest()? != audit.receipt.history_digest
     {
         return Err(Error::UnknownStoreOutcome.into());
@@ -103,13 +50,70 @@ pub(super) async fn imported(
     committed.extend(history.messages.iter().map(|m| m.id.clone()));
     Ok(history)
 }
+
+async fn message_prefix(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &crabber_core::SessionId,
+    proof: &mut Proof<'_>,
+    count: usize,
+) -> Result<(Vec<crabber_core::Message>, Vec<ImportedMessageProvenance>), Failure> {
+    let origins: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM imported_message_provenance WHERE session_id=$1")
+            .bind(&session.0)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(unknown)?;
+    if usize::try_from(origins).ok() != Some(count) {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    let messages: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM messages WHERE session_id=$1 AND run_id IS NULL")
+            .bind(&session.0)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(unknown)?;
+    if usize::try_from(messages).ok() != Some(count) {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    let mut messages = Vec::new();
+    let mut provenance_rows = Vec::new();
+    let ids = proof
+        .identities(tx, IMPORTED_MESSAGE_IDS, &session.0, "", count)
+        .await?;
+    if ids.len() != count {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    for id in ids {
+        crate::fork::history::validate_id(&id)?;
+        let raw = proof
+            .read(tx, MESSAGE, &session.0, &id, 32 * 1024 * 1024)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let message: crabber_core::Message = serde_json::from_str(&raw).map_err(unknown)?;
+        if message.id.0 != id || message.session_id != *session || message.run_id.is_some() {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        messages.push(message);
+        let raw = proof
+            .read(tx, IMPORT_PROVENANCE, &session.0, &id, 8 * 1024 * 1024)
+            .await?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let provenance: ImportedMessageProvenance = serde_json::from_str(&raw).map_err(unknown)?;
+        if provenance.message_id.0 != id || provenance.session_id != *session {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        provenance_rows.push(provenance);
+    }
+    Ok((messages, provenance_rows))
+}
+
 pub(super) async fn import_origin(
     tx: &mut Transaction<'_, Postgres>,
-    request: &ForkSession,
-    proof: &mut Proof,
+    session: &crabber_core::SessionId,
+    proof: &mut Proof<'_>,
 ) -> Result<Audit, Failure> {
     let raw = proof
-        .read(tx, IMPORT_AUDIT, &request.source_session_id.0, "", 32768)
+        .read(tx, IMPORT_AUDIT, &session.0, "", 32768)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;
     let audit: Audit = serde_json::from_str(&raw).map_err(unknown)?;
@@ -118,7 +122,7 @@ pub(super) async fn import_origin(
         .read(
             tx,
             IMPORT_RECEIPT,
-            &request.source_session_id.0,
+            &session.0,
             &audit.receipt.operation_id.0,
             65536,
         )
@@ -131,7 +135,7 @@ pub(super) async fn import_origin(
         || event_seq.is_some()
         || digest != saved.semantic_digest.as_str()
         || saved != audit.receipt
-        || saved.target.session_id != request.source_session_id
+        || saved.target.session_id != *session
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
@@ -145,6 +149,6 @@ const IMPORT_PROVENANCE: &str = r"SELECT octet_length(data_json) AS bytes,CASE W
 
 const IMPORT_CALL: &str = r"SELECT octet_length(data_json) AS bytes,CASE WHEN octet_length(data_json)<=$3 THEN data_json END AS record FROM imported_tool_calls WHERE session_id=$1 AND id=$2";
 
-const IMPORTED_MESSAGE_IDS: &str = r"WITH ids AS (SELECT id,seq AS position FROM messages WHERE session_id=$1 AND $2='' ORDER BY seq LIMIT $3) SELECT octet_length(id) AS bytes,CASE WHEN octet_length(id)<=512 AND sum(octet_length(id)) OVER ()<=$4 THEN id END AS id FROM ids ORDER BY position";
+const IMPORTED_MESSAGE_IDS: &str = r"WITH ids AS (SELECT id,seq AS position FROM messages WHERE session_id=$1 AND run_id IS NULL AND $2='' ORDER BY seq LIMIT $3) SELECT octet_length(id) AS bytes,CASE WHEN octet_length(id)<=512 AND sum(octet_length(id)) OVER ()<=$4 THEN id END AS id FROM ids ORDER BY position";
 
 const IMPORTED_CALL_IDS: &str = r"WITH ids AS (SELECT id,ordinal AS position FROM imported_tool_calls WHERE session_id=$1 AND $2='' ORDER BY ordinal LIMIT $3) SELECT octet_length(id) AS bytes,CASE WHEN octet_length(id)<=512 AND sum(octet_length(id)) OVER ()<=$4 THEN id END AS id FROM ids ORDER BY position";

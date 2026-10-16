@@ -16,8 +16,8 @@ impl From<Error> for Failure {
         Self::Error(value)
     }
 }
-struct Proof(usize);
-impl Proof {
+struct Proof<'a>(&'a mut crate::public_session::budget::Budget);
+impl Proof<'_> {
     async fn read(
         &mut self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -29,7 +29,7 @@ impl Proof {
         let row = sqlx::query(query)
             .bind(scope)
             .bind(key)
-            .bind(i64::try_from(self.0.min(cap)).map_err(unknown)?)
+            .bind(i64::try_from(self.0.remaining().min(cap)).map_err(unknown)?)
             .fetch_optional(&mut **tx)
             .await
             .map_err(unknown)?;
@@ -39,7 +39,7 @@ impl Proof {
         if size > cap {
             return Err(Error::UnknownStoreOutcome.into());
         }
-        self.0 = self.0.checked_sub(size).ok_or(Failure::Limited)?;
+        self.0.charge(size).map_err(|_| Failure::Limited)?;
         let text = row
             .try_get::<Option<String>, _>("record")
             .map_err(unknown)?
@@ -61,7 +61,7 @@ impl Proof {
             .bind(scope)
             .bind(key)
             .bind(i64::try_from(count).map_err(unknown)?)
-            .bind(i64::try_from(self.0).map_err(unknown)?)
+            .bind(i64::try_from(self.0.remaining()).map_err(unknown)?)
             .fetch_all(&mut **tx)
             .await
             .map_err(unknown)?;
@@ -72,7 +72,7 @@ impl Proof {
             if size > 512 {
                 return Err(Error::UnknownStoreOutcome.into());
             }
-            self.0 = self.0.checked_sub(size).ok_or(Failure::Limited)?;
+            self.0.charge(size).map_err(|_| Failure::Limited)?;
             let id = row
                 .try_get::<Option<String>, _>("id")
                 .map_err(unknown)?
@@ -88,11 +88,15 @@ pub(super) async fn prepare(
     request: &ForkSession,
 ) -> Result<Decision, Failure> {
     let (messages, mut raw_usage) = messages(tx, request).await?;
-    let mut proof = Proof(request.max_proof_bytes);
+    let mut budget = crate::public_session::budget::Budget::new(
+        request.max_proof_bytes,
+        crate::PublicSessionLimit::ProofBytes,
+    );
+    let mut proof = Proof(&mut budget);
     let mut committed = BTreeSet::new();
     let mut admitted = BTreeSet::new();
     let imported = if messages.iter().any(|m| m.run_id.is_none()) {
-        Some(imported(tx, request, &mut proof, &mut committed).await?)
+        Some(imported(tx, &request.source_session_id, &mut proof, &mut committed).await?)
     } else {
         None
     };
@@ -169,7 +173,7 @@ async fn authenticate_calls(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ForkSession,
     calls: &mut [SourceCall<'_>],
-    proof: &mut Proof,
+    proof: &mut Proof<'_>,
 ) -> Result<(), Failure> {
     for source in calls {
         if let SourceCall::Native(call) = source
@@ -251,7 +255,7 @@ async fn committed_event(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ForkSession,
     message: &Message,
-    proof: &mut Proof,
+    proof: &mut Proof<'_>,
 ) -> Result<bool, Failure> {
     let kind = match message.role {
         Role::Assistant => EventKind::MessageCommitted,
@@ -303,3 +307,6 @@ use terminal::terminal;
 
 #[path = "source/calls.rs"]
 mod calls;
+
+mod ownership;
+pub(in crate::sqlite) use ownership::verify_imported_history;

@@ -7,14 +7,14 @@ pub(super) async fn read(
     request: &ForkSession,
     run: &RunId,
     id: &ToolCallId,
-    proof: &mut Proof,
+    proof: &mut Proof<'_>,
     usage: &mut crate::SnapshotUsage,
 ) -> Result<ToolCallRecord, Failure> {
     crate::fork::history::validate_id(&id.0)?;
     let row = sqlx::query(CALL)
         .bind(&request.source_session_id.0)
         .bind(&id.0)
-        .bind(i64::try_from(proof.0.min(4 * 1024 * 1024)).map_err(unknown)?)
+        .bind(i64::try_from(proof.0.remaining().min(4 * 1024 * 1024)).map_err(unknown)?)
         .bind(
             i64::try_from(
                 request
@@ -44,7 +44,7 @@ pub(super) async fn read(
     if let Some(limit) = usage.exceeded(request.limits) {
         return Err(Failure::RawLimited(limit));
     }
-    proof.0 = proof.0.checked_sub(bytes).ok_or(Failure::Limited)?;
+    proof.0.charge(bytes).map_err(|_| Failure::Limited)?;
     let encoded = row
         .try_get::<Option<String>, _>("record")
         .map_err(unknown)?

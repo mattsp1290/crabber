@@ -52,6 +52,7 @@ async fn check(
         return Err(unknown("relational scope"));
     }
     native::runtime(tx, session, &mut proof).await?;
+    super::super::fork::verify_imported_history(tx, session, &mut proof).await?;
     let unknown_native = native::attempts(tx, session, &mut proof).await?;
     let unknown_calls = native::phases(tx, session, &mut proof).await?;
     domains::continuations(tx, session, &mut proof).await?;
@@ -68,3 +69,6 @@ async fn check(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod imported_tests;
