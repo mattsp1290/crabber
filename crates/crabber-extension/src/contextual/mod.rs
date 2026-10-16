@@ -248,6 +248,10 @@ impl ContextualPlanProvider {
 
 #[async_trait]
 impl RunPlanProvider for ContextualPlanProvider {
+    fn check_preparation_context(&self, context: &SessionContext) -> Result<(), ExtensionError> {
+        self.check_open()?;
+        self.inner.owners.lock().unwrap().check_context(context)
+    }
     fn registration_fingerprint(
         &self,
         context: &SessionContext,
@@ -323,6 +327,22 @@ impl RunPlanProvider for ContextualPlanProvider {
 }
 
 impl Owners {
+    fn check_context(&self, context: &SessionContext) -> Result<(), ExtensionError> {
+        if self.closed_sessions.contains(context.session_id())
+            || self.closed_workspaces.contains(context.workspace_id())
+        {
+            return Err(ExtensionError::ContextOwnerClosed);
+        }
+        if !context.workspace_id().is_empty()
+            && self
+                .roots
+                .get(context.workspace_id())
+                .is_some_and(|root| root != context.directory())
+        {
+            return Err(ExtensionError::ContextIdentityMismatch);
+        }
+        Ok(())
+    }
     fn validate(&mut self, context: &SessionContext) -> Result<(), ExtensionError> {
         if self.closed_sessions.contains(context.session_id())
             || self.closed_workspaces.contains(context.workspace_id())

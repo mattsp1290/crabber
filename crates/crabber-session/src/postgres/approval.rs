@@ -247,3 +247,8 @@ mod current_tests;
 
 #[cfg(test)]
 mod original_plan_tests;
+pub(super) use write::replay_scope as replay_prepared;
+
+pub(super) use claim::ready as preparation_context;
+
+pub(super) use recover::preparation_context as preparation_recovery_context;

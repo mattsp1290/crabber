@@ -29,6 +29,64 @@ struct FaultExecution {
 }
 #[async_trait]
 impl Store for FaultStore {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.inner.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        use crabber_session::session_owner::preparation::PreparationCompletion;
+        let completed = self.inner.complete_preparation(joined).await?;
+        if matches!(completed, PreparationCompletion::Admitted(_))
+            && self.fault == Fault::UnkeyedAdmissionLost
+        {
+            return Err(StoreError::Validation("unknown unkeyed admission response".into()).into());
+        }
+        if matches!(completed, PreparationCompletion::Keyed(_)) {
+            if self.fault == Fault::AdmissionLost {
+                return Err(StoreError::Validation("unknown admission response".into()).into());
+            }
+            if self.fault == Fault::AdmissionDelayed {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+        }
+        Ok(completed)
+    }
+
     fn supports_owned_attempts(&self) -> bool {
         self.inner.supports_owned_attempts()
     }
@@ -958,10 +1016,14 @@ async fn generic_recovery_skips_drifted_unstarted_plan_and_recovers_ordinary_wor
         .prompt_section(section.clone())
         .build()
         .unwrap();
+    let Err(error) = ordinary_agent.prompt(None, "ordinary").await else {
+        panic!("lost ordinary acknowledgment")
+    };
     assert!(matches!(
-        ordinary_agent.prompt(None, "ordinary").await,
-        Err(RuntimeError::Store(CoreError::Validation(_)))
+        error.operation_error(),
+        RuntimeError::Store(CoreError::Validation(_))
     ));
+    assert!(error.preparation_reconciliation().is_some());
     let ordinary = store
         .list_unfinished_runs()
         .await

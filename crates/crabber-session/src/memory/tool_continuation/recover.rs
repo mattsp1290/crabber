@@ -32,102 +32,126 @@ impl MemoryStore {
         request: &ToolContinuationRecovery,
         frontend: Option<&crate::FrontendContinuationRecovery>,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let fault = fault(self);
+        let result =
+            self.transact(|state| self.recover_compound_guarded(state, request, frontend, None));
+        after(result, fault)
+    }
+    pub(in crate::memory) fn recover_tools_guarded(
+        &self,
+        state: &mut super::super::State,
+        request: &ToolContinuationRecovery,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.recover_compound_guarded(state, request, None, preparation)
+    }
+    fn recover_compound_guarded(
+        &self,
+        state: &mut super::super::State,
+        request: &ToolContinuationRecovery,
+        frontend: Option<&crate::FrontendContinuationRecovery>,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         let digest = match frontend {
             Some(request) => request.fingerprint()?,
             None => request.fingerprint()?,
         };
         let fault = fault(self);
-        let result = self.transact(|state| {
-            let original = &request.original;
-            if let Some(saved) = replay(
-                state,
-                &original.session_id,
-                &original.run_id,
-                &request.id,
-                &digest,
-            )? {
-                match frontend {
-                    Some(request) => request.verify_receipt(&saved)?,
-                    None => request.verify_receipt(&saved)?,
-                }
-                return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        let original = &request.original;
+        if let Some(saved) = replay(
+            state,
+            &original.session_id,
+            &original.run_id,
+            &request.id,
+            &digest,
+        )? {
+            match frontend {
+                Some(request) => request.verify_receipt(&saved)?,
+                None => request.verify_receipt(&saved)?,
             }
-            let run = state
-                .runs
-                .get(&original.run_id)
-                .filter(|run| run.session_id == original.session_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if revision(state, &run.session_id) != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let mut record = eligible(state, &run, request, frontend)?;
-            let now = self.clock.now();
-            let activated =
-                domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
-            let mut parent = state
-                .attempts
-                .get(&request.attempt.id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if parent.lease_until > now {
-                return Err(Error::LiveOwner);
-            }
-            parent
-                .change(
-                    &activated,
-                    &AttemptMutation {
-                        id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
-                        expected_revision: request.expected_revision,
-                        command: AttemptCommand::ReclaimUnstarted {
-                            target: request.attempt.clone(),
-                        },
-                    },
-                    None,
-                    now,
-                    true,
+            return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        }
+        let run = state
+            .runs
+            .get(&original.run_id)
+            .filter(|run| run.session_id == original.session_id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        let expected_revision = preparation
+            .map_or(Ok(request.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::ToolContinuation(
+                        request.id.clone(),
+                    ),
+                    &original.session_id,
+                    &original.run_id,
+                    request.expected_revision,
                 )
-                .map_err(|_| Error::CleanupBlocked)?;
-            let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
-            let phases = super::phases::reclaim(state, &parent, &record)?;
-            let frontend_phases = if frontend.is_some() {
-                super::phases::reclaim_frontend(state, &parent, &record)?
-            } else {
-                Vec::new()
-            };
-            let fence = RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token.clone(),
-            };
-            super::super::native_parent::record_run(state, Some(&run), &activated)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            state.runs.insert(run.id.clone(), activated);
-            state
-                .attempts
-                .insert(request.attempt.id.clone(), parent.clone());
-            record.capture_recovery(request, frontend)?;
-            record.validate()?;
-            state
-                .tool_continuations
-                .insert(record.batch.continuation.id.clone(), record.clone());
-            let receipt = publish(
-                state,
-                &run,
-                request.id.clone(),
-                digest,
-                record.recovered_outcome(parent.snapshot)?,
-                now,
-            )?;
-            before(fault)?;
-            Ok((
-                ToolContinuationClaimOutcome::Applied {
-                    receipt,
-                    grant: record.into_grant(fence, authority, phases, frontend_phases)?,
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if revision(state, &run.session_id) != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let mut record = eligible(state, &run, request, frontend)?;
+        let now = self.clock.now();
+        let activated =
+            domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
+        let mut parent = state
+            .attempts
+            .get(&request.attempt.id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        if parent.lease_until > now {
+            return Err(Error::LiveOwner);
+        }
+        parent
+            .change(
+                &activated,
+                &AttemptMutation {
+                    id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
+                    expected_revision,
+                    command: AttemptCommand::ReclaimUnstarted {
+                        target: request.attempt.clone(),
+                    },
                 },
+                None,
+                now,
                 true,
-            ))
-        });
-        after(result, fault)
+            )
+            .map_err(|_| Error::CleanupBlocked)?;
+        let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
+        let phases = super::phases::reclaim(state, &parent, &record)?;
+        let frontend_phases = if frontend.is_some() {
+            super::phases::reclaim_frontend(state, &parent, &record)?
+        } else {
+            Vec::new()
+        };
+        let fence = RunFence {
+            run_id: run.id.clone(),
+            claim_token: activated.claim_token.clone(),
+        };
+        save_recovered_owner(state, &run, activated, &parent)?;
+        record.capture_recovery(request, frontend)?;
+        record.validate()?;
+        state
+            .tool_continuations
+            .insert(record.batch.continuation.id.clone(), record.clone());
+        let receipt = publish(
+            state,
+            &run,
+            request.id.clone(),
+            digest,
+            record.recovered_outcome(parent.snapshot)?,
+            now,
+        )?;
+        before(fault)?;
+        Ok((
+            ToolContinuationClaimOutcome::Applied {
+                receipt,
+                grant: record.into_grant(fence, authority, phases, frontend_phases)?,
+            },
+            true,
+        ))
     }
 }
 fn eligible(
@@ -286,5 +310,39 @@ fn validate_reserved(
             .chain(record.batch.frontend.iter().map(|call| call.target.clone()))
             .collect::<Vec<_>>(),
     )?;
+    Ok(())
+}
+
+pub(in crate::memory) fn preparation_context(
+    state: &State,
+    run: &Run,
+    request: &ToolContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    eligible(state, run, request, None)?;
+    if state
+        .attempts
+        .get(&request.attempt.id)
+        .ok_or(Error::NotFound)?
+        .lease_until
+        > now
+    {
+        return Err(Error::LiveOwner);
+    }
+    Ok(())
+}
+
+fn save_recovered_owner(
+    state: &mut State,
+    original: &Run,
+    activated: Run,
+    parent: &crate::attempt::AttemptRecord,
+) -> Result<(), Error> {
+    super::super::native_parent::record_run(state, Some(original), &activated)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state.runs.insert(original.id.clone(), activated);
+    state
+        .attempts
+        .insert(parent.snapshot.target.id.clone(), parent.clone());
     Ok(())
 }

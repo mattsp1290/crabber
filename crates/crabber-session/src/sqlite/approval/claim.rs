@@ -14,7 +14,6 @@ impl SqliteStore {
         &self,
         claim: &ApprovalContinuationClaim,
     ) -> Result<ApprovalClaimOutcome, Error> {
-        let digest = claim.fingerprint()?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -24,91 +23,117 @@ impl SqliteStore {
         let (mut tx, run) = self
             .approval_transaction(&claim.session_id, &claim.run_id)
             .await?;
-        let result = async {
-            if let Some(saved) = write::replay(&mut tx, &run, &claim.id, &digest).await? {
-                return Ok((ApprovalClaimOutcome::Replayed(saved), false));
-            }
-            if write::revision(&mut tx, &run.session_id).await? != claim.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let (mut record, calls) = ready(&mut tx, &run, claim).await?;
-            let now = self.clock.now();
-            let mut activated = run.clone();
-            activated.owner.clone_from(&claim.owner);
-            activated.claim_token = uuid::Uuid::new_v4().to_string();
-            activated.lease_until = now
-                .checked_add(time::Duration::milliseconds(
-                    i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
-                ))
-                .ok_or(Error::InvalidRequest)?;
-            activated.updated_at = now;
-            let fence = RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token.clone(),
-            };
-            super::super::records::save_run(&mut tx, &activated)
-                .await
-                .map_err(sql::unknown)?;
-            let execution = SqliteExecution {
-                store: self.clone(),
-                fence: fence.clone(),
-            };
-            let reserve = AttemptMutation {
-                id: approval::derived_id("claim-attempt", &claim.id),
-                expected_revision: claim.expected_revision,
-                command: AttemptCommand::Reserve {
-                    target: record.batch.next_attempt.clone(),
-                },
-            };
-            let applied = execution
-                .apply_claim_attempt(&mut tx, &activated, &reserve)
-                .await
-                .map_err(approval::attempt_error)?;
-            let AttemptMutationOutcome::Applied {
-                receipt,
-                authority: Some(authority),
-            } = applied
-            else {
-                return Err(Error::SemanticConflict);
-            };
-            record.state = ApprovalContinuationState::Claimed;
-            for question in &mut record.questions {
-                question.view.consumed = true;
-            }
-            write::save(&mut tx, &record).await?;
-            let receipt = write::publish(
-                &mut tx,
-                &run,
-                claim.id.clone(),
-                digest,
-                ApprovalOutcome::Claimed {
-                    continuation: claim.continuation.clone(),
-                    attempt: receipt.attempt,
-                },
-                now,
-            )
-            .await?;
-            sql::before_commit(fault)?;
-            Ok((
-                ApprovalClaimOutcome::Applied {
-                    receipt,
-                    grant: Box::new(ApprovalGrant {
-                        fence,
-                        authority,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id.clone(),
-                        usage: record.batch.usage.clone(),
-                        turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                    }),
-                },
-                true,
-            ))
-        }
-        .await;
+        let result = self
+            .claim_approval_guarded(&mut tx, &run, claim, None)
+            .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
+    pub(in crate::sqlite) async fn claim_approval_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &Run,
+        claim: &ApprovalContinuationClaim,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ApprovalClaimOutcome, bool), Error> {
+        let digest = claim.fingerprint()?;
+        #[cfg(test)]
+        let fault = self
+            .approval_fault
+            .load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fault = 0;
+
+        if let Some(saved) = write::replay(tx, run, &claim.id, &digest).await? {
+            return Ok((ApprovalClaimOutcome::Replayed(saved), false));
+        }
+        let expected_revision = preparation
+            .map_or(Ok(claim.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::Approval(claim.id.clone()),
+                    &claim.session_id,
+                    &claim.run_id,
+                    claim.expected_revision,
+                )
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if write::revision(tx, &run.session_id).await? != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let (mut record, calls) = ready(tx, run, claim).await?;
+        let now = self.clock.now();
+        let mut activated = run.clone();
+        activated.owner.clone_from(&claim.owner);
+        activated.claim_token = uuid::Uuid::new_v4().to_string();
+        activated.lease_until = now
+            .checked_add(time::Duration::milliseconds(
+                i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
+            ))
+            .ok_or(Error::InvalidRequest)?;
+        activated.updated_at = now;
+        let fence = RunFence {
+            run_id: run.id.clone(),
+            claim_token: activated.claim_token.clone(),
+        };
+        super::super::records::save_run(tx, &activated)
+            .await
+            .map_err(sql::unknown)?;
+        let execution = SqliteExecution {
+            store: self.clone(),
+            fence: fence.clone(),
+        };
+        let reserve = AttemptMutation {
+            id: approval::derived_id("claim-attempt", &claim.id),
+            expected_revision,
+            command: AttemptCommand::Reserve {
+                target: record.batch.next_attempt.clone(),
+            },
+        };
+        let applied = execution
+            .apply_claim_attempt(tx, &activated, &reserve)
+            .await
+            .map_err(approval::attempt_error)?;
+        let AttemptMutationOutcome::Applied {
+            receipt,
+            authority: Some(authority),
+        } = applied
+        else {
+            return Err(Error::SemanticConflict);
+        };
+        record.state = ApprovalContinuationState::Claimed;
+        for question in &mut record.questions {
+            question.view.consumed = true;
+        }
+        write::save(tx, &record).await?;
+        let receipt = write::publish(
+            tx,
+            run,
+            claim.id.clone(),
+            digest,
+            ApprovalOutcome::Claimed {
+                continuation: claim.continuation.clone(),
+                attempt: receipt.attempt,
+            },
+            now,
+        )
+        .await?;
+        sql::before_commit(fault)?;
+        Ok((
+            ApprovalClaimOutcome::Applied {
+                receipt,
+                grant: Box::new(ApprovalGrant {
+                    fence,
+                    authority,
+                    calls,
+                    source_turn_id: record.batch.source_turn_id.clone(),
+                    usage: record.batch.usage.clone(),
+                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
+                }),
+            },
+            true,
+        ))
+    }
 }
-async fn ready(
+pub(in crate::sqlite) async fn ready(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     claim: &ApprovalContinuationClaim,

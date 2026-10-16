@@ -51,16 +51,25 @@ async fn concurrent_and_terminal_retries_execute_once() {
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            agent
-                .prompt_keyed(session, "hello", options())
-                .await
-                .unwrap()
+            agent.prompt_keyed(session, "hello", options()).await
         }));
     }
     let mut receipt = None;
     let mut handle = None;
+    let mut pending = Vec::new();
     for task in tasks {
-        let outcome = task.await.unwrap();
+        let outcome = match task.await.unwrap() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                assert!(matches!(
+                    error.operation_error(),
+                    RuntimeError::PreparationRecoveryRequired
+                        | RuntimeError::Store(CoreError::AdmissionRecoveryRequired)
+                ));
+                pending.push(error.preparation_reconciliation().unwrap().clone());
+                continue;
+            }
+        };
         if let Some(expected) = &receipt {
             assert_eq!(outcome.receipt(), expected);
         }
@@ -74,6 +83,22 @@ async fn concurrent_and_terminal_retries_execute_once() {
         }
     }
     let result = handle.unwrap().done().await.unwrap();
+    // The host reconciles pending observations after the winning owned worker;
+    // none of those metadata responses granted another preparation or worker.
+    for original in pending {
+        assert_eq!(
+            agent
+                .lookup_preparation_operation(
+                    &session,
+                    &crabber::session::session_owner::preparation::PreparationKey::Admission(
+                        options().key
+                    )
+                )
+                .await
+                .unwrap(),
+            Some(original)
+        );
+    }
     let replay = agent
         .prompt_keyed(session.clone(), "hello", options())
         .await

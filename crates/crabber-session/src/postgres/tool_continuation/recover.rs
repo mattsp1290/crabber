@@ -43,10 +43,6 @@ impl PostgresStore {
         request: &ToolContinuationRecovery,
         frontend: Option<&crate::FrontendContinuationRecovery>,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let digest = match frontend {
-            Some(request) => request.fingerprint()?,
-            None => request.fingerprint()?,
-        };
         let fault = fault(self);
         let original = &request.original;
         let (mut tx, run) = if frontend.is_some() {
@@ -56,87 +52,123 @@ impl PostgresStore {
             self.tool_transaction(&original.session_id, &original.run_id)
                 .await?
         };
-        let result = async {
-            if let Some(saved) = write::replay(&mut tx, &run, &request.id, &digest).await? {
-                match frontend {
-                    Some(request) => request.verify_receipt(&saved)?,
-                    None => request.verify_receipt(&saved)?,
-                }
-                return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
-            }
-            if revision(&mut tx, &run.session_id).await? != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let mut record = eligible(&mut tx, &run, request, frontend).await?;
-            let now = self.clock.now();
-            let activated =
-                domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
-            let (mut parent, _) =
-                super::super::attempt::load_host_attempt(&mut tx, &run.id, None, true)
-                    .await
-                    .map_err(unknown)?
-                    .ok_or(Error::NotFound)?;
-            if parent.lease_until > now {
-                return Err(Error::LiveOwner);
-            }
-            parent
-                .change(
-                    &activated,
-                    &AttemptMutation {
-                        id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
-                        expected_revision: request.expected_revision,
-                        command: AttemptCommand::ReclaimUnstarted {
-                            target: request.attempt.clone(),
-                        },
-                    },
-                    None,
-                    now,
-                    true,
-                )
-                .map_err(|_| Error::CleanupBlocked)?;
-            let authority = parent.authority().map_err(unknown)?;
-            super::super::save_run(&mut tx, &activated)
-                .await
-                .map_err(unknown)?;
-            super::super::attempt::save_host_attempt(&mut tx, &parent, false)
-                .await
-                .map_err(unknown)?;
-            let phases = super::phases::recover(&mut tx, &run, &record, &authority).await?;
-            let frontend_phases = if frontend.is_some() {
-                super::phases::recover_frontend(&mut tx, &run, &record, &authority).await?
-            } else {
-                Vec::new()
-            };
-            record.capture_recovery(request, frontend)?;
-            write::save(&mut tx, &record, false).await?;
-            let receipt = write::publish(
-                &mut tx,
-                &run,
-                request.id.clone(),
-                digest,
-                record.recovered_outcome(parent.snapshot)?,
-                now,
-            )
-            .await?;
-            before(fault)?;
-            Ok((
-                ToolContinuationClaimOutcome::Applied {
-                    receipt,
-                    grant: record.into_grant(
-                        RunFence {
-                            run_id: run.id.clone(),
-                            claim_token: activated.claim_token,
-                        },
-                        authority,
-                        phases,
-                        frontend_phases,
-                    )?,
-                },
-                true,
-            ))
-        }
-        .await;
+        let result = self
+            .recover_compound_guarded(&mut tx, &run, request, frontend, None)
+            .await;
         after(finish(tx, result).await, fault)
+    }
+    pub(in crate::postgres) async fn recover_tools_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        run: &Run,
+        request: &ToolContinuationRecovery,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.recover_compound_guarded(tx, run, request, None, preparation)
+            .await
+    }
+    async fn recover_compound_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        run: &Run,
+        request: &ToolContinuationRecovery,
+        frontend: Option<&crate::FrontendContinuationRecovery>,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        let digest = match frontend {
+            Some(request) => request.fingerprint()?,
+            None => request.fingerprint()?,
+        };
+        let fault = fault(self);
+        let original = &request.original;
+        if let Some(saved) = write::replay(tx, run, &request.id, &digest).await? {
+            match frontend {
+                Some(request) => request.verify_receipt(&saved)?,
+                None => request.verify_receipt(&saved)?,
+            }
+            return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        }
+        let expected_revision = preparation
+            .map_or(Ok(request.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::ToolContinuation(
+                        request.id.clone(),
+                    ),
+                    &original.session_id,
+                    &original.run_id,
+                    request.expected_revision,
+                )
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if revision(tx, &run.session_id).await? != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let mut record = eligible(tx, run, request, frontend).await?;
+        let now = self.clock.now();
+        let activated =
+            domain::canonical::activated_run(run, &request.owner, request.lease_ms, now)?;
+        let (mut parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+            .await
+            .map_err(unknown)?
+            .ok_or(Error::NotFound)?;
+        if parent.lease_until > now {
+            return Err(Error::LiveOwner);
+        }
+        parent
+            .change(
+                &activated,
+                &AttemptMutation {
+                    id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
+                    expected_revision,
+                    command: AttemptCommand::ReclaimUnstarted {
+                        target: request.attempt.clone(),
+                    },
+                },
+                None,
+                now,
+                true,
+            )
+            .map_err(|_| Error::CleanupBlocked)?;
+        let authority = parent.authority().map_err(unknown)?;
+        super::super::save_run(tx, &activated)
+            .await
+            .map_err(unknown)?;
+        super::super::attempt::save_host_attempt(tx, &parent, false)
+            .await
+            .map_err(unknown)?;
+        let phases = super::phases::recover(tx, run, &record, &authority).await?;
+        let frontend_phases = if frontend.is_some() {
+            super::phases::recover_frontend(tx, run, &record, &authority).await?
+        } else {
+            Vec::new()
+        };
+        record.capture_recovery(request, frontend)?;
+        write::save(tx, &record, false).await?;
+        let receipt = write::publish(
+            tx,
+            run,
+            request.id.clone(),
+            digest,
+            record.recovered_outcome(parent.snapshot)?,
+            now,
+        )
+        .await?;
+        before(fault)?;
+        Ok((
+            ToolContinuationClaimOutcome::Applied {
+                receipt,
+                grant: record.into_grant(
+                    RunFence {
+                        run_id: run.id.clone(),
+                        claim_token: activated.claim_token,
+                    },
+                    authority,
+                    phases,
+                    frontend_phases,
+                )?,
+            },
+            true,
+        ))
     }
 }
 async fn eligible(
@@ -217,4 +249,21 @@ async fn eligible(
     }
     evidence::recover(tx, run, &record).await?;
     Ok(record)
+}
+
+pub(in crate::postgres) async fn preparation_context(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    run: &Run,
+    request: &ToolContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    eligible(tx, run, request, None).await?;
+    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+        .await
+        .map_err(unknown)?
+        .ok_or(Error::NotFound)?;
+    if parent.lease_until > now {
+        return Err(Error::LiveOwner);
+    }
+    Ok(())
 }

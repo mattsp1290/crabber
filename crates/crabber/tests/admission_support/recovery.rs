@@ -31,10 +31,14 @@ pub(super) async fn child(
             )
             .await;
         if mode == "commit-loss" {
+            let Err(error) = result else {
+                panic!("lost native acknowledgment")
+            };
             assert!(matches!(
-                result,
-                Err(RuntimeError::Store(StoreError::Validation(_)))
+                error.operation_error(),
+                RuntimeError::Store(StoreError::Validation(_))
             ));
+            assert!(error.preparation_reconciliation().is_some());
             assert_eq!(count(&dir.join("ledger"), "provider"), 0);
             return;
         }

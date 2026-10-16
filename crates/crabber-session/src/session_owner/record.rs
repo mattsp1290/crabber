@@ -15,6 +15,8 @@ pub(crate) struct Record {
     pub version: u32,
     pub snapshot: SessionOwnerSnapshot,
     pub origin: SessionOwnerOperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<super::preparation::Origin>,
     pub parent: Option<crate::native_parent::Witness>,
     pub sequence: u64,
     pub owner: String,
@@ -31,7 +33,7 @@ impl Record {
     ) -> Result<Self, Error> {
         request.fingerprint()?;
         Ok(Self {
-            version: 1,
+            version: 2,
             snapshot: SessionOwnerSnapshot {
                 binding: request.binding.clone(),
                 target: SessionOwnerTarget {
@@ -44,6 +46,7 @@ impl Record {
                 updated_at: now,
             },
             origin: request.id.clone(),
+            preparation: None,
             parent,
             sequence: 1,
             owner: request.owner.clone(),
@@ -60,7 +63,7 @@ impl Record {
             .map_err(|_| Error::UnknownStoreOutcome)?;
         identifier(&self.origin.0, 128, false).map_err(|_| Error::UnknownStoreOutcome)?;
         identifier(&self.owner, 512, false).map_err(|_| Error::UnknownStoreOutcome)?;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.sequence == 0
             || self.sequence > i64::MAX as u64
             || self.snapshot.target.id != self.snapshot.binding.id
@@ -68,6 +71,14 @@ impl Record {
                 != self.snapshot.termination.is_some()
             || (self.snapshot.state == SessionOwnerState::ReservedUnstarted && self.ever_began)
             || (self.snapshot.state == SessionOwnerState::Active && !self.ever_began)
+        {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if let Some(preparation) = &self.preparation
+            && (self.version != 2
+                || preparation.operation != self.origin
+                || self.snapshot.binding.kind
+                    != crate::session_owner::SessionOwnerKind::Preparation)
         {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -141,6 +152,17 @@ impl Record {
             return Err(Error::InvalidTransition);
         }
         let authorized = self.authorized(authority);
+        if let Some(preparation) = &self.preparation
+            && matches!(request.command, SessionOwnerCommand::Begin)
+            && request.id
+                != crate::session_owner::preparation::identity::ids(
+                    &preparation.key,
+                    &self.snapshot.binding.session_id,
+                )?
+                .begin
+        {
+            return Err(Error::InvalidRequest);
+        }
         let public_change = match &request.command {
             SessionOwnerCommand::Begin => {
                 if !authorized || self.lease_until <= now {
@@ -207,6 +229,7 @@ impl Record {
                 true
             }
         };
+        self.version = 2;
         self.sequence = self
             .sequence
             .checked_add(1)

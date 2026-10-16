@@ -12,6 +12,8 @@ mod attempt_control;
 mod management;
 #[path = "agent/phase.rs"]
 mod phase;
+#[path = "agent/preparation.rs"]
+mod preparation;
 mod public_session;
 mod run_control;
 use crate::ExecutionContext;
@@ -727,6 +729,18 @@ impl Agent {
         if let Some(receipt) = self.runtime.replay_admission(&request, &options).await? {
             return Ok(Admission::Replayed(receipt));
         }
+        let session = request
+            .session_id
+            .as_ref()
+            .ok_or(crabber_session::StoreError::NotFound)?;
+        self.runtime
+            .reject_pending_preparation(
+                session,
+                &crabber_session::session_owner::preparation::PreparationKey::Admission(
+                    options.key.clone(),
+                ),
+            )
+            .await?;
         let request = self.runtime.resolve_session_defaults(request).await?;
         self.prepare_request(&request).await?;
         let admission = self
@@ -788,6 +802,17 @@ impl Agent {
         Ok(Admission::from_runtime(admission))
     }
 
+    fn check_ingress(&self) -> Result<(), RuntimeError> {
+        if self.closed.load(Ordering::SeqCst)
+            || self
+                .contextual
+                .as_ref()
+                .is_some_and(|provider| provider.is_closed())
+        {
+            return Err(RuntimeError::HostClosed);
+        }
+        Ok(())
+    }
     async fn prepare_request(&self, request: &Request) -> Result<(), RuntimeError> {
         if self.closed.load(Ordering::SeqCst)
             || self
@@ -806,7 +831,7 @@ impl Agent {
                 ))
                 .await?;
         }
-        self.initialize_extensions().await
+        Ok(())
     }
 
     pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {

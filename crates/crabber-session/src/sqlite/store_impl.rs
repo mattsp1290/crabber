@@ -27,7 +27,36 @@ impl Store for SqliteStore {
         parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
     ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
     {
-        self.reserve_owner(request, parent).await
+        Box::pin(self.reserve_owner(request, parent)).await
+    }
+    fn supports_preparation_protocol(&self) -> bool {
+        true
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.reserve_preparation(request)).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &SessionId,
+        key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationReconciliation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.preparation_metadata(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.complete_preparation(joined)).await
     }
     async fn mutate_session_owner(
         &self,

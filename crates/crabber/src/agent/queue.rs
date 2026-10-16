@@ -171,6 +171,14 @@ impl Agent {
         {
             return Ok(saved);
         }
+        self.runtime
+            .reject_pending_preparation(
+                &control.authority.session_id,
+                &crabber_session::session_owner::preparation::PreparationKey::Queue(
+                    control.id.clone(),
+                ),
+            )
+            .await?;
         self.prepare_request(&request).await?;
         self.runtime.prepare_queue(request, control).await
     }
@@ -189,6 +197,14 @@ impl Agent {
         if let Some(saved) = self.runtime.replay_queue_admit(&request, &control).await? {
             return Ok(Admission::Replayed(saved));
         }
+        self.runtime
+            .reject_pending_preparation(
+                &control.authority.session_id,
+                &crabber_session::session_owner::preparation::PreparationKey::Queue(
+                    control.id.clone(),
+                ),
+            )
+            .await?;
         self.prepare_request(&request).await?;
         Ok(Admission::from_runtime(
             self.runtime.admit_queue(request, control, trace).await?,

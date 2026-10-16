@@ -364,6 +364,42 @@ pub trait Store: Send + Sync {
     {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Whether atomic preparation relinquishment/native publication is implemented.
+    fn supports_preparation_protocol(&self) -> bool {
+        false
+    }
+    /// Atomically capture the original CAS before granting preparation capacity.
+    /// Exact retries return metadata and never replacement dispatch authority.
+    async fn reserve_preparation(
+        &self,
+        _request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Original preparation correlation, selected by immutable stable identity.
+    /// No current owner, live lease, factory or authority is read or granted.
+    async fn lookup_preparation(
+        &self,
+        _session: &SessionId,
+        _key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationReconciliation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Commit a joined preparation and its native successor atomically. The
+    /// original operation input, digest and revision remain unchanged.
+    async fn complete_preparation(
+        &self,
+        _joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(StoreError::HostUnsupported.into())
+    }
     async fn mutate_session_owner(
         &self,
         _request: crate::session_owner::MutateSessionOwner,

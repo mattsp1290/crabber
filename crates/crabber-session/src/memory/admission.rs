@@ -185,7 +185,7 @@ fn admission_session(
         }
     };
     if guard.is_ordinary()
-        && let Some(expected) = request.expected_revision
+        && let Some(expected) = guard.expected_revision(request.expected_revision)
     {
         let current = state
             .public_revisions

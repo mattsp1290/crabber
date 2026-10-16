@@ -11,100 +11,116 @@ impl super::super::MemoryStore {
         &self,
         request: &ApprovalContinuationRecovery,
     ) -> Result<ApprovalClaimOutcome, Error> {
-        let digest = request.fingerprint()?;
-        #[cfg(test)]
-        let fault = self
-            .approval_fault
-            .load(std::sync::atomic::Ordering::SeqCst);
-        #[cfg(not(test))]
-        let fault = 0;
-        let original = &request.original;
-        let result = self.transact(|state| {
-            if let Some(saved) = replay(
-                state,
-                &original.session_id,
-                &original.run_id,
-                &request.id,
-                &digest,
-            )? {
-                request.verify_receipt(&saved)?;
-                return Ok((ApprovalClaimOutcome::Replayed(saved), false));
-            }
-            let run = state
-                .runs
-                .get(&original.run_id)
-                .filter(|run| run.session_id == original.session_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if revision(state, &run.session_id) != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let current = state
-                .approval_barriers
-                .get(&run.session_id)
-                .ok_or(Error::InvalidTransition)?;
-            let record = state
-                .approvals
-                .get(current)
-                .cloned()
-                .ok_or(Error::UnknownStoreOutcome)?;
-            super::verify_record(state, &run, &record)?;
-            let parent = receipt(state, &run.session_id, &original.id)?.ok_or(Error::NotFound)?;
-            let now = self.clock.now();
-            let calls = record.recovery_grants(&run, request, &parent, now)?;
-            validate_native(state, &run, request, &record, now)?;
-            super::claim::validate_calls(state, &run, &record)?;
-            let fence = activate(state, &run, request, now)?;
-            let execution = super::super::MemoryExecution {
-                store: self.clone(),
-                fence: fence.clone(),
-            };
-            let mutation = AttemptMutation {
-                id: approval::derived_id("reclaim-attempt", &request.id),
-                expected_revision: request.expected_revision,
-                command: AttemptCommand::ReclaimUnstarted {
-                    target: request.attempt.clone(),
-                },
-            };
-            let AttemptMutationOutcome::Applied {
-                receipt: native,
-                authority: Some(authority),
-            } = execution
-                .apply_attempt(state, mutation, None, None)
-                .map_err(approval::attempt_error)?
-            else {
-                return Err(Error::UnknownStoreOutcome);
-            };
-            let saved = publish(
-                state,
-                &run,
-                request.id.clone(),
-                digest.clone(),
-                ApprovalOutcome::ReclaimedUnstarted {
-                    continuation: original.continuation.clone(),
-                    original_claim_id: original.id.clone(),
-                    attempt: native.attempt,
-                },
-                now,
-            )?;
-            request.verify_receipt(&saved)?;
-            super::before_commit(fault)?;
-            Ok((
-                ApprovalClaimOutcome::Applied {
-                    receipt: saved,
-                    grant: Box::new(ApprovalGrant {
-                        fence,
-                        authority,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id,
-                        usage: record.batch.usage,
-                        turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                    }),
-                },
-                true,
-            ))
-        });
+        let fault = super::fault(self);
+        let result = self.transact(|state| self.recover_approval_guarded(state, request, None));
         super::after_commit(result, fault)
+    }
+
+    pub(in crate::memory) fn recover_approval_guarded(
+        &self,
+        state: &mut super::super::State,
+        request: &ApprovalContinuationRecovery,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ApprovalClaimOutcome, bool), Error> {
+        let digest = request.fingerprint()?;
+        let fault = super::fault(self);
+
+        let original = &request.original;
+        if let Some(saved) = replay(
+            state,
+            &original.session_id,
+            &original.run_id,
+            &request.id,
+            &digest,
+        )? {
+            request.verify_receipt(&saved)?;
+            return Ok((ApprovalClaimOutcome::Replayed(saved), false));
+        }
+        let run = state
+            .runs
+            .get(&original.run_id)
+            .filter(|run| run.session_id == original.session_id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        let expected_revision = preparation
+            .map_or(Ok(request.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::Approval(
+                        request.id.clone(),
+                    ),
+                    &original.session_id,
+                    &original.run_id,
+                    request.expected_revision,
+                )
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if revision(state, &run.session_id) != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let current = state
+            .approval_barriers
+            .get(&run.session_id)
+            .ok_or(Error::InvalidTransition)?;
+        let record = state
+            .approvals
+            .get(current)
+            .cloned()
+            .ok_or(Error::UnknownStoreOutcome)?;
+        super::verify_record(state, &run, &record)?;
+        let parent = receipt(state, &run.session_id, &original.id)?.ok_or(Error::NotFound)?;
+        let now = self.clock.now();
+        let calls = record.recovery_grants(&run, request, &parent, now)?;
+        validate_native(state, &run, request, &record, now)?;
+        super::claim::validate_calls(state, &run, &record)?;
+        let fence = activate(state, &run, request, now)?;
+        let execution = super::super::MemoryExecution {
+            store: self.clone(),
+            fence: fence.clone(),
+        };
+        let mutation = AttemptMutation {
+            id: approval::derived_id("reclaim-attempt", &request.id),
+            expected_revision,
+            command: AttemptCommand::ReclaimUnstarted {
+                target: request.attempt.clone(),
+            },
+        };
+        let AttemptMutationOutcome::Applied {
+            receipt: native,
+            authority: Some(authority),
+        } = execution
+            .apply_attempt(state, mutation, None, None)
+            .map_err(approval::attempt_error)?
+        else {
+            return Err(Error::UnknownStoreOutcome);
+        };
+        let saved = publish(
+            state,
+            &run,
+            request.id.clone(),
+            digest.clone(),
+            ApprovalOutcome::ReclaimedUnstarted {
+                continuation: original.continuation.clone(),
+                original_claim_id: original.id.clone(),
+                attempt: native.attempt,
+            },
+            now,
+        )?;
+        request.verify_receipt(&saved)?;
+        super::before_commit(fault)?;
+        Ok((
+            ApprovalClaimOutcome::Applied {
+                receipt: saved,
+                grant: Box::new(ApprovalGrant {
+                    fence,
+                    authority,
+                    calls,
+                    source_turn_id: record.batch.source_turn_id,
+                    usage: record.batch.usage,
+                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
+                }),
+            },
+            true,
+        ))
     }
 }
 fn activate(
@@ -191,5 +207,31 @@ pub(super) fn validate_provenance(
             receipt(state, &record.session_id, &answer.id)?.ok_or(Error::UnknownStoreOutcome)?;
         approval::verify_recovery_answer(answer, &saved)?;
     }
+    Ok(())
+}
+
+pub(in crate::memory) fn preparation_context(
+    state: &super::super::State,
+    run: &crabber_core::Run,
+    request: &ApprovalContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    let original = &request.original;
+    let current = state
+        .approval_barriers
+        .get(&run.session_id)
+        .ok_or(Error::InvalidTransition)?;
+    let record = state
+        .approvals
+        .get(current)
+        .cloned()
+        .ok_or(Error::UnknownStoreOutcome)?;
+    super::verify_record(state, run, &record)?;
+    let parent = receipt(state, &run.session_id, &original.id)?.ok_or(Error::NotFound)?;
+
+    let _calls = record.recovery_grants(run, request, &parent, now)?;
+    validate_native(state, run, request, &record, now)?;
+    super::claim::validate_calls(state, run, &record)?;
+
     Ok(())
 }

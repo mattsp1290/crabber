@@ -8,6 +8,99 @@ pub(super) struct FaultStore {
 }
 #[async_trait]
 impl Store for FaultStore {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.inner.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        mut joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        if self.mode == "precommit" {
+            return Err(StoreError::Validation("injected before commit".into()).into());
+        }
+        if self.mode == "delayed" {
+            fs::write(self.dir.join("waiting"), "ready").unwrap();
+            wait(&self.dir.join("release")).await;
+        }
+        if self.mode == "commit-loss" && !self.dir.join("text-only").exists() {
+            joined.set_admission_lease(Duration::from_millis(20));
+        }
+        if self.dir.join("short-admission-lease").exists() {
+            joined.set_admission_lease(Duration::from_secs(1));
+        }
+        let completed = self.inner.complete_preparation(joined).await?;
+        if let crabber_session::session_owner::preparation::PreparationCompletion::Keyed(outcome) =
+            &completed
+        {
+            let receipt = match outcome {
+                KeyedAdmitOutcome::Started { receipt, .. }
+                | KeyedAdmitOutcome::Replayed(receipt) => receipt,
+            };
+            if matches!(outcome, KeyedAdmitOutcome::Started { .. }) {
+                fs::write(
+                    self.dir.join("committed.json"),
+                    serde_json::to_vec(receipt).unwrap(),
+                )
+                .unwrap();
+            }
+            if self.mode == "commit-loss" {
+                assert_eq!(
+                    self.inner
+                        .lookup_admission(&receipt.session_id, &options().key)
+                        .await?,
+                    Some(receipt.clone())
+                );
+                let record = self
+                    .inner
+                    .load_admission_execution(&receipt.session_id, &options().key)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    record.state,
+                    crabber_session::AdmissionExecutionState::Unstarted
+                );
+                if !self.dir.join("text-only").exists() {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                return Err(StoreError::Validation(self.failure.into()).into());
+            }
+        }
+        Ok(completed)
+    }
+
     fn supports_owned_attempts(&self) -> bool {
         self.inner.supports_owned_attempts()
     }

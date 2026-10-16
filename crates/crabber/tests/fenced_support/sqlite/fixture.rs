@@ -23,6 +23,50 @@ impl SqliteFixture {
 }
 #[async_trait]
 impl Store for SqliteFixture {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.store.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.store.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        let completed = self.store.complete_preparation(joined).await?;
+
+        Ok(completed)
+    }
+
     fn supports_owned_attempts(&self) -> bool {
         self.store.supports_owned_attempts()
     }

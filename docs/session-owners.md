@@ -56,3 +56,69 @@ the operation with a sanitized unknown-storage outcome.
 PostgreSQL reads use a read-only Repeatable Read transaction; SQLite reads use a
 reader transaction. These metadata reads never return parent credentials, owner
 tokens or execution output, and never grant authority or infer resource joins.
+
+`Store::supports_preparation_protocol()` identifies adapters supporting atomic
+preparation completion. The ordinary and keyed admission, queue preparation and
+admission, and explicit approval/tool continuation claim and Unstarted recovery
+paths use this protocol. A preparation retains the original input, operation key,
+intent digest and caller revision. Reserve checks that revision before factories
+run; Begin grants one fresh preparation. Original receipt lookup precedes fresh
+CAS, archive and ingress checks. Changed retries reach the same deterministic
+preparation identity and conflict instead of creating another owner.
+
+Preparation ownership publications record their actual before/after session
+presence and revision in version 2 private audits. Completion authenticates at
+most 64 original publications of that exact owner, allowing its original Reserve
+and deterministic Begin; private Renew does not publish a revision. Before a
+Session exists, an independent immutable public-publication clock
+advances instead of fabricating a public Session revision. Existing SQL audit
+ordinals and Memory's append-only publication order also reject foreign changes
+after the original Reserve; deleting older history cannot balance the count and
+hide a newer foreign publication. SQL ignores a claimed private Renew only after
+corroborating its bounded original receipt, publication and routing; malformed or
+mismatched evidence refuses completion. An unrelated public change, including
+another owner change, invalidates completion. The original request and native semantic digest remain unchanged. The effective
+revision exists only inside the transaction that verifies the lineage.
+
+The runtime retains the factory/validation task and observes its actual join.
+The joined task supplies the exact native intent. In one Store transaction,
+completion validates that intent against the reservation, publishes the
+preparation Join, and commits the native successor. A prepared value or dropped
+plan is insufficient to establish resource cleanup. Queue and continuation receipts
+include the final public revision. Queue preparation therefore needs no later
+Join publication that would immediately stale its receipt.
+
+Continuation preparations corroborate their exact original waiting or expired
+Unstarted native source before granting preparation authority. Merely finding a
+bound Run does not authorize factories or exempt ordinary archived work. The
+native commit rechecks eligibility, fence, generation and original caller CAS.
+No successor worker is dispatched from a metadata replay or unknown response.
+
+`RuntimeError::PreparationIncomplete` preserves the underlying error and a safe
+`PreparationReconciliation` descriptor: exact scope, owner/generation and original
+Reserve/Begin/Join operation IDs. `operation_error()` classifies the original
+failure. `lookup_preparation_operation` returns the original descriptor without
+factories or authority, including after local close. Unknown acknowledgements
+must reconcile original native and owner keys. Failure does not automatically
+Join the owner: unless all tasks/resources actually joined, its durable Active
+or Uncertain state remains a cleanup blocker. An external native writer's winning
+receipt cannot conceal an unretired preparation.
+
+This checkpoint does not adopt generic resume or ordinary admission recovery
+into the atomic preparation protocol. Their original historical admission
+receipt remains historical metadata. Linked session services, contextual
+initializer/reaper lifetimes, provider/factory resource transfer and interrupted
+settlement callbacks require further ownership integration. Explicit standalone
+initialization remains separate. This protocol does not establish complete
+session resource coverage, remote cancellation, deletion readiness, or that a
+locally empty task registry means no remote work remains.
+
+A host retaining the actual joined completion and its resources may retry a
+failed native transaction with that same completion and key, without rerunning
+factories. Alternatively, after actual cleanup, an authenticated Join retires
+the original preparation and new work needs a new key and captured revision.
+Original preparation receipt replay never grants another Begin. The runtime
+currently reports failure correlation and drops its retained completion on
+error; finite runtime resource disposition and recovery remain required
+follow-up work. Native retained-completion tests do not establish runtime
+failure recovery. Descriptors alone grant no cleanup authority.

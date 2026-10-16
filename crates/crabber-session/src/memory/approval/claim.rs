@@ -12,106 +12,117 @@ impl super::super::MemoryStore {
         &self,
         claim: &ApprovalContinuationClaim,
     ) -> Result<ApprovalClaimOutcome, Error> {
-        let digest = claim.fingerprint()?;
-        #[cfg(test)]
-        let fault = self
-            .approval_fault
-            .load(std::sync::atomic::Ordering::SeqCst);
-        #[cfg(not(test))]
-        let fault = 0;
-        let result = self.transact(|state| {
-            if let Some(saved) =
-                replay(state, &claim.session_id, &claim.run_id, &claim.id, &digest)?
-            {
-                return Ok((ApprovalClaimOutcome::Replayed(saved), false));
-            }
-            let run = state
-                .runs
-                .get(&claim.run_id)
-                .filter(|run| run.session_id == claim.session_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if revision(state, &run.session_id) != claim.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let (mut record, calls) = ready(state, &run, claim)?;
-            let now = self.clock.now();
-            let mut activated = run.clone();
-            activated.owner.clone_from(&claim.owner);
-            activated.claim_token = uuid::Uuid::new_v4().to_string();
-            activated.lease_until = now
-                .checked_add(time::Duration::milliseconds(
-                    i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
-                ))
-                .ok_or(Error::InvalidRequest)?;
-            activated.updated_at = now;
-            let fence = RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token.clone(),
-            };
-            super::super::native_parent::record_run(state, Some(&run), &activated)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            state.runs.insert(run.id.clone(), activated);
-            let execution = super::super::MemoryExecution {
-                store: self.clone(),
-                fence: fence.clone(),
-            };
-            let reserve = AttemptMutation {
-                id: approval::derived_id("claim-attempt", &claim.id),
-                expected_revision: claim.expected_revision,
-                command: AttemptCommand::Reserve {
-                    target: record.batch.next_attempt.clone(),
-                },
-            };
-            let applied = execution
-                .apply_claim_attempt(state, reserve)
-                .map_err(approval::attempt_error)?;
-            let AttemptMutationOutcome::Applied {
-                receipt,
-                authority: Some(authority),
-            } = applied
-            else {
-                return Err(Error::SemanticConflict);
-            };
-            record.state = ApprovalContinuationState::Claimed;
-            for question in &mut record.questions {
-                question.view.consumed = true;
-            }
-            state
-                .approvals
-                .insert(claim.continuation.id.clone(), record.clone());
-            let receipt = publish(
-                state,
-                &run,
-                claim.id.clone(),
-                digest.clone(),
-                ApprovalOutcome::Claimed {
-                    continuation: claim.continuation.clone(),
-                    attempt: receipt.attempt,
-                },
-                now,
-            )?;
-            super::before_commit(fault)?;
-            Ok((
-                ApprovalClaimOutcome::Applied {
-                    receipt,
-                    grant: Box::new(ApprovalGrant {
-                        fence,
-                        authority,
-                        calls,
-                        source_turn_id: record.batch.source_turn_id.clone(),
-                        usage: record.batch.usage.clone(),
-                        turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                    }),
-                },
-                true,
-            ))
-        });
+        let fault = super::fault(self);
+        let result = self.transact(|state| self.claim_approval_guarded(state, claim, None));
         super::after_commit(result, fault)
+    }
+    pub(in crate::memory) fn claim_approval_guarded(
+        &self,
+        state: &mut super::super::State,
+        claim: &ApprovalContinuationClaim,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    ) -> Result<(ApprovalClaimOutcome, bool), Error> {
+        let digest = claim.fingerprint()?;
+        let fault = super::fault(self);
+
+        if let Some(saved) = replay(state, &claim.session_id, &claim.run_id, &claim.id, &digest)? {
+            return Ok((ApprovalClaimOutcome::Replayed(saved), false));
+        }
+        let run = state
+            .runs
+            .get(&claim.run_id)
+            .filter(|run| run.session_id == claim.session_id)
+            .cloned()
+            .ok_or(Error::NotFound)?;
+        let expected_revision = preparation
+            .map_or(Ok(claim.expected_revision), |proof| {
+                proof.control_revision(
+                    &crate::session_owner::preparation::PreparationKey::Approval(claim.id.clone()),
+                    &claim.session_id,
+                    &claim.run_id,
+                    claim.expected_revision,
+                )
+            })
+            .map_err(|_| Error::SemanticConflict)?;
+        if revision(state, &run.session_id) != expected_revision {
+            return Err(Error::RevisionConflict);
+        }
+        let (mut record, calls) = ready(state, &run, claim)?;
+        let now = self.clock.now();
+        let mut activated = run.clone();
+        activated.owner.clone_from(&claim.owner);
+        activated.claim_token = uuid::Uuid::new_v4().to_string();
+        activated.lease_until = now
+            .checked_add(time::Duration::milliseconds(
+                i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
+            ))
+            .ok_or(Error::InvalidRequest)?;
+        activated.updated_at = now;
+        let fence = RunFence {
+            run_id: run.id.clone(),
+            claim_token: activated.claim_token.clone(),
+        };
+        super::super::native_parent::record_run(state, Some(&run), &activated)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        state.runs.insert(run.id.clone(), activated);
+        let execution = super::super::MemoryExecution {
+            store: self.clone(),
+            fence: fence.clone(),
+        };
+        let reserve = AttemptMutation {
+            id: approval::derived_id("claim-attempt", &claim.id),
+            expected_revision,
+            command: AttemptCommand::Reserve {
+                target: record.batch.next_attempt.clone(),
+            },
+        };
+        let applied = execution
+            .apply_claim_attempt(state, reserve)
+            .map_err(approval::attempt_error)?;
+        let AttemptMutationOutcome::Applied {
+            receipt,
+            authority: Some(authority),
+        } = applied
+        else {
+            return Err(Error::SemanticConflict);
+        };
+        record.state = ApprovalContinuationState::Claimed;
+        for question in &mut record.questions {
+            question.view.consumed = true;
+        }
+        state
+            .approvals
+            .insert(claim.continuation.id.clone(), record.clone());
+        let receipt = publish(
+            state,
+            &run,
+            claim.id.clone(),
+            digest.clone(),
+            ApprovalOutcome::Claimed {
+                continuation: claim.continuation.clone(),
+                attempt: receipt.attempt,
+            },
+            now,
+        )?;
+        super::before_commit(fault)?;
+        Ok((
+            ApprovalClaimOutcome::Applied {
+                receipt,
+                grant: Box::new(ApprovalGrant {
+                    fence,
+                    authority,
+                    calls,
+                    source_turn_id: record.batch.source_turn_id.clone(),
+                    usage: record.batch.usage.clone(),
+                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
+                }),
+            },
+            true,
+        ))
     }
 }
 
-fn ready(
+pub(in crate::memory) fn ready(
     state: &super::super::State,
     run: &crabber_core::Run,
     claim: &ApprovalContinuationClaim,

@@ -16,6 +16,7 @@ mod execution_binding;
 #[cfg(test)]
 mod lock_order_tests;
 mod management;
+mod migration;
 mod native_parent;
 mod phase;
 mod public_header;
@@ -477,6 +478,11 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        if migration::is_current(&mut tx).await? {
+            tx.commit().await.map_err(db)?;
+            pool.close().await;
+            return Ok(());
+        }
         for statement in concat!(
             include_str!("../migrations/0001_initial.sql"),
             "\n",
@@ -670,7 +676,7 @@ impl PostgresStore {
             }
         };
         if guard.is_ordinary()
-            && let Some(expected) = request.expected_revision
+            && let Some(expected) = guard.expected_revision(request.expected_revision)
         {
             let current = u64::try_from(current_revision)
                 .map_err(|_| StoreError::Validation("invalid public session revision".into()))?;
@@ -829,7 +835,36 @@ impl Store for PostgresStore {
         parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
     ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
     {
-        self.reserve_owner(request, parent).await
+        Box::pin(self.reserve_owner(request, parent)).await
+    }
+    fn supports_preparation_protocol(&self) -> bool {
+        true
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Box::pin(self.reserve_preparation(request)).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &SessionId,
+        key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationReconciliation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.preparation_metadata(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.complete_preparation(joined)).await
     }
     async fn mutate_session_owner(
         &self,

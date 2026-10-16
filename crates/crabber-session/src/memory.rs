@@ -623,6 +623,39 @@ impl Store for MemoryStore {
     {
         self.reserve_owner(&request, parent.as_ref())
     }
+    fn supports_preparation_protocol(&self) -> bool {
+        true
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_preparation(&request)
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &SessionId,
+        key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationReconciliation>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.state
+            .lock()
+            .unwrap()
+            .session_owners
+            .preparation_metadata(session, key)
+    }
+    async fn complete_preparation(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.complete_preparation(&joined)
+    }
     async fn mutate_session_owner(
         &self,
         request: crate::session_owner::MutateSessionOwner,

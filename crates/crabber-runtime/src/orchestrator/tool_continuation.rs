@@ -3,7 +3,7 @@ use super::continuation::{ApprovalControl, ApprovalResume, ApprovedCalls, Resume
 use super::{Orchestrator, RunHandle, RuntimeError};
 use crabber_core::{ControlId, InputFingerprint, Run, RunId, SessionId, SessionRevision};
 use crabber_session::{
-    ContinuationTarget, ToolContinuationClaim, ToolContinuationClaimOutcome,
+    ContinuationTarget, StoreError, ToolContinuationClaim, ToolContinuationClaimOutcome,
     ToolContinuationError as Error, ToolContinuationOutcome, ToolContinuationReceipt,
 };
 use tokio::sync::oneshot;
@@ -160,6 +160,7 @@ impl Orchestrator {
         let (sender, receiver) = oneshot::channel();
         let (dummy, _) = oneshot::channel();
         let control = ApprovalResume {
+            prepared: None,
             control: ApprovalControl::Tool { control, sender },
             sender: dummy,
         };
@@ -187,35 +188,45 @@ impl Orchestrator {
         run: &Run,
         control: ToolResumeControl,
         sender: oneshot::Sender<ToolClaimed>,
+        prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
-        let outcome = match control {
-            ToolResumeControl::FrontendClaim(claim) => {
-                self.store.claim_frontend_continuation(claim).await?
-            }
-            ToolResumeControl::FrontendRecover(request) => {
-                let outcome = self
-                    .store
-                    .recover_frontend_continuation(request.clone())
-                    .await?;
-                let receipt = match &outcome {
-                    ToolContinuationClaimOutcome::Applied { receipt, .. }
-                    | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
-                };
-                request.verify_receipt(receipt)?;
-                outcome
-            }
-            ToolResumeControl::Claim(claim) => self.store.claim_tool_continuation(claim).await?,
-            ToolResumeControl::Recover(request) => {
-                let outcome = self
-                    .store
-                    .recover_tool_continuation(request.clone())
-                    .await?;
-                let receipt = match &outcome {
-                    ToolContinuationClaimOutcome::Applied { receipt, .. }
-                    | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
-                };
-                request.verify_receipt(receipt)?;
-                outcome
+        let outcome = if let Some(prepared) = prepared {
+            let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(outcome) = prepared else {
+                return Err(StoreError::AdmissionConflict.into());
+            };
+            outcome
+        } else {
+            match control {
+                ToolResumeControl::FrontendClaim(claim) => {
+                    self.store.claim_frontend_continuation(claim).await?
+                }
+                ToolResumeControl::FrontendRecover(request) => {
+                    let outcome = self
+                        .store
+                        .recover_frontend_continuation(request.clone())
+                        .await?;
+                    let receipt = match &outcome {
+                        ToolContinuationClaimOutcome::Applied { receipt, .. }
+                        | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
+                    };
+                    request.verify_receipt(receipt)?;
+                    outcome
+                }
+                ToolResumeControl::Claim(claim) => {
+                    self.store.claim_tool_continuation(claim).await?
+                }
+                ToolResumeControl::Recover(request) => {
+                    let outcome = self
+                        .store
+                        .recover_tool_continuation(request.clone())
+                        .await?;
+                    let receipt = match &outcome {
+                        ToolContinuationClaimOutcome::Applied { receipt, .. }
+                        | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
+                    };
+                    request.verify_receipt(receipt)?;
+                    outcome
+                }
             }
         };
         match outcome {

@@ -245,10 +245,19 @@ impl Orchestrator {
         capsule: &crabber_session::AdmissionExecutionCapsule,
         context: &SessionContext,
     ) -> Result<(), RuntimeError> {
-        let semantics = capsule
-            .runtime_semantics
-            .as_array()
-            .ok_or(StoreError::AdmissionConflict)?;
+        self.verify_configuration_semantics(
+            &capsule.runtime_semantics,
+            &capsule.plan_fingerprint,
+            context,
+        )
+    }
+    pub(super) fn verify_configuration_semantics(
+        &self,
+        semantics: &serde_json::Value,
+        plan_fingerprint: &str,
+        context: &SessionContext,
+    ) -> Result<(), RuntimeError> {
+        let semantics = semantics.as_array().ok_or(StoreError::AdmissionConflict)?;
         if semantics.get(5) != Some(&json!(format!("{:?}", self.execution_mode)))
             || semantics.get(6) != Some(&json!(self.compaction.trigger_ratio))
             || semantics.get(7) != Some(&json!(self.compaction.keep_tail_messages))
@@ -277,7 +286,7 @@ impl Orchestrator {
         let registration: Registration = serde_json::from_str(&declaration.version)
             .map_err(|_| AdmissionExecutionError::MissingEvidence)?;
         if registration.declaration != current
-            || compute_fingerprint(&components).to_string() != capsule.plan_fingerprint
+            || compute_fingerprint(&components).to_string() != plan_fingerprint
         {
             return Err(StoreError::AdmissionConflict.into());
         }

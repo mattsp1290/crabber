@@ -90,6 +90,7 @@ pub(super) fn agent(
             gate,
         }))
         .config(config())
+        .extension_factory(Arc::new(LedgerFactory(dir.to_owned())))
         .policy(Arc::new(crabber::StaticPolicy::new(
             crabber::PermissionDecision::Allow,
         )))
@@ -105,4 +106,47 @@ pub(super) fn agent(
         }))
         .build()
         .unwrap()
+}
+
+struct LedgerFactory(PathBuf);
+struct EmptyPreparation;
+#[async_trait]
+impl crabber::extension::ExtensionFactory for LedgerFactory {
+    fn identity(&self) -> crabber::extension::ComponentIdentity {
+        crabber::extension::ComponentIdentity {
+            id: "process-preparation".into(),
+            version: "1".into(),
+        }
+    }
+    fn config_hash(&self) -> String {
+        "v1".into()
+    }
+    fn scope(&self) -> crabber::extension::FactoryScope {
+        crabber::extension::FactoryScope::Session
+    }
+    async fn create(
+        &self,
+        _: crabber::extension::FactoryContext,
+    ) -> Result<Arc<dyn crabber::extension::Extension>, crabber::ExtensionError> {
+        append(&self.0.join("ledger"), "factory");
+        Ok(Arc::new(EmptyPreparation))
+    }
+}
+#[async_trait]
+impl crabber::extension::Extension for EmptyPreparation {
+    fn id(&self) -> &'static str {
+        "process-empty"
+    }
+    fn version(&self) -> &'static str {
+        "1"
+    }
+    fn config_hash(&self) -> String {
+        "v1".into()
+    }
+    async fn install(
+        &self,
+        _: &mut crabber::extension::Registrar,
+    ) -> Result<(), crabber::ExtensionError> {
+        Ok(())
+    }
 }

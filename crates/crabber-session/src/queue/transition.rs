@@ -12,12 +12,25 @@ pub(crate) struct VerifiedAdmission {
 pub(crate) enum AdmissionGuard<'a> {
     Ordinary,
     Queue(&'a VerifiedAdmission),
+    Preparation(&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>),
 }
 impl AdmissionGuard<'_> {
     pub fn is_ordinary(self) -> bool {
-        matches!(self, Self::Ordinary)
+        !matches!(self, Self::Queue(_))
+    }
+    pub fn expected_revision(
+        self,
+        original: Option<crabber_core::SessionRevision>,
+    ) -> Option<crabber_core::SessionRevision> {
+        match self {
+            Self::Preparation(proof) => Some(proof.effective_revision),
+            _ => original,
+        }
     }
     pub fn verify(self, request: &crate::AdmitRequest) -> Result<(), StoreError> {
+        if let Self::Preparation(proof) = self {
+            proof.verify_admission(request)?;
+        }
         if let Self::Queue(proof) = self {
             let original = &proof.bound.keyed.request;
             if original.session_id != request.session_id
@@ -58,15 +71,22 @@ fn live(
     }
     Ok(())
 }
-pub(crate) fn apply(
+pub(crate) fn apply_guarded(
     request: &QueueMutation,
     summary: &crate::SessionSummary,
     head: Option<&QueueSummary>,
     original: Option<Record>,
     sequence: u64,
     now: OffsetDateTime,
+    preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
 ) -> Result<Change, StoreError> {
-    if request.expected_revision != summary.revision {
+    let expected = if let Some(proof) = preparation {
+        proof.verify_queue(request)?;
+        proof.effective_revision
+    } else {
+        request.expected_revision
+    };
+    if expected != summary.revision {
         return Err(StoreError::AdmissionRevisionConflict);
     }
     if summary.archived && !matches!(request.action, QueueAction::Cancel { .. }) {

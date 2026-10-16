@@ -64,6 +64,7 @@ async fn facade_child() {
     } else {
         None
     };
+    let factories = count(&dir.join("ledger"), "factory");
     let result = agent
         .prompt_keyed_with_context(
             session.clone(),
@@ -72,12 +73,30 @@ async fn facade_child() {
             Some(context.clone()),
         )
         .await;
-    if mode == "precommit" || mode == "commit-loss" {
-        assert!(matches!(
+    if mode == "precommit"
+        || mode == "commit-loss"
+        || (mode == "preparation-blocked" || mode == "preparation-inflight")
+    {
+        preparation_failure(
+            &agent,
+            store.as_ref(),
+            &dir,
+            &session,
+            &mode,
             result,
-            Err(RuntimeError::Store(StoreError::Validation(_)))
+            factories,
+        )
+        .await;
+        return;
+    }
+    if mode.starts_with("race-") && result.is_err() {
+        let error = result.err().unwrap();
+        assert!(error.preparation_reconciliation().is_some());
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::PreparationRecoveryRequired
+                | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
         ));
-        assert_eq!(count(&dir.join("ledger"), "provider"), 0);
         return;
     }
     let admission = result.unwrap();
@@ -85,6 +104,7 @@ async fn facade_child() {
     if let Some(expected) = original {
         assert_eq!(receipt, expected);
         assert!(matches!(admission, Admission::Replayed(_)));
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
         let after = store.get_run(&receipt.run_id).await.unwrap();
         if dir.join("executing").exists() && !dir.join("execute-release").exists() {
             // The original worker may heartbeat; replay must not take ownership.
@@ -146,5 +166,79 @@ async fn facade_child() {
     println!(
         "child={mode} session={} receipt={} run={} user_message={}",
         receipt.session_id, receipt.run_id, receipt.run_id, receipt.user_message_id
+    );
+}
+
+async fn preparation_failure(
+    agent: &Agent,
+    store: &dyn Store,
+    dir: &Path,
+    session: &SessionId,
+    mode: &str,
+    result: Result<Admission, RuntimeError>,
+    factories: usize,
+) {
+    use crabber::session::session_owner::{
+        SessionOwnerState,
+        preparation::{PreparationKey, PreparationReconciliation},
+    };
+    let Err(error) = result else {
+        panic!("injected preparation failure")
+    };
+    let descriptor = error.preparation_reconciliation().unwrap();
+    assert_eq!(&descriptor.session_id, session);
+    assert_eq!(
+        agent
+            .lookup_preparation_operation(session, &PreparationKey::Admission(options().key))
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(descriptor)
+    );
+    if mode == "preparation-blocked" || mode == "preparation-inflight" {
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::PreparationRecoveryRequired
+        ));
+        if mode == "preparation-blocked" {
+            let original: PreparationReconciliation =
+                serde_json::from_slice(&fs::read(dir.join("preparation.meta")).unwrap()).unwrap();
+            assert_eq!(*descriptor, original);
+        }
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories);
+    } else {
+        assert!(matches!(
+            error.operation_error(),
+            RuntimeError::Store(StoreError::Validation(_))
+        ));
+        fs::write(
+            dir.join("preparation.meta"),
+            serde_json::to_vec(descriptor).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(count(&dir.join("ledger"), "factory"), factories + 1);
+    }
+    assert_eq!(
+        store
+            .get_session_owner(session, &descriptor.owner.id)
+            .await
+            .unwrap()
+            .state,
+        if mode == "commit-loss" {
+            SessionOwnerState::Joined
+        } else {
+            SessionOwnerState::Active
+        }
+    );
+    assert_eq!(count(&dir.join("ledger"), "provider"), 0);
+    assert_eq!(count(&dir.join("ledger"), "tool"), 0);
+    agent.close_extensions().await.unwrap();
+    assert_eq!(
+        agent
+            .lookup_preparation_operation(session, &PreparationKey::Admission(options().key))
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(descriptor)
     );
 }

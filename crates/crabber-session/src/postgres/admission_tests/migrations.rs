@@ -629,3 +629,30 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
     }
     admin.close().await;
 }
+
+#[tokio::test]
+async fn current_migration_never_relocks_runtime_tables() {
+    let Some(url) = test_url() else { return };
+    let _guard = TEST_LOCK.lock().await;
+    PostgresStore::migrate(&url).await.unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut active = pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE operation_receipts IN ROW EXCLUSIVE MODE")
+        .execute(&mut *active)
+        .await
+        .unwrap();
+    let migrated = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        PostgresStore::migrate(&url),
+    )
+    .await;
+    active.rollback().await.unwrap();
+    pool.close().await;
+    migrated
+        .expect("current-schema migration must finish while runtime tables stay locked")
+        .unwrap();
+}

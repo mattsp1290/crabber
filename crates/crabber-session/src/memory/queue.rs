@@ -4,7 +4,7 @@ use crate::{
     queue::{
         AdmissionGuard, Audit, Change, MAX_PENDING, MAX_PENDING_BYTES, QueueAction, QueueMutation,
         QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueState, QueueSummary, Record,
-        RetainedQueue, apply, complete, corrupt, encode, identifier, invalid, page, scope, target,
+        RetainedQueue, complete, corrupt, encode, identifier, invalid, page, scope, target,
         validate_summary, verify_audit, verify_current, verify_sources,
     },
 };
@@ -207,7 +207,7 @@ impl MemoryStore {
                 }
                 return Ok(QueueOutcome::Replayed(saved));
             }
-            self.queue_apply(state, request, digest)
+            self.queue_apply_guarded(state, request, digest, None)
         })?;
         #[cfg(test)]
         if matches!(result, QueueOutcome::Applied { .. }) {
@@ -215,11 +215,12 @@ impl MemoryStore {
         }
         Ok(result)
     }
-    fn queue_apply(
+    pub(super) fn queue_apply_guarded(
         &self,
         state: &mut State,
         request: QueueMutation,
         digest: crabber_core::InputFingerprint,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
         let session = state
@@ -270,7 +271,15 @@ impl MemoryStore {
         } else {
             0
         };
-        let mut change = apply(&request, &summary, head.as_ref(), original, sequence, now)?;
+        let mut change = crate::queue::apply_guarded(
+            &request,
+            &summary,
+            head.as_ref(),
+            original,
+            sequence,
+            now,
+            preparation,
+        )?;
         let admitted = self.queue_admission(state, &mut change)?;
         super::bump_public_revision(state, &request.session_id)?;
         let saved = QueueReceipt {
@@ -403,3 +412,49 @@ mod tests;
 #[cfg(test)]
 #[path = "queue/corruption_tests.rs"]
 mod corruption_tests;
+
+pub(super) fn replay(
+    state: &State,
+    request: &QueueMutation,
+) -> Result<Option<QueueOutcome>, StoreError> {
+    if let Some(saved) = receipt(state, &request.session_id, &request.id)? {
+        if saved.semantic_digest != request.fingerprint()? {
+            return Err(StoreError::AdmissionConflict);
+        }
+        return Ok(Some(QueueOutcome::Replayed(saved)));
+    }
+    Ok(None)
+}
+pub(super) fn preparation_context(
+    state: &State,
+    authority: &crate::QueueAuthority,
+    intent: &crabber_core::InputFingerprint,
+    now: time::OffsetDateTime,
+) -> Result<(), StoreError> {
+    let saved = record(state, &authority.session_id, &authority.queue_id)?;
+    if let Some(prepared) = &saved.prepared
+        && crate::session_owner::preparation::queue_admission_intent(prepared)
+            .map_err(|_| StoreError::AdmissionConflict)?
+            != *intent
+    {
+        return Err(StoreError::AdmissionConflict);
+    }
+    let claim = saved.claim.as_ref().ok_or(StoreError::Conflict)?;
+    if saved.summary.state != QueueState::Claimed
+        || claim.authority != *authority
+        || claim.expires <= now
+        || head(state, &authority.session_id)?
+            .is_none_or(|head| head.queue_id != authority.queue_id)
+    {
+        return Err(StoreError::Conflict);
+    }
+    if super::has_pending_continuation(state, &authority.session_id)?
+        || state
+            .runs
+            .values()
+            .any(|run| run.session_id == authority.session_id && !run.status.is_terminal())
+    {
+        return Err(StoreError::Busy);
+    }
+    Ok(())
+}

@@ -81,6 +81,25 @@ pub(in super::super) async fn replay(
     }
     Ok(saved)
 }
+pub(in crate::postgres) async fn replay_scope(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    id: &ControlId,
+    digest: &InputFingerprint,
+) -> Result<Option<ToolContinuationReceipt>, Error> {
+    let saved = super::read::receipt(tx, session, id)
+        .await?
+        .map(|(receipt, _)| receipt);
+    if saved
+        .as_ref()
+        .is_some_and(|receipt| receipt.run_id != *run_id || receipt.semantic_digest != *digest)
+    {
+        return Err(Error::SemanticConflict);
+    }
+    Ok(saved)
+}
+
 pub(in super::super) async fn publish(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

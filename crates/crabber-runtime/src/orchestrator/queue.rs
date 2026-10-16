@@ -272,11 +272,19 @@ impl Orchestrator {
             }
             return Err(StoreError::Conflict.into());
         }
+        self.reject_pending_preparation(
+            &control.authority.session_id,
+            &crabber_session::session_owner::preparation::PreparationKey::Queue(control.id.clone()),
+        )
+        .await?;
         let mut captured = request.clone();
         let session = self
             .store
             .queue_preparation_snapshot(&control.authority.session_id)
             .await?;
+        if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
+            return Ok(saved);
+        }
         if session.revision != control.expected_revision {
             if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
                 return Ok(saved);
@@ -302,33 +310,52 @@ impl Orchestrator {
                     .unwrap_or_else(|| fallback.model_id.clone()),
             };
         }
-        let (plan, prepared) = self
-            .prepare_keyed_admission(&captured, retained.input.admission)
+        let grant = self
+            .begin_control_preparation(
+                &mut captured,
+                &control.authority.session_id,
+                super::preparation::PreparationSpec {
+                    purpose:
+                        crabber_session::session_owner::preparation::PreparationPurpose::Queue {
+                            authority: control.authority.clone(),
+                        },
+                    key: crabber_session::session_owner::preparation::PreparationKey::Queue(
+                        control.id.clone(),
+                    ),
+                    revision: Some(control.expected_revision),
+                    options: Some(retained.input.admission.clone()),
+                    intent: None,
+                    source: None,
+                },
+            )
             .await?;
-        let desired_binding = prepared.binding.clone();
-        let desired_execution = prepared.keyed.execution.clone();
-        let outcome = self
-            .store
-            .mutate_queue(control.mutation(QueueAction::Prepare {
-                authority: control.authority.clone(),
-                prepared: Box::new(prepared),
-            }))
-            .await;
-        plan.release();
-        if matches!(outcome, Err(StoreError::AdmissionConflict))
-            && let Some(saved) = self.replay_queue_prepare(&request, &control).await?
-        {
-            let winner = self
-                .store
-                .retained_queue(&control.authority.session_id, &control.authority.queue_id)
-                .await?
-                .prepared
-                .ok_or(StoreError::AdmissionConflict)?;
-            if winner.binding == desired_binding && winner.keyed.execution == desired_execution {
-                return Ok(saved);
-            }
-        }
-        Ok(outcome?.receipt().clone())
+        let runtime = self.clone();
+        let prepared_request = captured.clone();
+        let prepared_control = control.clone();
+        let ((), completed) = self
+            .finish_durable_preparation(grant, async move {
+                let (plan, prepared) = runtime
+                    .prepare_keyed_admission(&prepared_request, retained.input.admission)
+                    .await?;
+                plan.release();
+                Ok((
+                    (),
+                    crabber_session::session_owner::preparation::PreparedOperation::Queue {
+                        request: prepared_control.mutation(QueueAction::Prepare {
+                            authority: prepared_control.authority.clone(),
+                            prepared: Box::new(prepared),
+                        }),
+                        binding: None,
+                    },
+                ))
+            })
+            .await?;
+        let crabber_session::session_owner::preparation::PreparationCompletion::Queue(outcome) =
+            completed
+        else {
+            return Err(StoreError::AdmissionConflict.into());
+        };
+        Ok(outcome.receipt().clone())
     }
     /// Exact admission replay, including after close; grants no worker handle.
     /// # Errors
@@ -378,14 +405,61 @@ impl Orchestrator {
         request: Request,
         control: QueueControl,
     ) -> Result<Admission, RuntimeError> {
+        self.reject_pending_preparation(
+            &control.authority.session_id,
+            &crabber_session::session_owner::preparation::PreparationKey::Queue(control.id.clone()),
+        )
+        .await?;
         let retained = self.queue_retained(&request, &control).await?;
         let original = retained.prepared.ok_or(StoreError::Conflict)?;
-        let captured = Request::from_binding(&original.binding);
-        let (plan, restored) = self
-            .prepare_keyed_admission(&captured, retained.input.admission)
+        let mut captured = Request::from_binding(&original.binding);
+        let grant = self
+            .begin_control_preparation(
+                &mut captured,
+                &control.authority.session_id,
+                super::preparation::PreparationSpec {
+                    purpose:
+                        crabber_session::session_owner::preparation::PreparationPurpose::Queue {
+                            authority: control.authority.clone(),
+                        },
+                    key: crabber_session::session_owner::preparation::PreparationKey::Queue(
+                        control.id.clone(),
+                    ),
+                    revision: Some(control.expected_revision),
+                    options: Some(retained.input.admission.clone()),
+                    intent: Some(
+                        crabber_session::session_owner::preparation::queue_admission_intent(
+                            &original,
+                        )?,
+                    ),
+                    source: None,
+                },
+            )
             .await?;
-        verify_restored(&original, &restored)?;
-        match self.store.mutate_queue(control.admit()).await? {
+        let runtime = self.clone();
+        let prepared_request = captured.clone();
+        let prepared_control = control.clone();
+        let (plan, completed) = self
+            .finish_durable_preparation(grant, async move {
+                let (plan, restored) = runtime
+                    .prepare_keyed_admission(&prepared_request, retained.input.admission)
+                    .await?;
+                verify_restored(&original, &restored)?;
+                Ok((
+                    plan,
+                    crabber_session::session_owner::preparation::PreparedOperation::Queue {
+                        request: prepared_control.admit(),
+                        binding: Some(Box::new(restored)),
+                    },
+                ))
+            })
+            .await?;
+        let crabber_session::session_owner::preparation::PreparationCompletion::Queue(outcome) =
+            completed
+        else {
+            return Err(StoreError::AdmissionConflict.into());
+        };
+        match outcome {
             QueueOutcome::Replayed(saved) => Ok(Admission::Replayed(
                 saved
                     .summary

@@ -1,5 +1,7 @@
 //! SQL ownership transactions. The session gate includes pre-session reservations.
 mod parent;
+mod preflight;
+mod preparation;
 mod reads;
 mod run;
 use super::PostgresStore;
@@ -7,7 +9,7 @@ use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
     SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerOutcome,
     SessionOwnerParentAuthority, SessionOwnerReceipt, SessionOwnerSnapshot, SessionOwnerState,
-    audit::{Audit, verify_current},
+    audit::{Audit, Publication, RevisionState, verify_current},
     record::Record,
 };
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
@@ -60,7 +62,25 @@ impl PostgresStore {
         request: ReserveSessionOwner,
         parent: Option<SessionOwnerParentAuthority>,
     ) -> Result<SessionOwnerOutcome, Error> {
-        let digest = request.fingerprint()?;
+        Box::pin(self.reserve_owner_inner(request, parent, None)).await
+    }
+    pub(super) async fn reserve_preparation(
+        &self,
+        request: crate::session_owner::preparation::ReservePreparation,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        request.fingerprint()?;
+        Box::pin(self.reserve_owner_inner(request.owner.clone(), None, Some(request))).await
+    }
+    async fn reserve_owner_inner(
+        &self,
+        request: ReserveSessionOwner,
+        parent: Option<SessionOwnerParentAuthority>,
+        preparation: Option<crate::session_owner::preparation::ReservePreparation>,
+    ) -> Result<SessionOwnerOutcome, Error> {
+        let digest = preparation.as_ref().map_or_else(
+            || request.fingerprint(),
+            super::super::session_owner::preparation::ReservePreparation::fingerprint,
+        )?;
         let mut tx = self.pool.begin().await.map_err(unknown)?;
         let result = async {
             super::lock_session(&mut tx, &request.binding.session_id)
@@ -74,8 +94,14 @@ impl PostgresStore {
                 }
                 return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
             }
-            self.reserve_fresh(&mut tx, &request, parent.as_ref(), digest)
-                .await
+            self.reserve_fresh(
+                &mut tx,
+                &request,
+                parent.as_ref(),
+                digest,
+                preparation.as_ref(),
+            )
+            .await
         }
         .await;
         let result = finish(tx, result).await?;
@@ -87,6 +113,7 @@ impl PostgresStore {
         request: &ReserveSessionOwner,
         parent: Option<&SessionOwnerParentAuthority>,
         digest: crabber_core::InputFingerprint,
+        preparation: Option<&crate::session_owner::preparation::ReservePreparation>,
     ) -> Result<SessionOwnerOutcome, Error> {
         let binding = &request.binding;
         reads::scope(tx, &binding.session_id).await?;
@@ -97,16 +124,32 @@ impl PostgresStore {
             &binding.directory,
         )
         .await?;
-        if let Some((session, metadata, _)) = super::management::current(tx, &binding.session_id)
+        let current = super::management::current(tx, &binding.session_id)
             .await
-            .map_err(unknown)?
-        {
+            .map_err(unknown)?;
+        if binding.parent.is_some() && current.is_none() {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if let Some(preparation) = preparation {
+            let actual = current.as_ref().map_or(
+                crabber_core::SessionRevision::INITIAL,
+                |(_, _, revision)| *revision,
+            );
+            self.preparation_preflight(tx, preparation, actual).await?;
+        }
+        if let Some((session, metadata, _)) = current {
             session
                 .ensure_identity(&binding.workspace_id, &binding.directory)
                 .map_err(|_| Error::IdentityMismatch)?;
-            // An independently authenticated native parent may finish an
-            // existing-work handoff while its session is archived.
-            if metadata.archived && binding.parent.is_none() {
+            if metadata.archived
+                && binding.parent.is_none()
+                && !preparation.is_some_and(|value| {
+                    matches!(
+                        value.purpose,
+                        crate::session_owner::preparation::PreparationPurpose::ExistingRun { .. }
+                    )
+                })
+            {
                 return Err(Error::InvalidTransition);
             }
         }
@@ -121,20 +164,22 @@ impl PostgresStore {
         reads::capacity(tx, &binding.session_id).await?;
         let now = self.clock.now();
         let witness = parent::proof(tx, request, parent, now).await?;
-        let record = Record::reserve(request, witness, now)?;
+        let mut record = Record::reserve(request, witness, now)?;
+        record.preparation = preparation.map(super::super::session_owner::preparation::origin);
         let authority = record.grant()?;
         let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Reserve);
+        let publication = publish_revision(tx, &binding.session_id, true).await?;
         reads::publish(
             tx,
             &Audit {
-                version: 1,
+                version: 2,
                 receipt: receipt.clone(),
                 record,
+                publication: Some(publication),
             },
             true,
         )
         .await?;
-        bump_existing(tx, &binding.session_id).await?;
         before(self)?;
         Ok(SessionOwnerOutcome::Applied {
             receipt,
@@ -178,25 +223,40 @@ impl PostgresStore {
                 None
             };
             let receipt = record.receipt(request.id.clone(), digest, op);
+            let publication = publish_revision(&mut tx, &request.session_id, public).await?;
             reads::publish(
                 &mut tx,
                 &Audit {
-                    version: 1,
+                    version: 2,
                     receipt: receipt.clone(),
                     record,
+                    publication: Some(publication),
                 },
                 false,
             )
             .await?;
-            if public {
-                bump_existing(&mut tx, &request.session_id).await?;
-            }
             before(self)?;
             Ok(SessionOwnerOutcome::Applied { receipt, authority })
         }
         .await;
         let result = finish(tx, result).await?;
         after(self, result)
+    }
+    pub(super) async fn preparation_metadata(
+        &self,
+        session: &SessionId,
+        key: &crate::session_owner::preparation::PreparationKey,
+    ) -> Result<Option<crate::session_owner::preparation::PreparationReconciliation>, Error> {
+        validate_scope(session, "preparation")?;
+        let ids = crate::session_owner::preparation::identity::ids(key, session)?;
+        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let result = reads::audit(&mut tx, session, &ids.reserve)
+            .await?
+            .map(|audit| {
+                crate::session_owner::preparation::identity::metadata(&audit, session, key)
+            })
+            .transpose();
+        finish(tx, result).await
     }
     pub(super) async fn owner_snapshot(
         &self,
@@ -235,22 +295,33 @@ fn validate_scope(session: &SessionId, id: &str) -> Result<(), Error> {
     crate::session_owner::validation::identifier(&session.0, 512, false)?;
     crate::session_owner::validation::identifier(id, 128, false)
 }
-async fn bump_existing(
+async fn publish_revision(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
-) -> Result<(), Error> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=$1)")
-        .bind(&session.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(unknown)?;
-    if exists {
+    public_change: bool,
+) -> Result<Publication, Error> {
+    let revision: Option<i64> =
+        sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+            .bind(&session.0)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(unknown)?;
+    let before = match revision {
+        Some(value) => RevisionState::Present(
+            crabber_core::SessionRevision::new(value.try_into().map_err(unknown)?)
+                .map_err(unknown)?,
+        ),
+        None => RevisionState::Absent(reads::publication_count(tx, session).await?),
+    };
+    let publication = Publication::new(before, public_change)?;
+    if revision.is_some() && public_change {
         super::bump_public_revision(tx, session)
             .await
             .map_err(unknown)?;
     }
-    Ok(())
+    Ok(publication)
 }
+
 fn before(store: &PostgresStore) -> Result<(), Error> {
     #[cfg(test)]
     crate::session_owner_contract::process::pause("before");
@@ -290,3 +361,23 @@ mod tests;
 
 #[cfg(test)]
 mod corruption;
+
+async fn revision(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+) -> Result<RevisionState, Error> {
+    let value: Option<i64> = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+        .bind(&session.0)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(unknown)?;
+    match value {
+        Some(value) => Ok(RevisionState::Present(
+            crabber_core::SessionRevision::new(value.try_into().map_err(unknown)?)
+                .map_err(unknown)?,
+        )),
+        None => Ok(RevisionState::Absent(
+            reads::publication_count(tx, session).await?,
+        )),
+    }
+}

@@ -80,6 +80,11 @@ mod tests {
         *page
     }
 }
+#[path = "fenced_support/preparation.rs"]
+mod preparation;
+#[path = "../../crabber-session/src/session_owner/preparation_contract.rs"]
+#[allow(dead_code)]
+mod preparation_contract;
 #[path = "../../crabber-session/src/session_owner/audit.rs"]
 #[allow(dead_code)]
 mod session_owner_audit;
@@ -92,12 +97,15 @@ mod session_owner_record;
 #[path = "../../crabber-session/src/session_owner/validation.rs"]
 #[allow(dead_code)]
 mod session_owner_validation;
+
 mod session_owner {
+    pub(crate) use crate::preparation;
+    pub(crate) use crate::preparation_contract;
     pub(crate) use crate::session_owner_audit as audit;
     pub(crate) use crate::session_owner_ledger::Ledger;
     pub(crate) use crate::session_owner_record as record;
     pub(crate) use crate::session_owner_validation as validation;
-    pub(crate) use crate::session_owner_validation::{identifier, resolver};
+    pub(crate) use crate::session_owner_validation::{digest, identifier, resolver};
     pub use crabber::session::session_owner::*;
 }
 #[path = "../../crabber-session/src/public_session/allocation.rs"]
@@ -1052,3 +1060,4 @@ async fn memory_waiting_cancel_rejects_coherent_ordinary_terminal_output_replace
         .await;
     }
 }
+use crabber::session::session_owner::*;

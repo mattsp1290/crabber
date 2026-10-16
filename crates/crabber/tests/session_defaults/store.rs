@@ -54,6 +54,76 @@ impl TestStore {
 }
 #[async_trait]
 impl Store for TestStore {
+    fn supports_preparation_protocol(&self) -> bool {
+        self.inner.supports_preparation_protocol()
+    }
+    async fn reserve_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::ReservePreparation,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.reserve_preparation(request).await
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crabber_session::session_owner::MutateSessionOwner,
+        authority: Option<crabber_session::session_owner::SessionOwnerAuthority>,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.mutate_session_owner(request, authority).await
+    }
+    async fn lookup_preparation(
+        &self,
+        session: &crabber_core::SessionId,
+        key: &crabber_session::session_owner::preparation::PreparationKey,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationReconciliation>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.lookup_preparation(session, key).await
+    }
+    async fn complete_preparation(
+        &self,
+        mut joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparationCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        if self.hold_admission.swap(false, Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        let lose_ack = self.lose_ack.swap(false, Ordering::SeqCst);
+        if lose_ack {
+            joined.set_admission_lease(std::time::Duration::from_millis(20));
+        }
+        let completed = self.inner.complete_preparation(joined).await?;
+        if lose_ack {
+            return Err(StoreError::Validation("injected acknowledgement loss".into()).into());
+        }
+        if let crabber_session::session_owner::preparation::PreparationCompletion::Queue(outcome) =
+            &completed
+        {
+            let step = if outcome.receipt().summary.admission.is_some() {
+                2
+            } else {
+                1
+            };
+            if self
+                .queue_loss
+                .compare_exchange(step, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Err(StoreError::Validation("queue acknowledgement lost".into()).into());
+            }
+        }
+        Ok(completed)
+    }
+
     async fn settle_waiting_cancellation(
         &self,
         request: WaitingCancellation,

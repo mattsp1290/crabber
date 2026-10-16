@@ -4,8 +4,8 @@ use crate::{
     StoreError,
     queue::{
         AdmissionGuard, Audit, MAX_PENDING, MAX_PENDING_BYTES, QueueAction, QueueAuthority,
-        QueueMutation, QueueOutcome, QueueReceipt, Record, apply, complete, corrupt, encode,
-        invalid, target,
+        QueueMutation, QueueOutcome, QueueReceipt, Record, complete, corrupt, encode, invalid,
+        target,
     },
 };
 use crabber_core::SessionRevision;
@@ -24,7 +24,7 @@ impl PostgresStore {
             tx.commit().await.map_err(db)?;
             return Ok(QueueOutcome::Replayed(saved));
         }
-        let result = Box::pin(self.queue_apply(&mut tx, request, digest)).await?;
+        let result = Box::pin(self.queue_apply_guarded(&mut tx, request, digest, None)).await?;
         #[cfg(test)]
         crate::binding_fault::trip(&self.queue_fault, 1)?;
         tx.commit().await.map_err(db)?;
@@ -32,11 +32,12 @@ impl PostgresStore {
         crate::binding_fault::trip(&self.queue_fault, 2)?;
         Ok(result)
     }
-    async fn queue_apply(
+    pub(super) async fn queue_apply_guarded(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         request: QueueMutation,
         digest: crabber_core::InputFingerprint,
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
         let (session, metadata, revision) = reads::current(tx, &request.session_id)
@@ -67,7 +68,15 @@ impl PostgresStore {
         } else {
             0
         };
-        let mut change = apply(&request, &summary, head.as_ref(), original, sequence, now)?;
+        let mut change = crate::queue::apply_guarded(
+            &request,
+            &summary,
+            head.as_ref(),
+            original,
+            sequence,
+            now,
+            preparation,
+        )?;
         let admitted = if let Some(proof) = &change.admission {
             let bound = proof.bound();
             let outcome = self
@@ -210,3 +219,52 @@ mod process_tests;
 
 #[cfg(test)]
 mod corruption_tests;
+
+impl PostgresStore {
+    pub(super) async fn queue_replay(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: &QueueMutation,
+    ) -> Result<Option<QueueOutcome>, StoreError> {
+        if let Some(saved) = reads::receipt(tx, &request.session_id, &request.id).await? {
+            if saved.semantic_digest != request.fingerprint()? {
+                return Err(StoreError::AdmissionConflict);
+            }
+            return Ok(Some(QueueOutcome::Replayed(saved)));
+        }
+        Ok(None)
+    }
+    pub(super) async fn queue_preparation_context(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        authority: &QueueAuthority,
+        intent: &crabber_core::InputFingerprint,
+    ) -> Result<(), StoreError> {
+        let saved = reads::record(tx, &authority.session_id, &authority.queue_id)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        if let Some(prepared) = &saved.prepared
+            && crate::session_owner::preparation::queue_admission_intent(prepared)
+                .map_err(|_| StoreError::AdmissionConflict)?
+                != *intent
+        {
+            return Err(StoreError::AdmissionConflict);
+        }
+        let claim = saved.claim.as_ref().ok_or(StoreError::Conflict)?;
+        if saved.summary.state != crate::QueueState::Claimed
+            || claim.authority != *authority
+            || claim.expires <= self.clock.now()
+            || reads::head(tx, &authority.session_id)
+                .await?
+                .is_none_or(|head| head.queue_id != authority.queue_id)
+        {
+            return Err(StoreError::Conflict);
+        }
+        let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
+            .bind(&authority.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
+        if busy || super::has_pending_continuation(tx, &authority.session_id).await? {
+            return Err(StoreError::Busy);
+        }
+        Ok(())
+    }
+}

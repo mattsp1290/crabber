@@ -137,3 +137,10 @@ fn event(row: &sqlx::postgres::PgRow) -> Result<EventRecord, Error> {
     event.cursor = Some(cursor);
     Ok(event)
 }
+
+pub(super) async fn verify_run(
+    tx: &mut Transaction<'_, Postgres>,
+    native: &Run,
+) -> Result<(), Error> {
+    run::latest(tx, native).await?.ok_or(Error)?.verify(native)
+}

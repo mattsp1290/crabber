@@ -9,6 +9,11 @@ use std::{
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Operation {
     Reserve(ReserveSessionOwner),
+    Preparation(crate::session_owner::preparation::ReservePreparation),
+    VerifyPreparation {
+        request: crate::session_owner::preparation::ReservePreparation,
+        committed: bool,
+    },
     Mutate(MutateSessionOwner),
     Verify {
         reserve: ReserveSessionOwner,
@@ -33,6 +38,12 @@ pub(crate) async fn execute(store: &impl Store, command: Operation) {
     match command {
         Operation::Reserve(request) => {
             store.reserve_session_owner(request, None).await.unwrap();
+        }
+        Operation::Preparation(request) => {
+            store.reserve_preparation(request).await.unwrap();
+        }
+        Operation::VerifyPreparation { request, committed } => {
+            verify_preparation(store, request, committed).await;
         }
         Operation::Mutate(request) => {
             store.mutate_session_owner(request, None).await.unwrap();
@@ -129,6 +140,7 @@ async fn joined(child: &mut Guard) {
     .unwrap();
 }
 pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
+    run_preparation(store, helper, path).await;
     for mutate in [false, true] {
         for committed in [false, true] {
             let reserve = reservation(SessionId::new());
@@ -177,5 +189,74 @@ pub(crate) async fn run(store: &impl Store, helper: &str, path: Option<&Path>) {
             );
             joined(&mut verify).await;
         }
+    }
+}
+
+async fn verify_preparation(
+    store: &impl Store,
+    request: crate::session_owner::preparation::ReservePreparation,
+    committed: bool,
+) {
+    let session = &request.owner.binding.session_id;
+    let original = store
+        .lookup_preparation(session, &request.key)
+        .await
+        .unwrap();
+    if committed {
+        assert_eq!(original, Some(request.reconciliation().unwrap()));
+        assert!(matches!(
+            store.reserve_preparation(request.clone()).await.unwrap(),
+            SessionOwnerOutcome::Replayed(_)
+        ));
+        let begin = MutateSessionOwner {
+            id: request.reconciliation().unwrap().begin_id,
+            session_id: session.clone(),
+            target: original.unwrap().owner,
+            command: SessionOwnerCommand::Begin,
+        };
+        assert_eq!(
+            store.mutate_session_owner(begin, None).await.unwrap_err(),
+            SessionOwnerError::StaleOwner
+        );
+    } else {
+        assert!(original.is_none());
+    }
+    assert!(store.get_session(session).await.unwrap().is_none());
+}
+async fn run_preparation(_store: &impl Store, helper: &str, path: Option<&Path>) {
+    use crate::session_owner::preparation::{
+        PreparationKey, PreparationPurpose, ReservePreparation,
+    };
+    for committed in [false, true] {
+        let request = ReservePreparation {
+            owner: reservation(SessionId::new()),
+            source: None,
+            key: PreparationKey::Unkeyed(crabber_core::ControlId::new()),
+            expected_revision: crabber_core::SessionRevision::INITIAL,
+            purpose: PreparationPurpose::OrdinaryAdmission,
+            intent: crabber_core::InputFingerprint::new("b".repeat(64)).unwrap(),
+        }
+        .bind_key(PreparationKey::Unkeyed(crabber_core::ControlId::new()))
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let marker_path = directory.path().join("preparation-commit");
+        let mut child = spawn(
+            helper,
+            &Operation::Preparation(request.clone()),
+            path,
+            Some(if committed { "after" } else { "before" }),
+            &marker_path,
+        );
+        marker(&marker_path).await;
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let mut cold = spawn(
+            helper,
+            &Operation::VerifyPreparation { request, committed },
+            path,
+            None,
+            &marker_path,
+        );
+        joined(&mut cold).await;
     }
 }

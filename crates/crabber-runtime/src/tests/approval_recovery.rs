@@ -128,12 +128,22 @@ async fn cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget() 
             assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
             let original = answers(&runtime, &session, &run).await;
             gate.approval_claim_ack_lost.store(true, Ordering::SeqCst);
+            let Err(error) = runtime.continue_approval(original.clone()).await else {
+                panic!("lost native acknowledgment");
+            };
             assert!(matches!(
-                runtime.continue_approval(original.clone()).await,
-                Err(RuntimeError::Approval(
-                    crabber_session::ApprovalError::UnknownStoreOutcome
-                ))
+                error.operation_error(),
+                RuntimeError::Approval(crabber_session::ApprovalError::UnknownStoreOutcome)
             ));
+            let preparation = error.preparation_reconciliation().unwrap();
+            assert_eq!(
+                store
+                    .get_session_owner(&session, &preparation.owner.id)
+                    .await
+                    .unwrap()
+                    .state,
+                crabber_session::session_owner::SessionOwnerState::Joined
+            );
             assert!(effects.lock().unwrap().is_empty());
             assert_eq!(provider.requests().len(), 1);
             gate.reject_run_reads.store(true, Ordering::SeqCst);
@@ -177,12 +187,14 @@ async fn cold_recovery_preserves_frozen_decisions_order_and_total_turn_budget() 
             if fault == 1 {
                 gate.approval_recovery_ack_lost
                     .store(true, Ordering::SeqCst);
+                let Err(error) = cold.recover_approval_continuation(recovery.clone()).await else {
+                    panic!("lost recovery acknowledgment");
+                };
                 assert!(matches!(
-                    cold.recover_approval_continuation(recovery.clone()).await,
-                    Err(RuntimeError::Approval(
-                        crabber_session::ApprovalError::UnknownStoreOutcome
-                    ))
+                    error.operation_error(),
+                    RuntimeError::Approval(crabber_session::ApprovalError::UnknownStoreOutcome)
                 ));
+                assert!(error.preparation_reconciliation().is_some());
                 assert!(matches!(
                     cold.recover_approval_continuation(recovery.clone())
                         .await
