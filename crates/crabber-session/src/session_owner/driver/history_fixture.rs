@@ -88,3 +88,75 @@ pub(crate) async fn joined<S: Store + 'static>(
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "history_fixture/active.rs"]
 pub(crate) mod active;
+
+/// New same-fence native work is not inside the already joined outer task.
+pub(crate) async fn begin_after_join<S: Store + 'static>(store: Arc<S>) -> Fixture {
+    use crate::{AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState};
+    let fixture = joined(store.clone(), false, true).await;
+    let session = fixture.request.context.session_id();
+    let fence = &fixture.request.fence;
+    let original = store
+        .lookup_session_owner(session, &fixture.join)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        original.owner.state,
+        crate::session_owner::SessionOwnerState::Joined
+    );
+    let execution = store.execution(fence.clone()).await.unwrap();
+    // This is the genuine one-shot transition, after the original task joined.
+    execution.begin_admission_execution().await.unwrap();
+    let AttemptMutationOutcome::Applied {
+        receipt: reserved,
+        authority: Some(authority),
+    } = execution
+        .mutate_attempt(
+            crate::attempt_contract::reserve(store.session_revision(session).await.unwrap()),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("fresh same-fence reservation")
+    };
+    let AttemptMutationOutcome::Applied {
+        receipt: begun,
+        authority: None,
+    } = execution
+        .mutate_attempt(
+            AttemptMutation {
+                id: crabber_core::ControlId::new(),
+                expected_revision: reserved.revision,
+                command: AttemptCommand::Begin {
+                    target: reserved.attempt.target,
+                },
+            },
+            Some(authority),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("fresh same-fence Begin")
+    };
+    assert_eq!(begun.attempt.state, AttemptState::Started);
+    assert_eq!(
+        store
+            .execution_attempt(&fence.run_id, &begun.attempt.target.id)
+            .await
+            .unwrap()
+            .attempt,
+        begun.attempt
+    );
+    let run = store.get_run(&fence.run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, crabber_core::RunStatus::Running);
+    assert_eq!(run.claim_token, fence.claim_token);
+    assert_eq!(
+        store
+            .lookup_session_owner(session, &fixture.join)
+            .await
+            .unwrap(),
+        Some(original)
+    );
+    fixture
+}
