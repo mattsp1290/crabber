@@ -81,3 +81,5 @@ impl std::fmt::Debug for AttemptResolverClaim {
         f.write_str("AttemptResolverClaim([redacted])")
     }
 }
+
+pub(crate) mod terminal;

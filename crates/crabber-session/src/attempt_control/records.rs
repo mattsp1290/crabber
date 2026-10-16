@@ -140,7 +140,7 @@ impl Control {
                     AttemptRetirementOutcome::Failed => RunStatus::Failed,
                     AttemptRetirementOutcome::Interrupted => RunStatus::Interrupted,
                 };
-                run.error = Some("host retired the reconciled execution attempt".into());
+                run.error = Some(crate::attempt_control::terminal::ERROR.into());
             }
         }
         run.claim_token = uuid::Uuid::new_v4().to_string();

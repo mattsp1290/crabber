@@ -206,7 +206,7 @@ impl ApprovalRecord {
                     .get("version")
                     .and_then(serde_json::Value::as_u64);
                 let genuine = matches!(version, Some(2 | 4))
-                    || (version == Some(3)
+                    || (matches!(version, Some(3 | 5))
                         && source
                             .event
                             .payload

@@ -135,3 +135,5 @@ async fn reject_oversized_error(store: &crate::SqliteStore, admitted: &crate::Ad
     ));
     tx.rollback().await.unwrap();
 }
+
+mod retirement;

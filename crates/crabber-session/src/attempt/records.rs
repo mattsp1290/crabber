@@ -1,5 +1,7 @@
 #[path = "pristine.rs"]
 pub(crate) mod pristine;
+#[path = "terminal.rs"]
+pub(crate) mod terminal;
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptError, AttemptMutation, AttemptReceipt, AttemptSnapshot,
     AttemptState,
@@ -69,6 +71,14 @@ pub(crate) fn verify_receipt(
         || event.cursor.is_some_and(|v| v != receipt.event_cursor)
     {
         return Err(AttemptError::UnknownStoreOutcome);
+    }
+    if event
+        .payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(5)
+    {
+        return crate::attempt_control::terminal::verify_event(receipt, event);
     }
     if event
         .payload

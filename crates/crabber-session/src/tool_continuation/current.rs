@@ -231,7 +231,9 @@ pub(crate) fn terminal_candidate(event: &EventRecord, record: &ToolContinuationR
                     .get("operation")
                     .and_then(serde_json::Value::as_str)
             ),
-            (Some(2), Some("conclude_run")) | (Some(4), Some("conclude_terminal")) | (Some(3), _)
+            (Some(2), Some("conclude_run"))
+                | (Some(4), Some("conclude_terminal"))
+                | (Some(3 | 5), _)
         )
         && serde_json::from_value::<crate::AttemptSnapshot>(
             event.payload.get("attempt").cloned().unwrap_or_default(),

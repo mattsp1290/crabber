@@ -20,6 +20,8 @@ pub(crate) mod faults;
 mod lifecycle;
 #[path = "attempt_control_contract/ordering.rs"]
 mod ordering;
+#[path = "attempt_control_contract/terminal.rs"]
+pub(crate) mod terminal;
 pub(crate) fn claim() -> AttemptResolverClaim {
     AttemptResolverClaim {
         resolver_id: "verified-host".into(),
@@ -69,6 +71,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     let store = factory(clock.clone());
     pending_and_replay(&store).await;
     lifecycle::run(&store).await;
+    terminal::run(&store).await;
     ordering::run(&store, &clock).await;
     expiry(&store, &clock).await;
 }

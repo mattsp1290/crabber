@@ -288,9 +288,13 @@ mod attempt_control_readiness;
 #[path = "../../crabber-session/src/attempt_control/records.rs"]
 #[allow(dead_code)]
 mod attempt_control_records;
+#[path = "../../crabber-session/src/attempt_control/terminal.rs"]
+#[allow(dead_code)]
+pub(crate) mod attempt_control_terminal;
 mod attempt_control {
     pub(crate) use crate::attempt_control_readiness::*;
     pub(crate) use crate::attempt_control_records::*;
+    pub(crate) use crate::attempt_control_terminal as terminal;
     pub(crate) use crate::attempt_control_turn::*;
 }
 #[path = "../../crabber-session/src/attempt_control_contract.rs"]

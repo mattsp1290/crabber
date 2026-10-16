@@ -137,3 +137,5 @@ async fn reject_oversized_error(store: &crate::PostgresStore, admitted: &crate::
     ));
     tx.rollback().await.unwrap();
 }
+
+mod retirement;

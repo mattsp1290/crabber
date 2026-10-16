@@ -43,24 +43,7 @@ impl SqliteStore {
             let now = self.clock.now();
             let turn = reconcile_children(&mut tx, &run, &control, now).await?;
             control.apply(&mut run, &mut record, current, now)?;
-            if matches!(control, Control::Retire(_)) {
-                if let Some(turn) = &turn.close {
-                    let event = attempt_control::close_turn(&run, turn.clone(), now);
-                    super::super::records::insert_event(&mut tx, &run, &event)
-                        .await
-                        .map_err(sql::unknown)?;
-                }
-                let event = attempt_control::terminal_event(&run, now, turn.source);
-                super::super::records::insert_event(&mut tx, &run, &event)
-                    .await
-                    .map_err(sql::unknown)?;
-                super::super::approval::release_terminal(&mut tx, &run, &control.mutation())
-                    .await?;
-                attempt_control::finish_record(&record)?;
-                super::super::run_control::finalize(&mut tx, &run, now)
-                    .await
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
-            }
+            let settlement = settle_retirement(&mut tx, &run, &control, &record, turn, now).await?;
             super::super::records::save_run(&mut tx, &run)
                 .await
                 .map_err(sql::unknown)?;
@@ -69,7 +52,7 @@ impl SqliteStore {
                 .await?
                 .next()
                 .map_err(|_| Error::RevisionExhausted)?;
-            let event = control.event(&run, &record.snapshot, now)?;
+            let event = control.publication(&run, &record.snapshot, settlement, now)?;
             let receipt = records::publish(
                 &mut tx,
                 &run,
@@ -96,6 +79,47 @@ impl SqliteStore {
         }
         result
     }
+}
+async fn settle_retirement(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    control: &Control,
+    record: &crate::attempt::AttemptRecord,
+    turn: attempt_control::TurnContext,
+    now: time::OffsetDateTime,
+) -> Result<Option<crabber_core::EventRecord>, Error> {
+    if !matches!(control, Control::Retire(_)) {
+        return Ok(None);
+    }
+
+    if let Some(turn) = &turn.close {
+        let event = attempt_control::close_turn(run, turn.clone(), now);
+        super::super::records::insert_event(tx, run, &event)
+            .await
+            .map_err(sql::unknown)?;
+    }
+    let mut event = attempt_control::terminal_event(run, now, turn.source);
+    super::super::records::insert_event(tx, run, &event)
+        .await
+        .map_err(sql::unknown)?;
+    let seq: i64 = sqlx::query_scalar(
+        "SELECT seq FROM events WHERE session_id=$1 AND run_id=$2 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&run.session_id.0)
+    .bind(&run.id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db)
+    .map_err(sql::unknown)?;
+    event.cursor = Some(crabber_core::EventCursor(
+        u64::try_from(seq).map_err(|_| Error::UnknownStoreOutcome)?,
+    ));
+    super::super::approval::release_terminal(tx, run, &control.mutation()).await?;
+    attempt_control::finish_record(record)?;
+    super::super::run_control::finalize(tx, run, now)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    Ok(Some(event))
 }
 async fn reconcile_children(
     tx: &mut Transaction<'_, Sqlite>,

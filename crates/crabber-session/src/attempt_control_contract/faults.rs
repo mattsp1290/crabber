@@ -1,5 +1,13 @@
 use super::*;
 pub(crate) async fn run(store: &impl Store, arm: impl Fn(u8)) {
+    for outcome in [
+        AttemptRetirementOutcome::Failed,
+        AttemptRetirementOutcome::Interrupted,
+    ] {
+        one(store, &arm, outcome).await;
+    }
+}
+async fn one(store: &impl Store, arm: &impl Fn(u8), outcome: AttemptRetirementOutcome) {
     let (admitted, _, _, planned) = crate::phase_contract::fixture(store).await;
     let request = uncertainty(
         &admitted,
@@ -38,7 +46,8 @@ pub(crate) async fn run(store: &impl Store, arm: impl Fn(u8)) {
         panic!("replay with lost ACK still armed");
     };
     arm(0);
-    let retire = retirement(&request, marked.revision);
+    let mut retire = retirement(&request, marked.revision);
+    retire.outcome = outcome;
     let before = store.get_run(&request.run_id).await.unwrap();
     let messages = store.list_all_messages(&request.session_id).await.unwrap();
     arm(1);

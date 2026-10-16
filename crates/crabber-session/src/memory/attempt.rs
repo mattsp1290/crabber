@@ -16,17 +16,12 @@ pub(super) fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Erro
         .get(receipt.event_cursor)
         .ok_or(Error::UnknownStoreOutcome)?;
     attempt::verify_receipt(receipt, event)?;
-    if event
-        .payload
-        .get("version")
-        .and_then(serde_json::Value::as_u64)
-        == Some(4)
-    {
+    if crate::attempt::terminal::candidate(event) {
         let run = state
             .runs
             .get(&receipt.attempt.run_id)
             .ok_or(Error::UnknownStoreOutcome)?;
-        let source = crate::attempt_conclusion::terminal::settlement(receipt, event)?;
+        let source = crate::attempt::terminal::settlement(receipt, event)?;
         let original = state
             .events
             .get(source.cursor.ok_or(Error::UnknownStoreOutcome)?)
@@ -42,8 +37,8 @@ pub(super) fn verify(state: &State, receipt: &AttemptReceipt) -> Result<(), Erro
         if latest != Some(original) {
             return Err(Error::UnknownStoreOutcome);
         }
-        crate::attempt_conclusion::terminal::verify_scope(
-            crate::attempt_conclusion::terminal::TerminalFacts {
+        crate::attempt::terminal::verify_scope(
+            crate::attempt::terminal::TerminalFacts {
                 session: &run.session_id,
                 run: &run.id,
                 status: run.status,

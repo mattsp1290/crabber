@@ -45,29 +45,10 @@ impl MemoryStore {
             let now = self.clock.now();
             let turn = reconcile_children(state, &run, control, now)?;
             apply_control(state, &mut run, &mut record, control, current, now)?;
-            if matches!(control, Control::Retire(_)) {
-                if let Some(turn) = &turn.close {
-                    super::super::insert_event(
-                        state,
-                        &run,
-                        attempt_control::close_turn(&run, turn.clone(), now),
-                    )
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
-                }
-                super::super::insert_event(
-                    state,
-                    &run,
-                    attempt_control::terminal_event(&run, now, turn.source),
-                )
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-                super::super::approval::release_terminal(state, &run, &control.mutation())?;
-                attempt_control::finish_record(&record)?;
-                super::super::run_control::finalize(state, &run, now)
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
-            }
+            let settlement = settle_retirement(state, &run, control, &record, turn, now)?;
             state.runs.insert(run.id.clone(), run.clone());
             state.attempts.insert(target.id.clone(), record.clone());
-            let mut event = control.event(&run, &record.snapshot, now)?;
+            let mut event = control.publication(&run, &record.snapshot, settlement, now)?;
             let cursor = state
                 .events
                 .next_cursor()
@@ -122,6 +103,42 @@ fn apply_control(
     .map_err(|_| Error::UnknownStoreOutcome)
 }
 
+fn settle_retirement(
+    state: &mut State,
+    run: &Run,
+    control: &Control,
+    record: &crate::attempt::AttemptRecord,
+    turn: attempt_control::TurnContext,
+    now: time::OffsetDateTime,
+) -> Result<Option<crabber_core::EventRecord>, Error> {
+    if !matches!(control, Control::Retire(_)) {
+        return Ok(None);
+    }
+
+    if let Some(turn) = &turn.close {
+        super::super::insert_event(
+            state,
+            run,
+            attempt_control::close_turn(run, turn.clone(), now),
+        )
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    super::super::insert_event(
+        state,
+        run,
+        attempt_control::terminal_event(run, now, turn.source),
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    let settlement = state
+        .events
+        .last()
+        .cloned()
+        .ok_or(Error::UnknownStoreOutcome)?;
+    super::super::approval::release_terminal(state, run, &control.mutation())?;
+    attempt_control::finish_record(record)?;
+    super::super::run_control::finalize(state, run, now).map_err(|_| Error::UnknownStoreOutcome)?;
+    Ok(Some(settlement))
+}
 fn reconcile_children(
     state: &mut State,
     run: &Run,

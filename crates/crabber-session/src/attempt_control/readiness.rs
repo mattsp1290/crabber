@@ -172,14 +172,24 @@ pub(crate) fn terminal_event(
     now: OffsetDateTime,
     turn: Option<crabber_core::TurnId>,
 ) -> EventRecord {
+    terminal_event_scope(&run.session_id, &run.id, run.status, &run.usage, now, turn)
+}
+pub(crate) fn terminal_event_scope(
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    status: crabber_core::RunStatus,
+    usage: &crabber_core::Usage,
+    now: OffsetDateTime,
+    turn: Option<crabber_core::TurnId>,
+) -> EventRecord {
     EventRecord {
         cursor: None,
-        session_id: run.session_id.clone(),
-        run_id: run.id.clone(),
+        session_id: session.clone(),
+        run_id: run.clone(),
         turn_id: turn,
         kind: EventKind::RunSettled,
-        payload: serde_json::json!({"status":run.status,"usage":run.usage,"input_tokens":run.usage.input_tokens,"output_tokens":run.usage.output_tokens,"duration_ms":0,"duration_ns":0}),
-        correlation: Some(run.id.0.clone()),
+        payload: serde_json::json!({"status":status,"usage":usage,"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"duration_ms":0,"duration_ns":0}),
+        correlation: Some(run.0.clone()),
         live_only: false,
         created_at: now,
     }

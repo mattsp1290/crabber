@@ -1,5 +1,5 @@
 //! Original terminal v4 conclusion, with every leaf on the caller allowance.
-use crate::attempt_conclusion::terminal::{self, TerminalFacts};
+use crate::attempt::terminal::{self, TerminalFacts};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{EventCursor, RunId, RunStatus, SessionId, Usage};
@@ -36,12 +36,7 @@ pub(super) async fn verify(
         proof,
     )
     .await?;
-    if event
-        .payload
-        .get("version")
-        .and_then(serde_json::Value::as_u64)
-        != Some(4)
-    {
+    if !terminal::candidate(&event) {
         return Ok(false);
     }
     let operation = super::super::source::operation(&event)?;
