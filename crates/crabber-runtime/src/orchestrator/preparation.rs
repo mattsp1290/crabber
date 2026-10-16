@@ -121,11 +121,6 @@ impl Orchestrator {
             request.directory.clone(),
         );
         let resource_contract = self.declared_resource_contract(&context)?;
-        if resource_contract.is_some()
-            && (!self.store.supports_preparation_resources() || !self.store.supports_owned_scopes())
-        {
-            return Err(StoreError::HostUnsupported.into());
-        }
         let reservation = ReservePreparation {
             key: spec.key.clone(),
             source: spec.source,

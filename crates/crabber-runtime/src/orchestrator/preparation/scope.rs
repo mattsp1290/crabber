@@ -32,9 +32,16 @@ impl Orchestrator {
         &self,
         context: &SessionContext,
     ) -> Result<Option<InputFingerprint>, RuntimeError> {
-        self.plan_provider
+        let declared = self
+            .plan_provider
             .preparation_resource_contract(context)
             .map(|declared| declared.map(|contract| contract.fingerprint()))
-            .map_err(RuntimeError::ExtensionPlan)
+            .map_err(RuntimeError::ExtensionPlan)?;
+        if declared.is_some()
+            && (!self.store.supports_preparation_resources() || !self.store.supports_owned_scopes())
+        {
+            return Err(crabber_session::StoreError::HostUnsupported.into());
+        }
+        Ok(declared)
     }
 }
