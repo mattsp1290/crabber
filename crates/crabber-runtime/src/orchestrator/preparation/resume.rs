@@ -151,7 +151,7 @@ impl Orchestrator {
             .prepared = Some(completed);
         Ok(resources)
     }
-    async fn restore_resume_resources(
+    pub(in crate::orchestrator) async fn restore_resume_resources(
         &self,
         run: &Run,
         binding: &ExecutionBindingCapsule,

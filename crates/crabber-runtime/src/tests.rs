@@ -1793,6 +1793,11 @@ struct SettlementGate {
     invocation_poll_panic: std::sync::atomic::AtomicBool,
     invocation_poll_entered: Notify,
     driver_register_fault: AtomicUsize,
+    successor_disabled: std::sync::atomic::AtomicBool,
+    successor_request:
+        Mutex<Option<crabber_session::session_owner::driver::RegisterSuccessorExecutionDriver>>,
+    successor_join_bad: AtomicUsize,
+    successor_join_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
     driver_register_request_override:
         Mutex<Option<crabber_session::session_owner::driver::RegisterExecutionDriver>>,
     driver_register_captured:
@@ -2094,6 +2099,39 @@ impl Store for DelayedTerminalStore {
         }
         Ok(outcome)
     }
+    fn supports_successor_execution_drivers(&self) -> bool {
+        !self.gate.successor_disabled.load(Ordering::SeqCst)
+            && self.inner.supports_successor_execution_drivers()
+    }
+    async fn register_successor_execution_driver(
+        &self,
+        request: crabber_session::session_owner::driver::RegisterSuccessorExecutionDriver,
+    ) -> Result<
+        crabber_session::session_owner::driver::SuccessorExecutionDriverOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        *self.gate.successor_request.lock().unwrap() = Some(request.clone());
+        let point = self.gate.driver_register_fault.swap(0, Ordering::SeqCst);
+        assert_ne!(point, 3, "successor Register store panic before commit");
+        if point == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let result = self
+            .inner
+            .register_successor_execution_driver(request.clone())
+            .await?;
+        assert_ne!(point, 4, "successor Register store panic after commit");
+        if point == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        if point == 5 {
+            return self
+                .inner
+                .register_successor_execution_driver(request)
+                .await;
+        }
+        Ok(result)
+    }
     fn supports_preparation_resources(&self) -> bool {
         true
     }
@@ -2120,7 +2158,9 @@ impl Store for DelayedTerminalStore {
     > {
         let fault = if authority.target().id.0.starts_with("service-owner-") {
             &self.gate.service_activation_fault
-        } else if authority.target().id.0.starts_with("driver-owner-") {
+        } else if authority.target().id.0.starts_with("driver-owner-")
+            || authority.target().id.0.starts_with("successor-owner-")
+        {
             &self.gate.driver_activation_fault
         } else {
             &self.gate.activation_fault
@@ -2193,25 +2233,10 @@ impl Store for DelayedTerminalStore {
             }
             return Ok(result);
         }
-        if authority.target().id.0.starts_with("driver-owner-") {
-            self.gate.driver_join_calls.fetch_add(1, Ordering::SeqCst);
-            self.gate
-                .driver_join_keys
-                .lock()
-                .unwrap()
-                .push(proof.request()?.id);
-            let point = self.gate.driver_join_fault.swap(0, Ordering::SeqCst);
-            assert_ne!(point, 3, "Join Store panic before publication");
-            if point == 1 {
-                return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
-            }
-            let mut outcome = self.inner.join_owned_scope(proof, authority).await?;
-            self.gate.malformed_driver_ack(&mut outcome);
-            assert_ne!(point, 4, "Join Store panic after publication");
-            if point == 2 {
-                return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
-            }
-            return Ok(outcome);
+        if authority.target().id.0.starts_with("driver-owner-")
+            || authority.target().id.0.starts_with("successor-owner-")
+        {
+            return self.join_driver_scope(proof, authority).await;
         }
         self.gate.owned_join_calls.fetch_add(1, Ordering::SeqCst);
         let point = self.gate.owned_join_fault.swap(0, Ordering::SeqCst);
@@ -2285,13 +2310,15 @@ impl Store for DelayedTerminalStore {
             self.gate.invocation_poll_entered.notify_one();
             panic!("detached control Store future panicked");
         }
-        if authority.target().id.0.starts_with("driver-owner-")
+        if (authority.target().id.0.starts_with("driver-owner-")
+            || authority.target().id.0.starts_with("successor-owner-"))
             && self.gate.driver_poll_panic.swap(false, Ordering::SeqCst)
         {
             self.gate.driver_poll_entered.notify_one();
             panic!("driver control Store future panicked");
         }
-        if authority.target().id.0.starts_with("driver-owner-")
+        if (authority.target().id.0.starts_with("driver-owner-")
+            || authority.target().id.0.starts_with("successor-owner-"))
             && self.gate.driver_poll_hold.swap(false, Ordering::SeqCst)
         {
             self.gate.driver_poll_entered.notify_one();
@@ -2300,7 +2327,8 @@ impl Store for DelayedTerminalStore {
                 .driver_poll_completed
                 .fetch_add(1, Ordering::SeqCst);
         }
-        if !authority.target().id.0.starts_with("driver-owner-")
+        if !(authority.target().id.0.starts_with("driver-owner-")
+            || authority.target().id.0.starts_with("successor-owner-"))
             && let Some(gate) = &self.gate.preparation_heartbeat
         {
             gate.pending().await;
@@ -2667,6 +2695,28 @@ impl Store for DelayedTerminalStore {
         crabber_session::AdmissionExecutionError,
     > {
         self.inner.load_admission_execution(session, key).await
+    }
+    async fn lookup_expired_run_preparation(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        issuance: u64,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::ExpiredRunReceipt>,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner
+            .lookup_expired_run_preparation(session, run, issuance)
+            .await
+    }
+    async fn inspect_expired_run_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::InspectExpiredRunPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::ExpiredRunPreparation,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.inspect_expired_run_preparation(request).await
     }
     async fn inspect_admission_recovery(
         &self,
@@ -4063,6 +4113,48 @@ async fn interruption_during_provider_backoff_is_prompt_and_never_retries() {
 }
 
 impl DelayedTerminalStore {
+    async fn join_driver_scope(
+        &self,
+        proof: crabber_session::session_owner::owned_scope::JoinedOwnedScope,
+        authority: crabber_session::session_owner::SessionOwnerAuthority,
+    ) -> Result<
+        crabber_session::session_owner::SessionOwnerOutcome,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.gate.driver_join_calls.fetch_add(1, Ordering::SeqCst);
+        let point = self.gate.driver_join_fault.swap(0, Ordering::SeqCst);
+        assert_ne!(point, 3, "Join Store panic before publication");
+        if point == 1 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        let successor = authority.target().id.0.starts_with("successor-owner-");
+        let keys = if successor {
+            &self.gate.successor_join_keys
+        } else {
+            &self.gate.driver_join_keys
+        };
+        keys.lock().unwrap().push(proof.request()?.id);
+        let mut outcome = self.inner.join_owned_scope(proof, authority).await?;
+        if successor && self.gate.successor_join_bad.load(Ordering::SeqCst) != 0 {
+            match &mut outcome {
+                crabber_session::session_owner::SessionOwnerOutcome::Applied {
+                    receipt, ..
+                }
+                | crabber_session::session_owner::SessionOwnerOutcome::Replayed(receipt) => {
+                    receipt.owner.termination =
+                        Some(crabber_session::session_owner::SessionOwnerTermination::Cancelled);
+                }
+            }
+        }
+        if !successor {
+            self.gate.malformed_driver_ack(&mut outcome);
+        }
+        assert_ne!(point, 4, "Join Store panic after publication");
+        if point == 2 {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
+        Ok(outcome)
+    }
     async fn cancel_before_begin_ack(
         &self,
         session: SessionId,

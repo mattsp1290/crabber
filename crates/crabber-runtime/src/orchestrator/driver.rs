@@ -1,20 +1,18 @@
 //! Actual worker completion precedes native ownership retirement.
 mod control;
+pub(super) mod registration;
 mod resources;
 mod retirement;
 use super::{RunResult, RuntimeError};
 use crate::execution_tasks::WorkerResources;
 use crabber_session::{
     Store,
-    session_owner::{
-        driver::{ExecutionDriverOutcome, RegisterExecutionDriver},
-        owned_scope::{
-            OwnedCleanupTask, OwnedScopeActivationOutcome, OwnedScopeParentAuthority,
-            OwnedTaskRegistration,
-        },
+    session_owner::owned_scope::{
+        OwnedCleanupTask, OwnedScopeActivationOutcome, OwnedTaskRegistration,
     },
 };
 use futures::FutureExt;
+pub(super) use registration::Request;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
@@ -67,7 +65,7 @@ impl WorkerCompletion {
 pub(super) async fn run<F, W>(
     store: Arc<dyn Store>,
     resources: WorkerResources,
-    request: RegisterExecutionDriver,
+    request: Request,
     cancellation: CancellationToken,
     completion: WorkerCompletion,
     work: F,
@@ -76,16 +74,8 @@ where
     F: FnOnce() -> W + Send + 'static,
     W: Future<Output = ()> + Send + 'static,
 {
-    let ExecutionDriverOutcome::Applied { grant, receipt } =
-        store_call(async { store.register_execution_driver(request.clone()).await }).await?
-    else {
-        return Err(RuntimeError::PreparationRecoveryRequired);
-    };
-    if grant.original_request().fingerprint()? != request.fingerprint()?
-        || grant.receipt() != &receipt
-    {
-        return Err(RuntimeError::PreparationRecoveryRequired);
-    }
+    let run = request.run_id().clone();
+    let grant = request.register(store.as_ref()).await?;
     let mut main = OwnedTaskRegistration::register(grant.scope_source()?, work)?;
     // The registered task stays outside every untrusted Store future's unwind
     // boundary. An adapter panic cannot drop/detach its actual join handle.
@@ -94,7 +84,7 @@ where
             .activate_owned_scope(
                 main.activation().clone(),
                 grant.authority().clone(),
-                Some(OwnedScopeParentAuthority::ExecutionDriver(grant.clone())),
+                Some(grant.parent()),
             )
             .await
     })
@@ -128,7 +118,6 @@ where
     stop_control.cancel();
     // This is an independently retained, actual cleanup task. Main completion,
     // empty snapshots and native terminal publications cannot substitute for it.
-    let run = request.fence.run_id;
     let failed_run = run.clone();
     let (main_joined, observe_main) = oneshot::channel();
     let mut cleanup = OwnedCleanupTask::from_host_task(

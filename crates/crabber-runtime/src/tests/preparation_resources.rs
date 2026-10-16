@@ -16,6 +16,8 @@ mod services;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "preparation_resources/sql.rs"]
 mod sql;
+#[path = "preparation_resources/successor.rs"]
+mod successor;
 use super::*;
 use crabber_core::{AdmissionKey, AdmissionOptions, InputFingerprint, SessionContext};
 use crabber_extension::{

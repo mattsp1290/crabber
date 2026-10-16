@@ -158,11 +158,11 @@ pub struct Request {
     pub max_output_tokens: Option<u32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum InitialEntry {
     Unkeyed,
     Keyed,
-    RecoveredKeyed,
+    RecoveredKeyed(Option<crabber_session::session_owner::driver::NativeClaimLocator>),
 }
 struct InitialRequest {
     request: Request,
@@ -1261,6 +1261,14 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         self.own_preparation(run.session_id.clone(), async move {
             let validated = runtime.validated_session(&run).await?;
+            let binding = runtime.stored_binding(&run.session_id, &run.id).await?;
+            if crabber_session::session_owner::preparation::resource_contract(
+                &binding.runtime_semantics,
+            )?
+            .is_some()
+            {
+                return Box::pin(runtime.spawn_prepared_expired(run, validated, binding)).await;
+            }
             let session_id = validated.0.id.clone();
             Ok(runtime.spawn_worker(
                 session_id,
@@ -1314,13 +1322,23 @@ impl Orchestrator {
         Ok((RunSession::from(&session), saved))
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn resume_loaded(
+        &self,
+        run: crabber_core::Run,
+        validated: (RunSession, Option<Request>),
+        cancellation: CancellationToken,
+        approval: Option<continuation::ApprovalResume>,
+    ) -> Result<RunResult, RuntimeError> {
+        Box::pin(self.resume_loaded_inner(run, validated, cancellation, approval, None)).await
+    }
+    #[allow(clippy::too_many_lines)]
+    async fn resume_loaded_inner(
         &self,
         run: crabber_core::Run,
         (session, saved): (RunSession, Option<Request>),
         cancellation: CancellationToken,
         mut approval: Option<continuation::ApprovalResume>,
+        prepared: Option<preparation::expired_resume::ExpiredResume>,
     ) -> Result<RunResult, RuntimeError> {
         let run_id = &run.id.clone();
         if self.store.admission_execution_state(run_id).await?
@@ -1349,9 +1367,14 @@ impl Orchestrator {
             self.verify_binding_request(saved, &session.id, &binding)?;
         }
         let original = Request::from_binding(&binding);
-        let (plan, bound) = self
-            .prepare_resume_resources(&run, &binding, &mut approval)
-            .await?;
+        let (plan, bound, prepared_authority) = if let Some(prepared) = prepared {
+            (prepared.plan, prepared.bound, Some(prepared.authority))
+        } else {
+            let (plan, bound) = self
+                .prepare_resume_resources(&run, &binding, &mut approval)
+                .await?;
+            (plan, bound, None)
+        };
         if !self.store.supports_owned_attempts()
             || !self.store.supports_owned_tool_phases()
             || !self.store.supports_pre_effect_approvals()
@@ -1384,7 +1407,12 @@ impl Orchestrator {
                 self.store.list_unfinished_tool_calls(run_id).await?,
             )?;
         }
-        let Some(acquisition) = self.acquire_resume(&run, approval).await? else {
+        let acquisition = if let Some(authority) = prepared_authority {
+            Some(authority)
+        } else {
+            self.acquire_resume(&run, approval).await?
+        };
+        let Some(acquisition) = acquisition else {
             plan.release();
             return Ok(RunResult {
                 session_id: run.session_id,
@@ -2299,7 +2327,7 @@ impl Orchestrator {
                 plan,
                 claimed.fence,
                 &persisted,
-                InitialEntry::RecoveredKeyed,
+                InitialEntry::RecoveredKeyed(None),
                 Some(bound),
             ),
         })
@@ -2538,17 +2566,15 @@ impl Orchestrator {
         bound: Option<crabber_providers::BoundProvider>,
     ) -> RunHandle {
         let work_session = RunSession::from(session);
-        let driver = (matches!(entry, InitialEntry::Keyed | InitialEntry::Unkeyed)
-            && plan.retains_preparation_resources())
-        .then(
-            || crabber_session::session_owner::driver::RegisterExecutionDriver {
-                context: crabber_core::SessionContext::new(
-                    session.id.clone(),
-                    session.workspace_id.clone(),
-                    session.directory.clone(),
-                ),
-                fence: fence.clone(),
-            },
+        let driver = driver::registration::for_entry(
+            &entry,
+            plan.retains_preparation_resources(),
+            crabber_core::SessionContext::new(
+                session.id.clone(),
+                session.workspace_id.clone(),
+                session.directory.clone(),
+            ),
+            fence.clone(),
         );
         self.spawn_worker_inner(
             session.id.clone(),
@@ -2583,7 +2609,7 @@ impl Orchestrator {
         &self,
         session_id: SessionId,
         run_id: RunId,
-        driver: Option<crabber_session::session_owner::driver::RegisterExecutionDriver>,
+        driver: Option<driver::Request>,
         work: F,
     ) -> RunHandle
     where

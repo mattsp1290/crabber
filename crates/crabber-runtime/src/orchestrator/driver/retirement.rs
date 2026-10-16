@@ -4,14 +4,14 @@ use crabber_session::{
     Store,
     session_owner::{
         SessionOwnerCommand, SessionOwnerError, SessionOwnerOperation, SessionOwnerOutcome,
-        SessionOwnerState, driver::ExecutionDriverGrant, owned_scope::JoinedOwnedScope,
+        SessionOwnerState, owned_scope::JoinedOwnedScope,
     },
 };
 use std::time::Duration;
 
 pub(super) async fn join(
     store: &dyn Store,
-    grant: &ExecutionDriverGrant,
+    grant: &super::registration::Grant,
     proof: JoinedOwnedScope,
 ) -> Result<(), RuntimeError> {
     let native = proof.request()?;
@@ -36,8 +36,8 @@ pub(super) async fn join(
                 | SessionOwnerOutcome::Replayed(receipt)
                     if receipt.operation == SessionOwnerOperation::Join
                         && receipt.owner.state == SessionOwnerState::Joined
-                        && receipt.owner.binding == grant.receipt().begin.owner.binding
-                        && receipt.owner.created_at == grant.receipt().begin.owner.created_at
+                        && receipt.owner.binding == grant.begin().owner.binding
+                        && receipt.owner.created_at == grant.begin().owner.created_at
                         && receipt.owner.termination == Some(termination)
                         && receipt.session_id == native.session_id
                         && receipt.operation_id == native.id

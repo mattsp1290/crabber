@@ -338,6 +338,8 @@ pub(super) struct DurablePreparation {
     capacity: tokio::sync::OwnedSemaphorePermit,
 }
 
+#[path = "preparation/expired_resume.rs"]
+pub(super) mod expired_resume;
 #[path = "preparation/finish.rs"]
 mod finish;
 #[path = "preparation/progress.rs"]

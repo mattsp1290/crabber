@@ -20,6 +20,7 @@ impl Orchestrator {
         retained: admission::Retained,
     ) -> Result<Admission, RuntimeError> {
         self.verify_declared_provider(&retained.binding)?;
+        self.require_successor_driver(&retained.binding)?;
         let source = self.inspect_initial_recovery(&retained).await?;
         let session = source.request().session_id.clone();
         let key = PreparationKey::AdmissionRecovery {
@@ -48,6 +49,13 @@ impl Orchestrator {
         let grant = self
             .begin_control_preparation(&mut captured, &session, spec)
             .await?;
+        let locator = crabber_session::session_owner::driver::NativeClaimLocator {
+            issuance: source
+                .expected_issuance()
+                .checked_add(1)
+                .ok_or(StoreError::AdmissionConflict)?,
+            root_join_id: grant.grant.reconciliation()?.join_id,
+        };
         let runtime = self.clone();
         let original_binding = retained.binding;
         let ((plan, bound), completed) = self
@@ -70,11 +78,27 @@ impl Orchestrator {
                     plan,
                     claimed.fence,
                     &retained.session,
-                    InitialEntry::RecoveredKeyed,
+                    InitialEntry::RecoveredKeyed(Some(locator)),
                     Some(bound),
                 ),
             },
         })
+    }
+    pub(in crate::orchestrator) fn require_successor_driver(
+        &self,
+        binding: &crabber_session::ExecutionBindingCapsule,
+    ) -> Result<(), RuntimeError> {
+        if crabber_session::session_owner::preparation::resource_contract(
+            &binding.runtime_semantics,
+        )?
+        .is_some()
+            && (!self.store.supports_successor_execution_drivers()
+                || !self.store.supports_owned_scopes()
+                || !self.store.supports_preparation_protocol())
+        {
+            return Err(StoreError::HostUnsupported.into());
+        }
+        Ok(())
     }
     async fn inspect_initial_recovery(
         &self,

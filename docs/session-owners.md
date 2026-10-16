@@ -418,10 +418,9 @@ no historical receipt is rewritten to the current revision.
 original source, preparation audits and actual successor without reading current
 Run state. It returns bounded metadata only. Completion replay likewise cannot
 mint a fence or run factories, including after lost ACKs or later R changes.
-This checkpoint supplies native Store primitives only. Runtime generic resume,
-successor driver ownership and normal Static/provider/service adoption still need
-their own integration; this association does not establish physical cleanup,
-whole-Run coverage or deletion readiness.
+The native association does not establish physical cleanup, whole-Run coverage or
+deletion readiness. Runtime adoption of the two supported successor sources is
+described below; normal Static/provider/service coverage remains separate.
 
 The current inspection and reconciliation limits apply to individual carriers.
 They do not establish one aggregate 32 MiB proof budget or bound the complete
@@ -539,5 +538,22 @@ outside that bound. Original metadata replay authenticates the original sources
 without requiring a later head, lease or current revision, and never supplies a
 dispatch grant. Unknown registration/activation ACKs cannot invoke `FnOnce`.
 Actual main and independently retained resource joins remain required for Join.
-This Store component does not adopt Runtime successor dispatch, enable Static
-ownership defaults, or establish whole-Run resource coverage.
+Runtime uses this distinct successor gate after actual prepared admission
+recovery and expired-Run resumption. It captures the original claim locator from
+the inspected source and actual preparation Join; the Store independently
+authenticates it before granting dispatch. Register/Activate replay, unknown ACK
+or panic never dispatches a replacement task. The supervisor retains actual main
+and resource tasks through control errors and retries the original Join proof
+when its ACK is unknown or malformed. Cancellation closes resource ingress;
+neither terminal native metadata nor task cancellation proves those joins.
+
+These two routes preserve the original admission receipt and frozen provider
+policy. An owned provider requires successor capability before restoration.
+Other continuation families retain their existing behavior and remain outside
+this successor component. A live paused owned Run still needs a separately
+authenticated live-pause source; expiry is not inferred from suspension. Legacy
+providers retain the existing unqualified resume path. Static ownership defaults
+and whole-Run resource coverage remain disabled. A process that dies after native
+completion can leave its acquisition child Active; a fresh controller may recover
+eligible native work, but cannot turn that old child into Joined from process
+death, lease expiry or metadata replay.
