@@ -512,10 +512,19 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        // Later migrations widen this constraint for additional metadata kinds.
+        // Reapplying the v10 definition would reject already committed v15 forks.
+        let queue_migrated: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=10)")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if !queue_migrated {
+            sqlx::raw_sql(include_str!("../migrations/0010_future_queue.sql"))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
         sqlx::raw_sql(include_str!("../migrations/0011_tool_continuations.sql"))
             .execute(&mut *tx)
             .await
