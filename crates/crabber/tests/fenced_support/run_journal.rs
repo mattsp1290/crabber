@@ -10,3 +10,14 @@ pub(super) fn advance(previous: &Run, next: &Run, latest: Option<&str>) -> Optio
     )
     .unwrap()
 }
+
+/// Intentional fixture writes retain the independently protected source chain.
+/// The header comes from the actual database row, never a reconstructed fence.
+pub(super) fn source(
+    issuance: &RunIssuance,
+    header: &str,
+) -> crate::native_parent::source_protocol::JournalSource {
+    let head: crate::native_parent::source_protocol::JournalHead =
+        serde_json::from_str(header).unwrap();
+    crate::native_parent::source_protocol::JournalSource::new(Some(&head), issuance).unwrap()
+}

@@ -36,6 +36,13 @@ impl abandonment_contract::FixtureStore for PostgresStore {
         let previous: Run = serde_json::from_str(&previous).unwrap();
         let latest:Option<String>=sqlx::query_scalar("SELECT data_json FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 1").bind(&run.session_id.0).bind(&run.id.0).fetch_optional(&mut *tx).await.unwrap();
         if let Some(issuance) = super::run_journal::advance(&previous, &run, latest.as_deref()) {
+            let header: String = sqlx::query_scalar("SELECT jsonb_build_object('version',protocol_version,'session_id',session_id,'run_id',run_id,'sequence',sequence,'origin_digest',origin_digest,'chain_digest',chain_digest)::text FROM native_run_source_heads WHERE session_id=$1 AND run_id=$2")
+                .bind(&run.session_id.0).bind(&run.id.0).fetch_one(&mut *tx).await.unwrap();
+            let source = crate::run_journal::source(&issuance, &header);
+            sqlx::query("INSERT INTO native_run_sources(session_id,run_id,sequence,issuance_digest,previous_digest,chain_digest) VALUES($1,$2,$3,$4,$5,$6)")
+                .bind(&source.session_id.0).bind(&source.run_id.0).bind(i64::try_from(source.sequence).unwrap())
+                .bind(source.issuance_digest.as_str()).bind(source.previous_digest.as_ref().map(crabber_core::InputFingerprint::as_str)).bind(source.chain_digest.as_str())
+                .execute(&mut *tx).await.unwrap();
             sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,$3,$4)").bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(issuance.sequence).unwrap()).bind(serde_json::to_string(&issuance).unwrap()).execute(&mut *tx).await.unwrap();
         }
         sqlx::query("UPDATE runs SET status=$2,data=$3,lease_until=$4,claim_token=$5 WHERE id=$1")
