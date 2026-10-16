@@ -690,6 +690,7 @@ impl Projector {
             // Until implemented, fail closed instead of dropping a public update.
             EventKind::PublicStateSnapshot
             | EventKind::ExecutionAttemptChanged
+            | EventKind::RunControlChanged
             | EventKind::ToolPhaseChanged
             | EventKind::InteractionChanged
             | EventKind::ContinuationChanged => {

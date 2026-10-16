@@ -62,6 +62,8 @@ impl MemoryStore {
                 .map_err(|_| Error::UnknownStoreOutcome)?;
                 super::super::approval::release_terminal(state, &run, &control.mutation())?;
                 attempt_control::finish_record(&record)?;
+                super::super::run_control::finalize(state, &run, now)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
             }
             state.runs.insert(run.id.clone(), run.clone());
             state.attempts.insert(target.id.clone(), record.clone());
@@ -214,7 +216,7 @@ fn retire_calls(
     Ok(())
 }
 
-fn read_turn(
+pub(in super::super) fn read_turn(
     state: &State,
     run: &Run,
     source: Option<crabber_core::TurnId>,

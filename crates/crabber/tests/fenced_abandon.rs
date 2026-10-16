@@ -75,9 +75,33 @@ pub use crabber::session::{
     PublicHeaderRequest, PublicHeaderUsage, PublicSessionError, PublicSessionLimit,
     PublicSessionLimits, PublicSessionOutcome, PublicSessionRequest,
 };
+pub use crabber::session::{
+    RunControlAction, RunControlBinding, RunControlBoundary, RunControlError, RunControlKind,
+    RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus,
+    RunControlSummary, RunControlTarget, WaitingCancellation,
+};
+#[path = "../../crabber-session/src/run_control/records.rs"]
+#[allow(dead_code)]
+mod run_control_records;
+#[path = "../../crabber-session/src/run_control/suspension.rs"]
+#[allow(dead_code)]
+mod run_control_suspension;
+#[allow(unused_imports)]
+mod run_control {
+    pub(crate) use crate::run_control_records::*;
+    pub(crate) use crate::run_control_suspension::*;
+    pub(crate) use crabber::session::{
+        RunControlAction, RunControlBoundary, RunControlError, RunControlKind, RunControlOutcome,
+        RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus, RunControlSummary,
+        RunControlTarget,
+    };
+}
 #[path = "../../crabber-session/src/public_run.rs"]
 #[allow(dead_code)]
 mod public_run;
+#[path = "../../crabber-session/src/run_control_contract.rs"]
+#[allow(dead_code)]
+mod run_control_contract;
 
 pub use crabber::session::{
     QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
@@ -109,7 +133,7 @@ mod queue {
 #[path = "../../crabber-session/src/queue_contract.rs"]
 #[allow(dead_code)]
 mod queue_contract;
-pub use crabber::session::AdmissionSelectionPolicy;
+pub use crabber::session::{AdmissionSelectionPolicy, MAX_RUN_BOUNDARY_BYTES};
 pub use crabber::session::{PublicRunOutcome, PublicRunState, PublicRunSummary};
 
 #[path = "../../crabber-session/src/tool_continuation/audit.rs"]
@@ -131,10 +155,14 @@ mod tool_continuation_canonical;
 #[path = "../../crabber-session/src/tool_continuation/records.rs"]
 #[allow(dead_code)]
 mod tool_continuation_records;
+#[path = "../../crabber-session/src/tool_continuation/termination.rs"]
+#[allow(dead_code)]
+mod tool_continuation_termination;
 mod tool_continuation {
     pub(crate) use crate::tool_continuation_audit::*;
     pub(crate) use crate::tool_continuation_current::*;
     pub(crate) use crate::tool_continuation_records::*;
+    pub(crate) use crate::tool_continuation_termination::*;
 
     pub(crate) use crabber::session::{
         FrozenToolPhase, ToolContinuationClaim, ToolContinuationError, ToolContinuationOutcome,

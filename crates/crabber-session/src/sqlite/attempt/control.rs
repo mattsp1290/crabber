@@ -57,6 +57,9 @@ impl SqliteStore {
                 super::super::approval::release_terminal(&mut tx, &run, &control.mutation())
                     .await?;
                 attempt_control::finish_record(&record)?;
+                super::super::run_control::finalize(&mut tx, &run, now)
+                    .await
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
             }
             super::super::records::save_run(&mut tx, &run)
                 .await
@@ -204,3 +207,4 @@ async fn validate_phases(
 #[path = "control/tests.rs"]
 mod tests;
 mod turns;
+pub(in super::super) use turns::read as host_turn;

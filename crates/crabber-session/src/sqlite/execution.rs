@@ -29,6 +29,13 @@ impl ExecutionStore for SqliteExecution {
         self.suspend_tools(batch, authority).await
     }
 
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        self.control_boundary(turn).await
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -407,7 +414,7 @@ impl ExecutionStore for SqliteExecution {
                 .await
                 .map_err(db)?
                 .is_some();
-                if pending {
+                if pending || super::run_control::pending(&mut tx, &run).await.map_err(crate::run_control::store_error)? {
                     return Err(StoreError::PendingInput);
                 }
             }
@@ -417,6 +424,7 @@ impl ExecutionStore for SqliteExecution {
             run.usage = usage;
             run.updated_at = self.store.clock.now();
             save_run(&mut tx, &run).await?;
+            super::run_control::finalize(&mut tx, &run, self.store.clock.now()).await.map_err(crate::run_control::store_error)?;
             Ok(())
         }
         .await;

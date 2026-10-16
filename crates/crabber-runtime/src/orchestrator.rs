@@ -19,6 +19,7 @@ mod continuation;
 mod management;
 #[path = "orchestrator/queue.rs"]
 mod queue;
+mod run_control;
 pub use queue::QueueControl;
 #[path = "orchestrator/phase_control.rs"]
 mod phase_control;
@@ -244,6 +245,8 @@ pub enum RecoverySkipReason {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error("durable run control: {0}")]
+    RunControl(#[from] crabber_session::RunControlError),
     #[error("agent host is closed")]
     HostClosed,
     #[error("session is busy")]
@@ -1715,6 +1718,15 @@ impl Orchestrator {
                 }
                 Ok(()) | Err(_) => resumed_work.as_mut().await,
             },
+            control = self_.wait_durable_cancel(failure_execution.as_ref()) => {
+                match control {
+                    Ok(()) => { cancellation.cancel(); resumed_work.as_mut().await }
+                    Err(error) => {
+                        if matches!(error, RuntimeError::LeaseLost) { failure_lost.store(true, Ordering::SeqCst); }
+                        Err(error)
+                    }
+                }
+            },
             result = &mut resumed_work => result,
         };
         drop(heartbeat);
@@ -2632,6 +2644,15 @@ impl Orchestrator {
                         Ok(()) => (),
                         Err(_) => break run_future.as_mut().await,
                     },
+                    control = self_.wait_durable_cancel(execution.as_ref()) => {
+                        match control {
+                            Ok(()) => { cancellation.cancel(); break run_future.as_mut().await; }
+                            Err(error) => {
+                                if matches!(error, RuntimeError::LeaseLost) { lost.store(true, Ordering::SeqCst); }
+                                break Err(error);
+                            }
+                        }
+                    },
                     result = &mut run_future => break result,
                 }
             }
@@ -2711,6 +2732,12 @@ impl Orchestrator {
                 self.turn_event(session_id, run_id, &turn_id, EventKind::TurnStarted),
             )
             .await?;
+            if self.store.supports_run_controls() {
+                let boundary = execution.observe_run_controls(Some(&turn_id)).await?;
+                if boundary.cancel_observed {
+                    return Err(RuntimeError::Interrupted);
+                }
+            }
             let mut snapshot = self.snapshot(run_id, session, request, plan).await?;
             snapshot.identity.turn_id = turn_id.clone();
             let mut compacted = false;
@@ -2860,6 +2887,7 @@ impl Orchestrator {
                         if self.claim_input(execution, InboxKind::Steer).await?
                             + self.claim_input(execution, InboxKind::FollowUp).await?
                             == 0
+                            && !self.store.supports_run_controls()
                         {
                             return Err(RuntimeError::Store(StoreError::PendingInput));
                         }

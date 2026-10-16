@@ -9,6 +9,7 @@ pub(super) use public_header::read as public_header;
 mod recover;
 mod suspend;
 mod terminate;
+pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
 mod write;
 use super::{PostgresStore, db};
 use crate::{

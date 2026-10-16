@@ -137,6 +137,9 @@ async fn settle(
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+    super::run_control::finalize(tx, &outcome.run, now)
+        .await
+        .map_err(crate::run_control::store_error)?;
     Ok((outcome, true))
 }
 

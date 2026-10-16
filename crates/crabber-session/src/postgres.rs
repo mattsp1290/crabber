@@ -21,6 +21,7 @@ mod public_state;
 mod tool_result;
 
 mod queue;
+mod run_control;
 mod tool_continuation;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -63,6 +64,8 @@ pub struct PostgresStore {
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    control_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 struct PostgresExecution {
     store: PostgresStore,
@@ -234,7 +237,8 @@ async fn insert_event(
 ) -> Result<(), StoreError> {
     if matches!(
         event.kind,
-        crabber_core::EventKind::PublicStateSnapshot
+        crabber_core::EventKind::RunControlChanged
+            | crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
@@ -438,6 +442,8 @@ impl PostgresStore {
             queue_fault: Arc::default(),
             #[cfg(test)]
             tool_continuation_fault: Arc::default(),
+            #[cfg(test)]
+            control_fault: Arc::default(),
         })
     }
     /// Applies the bundled migrations to a dedicated PostgreSQL 14+ database.
@@ -495,6 +501,10 @@ impl PostgresStore {
             .await
             .map_err(db)?;
         sqlx::raw_sql(include_str!("../migrations/0011_tool_continuations.sql"))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::raw_sql(include_str!("../migrations/0012_run_controls.sql"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -802,6 +812,44 @@ impl Store for PostgresStore {
         request: crate::ToolContinuationRecovery,
     ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
         self.recover_tools(request).await
+    }
+
+    async fn settle_waiting_cancellation(
+        &self,
+        request: crate::WaitingCancellation,
+    ) -> Result<crate::RunControlSummary, crate::RunControlError> {
+        self.control_settle_waiting(request).await
+    }
+
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<crate::RunControlBinding, crate::RunControlError> {
+        self.control_binding(session, run).await
+    }
+
+    fn supports_run_controls(&self) -> bool {
+        true
+    }
+    async fn control_run(
+        &self,
+        request: crate::RunControlRequest,
+    ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
+        self.control_accept(request).await
+    }
+    async fn lookup_run_control(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::RunControlReceipt>, crate::RunControlError> {
+        self.control_lookup(session, id).await
+    }
+    async fn run_controls(
+        &self,
+        target: &crate::RunControlTarget,
+    ) -> Result<crate::RunControlPage, crate::RunControlError> {
+        self.control_page(target).await
     }
 
     async fn terminate_approval(
@@ -1313,6 +1361,13 @@ impl ExecutionStore for PostgresExecution {
         self.suspend_tools(batch, authority).await
     }
 
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        self.control_boundary(turn).await
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -1645,7 +1700,11 @@ impl ExecutionStore for PostgresExecution {
             .await
             .map_err(db)?
             .is_some();
-            if pending {
+            if pending
+                || run_control::pending(&mut tx, &run)
+                    .await
+                    .map_err(crate::run_control::store_error)?
+            {
                 return Err(StoreError::PendingInput);
             }
         }
@@ -1655,6 +1714,9 @@ impl ExecutionStore for PostgresExecution {
         run.usage = usage;
         run.updated_at = self.store.clock.now();
         save_run(&mut tx, &run).await?;
+        run_control::finalize(&mut tx, &run, self.store.clock.now())
+            .await
+            .map_err(crate::run_control::store_error)?;
         tx.commit().await.map_err(db)
     }
     async fn put_extension_state(

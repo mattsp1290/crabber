@@ -1,3 +1,5 @@
+#[path = "control_execution.rs"]
+mod control_execution;
 use async_trait::async_trait;
 use crabber::{core::*, session::*};
 use std::{
@@ -10,6 +12,14 @@ use std::{
 use tokio::sync::Notify;
 pub(super) struct TestStore {
     pub inner: Arc<dyn Store>,
+    pub control_loss: AtomicBool,
+    pub waiting_loss: AtomicUsize,
+    pub hold_pause: Arc<AtomicBool>,
+    pub skip_control_observation: Arc<AtomicBool>,
+    pub pause_entered: Arc<Notify>,
+    pub pause_release: Arc<Notify>,
+    pub terminal_fault: Arc<AtomicUsize>,
+    pub terminal_calls: Arc<AtomicUsize>,
     pub summary_reads: AtomicUsize,
     pub queue_loss: AtomicUsize,
     pub unsupported: AtomicBool,
@@ -23,6 +33,14 @@ impl TestStore {
     pub fn new(inner: Arc<dyn Store>) -> Self {
         Self {
             inner,
+            control_loss: AtomicBool::new(false),
+            waiting_loss: AtomicUsize::new(0),
+            hold_pause: Arc::default(),
+            skip_control_observation: Arc::default(),
+            pause_entered: Arc::default(),
+            pause_release: Arc::default(),
+            terminal_fault: Arc::default(),
+            terminal_calls: Arc::default(),
             summary_reads: AtomicUsize::new(0),
             queue_loss: AtomicUsize::new(0),
             unsupported: AtomicBool::new(false),
@@ -36,6 +54,60 @@ impl TestStore {
 }
 #[async_trait]
 impl Store for TestStore {
+    async fn settle_waiting_cancellation(
+        &self,
+        request: WaitingCancellation,
+    ) -> Result<RunControlSummary, RunControlError> {
+        if self.waiting_loss.load(Ordering::SeqCst) == 1 {
+            return Err(RunControlError::UnknownStoreOutcome);
+        }
+        let result = self.inner.settle_waiting_cancellation(request).await?;
+        if self.waiting_loss.load(Ordering::SeqCst) == 2 {
+            return Err(RunControlError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
+
+    fn supports_run_controls(&self) -> bool {
+        !self.unsupported.load(Ordering::SeqCst) && self.inner.supports_run_controls()
+    }
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<RunControlBinding, RunControlError> {
+        self.inner.run_control_binding(session, run).await
+    }
+    async fn lookup_run_control(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<RunControlReceipt>, RunControlError> {
+        if self.unsupported.load(Ordering::SeqCst) {
+            return Err(RunControlError::Unsupported);
+        }
+        self.inner.lookup_run_control(session, id).await
+    }
+    async fn run_controls(
+        &self,
+        target: &RunControlTarget,
+    ) -> Result<RunControlPage, RunControlError> {
+        self.inner.run_controls(target).await
+    }
+    async fn control_run(
+        &self,
+        request: RunControlRequest,
+    ) -> Result<RunControlOutcome, RunControlError> {
+        if self.unsupported.load(Ordering::SeqCst) {
+            return Err(RunControlError::Unsupported);
+        }
+        let result = self.inner.control_run(request).await?;
+        if self.control_loss.swap(false, Ordering::SeqCst) {
+            return Err(RunControlError::UnknownStoreOutcome);
+        }
+        Ok(result)
+    }
+
     async fn queue_preparation_snapshot(
         &self,
         id: &SessionId,
@@ -307,6 +379,21 @@ impl Store for TestStore {
         self.inner.claim_unstarted_admission(request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        self.inner.execution(fence).await
+        let inner = self.inner.execution(fence).await?;
+        if self.terminal_fault.load(Ordering::SeqCst) == 0
+            && !self.hold_pause.load(Ordering::SeqCst)
+            && !self.skip_control_observation.load(Ordering::SeqCst)
+        {
+            return Ok(inner);
+        }
+        Ok(Box::new(control_execution::ControlExecution {
+            inner,
+            fault: self.terminal_fault.clone(),
+            calls: self.terminal_calls.clone(),
+            hold_pause: self.hold_pause.clone(),
+            skip_observation: self.skip_control_observation.clone(),
+            entered: self.pause_entered.clone(),
+            release: self.pause_release.clone(),
+        }))
     }
 }

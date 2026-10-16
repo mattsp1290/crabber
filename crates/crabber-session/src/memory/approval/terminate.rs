@@ -8,7 +8,7 @@ impl super::super::MemoryStore {
         &self,
         request: &ApprovalTermination,
     ) -> Result<ApprovalReceipt, Error> {
-        let digest = request.fingerprint()?;
+        request.fingerprint()?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -16,97 +16,102 @@ impl super::super::MemoryStore {
         #[cfg(not(test))]
         let fault = 0;
         let result = self.transact(|state| {
-            if let Some(saved) = replay(
-                state,
-                &request.session_id,
-                &request.run_id,
-                &request.id,
-                &digest,
-            )? {
-                request.verify_receipt(&saved)?;
-                return Ok((saved, false));
+            let result = apply_termination(state, request, self.clock.now())?;
+            if result.1 {
+                super::before_commit(fault)?;
             }
-            let mut run = state
-                .runs
-                .get(&request.run_id)
-                .filter(|run| run.session_id == request.session_id)
-                .cloned()
-                .ok_or(Error::NotFound)?;
-            if revision(state, &run.session_id) != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let id = state
-                .approval_barriers
-                .get(&run.session_id)
-                .cloned()
-                .ok_or(Error::InvalidTransition)?;
-            let mut record = state
-                .approvals
-                .get(&id)
-                .cloned()
-                .ok_or(Error::UnknownStoreOutcome)?;
-            super::verify_record(state, &run, &record)?;
-            validate_native(state, &run, &record)?;
-            validate_calls(state, &run, &record)?;
-            let now = self.clock.now();
-            let outcome = record.terminate(request, &run, now)?;
-            for prepared in &record.batch.calls {
-                let call = state
-                    .calls
-                    .get(&prepared.target.call_id)
-                    .ok_or(Error::NotFound)?;
-                let records = request.materialize_call(
-                    &run,
-                    call,
-                    &prepared.target,
-                    now,
-                    record.batch.source_turn_id.clone(),
-                )?;
-                super::super::tool_result::publish_result(
-                    state,
-                    &run,
-                    &prepared.target.call_id,
-                    records,
-                )
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            }
-            if let Some(event) =
-                request.turn_event(&run, record.batch.source_turn_id.clone(), now)?
-            {
-                super::super::insert_event(state, &run, event)
-                    .map_err(|_| Error::UnknownStoreOutcome)?;
-            }
-            let event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
-            super::super::insert_event(state, &run, event)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            let previous = crate::native_parent::RunState::from_run(&run)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            request.apply_run(&mut run, now)?;
-            super::super::native_parent::record_run_states(
-                state,
-                Some(&previous),
-                crate::native_parent::RunState::from_run(&run)
-                    .map_err(|_| Error::UnknownStoreOutcome)?,
-            )
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-            state.runs.insert(run.id.clone(), run.clone());
-            state.approvals.insert(id, record);
-            state.approval_barriers.remove(&run.session_id);
-            let saved = publish(
-                state,
-                &run,
-                request.id.clone(),
-                digest.clone(),
-                outcome,
-                now,
-            )?;
-            request.verify_receipt(&saved)?;
-            super::before_commit(fault)?;
-            Ok((saved, true))
+            Ok(result)
         });
         super::after_commit(result, fault)
     }
 }
+pub(in super::super) fn apply_termination(
+    state: &mut super::super::State,
+    request: &ApprovalTermination,
+    now: time::OffsetDateTime,
+) -> Result<(ApprovalReceipt, bool), Error> {
+    let digest = request.fingerprint()?;
+    if let Some(saved) = replay(
+        state,
+        &request.session_id,
+        &request.run_id,
+        &request.id,
+        &digest,
+    )? {
+        request.verify_receipt(&saved)?;
+        return Ok((saved, false));
+    }
+    let mut run = state
+        .runs
+        .get(&request.run_id)
+        .filter(|run| run.session_id == request.session_id)
+        .cloned()
+        .ok_or(Error::NotFound)?;
+    if revision(state, &run.session_id) != request.expected_revision {
+        return Err(Error::RevisionConflict);
+    }
+    let id = state
+        .approval_barriers
+        .get(&run.session_id)
+        .cloned()
+        .ok_or(Error::InvalidTransition)?;
+    let mut record = state
+        .approvals
+        .get(&id)
+        .cloned()
+        .ok_or(Error::UnknownStoreOutcome)?;
+    super::verify_record(state, &run, &record)?;
+    validate_native(state, &run, &record)?;
+    validate_calls(state, &run, &record)?;
+
+    let outcome = record.terminate(request, &run, now)?;
+    for prepared in &record.batch.calls {
+        let call = state
+            .calls
+            .get(&prepared.target.call_id)
+            .ok_or(Error::NotFound)?;
+        let records = request.materialize_call(
+            &run,
+            call,
+            &prepared.target,
+            now,
+            record.batch.source_turn_id.clone(),
+        )?;
+        super::super::tool_result::publish_result(state, &run, &prepared.target.call_id, records)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    if let Some(event) = request.turn_event(&run, record.batch.source_turn_id.clone(), now)? {
+        super::super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    let event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
+    super::super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
+    let previous =
+        crate::native_parent::RunState::from_run(&run).map_err(|_| Error::UnknownStoreOutcome)?;
+    request.apply_run(&mut run, now)?;
+    super::super::native_parent::record_run_states(
+        state,
+        Some(&previous),
+        crate::native_parent::RunState::from_run(&run).map_err(|_| Error::UnknownStoreOutcome)?,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::super::run_control::finalize(state, &run, now)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state.runs.insert(run.id.clone(), run.clone());
+    state.approvals.insert(id, record);
+    state.approval_barriers.remove(&run.session_id);
+    let saved = publish(
+        state,
+        &run,
+        request.id.clone(),
+        digest.clone(),
+        outcome,
+        now,
+    )?;
+    request.verify_receipt(&saved)?;
+
+    Ok((saved, true))
+}
+
 fn validate_native(
     state: &super::super::State,
     run: &Run,

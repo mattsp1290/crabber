@@ -12,7 +12,7 @@ impl SqliteStore {
         &self,
         request: &ApprovalTermination,
     ) -> Result<ApprovalReceipt, Error> {
-        let digest = request.fingerprint()?;
+        request.fingerprint()?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -23,52 +23,66 @@ impl SqliteStore {
             .approval_transaction(&request.session_id, &request.run_id)
             .await?;
         let result = async {
-            if let Some(saved) = write::replay(&mut tx, &run, &request.id, &digest).await? {
-                request.verify_receipt(&saved)?;
-                return Ok((saved, false));
+            let result = apply_termination(&mut tx, &run, request, self.clock.now()).await?;
+            if result.1 {
+                sql::before_commit(fault)?;
             }
-            if write::revision(&mut tx, &run.session_id).await? != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let (mut record, _) = load(&mut tx, &run.session_id, &run.id)
-                .await?
-                .ok_or(Error::InvalidTransition)?;
-            write::active(&mut tx, &record).await?;
-            let now = self.clock.now();
-            validate_provenance(&mut tx, &record).await?;
-            validate_attempt(&mut tx, &run, &record).await?;
-            terminal_phases::validate(&mut tx, &run, request.expected_revision).await?;
-            super::suspend::validate_calls(&mut tx, &run, &record.batch).await?;
-            let outcome = record.terminate(request, &run, now)?;
-            materialize_calls(&mut tx, &run, &record, request, now).await?;
-            if let Some(event) =
-                request.turn_event(&run, record.batch.source_turn_id.clone(), now)?
-            {
-                super::super::records::insert_event(&mut tx, &run, &event)
-                    .await
-                    .map_err(sql::unknown)?;
-            }
-            let event = request.run_event(&run, record.batch.source_turn_id.clone(), now)?;
-            super::super::records::insert_event(&mut tx, &run, &event)
-                .await
-                .map_err(sql::unknown)?;
-            let mut terminal = run.clone();
-            request.apply_run(&mut terminal, now)?;
-            super::super::records::save_run(&mut tx, &terminal)
-                .await
-                .map_err(sql::unknown)?;
-            write::save(&mut tx, &record).await?;
-            release_barrier(&mut tx, &record).await?;
-            let saved =
-                write::publish(&mut tx, &run, request.id.clone(), digest, outcome, now).await?;
-            request.verify_receipt(&saved)?;
-            sql::before_commit(fault)?;
-            Ok((saved, true))
+            Ok(result)
         }
         .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
 }
+pub(in super::super) async fn apply_termination(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &ApprovalTermination,
+    now: time::OffsetDateTime,
+) -> Result<(ApprovalReceipt, bool), Error> {
+    let digest = request.fingerprint()?;
+    if let Some(saved) = write::replay(tx, run, &request.id, &digest).await? {
+        request.verify_receipt(&saved)?;
+        return Ok((saved, false));
+    }
+    if write::revision(tx, &run.session_id).await? != request.expected_revision {
+        return Err(Error::RevisionConflict);
+    }
+    let (mut record, _) = load(tx, &run.session_id, &run.id)
+        .await?
+        .ok_or(Error::InvalidTransition)?;
+    write::active(tx, &record).await?;
+
+    validate_provenance(tx, &record).await?;
+    validate_attempt(tx, run, &record).await?;
+    terminal_phases::validate(tx, run, request.expected_revision).await?;
+    super::suspend::validate_calls(tx, run, &record.batch).await?;
+    let outcome = record.terminate(request, run, now)?;
+    materialize_calls(tx, run, &record, request, now).await?;
+    if let Some(event) = request.turn_event(run, record.batch.source_turn_id.clone(), now)? {
+        super::super::records::insert_event(tx, run, &event)
+            .await
+            .map_err(sql::unknown)?;
+    }
+    let event = request.run_event(run, record.batch.source_turn_id.clone(), now)?;
+    super::super::records::insert_event(tx, run, &event)
+        .await
+        .map_err(sql::unknown)?;
+    let mut terminal = run.clone();
+    request.apply_run(&mut terminal, now)?;
+    super::super::run_control::finalize(tx, &terminal, now)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::super::records::save_run(tx, &terminal)
+        .await
+        .map_err(sql::unknown)?;
+    write::save(tx, &record).await?;
+    release_barrier(tx, &record).await?;
+    let saved = write::publish(tx, run, request.id.clone(), digest, outcome, now).await?;
+    request.verify_receipt(&saved)?;
+
+    Ok((saved, true))
+}
+
 async fn validate_provenance(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
@@ -160,4 +174,51 @@ async fn release_barrier(
         return Err(Error::UnknownStoreOutcome);
     }
     Ok(())
+}
+
+pub(in super::super) async fn cancel_waiting(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &crate::RunControlRequest,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    let crate::RunControlAction::Cancel { resolver } = &request.action else {
+        return Ok(());
+    };
+    if run.status != crabber_core::RunStatus::Paused {
+        return Ok(());
+    }
+    let barrier: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+    )
+    .bind(&run.session_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(super::super::db)
+    .map_err(sql::unknown)?;
+    if !barrier {
+        return Ok(());
+    }
+    let (record, expected_revision) = load(tx, &run.session_id, &run.id)
+        .await?
+        .ok_or(Error::UnknownStoreOutcome)?;
+    let termination = ApprovalTermination {
+        id: crate::approval::derived_id("run-control-cancel", &request.id),
+        session_id: run.session_id.clone(),
+        run_id: run.id.clone(),
+        continuation: record.batch.continuation,
+        expected_revision,
+        resolver: resolver.clone(),
+        kind: crate::ApprovalTerminationKind::Cancel,
+    };
+    apply_termination(tx, run, &termination, now).await?;
+    Ok(())
+}
+
+pub(in super::super) async fn validate_terminal_phases(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    revision: crabber_core::SessionRevision,
+) -> Result<(), Error> {
+    terminal_phases::validate(tx, run, revision).await
 }

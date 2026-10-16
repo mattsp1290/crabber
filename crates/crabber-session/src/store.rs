@@ -239,6 +239,49 @@ pub trait Store: Send + Sync {
         crate::public_session::compose::snapshot(self, request).await
     }
 
+    /// Whether this adapter durably implements targeted cancel and steer.
+    fn supports_run_controls(&self) -> bool {
+        false
+    }
+    /// Coherent exact host target binding. Does not infer workspace authorization.
+    async fn run_control_binding(
+        &self,
+        _session: &SessionId,
+        _run: &RunId,
+    ) -> Result<crate::RunControlBinding, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
+    }
+    /// Apply an already accepted Cancel to an authentically quiescent pause.
+    /// A settled original returns metadata before CAS. It never grants dispatch.
+    async fn settle_waiting_cancellation(
+        &self,
+        _request: crate::WaitingCancellation,
+    ) -> Result<crate::RunControlSummary, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
+    }
+    /// Exact-target durable cancel/steer acceptance. Unsupported before acceptance.
+    async fn control_run(
+        &self,
+        _request: crate::RunControlRequest,
+    ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
+    }
+    /// Immutable original receipt, reconciled before current revision or ingress.
+    async fn lookup_run_control(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::RunControlReceipt>, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
+    }
+    /// Coherent bounded status, with no private steer input or worker authority.
+    async fn run_controls(
+        &self,
+        _target: &crate::RunControlTarget,
+    ) -> Result<crate::RunControlPage, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
+    }
+
     /// Revoke a lost/stopped parent without manufacturing child outcomes.
     async fn mark_attempt_uncertain(
         &self,
@@ -749,6 +792,15 @@ pub trait ExecutionStore: Send + Sync {
         _authority: crate::ToolSuspensionAuthority,
     ) -> Result<crate::ToolContinuationReceipt, crate::ToolContinuationError> {
         Err(crate::ToolContinuationError::Unsupported)
+    }
+
+    /// Observe cancellation under the live worker fence. With a turn, atomically
+    /// append all accepted steers before constructing the next provider context.
+    async fn observe_run_controls(
+        &self,
+        _turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        Err(crate::RunControlError::Unsupported)
     }
 
     /// Atomically acknowledge native phase Begin and its logical running source.

@@ -36,7 +36,8 @@ pub(super) fn verify(state: &State, record: &ToolContinuationRecord) -> Result<(
     {
         return Err(Error::UnknownStoreOutcome);
     }
-    audits.verify(record, releases == 1)
+    audits.verify(record, releases == 1)?;
+    super::cancel::verify(state, record)
 }
 fn is_successor(event: &crabber_core::EventRecord, record: &ToolContinuationRecord) -> bool {
     event.kind == crabber_core::EventKind::ContinuationChanged

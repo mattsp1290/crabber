@@ -147,6 +147,10 @@ pub struct ToolContinuationSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolContinuationOutcome {
+    Terminated {
+        continuation: ContinuationTarget,
+        original_cancel_id: ControlId,
+    },
     Suspended {
         continuation: ContinuationTarget,
     },
@@ -222,5 +226,7 @@ mod boundary;
 pub(crate) mod canonical;
 pub(crate) use audit::{audit, checkpoint, derived_id, verify_receipt};
 mod records;
+mod termination;
+pub(crate) use termination::ToolContinuationTermination;
 mod validation;
 pub(crate) use records::*;

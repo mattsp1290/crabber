@@ -2,7 +2,9 @@
 mod answer;
 mod claim;
 pub(super) use claim::waiting_context;
+mod cancel;
 mod current;
+pub(super) use cancel::cancel_waiting;
 mod scan;
 pub(super) use scan::pending as pending_in_session;
 mod evidence;

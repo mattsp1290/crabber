@@ -23,6 +23,9 @@ fn active(state: &State, run: &Run) -> Result<Option<ToolContinuationRecord>, Er
     scan::run(state, run).map(|(_, active)| active)
 }
 pub(super) use claim::waiting_context;
+#[path = "tool_continuation/cancel.rs"]
+mod cancel;
+pub(super) use cancel::cancel_waiting;
 #[path = "tool_continuation/evidence.rs"]
 mod evidence;
 #[path = "tool_continuation/phases.rs"]

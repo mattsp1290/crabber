@@ -32,18 +32,29 @@ impl Orchestrator {
         } = scope;
         let run = &fence.run_id;
         if matches!(error, RuntimeError::Paused) {
+            let selected = self.finish_paused_cancellation(session, run).await?;
+            let usage = if selected.is_some() {
+                self.store
+                    .get_run(run)
+                    .await?
+                    .ok_or(crabber_session::StoreError::NotFound)?
+                    .usage
+            } else {
+                Usage::default()
+            };
             return Ok(RunResult {
                 session_id: session.clone(),
                 run_id: run.clone(),
-                status: RunStatus::Paused,
-                usage: Usage::default(),
+                status: selected.unwrap_or(RunStatus::Paused),
+                usage,
             });
         }
         // An unknown terminal write is reconciled from durable state, never
         // followed by a second attempt to manufacture another outcome.
         if matches!(
             error,
-            RuntimeError::TerminalOutcomeUnknown { .. }
+            RuntimeError::RunControl(_)
+                | RuntimeError::TerminalOutcomeUnknown { .. }
                 | RuntimeError::ApprovalBoundaryUnknown { .. }
                 | RuntimeError::ToolContinuationBoundaryUnknown { .. }
                 | RuntimeError::AttemptBoundaryUnknown { .. }

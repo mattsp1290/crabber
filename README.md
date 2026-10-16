@@ -50,6 +50,9 @@ checks run under retained ownership, so await `done()` for their outcome. Clone
 `handle.control()` to interrupt a worker independently of its receiver. This is a
 local cancellation signal; it does not acknowledge a durable cancellation request.
 
+For persisted cross-controller cancellation and ordered user input at the next
+context boundary, use [durable run controls](docs/durable-run-controls.md).
+
 `done()` awaits the worker result and actual task join. Event EOF and the control's
 completion signal do not prove terminal persistence or external resource cleanup.
 If a terminal write fails or loses its acknowledgement, the result is

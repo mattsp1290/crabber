@@ -25,6 +25,7 @@ pub(super) fn verify_record(
     origin::verify(state, run, record)?;
     current::verify(state, run, record, false)
 }
+pub(super) use terminate::apply_termination;
 use time::OffsetDateTime;
 
 fn receipt(

@@ -33,7 +33,8 @@ pub(super) async fn verify(
     {
         return Err(Error::UnknownStoreOutcome);
     }
-    audits.verify(record, released)
+    audits.verify(record, released)?;
+    super::cancel::verify(tx, record).await
 }
 async fn insert(
     tx: &mut Transaction<'_, Postgres>,

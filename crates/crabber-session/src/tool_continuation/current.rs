@@ -12,6 +12,7 @@ pub(crate) struct CurrentAudits {
     answers: BTreeMap<InteractionId, ToolContinuationReceipt>,
     claim: Option<ToolContinuationReceipt>,
     recovery: Option<ToolContinuationReceipt>,
+    termination: Option<ToolContinuationReceipt>,
 }
 pub(crate) fn audit_key(
     event: &EventRecord,
@@ -50,7 +51,8 @@ impl CurrentAudits {
         record: &ToolContinuationRecord,
     ) -> Result<(), Error> {
         let target = match &receipt.outcome {
-            Outcome::Suspended { continuation }
+            Outcome::Terminated { continuation, .. }
+            | Outcome::Suspended { continuation }
             | Outcome::Answered { continuation, .. }
             | Outcome::Claimed { continuation, .. }
             | Outcome::ReclaimedUnstarted { continuation, .. } => continuation,
@@ -62,6 +64,7 @@ impl CurrentAudits {
             return Err(Error::UnknownStoreOutcome);
         }
         let replaced = match &receipt.outcome {
+            Outcome::Terminated { .. } => self.termination.replace(receipt).is_some(),
             Outcome::Suspended { .. } => self.origin.replace(receipt).is_some(),
             Outcome::Answered { interaction_id, .. } => {
                 let duplicate = self
@@ -113,6 +116,10 @@ impl CurrentAudits {
                             .claim
                             .as_ref()
                             .is_none_or(|claim| receipt.event_cursor < claim.event_cursor)
+                        && self
+                            .termination
+                            .as_ref()
+                            .is_none_or(|end| receipt.event_cursor < end.event_cursor)
                         && receipt.outcome
                             == (Outcome::Answered {
                                 continuation: record.batch.continuation.clone(),
@@ -123,6 +130,25 @@ impl CurrentAudits {
             }
         }
         if !answers.is_empty() {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if let Some(termination) = &self.termination {
+            let proof = record
+                .termination
+                .as_ref()
+                .ok_or(Error::UnknownStoreOutcome)?;
+            proof.verify_receipt(record, termination)?;
+            if released
+                || self.claim.is_some()
+                || self.recovery.is_some()
+                || termination.event_cursor <= origin.event_cursor
+                || termination.event_cursor <= proof.accepted.event_cursor
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
+            return Ok(());
+        }
+        if record.termination.is_some() {
             return Err(Error::UnknownStoreOutcome);
         }
         let expected = match (&self.claim, &record.claim) {

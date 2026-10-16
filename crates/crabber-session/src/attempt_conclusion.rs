@@ -36,7 +36,8 @@ impl std::fmt::Debug for RunBoundary {
 }
 /// The owner has joined every attempt-owned resource before making this claim.
 /// The Store also checks native phase/call readiness; it cannot inspect resources.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttemptConclusion {
     pub finish: AttemptMutation,
     pub boundary: RunBoundary,

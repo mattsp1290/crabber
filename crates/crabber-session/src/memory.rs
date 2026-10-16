@@ -38,6 +38,8 @@ mod tool_result;
 
 #[path = "memory/queue.rs"]
 mod queue;
+#[path = "memory/run_control.rs"]
+mod run_control;
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -82,12 +84,18 @@ pub struct MemoryStore {
     queue_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     tool_continuation_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    control_fault: Arc<std::sync::atomic::AtomicU8>,
 }
 
 #[derive(Clone, Default)]
 struct State {
     native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
+    suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,
+    run_controls: BTreeMap<(SessionId, crabber_core::ControlId), crate::run_control::Record>,
+    run_control_audits:
+        BTreeMap<(SessionId, crabber_core::ControlId, u64), crate::RunControlSummary>,
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
     tool_continuations:
@@ -126,6 +134,7 @@ struct State {
 
 #[derive(Clone)]
 enum OperationReceipt {
+    RunControl(crate::RunControlReceipt),
     Queue(crate::QueueReceipt),
     ToolContinuation(crate::ToolContinuationReceipt),
     Management(crate::ManagementReceipt),
@@ -186,6 +195,8 @@ impl MemoryStore {
             queue_fault: Arc::default(),
             #[cfg(test)]
             tool_continuation_fault: Arc::default(),
+            #[cfg(test)]
+            control_fault: Arc::default(),
         }
     }
 
@@ -305,7 +316,8 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
 fn insert_event(state: &mut State, run: &Run, mut event: EventRecord) -> Result<(), StoreError> {
     if matches!(
         event.kind,
-        crabber_core::EventKind::PublicStateSnapshot
+        crabber_core::EventKind::RunControlChanged
+            | crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
@@ -443,6 +455,44 @@ impl Store for MemoryStore {
         request: crate::PublicHeaderRequest,
     ) -> Result<crate::PublicHeaderOutcome, crate::PublicSessionError> {
         self.read_public_header(&request)
+    }
+
+    async fn settle_waiting_cancellation(
+        &self,
+        request: crate::WaitingCancellation,
+    ) -> Result<crate::RunControlSummary, crate::RunControlError> {
+        self.control_settle_waiting(&request)
+    }
+
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<crate::RunControlBinding, crate::RunControlError> {
+        self.control_binding(session, run)
+    }
+
+    fn supports_run_controls(&self) -> bool {
+        true
+    }
+    async fn control_run(
+        &self,
+        request: crate::RunControlRequest,
+    ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
+        self.control_accept(request)
+    }
+    async fn lookup_run_control(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::RunControlReceipt>, crate::RunControlError> {
+        self.control_lookup(session, id)
+    }
+    async fn run_controls(
+        &self,
+        target: &crate::RunControlTarget,
+    ) -> Result<crate::RunControlPage, crate::RunControlError> {
+        self.control_page(target)
     }
 
     async fn mark_attempt_uncertain(
@@ -1041,6 +1091,13 @@ impl ExecutionStore for MemoryExecution {
         self.suspend_tools(&batch, &authority)
     }
 
+    async fn observe_run_controls(
+        &self,
+        turn: Option<&crabber_core::TurnId>,
+    ) -> Result<crate::RunControlBoundary, crate::RunControlError> {
+        self.control_boundary(turn)
+    }
+
     async fn start_tool_phase(
         &self,
         start: crate::PhaseStart,
@@ -1351,10 +1408,10 @@ impl ExecutionStore for MemoryExecution {
                 ));
             }
             if status == RunStatus::Completed
-                && state
-                    .inbox
-                    .iter()
-                    .any(|row| row.session_id == run.session_id && row.consumed_by_run.is_none())
+                && (run_control::pending(state, run).map_err(crate::run_control::store_error)?
+                    || state.inbox.iter().any(|row| {
+                        row.session_id == run.session_id && row.consumed_by_run.is_none()
+                    }))
             {
                 return Err(StoreError::PendingInput);
             }
@@ -1365,6 +1422,8 @@ impl ExecutionStore for MemoryExecution {
             entry.usage = usage;
             entry.updated_at = now;
             crate::ensure_storable(entry)?;
+            let terminal = entry.clone();
+            run_control::finalize(state, &terminal, now)?;
             Ok(())
         })
     }
@@ -1642,3 +1701,7 @@ async fn untrusted_terminal_markers_are_never_replay_authority() {
     )
     .await;
 }
+
+#[cfg(test)]
+#[path = "memory/run_control_tests.rs"]
+mod run_control_tests;

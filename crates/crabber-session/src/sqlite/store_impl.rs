@@ -61,6 +61,44 @@ impl Store for SqliteStore {
         self.recover_tools(request).await
     }
 
+    async fn settle_waiting_cancellation(
+        &self,
+        request: crate::WaitingCancellation,
+    ) -> Result<crate::RunControlSummary, crate::RunControlError> {
+        self.control_settle_waiting(request).await
+    }
+
+    async fn run_control_binding(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<crate::RunControlBinding, crate::RunControlError> {
+        self.control_binding(session, run).await
+    }
+
+    fn supports_run_controls(&self) -> bool {
+        true
+    }
+    async fn control_run(
+        &self,
+        request: crate::RunControlRequest,
+    ) -> Result<crate::RunControlOutcome, crate::RunControlError> {
+        self.control_accept(request).await
+    }
+    async fn lookup_run_control(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::RunControlReceipt>, crate::RunControlError> {
+        self.control_lookup(session, id).await
+    }
+    async fn run_controls(
+        &self,
+        target: &crate::RunControlTarget,
+    ) -> Result<crate::RunControlPage, crate::RunControlError> {
+        self.control_page(target).await
+    }
+
     async fn terminate_approval(
         &self,
         request: crate::ApprovalTermination,

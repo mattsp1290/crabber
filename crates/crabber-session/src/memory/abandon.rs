@@ -109,6 +109,7 @@ pub(super) fn abandon_transaction(
     );
     #[cfg(test)]
     fail_boundary(state, 7)?;
+    super::run_control::finalize(state, &outcome.run, now)?;
     Ok(outcome)
 }
 

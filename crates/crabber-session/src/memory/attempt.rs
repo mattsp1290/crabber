@@ -1,5 +1,6 @@
 #[path = "attempt/control.rs"]
 mod control;
+pub(super) use control::read_turn as host_turn;
 #[path = "attempt/pristine.rs"]
 mod pristine;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
@@ -69,7 +70,8 @@ impl MemoryStore {
                 Ok(Some(receipt.clone()))
             }
             Some(
-                OperationReceipt::Queue(_)
+                OperationReceipt::RunControl(_)
+                | OperationReceipt::Queue(_)
                 | OperationReceipt::Management(_)
                 | OperationReceipt::PublicState(_)
                 | OperationReceipt::Phase(_)
@@ -204,11 +206,7 @@ impl MemoryExecution {
         let revision = revision(state, &run.session_id)
             .next()
             .map_err(|_| Error::RevisionExhausted)?;
-        let authority = if grant {
-            Some(record.authority()?)
-        } else {
-            None
-        };
+        let authority = grant.then(|| record.authority()).transpose()?;
         let mut event = if let Some(conclusion) = conclusion {
             crate::attempt_conclusion::event(
                 &run,
@@ -243,6 +241,7 @@ impl MemoryExecution {
         state
             .operation_receipts
             .insert(key, OperationReceipt::Attempt(receipt.clone()));
+        super::run_control::suspension::save(state, &run, conclusion, &receipt);
         #[cfg(test)]
         if self
             .store
@@ -319,6 +318,7 @@ fn apply_boundary(
     conclusion.apply_run(&mut updated, now)?;
     super::native_parent::record_run(state, Some(run), &updated)
         .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::run_control::finalize(state, &updated, now).map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), updated);
     Ok(())
 }
@@ -330,10 +330,11 @@ fn check_boundary(
 ) -> Result<(), Error> {
     if let crate::RunBoundary::Terminal { status, .. } = &conclusion.boundary {
         if *status == crabber_core::RunStatus::Completed
-            && state
-                .inbox
-                .iter()
-                .any(|row| row.session_id == run.session_id && row.consumed_by_run.is_none())
+            && (super::run_control::pending(state, run).map_err(|_| Error::UnknownStoreOutcome)?
+                || state
+                    .inbox
+                    .iter()
+                    .any(|row| row.session_id == run.session_id && row.consumed_by_run.is_none()))
         {
             return Err(Error::PendingInput);
         }

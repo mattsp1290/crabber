@@ -469,3 +469,14 @@ Custom Stores opt in explicitly; defaults return Unsupported before tools execut
 See [explicit tool continuations](../../docs/explicit-tool-continuations.md) for the
 start/resume contract, host answers, metadata-only replay, and positive-Unstarted
 recovery. Checkpoints never become tool result output or public snapshots.
+
+## Durable run controls
+
+PostgreSQL schema 12 and fresh SQLite schema 8 add exact-target cancel/steer
+records, immutable progress indexes and private native suspension proofs. Native
+Stores atomically persist acceptance, ordered input incorporation and explicit
+waiting cancellation with their events/revisions. Terminating a waiting tool
+continuation records its own immutable host proof and retains prior answers and
+native Suspended+Complete history. Unsupported or unproven waiting states refuse
+without manufacturing cleanup. See [durable run controls](../../docs/durable-run-controls.md)
+for host request/retry/supervisor APIs and the status versus task-join distinction.

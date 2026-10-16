@@ -10,6 +10,7 @@ mod management;
 #[path = "agent/phase.rs"]
 mod phase;
 mod public_session;
+mod run_control;
 use crate::ExecutionContext;
 pub use approval::Continuation;
 use async_trait::async_trait;

@@ -2,6 +2,7 @@
 pub(super) use records::receipt as host_receipt;
 pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
 mod control;
+pub(super) use control::host_turn;
 mod pristine;
 pub(super) mod records;
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
@@ -262,6 +263,9 @@ impl PostgresExecution {
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
         super::native_parent::record_attempt(tx, run, request, &record, &receipt).await?;
+        super::run_control::suspension::save(tx, run, conclusion, &receipt)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }
@@ -318,7 +322,11 @@ async fn check_boundary(
                 .map_err(db)
                 .map_err(sql::unknown)?;
             let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=$1 AND consumed_by_run IS NULL)").bind(&run.session_id.0).fetch_one(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
-            if pending {
+            if pending
+                || super::run_control::pending(tx, run)
+                    .await
+                    .map_err(|_| Error::UnknownStoreOutcome)?
+            {
                 return Err(Error::PendingInput);
             }
         }
@@ -344,6 +352,9 @@ async fn apply_run_transition(
             .map_err(sql::unknown)?;
         let mut updated = run.clone();
         conclusion.apply_run(&mut updated, now)?;
+        super::run_control::finalize(tx, &updated, now)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         super::save_run(tx, &updated).await.map_err(sql::unknown)?;
         if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
             super::approval::release_terminal(tx, run, request).await?;

@@ -4,7 +4,7 @@ use crate::{
 };
 use crabber_core::{EventRecord, Run};
 use sqlx::{Row, Sqlite, Transaction};
-pub(super) async fn read(
+pub(in super::super::super) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     source: Option<crabber_core::TurnId>,

@@ -28,6 +28,8 @@ pub(crate) struct ToolContinuationRecord {
     pub claim: Option<ToolContinuationClaim>,
     #[serde(default)]
     pub recovery: Option<crate::ToolContinuationRecovery>,
+    #[serde(default)]
+    pub termination: Option<crate::tool_continuation::ToolContinuationTermination>,
 }
 impl ToolContinuationRecord {
     pub(crate) fn new(
@@ -76,6 +78,7 @@ impl ToolContinuationRecord {
             questions,
             claim: None,
             recovery: None,
+            termination: None,
         })
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
@@ -106,7 +109,8 @@ impl ToolContinuationRecord {
                 return Err(Error::UnknownStoreOutcome);
             }
             match (&question.answer, question.view.state) {
-                (None, InteractionState::Pending) => (),
+                (None, InteractionState::Pending) if self.termination.is_none() => (),
+                (None, InteractionState::Cancelled) if self.termination.is_some() => (),
                 (Some(answer), state) if state != InteractionState::Pending => {
                     answer
                         .fingerprint()
@@ -125,7 +129,15 @@ impl ToolContinuationRecord {
                 _ => return Err(Error::UnknownStoreOutcome),
             }
         }
-        if (self.state == ToolContinuationState::Waiting) != self.claim.is_none() {
+        if let Some(termination) = &self.termination {
+            termination.verify(self)?;
+            if self.state != ToolContinuationState::Released
+                || self.claim.is_some()
+                || self.recovery.is_some()
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
+        } else if (self.state == ToolContinuationState::Waiting) != self.claim.is_none() {
             return Err(Error::UnknownStoreOutcome);
         }
         if let Some(claim) = &self.claim {

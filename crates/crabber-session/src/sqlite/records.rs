@@ -178,7 +178,8 @@ pub(super) async fn insert_event(
 ) -> Result<(), StoreError> {
     if matches!(
         event.kind,
-        crabber_core::EventKind::PublicStateSnapshot
+        crabber_core::EventKind::RunControlChanged
+            | crabber_core::EventKind::PublicStateSnapshot
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
