@@ -200,6 +200,7 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         prepared: &crate::session_owner::preparation::PreparedExpiredRunResume,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<
         crate::session_owner::preparation::ExpiredRunOutcome,
         crate::session_owner::preparation::PreparationCommitError,
@@ -212,7 +213,7 @@ impl SqliteStore {
         let completion = expired::completion_source(source, proof, current.expected_revision())?;
         let original = load_run(tx, source.request()).await?;
         let next = expired::replacement(&original, source, self.clock.now())?;
-        super::records::save_run_with_completion(tx, &next, Some(&completion)).await?;
+        super::records::save_run_with_proof(tx, &next, Some(&completion), read_proof).await?;
         Ok(expired::claimed(
             source,
             &completion,

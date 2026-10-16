@@ -139,6 +139,8 @@ pub(in crate::memory) fn current<'a>(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<Option<&'a RunIssuance>, Failure> {
+    crate::native_parent::source_protocol::validate_scope(session, run).map_err(unknown)?;
+    proof.measure(&(session, run))?;
     if !state
         .native_run_protocols
         .contains(&(session.clone(), run.clone()))

@@ -45,8 +45,11 @@ pub(super) async fn init(
     tx: &mut Transaction<'_, Postgres>,
     record: &AdmissionExecutionRecord,
     run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    let issuance = issuer(tx, &run.session_id, &run.id, Some(1)).await?;
+    let issuance = issuance_with_proof(tx, &run.session_id, &run.id, Some(1), proof)
+        .await
+        .map_err(|_| invalid())?;
     issuance.verify(run).map_err(|_| invalid())?;
     insert(tx, Source::Init(Init::new(record, issuance)?)).await
 }

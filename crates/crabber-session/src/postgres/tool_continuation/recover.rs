@@ -46,7 +46,14 @@ impl PostgresStore {
                 .await?
         };
         let result = self
-            .recover_compound_guarded(&mut tx, &run, request, frontend, None)
+            .recover_compound_guarded(
+                &mut tx,
+                &run,
+                request,
+                frontend,
+                None,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
             .await;
         after(finish(tx, result).await, fault)
     }
@@ -56,8 +63,9 @@ impl PostgresStore {
         run: &Run,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.recover_compound_guarded(tx, run, request, None, preparation)
+        self.recover_compound_guarded(tx, run, request, None, preparation, read_proof)
             .await
     }
     pub(in crate::postgres) async fn recover_frontend_guarded(
@@ -66,6 +74,7 @@ impl PostgresStore {
         run: &Run,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         self.recover_compound_guarded(
             tx,
@@ -73,6 +82,7 @@ impl PostgresStore {
             &domain::canonical::frontend_recovery(request),
             Some(request),
             Some(preparation),
+            read_proof,
         )
         .await
     }
@@ -83,6 +93,7 @@ impl PostgresStore {
         request: &ToolContinuationRecovery,
         frontend: Option<&crate::FrontendContinuationRecovery>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         let digest = match frontend {
             Some(request) => request.fingerprint()?,
@@ -143,7 +154,7 @@ impl PostgresStore {
             .map_err(|_| Error::CleanupBlocked)?;
         let authority = parent.authority().map_err(unknown)?;
 
-        super::super::save_run_with_completion(tx, &activated, completion.as_ref())
+        super::super::save_run_with_proof(tx, &activated, completion.as_ref(), read_proof)
             .await
             .map_err(unknown)?;
         super::super::attempt::save_host_attempt(tx, &parent, false)

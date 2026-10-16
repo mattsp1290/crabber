@@ -496,3 +496,11 @@ cannot be deleted or moved to create a new source era. Permanent tombstone purge
 removes dependent source heads and slots in the same transaction. Complete native
 source history supplies one history fact; main-task joins and whole-run resource
 policy still require their own evidence.
+
+SQL prepared native transactions retain the same proof context through preparation
+source verification, root Join publication, initial source publication and later
+issuer changes. Standalone native calls create their allowance at the outer entry.
+The issuer publisher honors the caller's remaining allowance before reading or
+hashing its carriers. Existing native ready/load/provenance helpers still include
+legacy readers, so this source allowance does not establish a bound for every
+carrier in the entire native transaction.

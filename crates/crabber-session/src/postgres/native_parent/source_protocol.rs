@@ -318,3 +318,7 @@ mod begin_tests;
 #[path = "source_protocol/current.rs"]
 mod current;
 pub(in super::super) use current::read as current;
+
+#[cfg(test)]
+#[path = "source_protocol/budget_tests.rs"]
+mod budget_tests;

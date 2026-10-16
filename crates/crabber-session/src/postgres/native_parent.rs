@@ -5,7 +5,7 @@ mod run;
 pub(super) mod source_protocol;
 use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
-pub(super) use run::{change as record_run, change_completed as record_completed};
+pub(super) use run::change_with_proof as record_run_with_proof;
 use sqlx::{Postgres, Row, Transaction};
 
 pub(super) async fn record_attempt(
@@ -14,11 +14,12 @@ pub(super) async fn record_attempt(
     request: &crate::AttemptMutation,
     attempt: &crate::attempt::AttemptRecord,
     receipt: &crate::AttemptReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::AttemptError> {
     if crate::POSTGRES_SCHEMA_VERSION >= 13
         && matches!(request.command, crate::AttemptCommand::Begin { .. })
     {
-        let Some(issuance) = run::latest(tx, run)
+        let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
             .await
             .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
         else {

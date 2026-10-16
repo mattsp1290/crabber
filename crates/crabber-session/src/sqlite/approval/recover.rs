@@ -23,7 +23,13 @@ impl SqliteStore {
             .approval_transaction(&original.session_id, &original.run_id)
             .await?;
         let result = self
-            .recover_approval_guarded(&mut tx, &run, request, None)
+            .recover_approval_guarded(
+                &mut tx,
+                &run,
+                request,
+                None,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
             .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
@@ -34,6 +40,7 @@ impl SqliteStore {
         run: &Run,
         request: &ApprovalContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ApprovalClaimOutcome, bool), Error> {
         let digest = request.fingerprint()?;
         #[cfg(test)]
@@ -78,7 +85,7 @@ impl SqliteStore {
             claim_token: activated.claim_token.clone(),
         };
 
-        super::super::records::save_run_with_completion(tx, &activated, completion.as_ref())
+        super::super::records::save_run_with_proof(tx, &activated, completion.as_ref(), read_proof)
             .await
             .map_err(sql::unknown)?;
         let execution = SqliteExecution {
@@ -96,7 +103,7 @@ impl SqliteStore {
             receipt: native,
             authority: Some(authority),
         } = execution
-            .apply_attempt(tx, &activated, &mutation, None, None)
+            .apply_attempt_with_proof(tx, &activated, &mutation, None, None, read_proof)
             .await
             .map_err(approval::attempt_error)?
         else {

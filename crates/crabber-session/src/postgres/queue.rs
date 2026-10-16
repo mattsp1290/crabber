@@ -25,7 +25,14 @@ impl PostgresStore {
             tx.commit().await.map_err(db)?;
             return Ok(QueueOutcome::Replayed(saved));
         }
-        let result = Box::pin(self.queue_apply_guarded(&mut tx, request, digest, None)).await?;
+        let result = Box::pin(self.queue_apply_guarded(
+            &mut tx,
+            request,
+            digest,
+            None,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        ))
+        .await?;
         #[cfg(test)]
         crate::binding_fault::trip(&self.queue_fault, 1)?;
         tx.commit().await.map_err(db)?;
@@ -39,6 +46,7 @@ impl PostgresStore {
         request: QueueMutation,
         digest: crabber_core::InputFingerprint,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
         let (session, metadata, revision) = reads::current(tx, &request.session_id)
@@ -81,7 +89,7 @@ impl PostgresStore {
         let admitted = if let Some(proof) = &change.admission {
             let bound = proof.bound();
             let outcome = self
-                .admit_keyed_guarded(
+                .admit_keyed_guarded_with_proof(
                     tx,
                     bound.keyed.clone(),
                     preparation.map_or(AdmissionGuard::Queue(proof), |preparation| {
@@ -90,6 +98,7 @@ impl PostgresStore {
                             preparation,
                         }
                     }),
+                    read_proof,
                 )
                 .await?;
             let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {

@@ -9,6 +9,7 @@ pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     grant: &PreparationGrant,
     completed: &PreparationCompletion,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     let Some((session, run, cursor)) = history::metadata(completed) else {
         return Ok(());
@@ -17,6 +18,16 @@ pub(super) async fn verify(
         &grant.original_reservation().key,
         session,
     )?;
+    crate::postgres::read_proof::charge(
+        tx,
+        sqlx::query_scalar(COST)
+            .bind(&session.0)
+            .bind(&run.0)
+            .bind(i64::try_from(cursor.0).map_err(unknown)?),
+        proof,
+    )
+    .await
+    .map_err(unknown)?;
     let rows = sqlx::query(SOURCES)
         .bind(&session.0)
         .bind(&run.0)
@@ -57,7 +68,7 @@ pub(super) async fn verify(
     let mut audits = Vec::with_capacity(3);
     for id in [&ids.reserve, &ids.begin, &ids.join] {
         audits.push(
-            crate::postgres::session_owner::source_audit(tx, session, id)
+            crate::postgres::session_owner::reads::audit_with_proof(tx, session, id, proof)
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?,
         );
@@ -81,3 +92,5 @@ fn carrier(row: &sqlx::postgres::PgRow, name: &str) -> Result<String, Error> {
         .ok_or(Error::UnknownStoreOutcome)
 }
 const SOURCES: &str = "SELECT n.sequence,CASE WHEN octet_length(n.data_json)<=2048 THEN n.data_json END AS current,CASE WHEN octet_length(p.data_json)<=2048 THEN p.data_json END AS previous,CASE WHEN octet_length(e.data::text)<=65536 THEN e.data::text END AS event FROM native_run_issuances n LEFT JOIN native_run_issuances p ON p.session_id=n.session_id AND p.run_id=n.run_id AND p.sequence=n.sequence-1 LEFT JOIN events e ON e.session_id=n.session_id AND e.run_id=n.run_id AND e.seq=$3 WHERE n.session_id=$1 AND n.run_id=$2 ORDER BY n.sequence DESC LIMIT 2";
+
+const COST: &str = "SELECT CAST(COALESCE(SUM(octet_length(n.data_json)+COALESCE(octet_length(p.data_json),0)+COALESCE(octet_length(e.data::text),0)),0) AS BIGINT) FROM (SELECT * FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 2) n LEFT JOIN native_run_issuances p ON p.session_id=n.session_id AND p.run_id=n.run_id AND p.sequence=n.sequence-1 LEFT JOIN events e ON e.session_id=n.session_id AND e.run_id=n.run_id AND e.seq=$3";

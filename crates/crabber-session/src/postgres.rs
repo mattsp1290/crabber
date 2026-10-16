@@ -178,11 +178,21 @@ async fn save_run_with_completion(
     run: &Run,
     source: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<(), StoreError> {
-    if let Some(source) = source {
-        native_parent::record_completed(tx, run, source).await?;
-    } else {
-        native_parent::record_run(tx, run, false).await?;
-    }
+    save_run_with_proof(
+        tx,
+        run,
+        source,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+async fn save_run_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
         .bind(&run.id.0)
         .bind(status(run.status))
@@ -193,6 +203,21 @@ async fn save_run_with_completion(
         .await
         .map_err(db)?;
     Ok(())
+}
+async fn load_run_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    id: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Run, StoreError> {
+    read_proof::charge(
+        tx,
+        sqlx::query_scalar("SELECT CAST(octet_length(data::text) AS BIGINT) FROM runs WHERE id=$1")
+            .bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
+    load_run(tx, id, true).await
 }
 async fn load_run(
     tx: &mut Transaction<'_, Postgres>,
@@ -665,13 +690,30 @@ impl PostgresStore {
         )
         .await
     }
-    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
     pub(super) async fn admit_transaction_guarded(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         request: AdmitRequest,
         allow_create: bool,
         guard: crate::queue::AdmissionGuard<'_>,
+    ) -> Result<AdmitOutcome, StoreError> {
+        self.admit_transaction_guarded_with_proof(
+            tx,
+            request,
+            allow_create,
+            guard,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
+    }
+    #[allow(clippy::too_many_lines)] // Existing atomic admission body, shared with verified queue admission.
+    pub(super) async fn admit_transaction_guarded_with_proof(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        request: AdmitRequest,
+        allow_create: bool,
+        guard: crate::queue::AdmissionGuard<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<AdmitOutcome, StoreError> {
         guard.verify(&request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
@@ -818,7 +860,7 @@ impl PostgresStore {
         sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) VALUES($1,$2,$3,$4,$5,$6,1)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
         if !guard.has_owned_resources() {
-            native_parent::record_run(tx, &run, true).await?;
+            native_parent::record_run_with_proof(tx, &run, true, None, read_proof).await?;
         }
         sqlx::query("INSERT INTO epochs(id,session_id,run_id,data) VALUES($1,$2,$3,$4)")
             .bind(&epoch.id.0)
@@ -835,7 +877,8 @@ impl PostgresStore {
             message.run_id = Some(run_id.clone());
             insert_message(tx, &run, &message).await?;
         }
-        ownership_origin::record_admission(tx, &session, &run, !had_session, guard).await?;
+        ownership_origin::record_admission(tx, &session, &run, !had_session, guard, read_proof)
+            .await?;
         Ok(AdmitOutcome {
             session,
             run,

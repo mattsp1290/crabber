@@ -40,6 +40,21 @@ impl SqliteStore {
         keyed: KeyedAdmitRequest,
         guard: crate::queue::AdmissionGuard<'_>,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
+        self.admit_keyed_guarded_with_proof(
+            tx,
+            keyed,
+            guard,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
+    }
+    pub(super) async fn admit_keyed_guarded_with_proof(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        keyed: KeyedAdmitRequest,
+        guard: crate::queue::AdmissionGuard<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
         let digest = keyed.validated_digest()?;
         let request = &keyed.request;
         let session = request
@@ -71,7 +86,7 @@ impl SqliteStore {
             1
         };
         let admitted = self
-            .admit_transaction_guarded(tx, keyed.request, true, guard)
+            .admit_transaction_guarded_with_proof(tx, keyed.request, true, guard, read_proof)
             .await?;
         let receipt = AdmissionReceipt {
             session_id,
@@ -116,7 +131,7 @@ impl SqliteStore {
                 .execute(&mut **tx)
                 .await
                 .map_err(db)?;
-            super::admission_journal::init(tx, &record, &admitted.run).await?;
+            super::admission_journal::init(tx, &record, &admitted.run, read_proof).await?;
         }
         Ok(KeyedAdmitOutcome::Started {
             receipt,

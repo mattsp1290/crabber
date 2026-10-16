@@ -24,7 +24,13 @@ impl PostgresStore {
             .approval_transaction(&claim.session_id, &claim.run_id)
             .await?;
         let result = self
-            .claim_approval_guarded(&mut tx, &run, claim, None)
+            .claim_approval_guarded(
+                &mut tx,
+                &run,
+                claim,
+                None,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
             .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
@@ -34,6 +40,7 @@ impl PostgresStore {
         run: &Run,
         claim: &ApprovalContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ApprovalClaimOutcome, bool), Error> {
         let digest = claim.fingerprint()?;
         #[cfg(test)]
@@ -74,7 +81,7 @@ impl PostgresStore {
             claim_token: activated.claim_token.clone(),
         };
 
-        super::super::save_run_with_completion(tx, &activated, completion.as_ref())
+        super::super::save_run_with_proof(tx, &activated, completion.as_ref(), read_proof)
             .await
             .map_err(sql::unknown)?;
         let execution = PostgresExecution {
@@ -89,7 +96,7 @@ impl PostgresStore {
             },
         };
         let applied = execution
-            .apply_claim_attempt(tx, &activated, &reserve)
+            .apply_claim_attempt(tx, &activated, &reserve, read_proof)
             .await
             .map_err(approval::attempt_error)?;
         let AttemptMutationOutcome::Applied {

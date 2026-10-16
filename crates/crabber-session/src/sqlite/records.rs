@@ -60,11 +60,21 @@ pub(super) async fn save_run_with_completion(
     run: &Run,
     source: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<(), StoreError> {
-    if let Some(source) = source {
-        super::native_parent::record_completed(tx, run, source).await?;
-    } else {
-        super::native_parent::record_run(tx, run, false).await?;
-    }
+    save_run_with_proof(
+        tx,
+        run,
+        source,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn save_run_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    super::native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",
@@ -99,6 +109,20 @@ pub(super) async fn save_call(
     Ok(())
 }
 
+pub(super) async fn load_run_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Run, StoreError> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar("SELECT length(CAST(data AS BLOB)) FROM runs WHERE id=$1").bind(&id.0),
+        proof,
+    )
+    .await
+    .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
+    load_run(tx, id).await
+}
 pub(super) async fn load_run(
     tx: &mut Transaction<'_, Sqlite>,
     id: &RunId,

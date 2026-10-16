@@ -9,6 +9,7 @@ pub(in crate::postgres) async fn claim_prepared(
     tx: &mut Transaction<'_, Postgres>,
     recovery: &PreparedAdmissionRecovery,
     proof: &VerifiedPreparation<'_>,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<ClaimedAdmission, PreparationCommitError> {
     recovery.validate()?;
     let source = &recovery.source;
@@ -24,9 +25,16 @@ pub(in crate::postgres) async fn claim_prepared(
     .map_err(|_| Error::SemanticConflict)?;
     let completion =
         crate::session_owner::preparation::recovery::completion_source(source, proof, revision)?;
-    let run = super::super::load_run(tx, &source.request().expected_fence.run_id, true).await?;
-    Ok(
-        super::claim_in_transaction(store, tx, run, source.request().clone(), Some(completion))
-            .await?,
+    let run =
+        super::super::load_run_with_proof(tx, &source.request().expected_fence.run_id, read_proof)
+            .await?;
+    Ok(super::claim_in_transaction(
+        store,
+        tx,
+        run,
+        source.request().clone(),
+        Some(completion),
+        read_proof,
     )
+    .await?)
 }

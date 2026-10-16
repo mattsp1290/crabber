@@ -152,16 +152,35 @@ impl SqliteExecution {
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<Outcome, Error> {
-        self.apply_attempt_inner(tx, run, request, (authority, conclusion, false))
-            .await
+        self.apply_attempt_inner(
+            tx,
+            run,
+            request,
+            (authority, conclusion, false),
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
     }
     pub(super) async fn apply_claim_attempt(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         run: &Run,
         request: &AttemptMutation,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
-        self.apply_attempt_inner(tx, run, request, (None, None, true))
+        self.apply_attempt_inner(tx, run, request, (None, None, true), read_proof)
+            .await
+    }
+    pub(super) async fn apply_attempt_with_proof(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        run: &Run,
+        request: &AttemptMutation,
+        authority: Option<&AttemptAuthority>,
+        conclusion: Option<&crate::AttemptConclusion>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Outcome, Error> {
+        self.apply_attempt_inner(tx, run, request, (authority, conclusion, false), read_proof)
             .await
     }
     async fn apply_attempt_inner(
@@ -174,6 +193,7 @@ impl SqliteExecution {
             Option<&crate::AttemptConclusion>,
             bool,
         ),
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
         let (authority, conclusion, claiming) = context;
         let digest = if let Some(conclusion) = conclusion {
@@ -248,7 +268,8 @@ impl SqliteExecution {
             (record, grant)
         };
         let authority = grant.then(|| record.authority()).transpose()?;
-        let settlement = apply_run_transition(tx, run, request, conclusion, now).await?;
+        let settlement =
+            apply_run_transition(tx, run, request, conclusion, now, read_proof).await?;
         let revision = records::revision(tx, &run.session_id)
             .await?
             .next()
@@ -265,7 +286,8 @@ impl SqliteExecution {
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
-        super::native_parent::record_attempt(tx, run, request, &record, &receipt).await?;
+        super::native_parent::record_attempt(tx, run, request, &record, &receipt, read_proof)
+            .await?;
         super::run_control::suspension::save(tx, run, conclusion, &receipt)
             .await
             .map_err(|_| Error::UnknownStoreOutcome)?;
@@ -341,6 +363,7 @@ async fn apply_run_transition(
     request: &AttemptMutation,
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<crabber_core::EventRecord>, Error> {
     let mut settlement = None;
     if let Some(conclusion) = conclusion {
@@ -366,7 +389,7 @@ async fn apply_run_transition(
         super::run_control::finalize(tx, &updated, now)
             .await
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        super::records::save_run(tx, &updated)
+        super::records::save_run_with_proof(tx, &updated, None, read_proof)
             .await
             .map_err(sql::unknown)?;
         if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
@@ -383,7 +406,7 @@ async fn apply_run_transition(
         let mut activated = run.clone();
         activated.status = crabber_core::RunStatus::Running;
         activated.updated_at = now;
-        super::records::save_run(tx, &activated)
+        super::records::save_run_with_proof(tx, &activated, None, read_proof)
             .await
             .map_err(sql::unknown)?;
     }

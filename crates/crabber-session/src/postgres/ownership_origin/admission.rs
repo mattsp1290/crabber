@@ -9,6 +9,7 @@ pub(in super::super) async fn record_admission(
     run: &Run,
     new_session: bool,
     guard: AdmissionGuard<'_>,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
     if !guard.has_owned_resources() {
         return Ok(());
@@ -36,8 +37,7 @@ pub(in super::super) async fn record_admission(
     let encoded = witness.encoded().map_err(invalid)?;
     let join = witness.join_id().map_err(invalid)?;
     let initial = serde_json::to_string(&issuance).map_err(invalid)?;
-    let mut source_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
-    super::super::native_parent::source_protocol::append(tx, &issuance, true, &mut source_proof)
+    super::super::native_parent::source_protocol::append(tx, &issuance, true, read_proof)
         .await
         .map_err(invalid)?;
     sqlx::query(

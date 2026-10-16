@@ -109,7 +109,15 @@ pub(super) async fn claim(
             crate::session_owner::SessionOwnerError::Busy => Error::PreparationBusy,
             _ => Error::UnknownStoreFailure,
         })?;
-    let value = claim_in_transaction(store, &mut tx, run, request, None).await?;
+    let value = claim_in_transaction(
+        store,
+        &mut tx,
+        run,
+        request,
+        None,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await?;
     tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
     Ok(value)
 }
@@ -119,6 +127,7 @@ pub(in crate::sqlite) async fn claim_in_transaction(
     mut run: Run,
     request: ClaimUnstartedAdmissionRequest,
     completion: Option<crate::native_parent::CompletionSource>,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<ClaimedAdmission, Error> {
     let record = load_record(tx, &run.id)
         .await
@@ -144,7 +153,7 @@ pub(in crate::sqlite) async fn claim_in_transaction(
     run.claim_token = uuid::Uuid::new_v4().to_string();
     run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
     run.updated_at = now;
-    super::records::save_run_with_completion(tx, &run, completion.as_ref())
+    super::records::save_run_with_proof(tx, &run, completion.as_ref(), read_proof)
         .await
         .map_err(unknown)?;
     Ok(ClaimedAdmission {

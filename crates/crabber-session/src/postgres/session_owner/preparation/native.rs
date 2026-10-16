@@ -1,4 +1,6 @@
 //! Apply the exact task-returned native intent under the preparation gate.
+#[path = "native/continuation.rs"]
+mod continuation;
 #[path = "native/control.rs"]
 mod control;
 use crate::session_owner::preparation::{PreparationCompletion, PreparedOperation};
@@ -9,84 +11,55 @@ impl super::super::PostgresStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         operation: PreparedOperation,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         let completed = match operation {
             PreparedOperation::ExpiredRunResume(prepared) => PreparationCompletion::ExpiredRun(
-                self.claim_prepared_expired(tx, &prepared, proof).await?,
+                self.claim_prepared_expired(tx, &prepared, proof, read_proof)
+                    .await?,
             ),
             PreparedOperation::AdmissionRecovery(recovery) => {
                 PreparationCompletion::AdmissionRecovery(
                     crate::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(Box::new(
                         super::super::super::admission_execution::claim_prepared(
-                            self, tx, &recovery, proof,
+                            self, tx, &recovery, proof, read_proof,
                         )
                         .await?,
                     )),
                 )
             }
-            PreparedOperation::FrontendClaim(claim) => {
-                let run = super::super::super::load_run(tx, &claim.claim.run_id, true).await?;
-                PreparationCompletion::ToolContinuation(
-                    self.claim_frontend_guarded(tx, &run, &claim, proof)
-                        .await?
-                        .0,
-                )
-            }
-            PreparedOperation::FrontendRecovery(recovery) => {
-                let run = super::super::super::load_run(tx, &recovery.original.claim.run_id, true)
-                    .await?;
-                PreparationCompletion::ToolContinuation(
-                    self.recover_frontend_guarded(tx, &run, &recovery, proof)
-                        .await?
-                        .0,
-                )
-            }
-            PreparedOperation::ApprovalClaim(claim) => {
-                let run = super::super::super::load_run(tx, &claim.run_id, true).await?;
-                PreparationCompletion::Approval(
-                    self.claim_approval_guarded(tx, &run, &claim, Some(proof))
-                        .await?
-                        .0,
-                )
-            }
-            PreparedOperation::ToolClaim(claim) => {
-                let run = super::super::super::load_run(tx, &claim.run_id, true).await?;
-                PreparationCompletion::ToolContinuation(
-                    self.claim_tools_guarded(tx, &run, &claim, Some(proof))
-                        .await?
-                        .0,
-                )
-            }
-            PreparedOperation::ApprovalRecovery(recovery) => {
-                let run =
-                    super::super::super::load_run(tx, &recovery.original.run_id, true).await?;
-                PreparationCompletion::Approval(
-                    self.recover_approval_guarded(tx, &run, &recovery, Some(proof))
-                        .await?
-                        .0,
-                )
-            }
-            PreparedOperation::ToolRecovery(recovery) => {
-                let run =
-                    super::super::super::load_run(tx, &recovery.original.run_id, true).await?;
-                PreparationCompletion::ToolContinuation(
-                    self.recover_tools_guarded(tx, &run, &recovery, Some(proof))
-                        .await?
-                        .0,
-                )
+            operation @ (PreparedOperation::FrontendClaim(_)
+            | PreparedOperation::FrontendRecovery(_)
+            | PreparedOperation::ApprovalClaim(_)
+            | PreparedOperation::ToolClaim(_)
+            | PreparedOperation::ApprovalRecovery(_)
+            | PreparedOperation::ToolRecovery(_)) => {
+                Box::pin(self.apply_prepared_continuation(tx, operation, proof, read_proof)).await?
             }
             PreparedOperation::Queue { request, .. } => {
                 let digest = request.fingerprint()?;
                 PreparationCompletion::Queue(
-                    Box::pin(self.queue_apply_guarded(tx, request, digest, Some(proof))).await?,
+                    Box::pin(self.queue_apply_guarded(
+                        tx,
+                        request,
+                        digest,
+                        Some(proof),
+                        read_proof,
+                    ))
+                    .await?,
                 )
             }
-            PreparedOperation::Admit(bound) => self.admit_prepared_bound(tx, *bound, proof).await?,
+            PreparedOperation::Admit(bound) => {
+                self.admit_prepared_bound(tx, *bound, proof, read_proof)
+                    .await?
+            }
             PreparedOperation::AdmitKeyed(bound) => {
                 let user = bound.keyed.request.user_message.clone();
-                let outcome = self.admit_keyed_guarded(tx, bound.keyed, guard).await?;
+                let outcome = self
+                    .admit_keyed_guarded_with_proof(tx, bound.keyed, guard, read_proof)
+                    .await?;
                 if let KeyedAdmitOutcome::Started { admitted, .. } = &outcome {
                     super::super::super::execution_binding::save(
                         tx,
@@ -97,7 +70,7 @@ impl super::super::PostgresStore {
                 PreparationCompletion::Keyed(outcome)
             }
         };
-        control::verify(tx, proof.grant, &completed).await?;
+        control::verify(tx, proof.grant, &completed, read_proof).await?;
         Ok(completed)
     }
 }
@@ -108,13 +81,14 @@ impl super::super::PostgresStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         bound: crate::BoundAdmitRequest,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         bound.binding.validate(&bound.request)?;
         let user = bound.request.user_message.clone();
         let admitted = self
-            .admit_transaction_guarded(tx, bound.request, false, guard)
+            .admit_transaction_guarded_with_proof(tx, bound.request, false, guard, read_proof)
             .await?;
         super::super::super::execution_binding::save(
             tx,

@@ -38,12 +38,13 @@ impl super::PostgresStore {
             )
             .await
             .map_err(storage_error)?;
+            let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
             let mut proof = Box::pin(self.verify_service_preparation(
                 &mut tx,
                 joined.observed_grant(),
                 None,
                 false,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024),
+                &mut read_proof,
             ))
             .await
             .map_err(storage_error)?;
@@ -60,13 +61,14 @@ impl super::PostgresStore {
                 .map_err(storage_error)?;
             crate::session_owner::preparation::proof::record_handoff(&mut record, &proof)
                 .map_err(storage_error)?;
-            publish_join(&mut tx, &session, record, &join)
+            publish_join(&mut tx, &session, record, &join, &mut read_proof)
                 .await
                 .map_err(storage_error)?;
             let result = Box::pin(self.apply_prepared_native(
                 &mut tx,
                 joined.observed_operation().clone(),
                 &proof,
+                &mut read_proof,
             ))
             .await?;
             super::before(self).map_err(storage_error)?;
@@ -146,6 +148,7 @@ async fn publish_join(
     session: &crabber_core::SessionId,
     record: crate::session_owner::record::Record,
     join: &crate::session_owner::MutateSessionOwner,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     let receipt = record.receipt(
         join.id.clone(),
@@ -153,7 +156,7 @@ async fn publish_join(
         SessionOwnerOperation::Join,
     );
     let publication = publish_revision(tx, session, true).await?;
-    reads::publish(
+    reads::publish_with_proof(
         tx,
         &Audit {
             version: 2,
@@ -162,6 +165,7 @@ async fn publish_join(
             publication: Some(publication),
         },
         false,
+        proof,
     )
     .await?;
 
