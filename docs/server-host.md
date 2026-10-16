@@ -485,6 +485,17 @@ invalidates the capture. These DTOs expose no worker capability, private checkpo
 raw external answer or supplied frontend output. Empty local task lists are not
 durable quiescence evidence.
 
+Tools acquired from `Registry::mount_owned` use concrete mount invocation
+facades, including explicit resumable start and resume calls. An extracted
+executor refuses new invocation after that mount seals. The mount retains the
+original invocation join across caller cancellation; Runtime phase resources
+also retain that same join through their callback owner. Legacy mounts and
+standalone plans keep their original behavior. A held executor `Arc` can still
+keep the original object and opaque resources alive after close: invocation
+joins do not prove reference disposal, physical generation shutdown or a whole
+Run's resource policy. Guards, prompt contributors, provider streams and raw host
+services require their own lifecycle bridges.
+
 `ForkSession` copies a verified closed history prefix into a new session with
 nonexecuting `ImportedToolCall` and message provenance. It does not clone run
 capabilities, pending questions, native effects or execution authority. The

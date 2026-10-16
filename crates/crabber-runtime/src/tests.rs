@@ -36,6 +36,8 @@ mod continuations;
 #[path = "tests/frontend_replay.rs"]
 mod frontend_replay;
 mod native_phase;
+#[path = "tests/owned_tool_invocations.rs"]
+mod owned_tool_invocations;
 #[path = "tests/preparation_resources.rs"]
 mod preparation_resources;
 #[path = "tests/public_state.rs"]

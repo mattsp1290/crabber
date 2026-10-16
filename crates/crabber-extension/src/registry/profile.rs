@@ -1,7 +1,6 @@
 //! Capture registration metadata without plan leases, initialization or execution.
 use super::{
-    RegistrationIdentity, Registry, Scope, append_registration_components, finish_contributors,
-    freeze_contributors,
+    Registry, Scope, append_registration_components, finish_contributors, freeze_contributors,
 };
 use crate::dispatch::{HandlerFn, Mode};
 use crate::{ExtensionError, Registrar, TransformPhase};
@@ -63,13 +62,14 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
             let mut contributors = Vec::new();
             // Global mount sequence is intentionally absent. The outer ordered
             // list records precedence among registrations relevant to a context.
-            let identity = RegistrationIdentity::capture(mount.extension.as_ref());
+            let identity = mount.registration_identity();
             append_registration_components(
                 &identity,
                 mount.scope.rank(),
                 &registrar,
                 0,
                 &mut components,
+                mount.registration.as_ref(),
             );
             super::owned::append_contract(&mount, &mut components);
             freeze_contributors(

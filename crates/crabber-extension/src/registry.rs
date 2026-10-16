@@ -379,6 +379,7 @@ struct Mount {
     drained_notify: Notify,
     cleanup: CleanupOwner,
     owned: Option<owned::State>,
+    registration: Option<CapturedRegistration>,
     close_timeout: Duration,
     close_observer: Option<MountCloseObserver>,
     /// Runs once, right after the tracker first drains, before the re-check.
@@ -386,6 +387,12 @@ struct Mount {
     drain_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl Mount {
+    fn registration_identity(&self) -> RegistrationIdentity {
+        self.registration.as_ref().map_or_else(
+            || RegistrationIdentity::capture(self.extension.as_ref()),
+            |captured| captured.identity.clone(),
+        )
+    }
     /// Waits until no plan lease is held.
     async fn leases_released(&self) {
         while self.leases.load(Ordering::SeqCst) > 0 {
@@ -608,10 +615,16 @@ impl Registry {
                     "extension initialization panicked".into(),
                 ))
             });
-        let result = match installation {
-            Err(error) => Err(error),
-            Ok(()) => self.publish_mount(extension.clone(), scope, &mut registrar, sealed),
-        };
+        let result = installation.and_then(|()| {
+            let captured = if sealed {
+                CapturedRegistration::capture(extension.as_ref(), &registrar).map(Some)
+            } else {
+                Ok(None)
+            };
+            captured.and_then(|captured| {
+                self.publish_mount(extension.clone(), scope, &mut registrar, sealed, captured)
+            })
+        });
         match result {
             Ok(handle) => Ok(handle),
             Err(error) if sealed => {
@@ -636,6 +649,7 @@ impl Registry {
         scope: Scope,
         registrar: &mut Registrar,
         sealed: bool,
+        registration: Option<CapturedRegistration>,
     ) -> Result<MountHandle, ExtensionError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
@@ -700,6 +714,7 @@ impl Registry {
             drained_notify: Notify::new(),
             cleanup,
             owned,
+            registration,
             close_timeout: inner.close_timeout,
             close_observer: inner.close_observer.clone(),
             #[cfg(test)]
@@ -839,7 +854,13 @@ impl Registry {
             // instance in another workspace/session cannot change recovery hashes.
             let plan_sequence = u64::try_from(index).expect("plan index fits u64") + 1;
             let r = mount.registrar.lock().unwrap();
-            tools.extend(r.tools.iter().cloned());
+            if let Some(captured) = &mount.registration {
+                tools.extend(r.tools.iter().zip(&captured.tools).map(|(tool, metadata)| {
+                    owned::tools::project(tool, metadata, InvocationSource::new(mount))
+                }));
+            } else {
+                tools.extend(r.tools.iter().cloned());
+            }
             for prompt in &r.prompts {
                 prompts.retain(|old: &Arc<PromptSection>| old.name != prompt.name);
                 prompts.push(Arc::clone(prompt));
@@ -890,11 +911,55 @@ fn append_mount_components(
     plan_sequence: u64,
     components: &mut Vec<ComponentIdentity>,
 ) {
-    let identity = RegistrationIdentity::capture(mount.extension.as_ref());
-    append_registration_components(&identity, mount.scope.rank(), r, plan_sequence, components);
+    let identity = mount.registration_identity();
+    append_registration_components(
+        &identity,
+        mount.scope.rank(),
+        r,
+        plan_sequence,
+        components,
+        mount.registration.as_ref(),
+    );
     owned::append_contract(mount, components);
 }
 
+struct CapturedRegistration {
+    identity: RegistrationIdentity,
+    tools: Vec<owned::tools::Metadata>,
+    guards: Vec<String>,
+    providers: Vec<(String, String)>,
+}
+impl CapturedRegistration {
+    // User metadata methods run only before publication, outside registry/mount locks.
+    fn capture(extension: &dyn Extension, registrar: &Registrar) -> Result<Self, ExtensionError> {
+        std::panic::catch_unwind(AssertUnwindSafe(|| Self {
+            identity: RegistrationIdentity::capture(extension),
+            tools: registrar
+                .tools
+                .iter()
+                .map(|tool| owned::tools::Metadata::capture(&tool.executor))
+                .collect(),
+            guards: registrar
+                .guards
+                .iter()
+                .map(|guard| guard.id().to_owned())
+                .collect(),
+            providers: registrar
+                .providers
+                .iter()
+                .map(|provider| {
+                    let info = provider.info();
+                    (info.id, info.name)
+                })
+                .collect(),
+        }))
+        .map_err(|payload| {
+            crate::dispatch::discard_panic_payload(payload);
+            ExtensionError::RegistrationDescriptorUnavailable
+        })
+    }
+}
+#[derive(Clone)]
 struct RegistrationIdentity {
     id: String,
     version: String,
@@ -915,6 +980,7 @@ fn append_registration_components(
     r: &Registrar,
     plan_sequence: u64,
     components: &mut Vec<ComponentIdentity>,
+    captured: Option<&CapturedRegistration>,
 ) {
     let extension_id = &identity.id;
     let extension_version = &identity.version;
@@ -924,12 +990,16 @@ fn append_registration_components(
         version: serde_json::to_string(&(extension_version, &extension_config))
             .expect("extension identity serializes"),
     });
-    for t in &r.tools {
+    for (index, t) in r.tools.iter().enumerate() {
         components.push(ComponentIdentity {
             id: format!("tool:{}", t.info.name),
             version: canonical_json(&serde_json::to_value(&t.info).unwrap()).to_string(),
         });
-        if let Some(identity) = t.resumable_identity() {
+        let declaration = captured.map_or_else(
+            || t.resumable_identity(),
+            |captured| captured.tools[index].declaration.clone(),
+        );
+        if let Some(identity) = declaration {
             components.push(ComponentIdentity {
                 id: format!("resumable:{}", t.info.name),
                 version: canonical_json(&serde_json::to_value(identity).unwrap()).to_string(),
@@ -942,9 +1012,13 @@ fn append_registration_components(
             version: format!("{}:{}", p.order, p.text),
         });
     }
-    for g in &r.guards {
+    for (index, g) in r.guards.iter().enumerate() {
+        let id = captured.map_or_else(
+            || g.id().to_owned(),
+            |captured| captured.guards[index].clone(),
+        );
         components.push(ComponentIdentity {
-            id: format!("guard:{}", g.id()),
+            id: format!("guard:{id}"),
             version: String::new(),
         });
     }
@@ -965,10 +1039,17 @@ fn append_registration_components(
             version: handler_version(h, plan_sequence),
         });
     }
-    for provider in &r.providers {
+    for (index, provider) in r.providers.iter().enumerate() {
+        let (id, name) = captured.map_or_else(
+            || {
+                let info = provider.info();
+                (info.id, info.name)
+            },
+            |captured| captured.providers[index].clone(),
+        );
         components.push(ComponentIdentity {
-            id: format!("provider:{}", provider.info().id),
-            version: provider.info().name,
+            id: format!("provider:{id}"),
+            version: name,
         });
     }
     let service_presence = [

@@ -1,5 +1,6 @@
 //! Explicit sealed mount cleanup; completion is an observed actual task join.
 mod invocations;
+pub(super) mod tools;
 use super::{ExtensionError, Mount, MountCloseTimeout, MountHandle, dispatch};
 use crate::{ComponentIdentity, ResourceDrain, ResourceFailure, ToolResourceOwner};
 use futures::FutureExt;
@@ -35,6 +36,10 @@ impl State {
 /// bounded by [`crate::MAX_TOOL_RESOURCE_TASKS`] retained tasks over its lifetime.
 /// Dispatcher callbacks sourced from this concrete owned mount retain their
 /// actual main joins independently of extracted dispatcher clones and waiters.
+/// Registered tool executors and resumable start/resume calls use the same
+/// concrete invocation admission and original joins. Extracted references may
+/// still keep the original object and its opaque resources alive after close;
+/// invocation joins do not prove reference disposal or physical generation close.
 /// Other escaped interfaces still require their own lifecycle ownership.
 #[derive(Clone)]
 pub struct OwnedMountHandle {
@@ -115,6 +120,10 @@ pub(super) fn append_contract(mount: &Mount, components: &mut Vec<ComponentIdent
         components.push(ComponentIdentity {
             id: "registry.mount.cleanup".into(),
             version: "crabber.registry.mount.sealed.v1".into(),
+        });
+        components.push(ComponentIdentity {
+            id: "registry.mount.tool_invocations".into(),
+            version: "crabber.registry.mount.tool-invocations.v1".into(),
         });
         components.push(ComponentIdentity {
             id: "registry.mount.callbacks".into(),
