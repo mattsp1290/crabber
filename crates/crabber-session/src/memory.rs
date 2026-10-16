@@ -60,7 +60,7 @@ use crabber_core::{
     SystemClock, ToolCallId, ToolCallRecord, ToolCallStatus, ToolResult, ToolResultStatus, Usage,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use time::OffsetDateTime;
@@ -99,6 +99,8 @@ pub struct MemoryStore {
 #[derive(Clone, Default)]
 struct State {
     tombstones: BTreeMap<SessionId, crate::deletion::Tombstone>,
+    ownership_origins: BTreeMap<SessionId, crate::deletion::origin::OwnershipOrigin>,
+    ownership_protocol_sessions: BTreeSet<SessionId>,
     native_run_issuances: BTreeMap<(SessionId, RunId, u64), crate::native_parent::RunIssuance>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,

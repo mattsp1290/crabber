@@ -156,6 +156,7 @@ fn publish(
         receipt: saved.clone(),
     };
     audit.validate()?;
+    let origin = crate::deletion::origin::OwnershipOrigin::fork(&saved);
     // Every fallible check precedes the first mutation under the same lock.
     if history.calls.iter().any(|call| {
         state.calls.contains_key(&call.id) || state.imported_call_ids.contains(&call.id)
@@ -163,6 +164,8 @@ fn publish(
         return Err(Error::UnknownStoreOutcome);
     }
     let target = &session.id;
+    state.ownership_protocol_sessions.insert(target.clone());
+    state.ownership_origins.insert(target.clone(), origin);
     for message in history.messages {
         state.messages.push(target.clone(), message);
     }

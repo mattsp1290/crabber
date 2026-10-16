@@ -85,6 +85,13 @@ impl MemoryStore {
                 summary: management::summary(&session, metadata.clone(), revision),
             };
             let key = (session.id.clone(), request.id.clone());
+            if matches!(request.change, crate::SessionChange::Create { .. }) {
+                state.ownership_protocol_sessions.insert(session.id.clone());
+                state.ownership_origins.insert(
+                    session.id.clone(),
+                    crate::deletion::origin::OwnershipOrigin::managed(&saved),
+                );
+            }
             state.sessions.insert(session.id.clone(), session);
             state
                 .management

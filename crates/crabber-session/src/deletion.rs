@@ -111,6 +111,7 @@ impl DeleteSession {
 }
 
 pub(crate) mod coverage;
+pub(crate) mod origin;
 mod records;
 pub(crate) use records::Tombstone;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]

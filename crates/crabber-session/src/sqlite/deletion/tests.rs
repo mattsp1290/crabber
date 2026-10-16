@@ -1,6 +1,67 @@
 use super::super::SqliteStore;
 use crate::{Store, StoreError};
 #[tokio::test]
+async fn creation_protocol_is_not_retrofitted() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("origins.db");
+    SqliteStore::migrate(&path).await.unwrap();
+    let store = SqliteStore::connect(&path).await.unwrap();
+    let managed = store
+        .manage_session(crate::management_contract::create())
+        .await
+        .unwrap();
+    let protocol: i64 = sqlx::query_scalar("SELECT ownership_protocol FROM sessions WHERE id=$1")
+        .bind(&managed.session_id.0)
+        .fetch_one(&store.readers)
+        .await
+        .unwrap();
+    assert_eq!(protocol, 1);
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session_ownership_origins WHERE session_id=$1")
+            .bind(&managed.session_id.0)
+            .fetch_one(&store.readers)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    let session = crabber_core::SessionId::new();
+    store
+        .admit_run(crate::deletion::contract::admission(&session))
+        .await
+        .unwrap();
+    let revision = store.session_revision(&session).await.unwrap();
+    store
+        .manage_session(crate::ManageSession {
+            id: crabber_core::ControlId::new(),
+            session_id: session.clone(),
+            expected_revision: revision,
+            change: crate::SessionChange::Rename {
+                title: "renamed legacy session".into(),
+            },
+        })
+        .await
+        .unwrap();
+    let protocol: i64 = sqlx::query_scalar("SELECT ownership_protocol FROM sessions WHERE id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.readers)
+        .await
+        .unwrap();
+    assert_eq!(protocol, 0);
+    assert!(
+        sqlx::query("INSERT INTO session_ownership_origins(session_id,data_json) VALUES($1,'{}')")
+            .bind(&session.0)
+            .execute(&store.writer)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("UPDATE sessions SET ownership_protocol=1 WHERE id=$1")
+            .bind(&session.0)
+            .execute(&store.writer)
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
 async fn permanent_identity_guards() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("deleted.db");

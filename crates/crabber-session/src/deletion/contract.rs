@@ -153,7 +153,7 @@ async fn fork_target_guard(store: &dyn Store, target: &SessionId) {
     );
 }
 
-fn admission(session: &SessionId) -> crate::AdmitRequest {
+pub(crate) fn admission(session: &SessionId) -> crate::AdmitRequest {
     let id = crabber_core::MessageId::new();
     crate::AdmitRequest {
         expected_revision: None,

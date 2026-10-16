@@ -19,6 +19,7 @@ mod lock_order_tests;
 mod management;
 mod migration;
 mod native_parent;
+mod ownership_origin;
 mod phase;
 mod public_header;
 mod public_run;

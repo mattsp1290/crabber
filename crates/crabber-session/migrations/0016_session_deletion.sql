@@ -1,4 +1,23 @@
 -- Minimal permanent erasure identity; deliberately has no session/run FK.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ownership_protocol smallint NOT NULL DEFAULT 0 CHECK(ownership_protocol IN (0,1));
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_ownership_scope ON sessions(id,ownership_protocol);
+CREATE TABLE IF NOT EXISTS session_ownership_origins (
+ session_id text PRIMARY KEY REFERENCES sessions(id),
+ protocol_version smallint NOT NULL DEFAULT 1 CHECK(protocol_version=1),
+ data_json text NOT NULL CHECK(octet_length(data_json)<=8192),
+ FOREIGN KEY(session_id,protocol_version) REFERENCES sessions(id,ownership_protocol)
+);
+CREATE OR REPLACE FUNCTION crabber_immutable_ownership_protocol() RETURNS trigger AS $$
+BEGIN
+ IF NEW.ownership_protocol IS DISTINCT FROM OLD.ownership_protocol THEN
+  RAISE EXCEPTION 'crabber_ownership_protocol_immutable';
+ END IF;
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS sessions_ownership_protocol_immutable ON sessions;
+CREATE TRIGGER sessions_ownership_protocol_immutable BEFORE UPDATE OF ownership_protocol ON sessions
+ FOR EACH ROW EXECUTE FUNCTION crabber_immutable_ownership_protocol();
 CREATE TABLE IF NOT EXISTS session_tombstones (
  session_id text PRIMARY KEY CHECK(octet_length(session_id) BETWEEN 1 AND 512),
  operation_id text NOT NULL CHECK(octet_length(operation_id) BETWEEN 1 AND 128),
