@@ -18,7 +18,6 @@ use futures::FutureExt;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -109,30 +108,24 @@ where
         }
         Err(error) => Err(error.into()),
     };
-    let mut ticker = tokio::time::interval_at(
-        tokio::time::Instant::now() + Duration::from_secs(5),
-        Duration::from_secs(5),
-    );
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut observed = None;
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => break,
-            joined = main.join() => { joined?; break; }
-            _ = ticker.tick() => {
-                let poll = store_call(async {
-                    control::poll(store.as_ref(), grant.authority(), &cancellation, &mut observed).await;
-                    Ok(())
-                }).await;
-                if poll.is_err() {
-                    cancellation.cancel();
-                    // Start real resource closure before awaiting the main:
-                    // a main may itself be waiting for a child to receive close.
-                    break;
-                }
-            },
-        }
-    }
+    let stop_control = CancellationToken::new();
+    // Keep an in-flight Store future alive across main/cancel selection. Close
+    // can progress concurrently, but retirement awaits this original future.
+    let mut polling = Box::pin(control::supervise(
+        store.as_ref(),
+        grant.authority(),
+        &cancellation,
+        &stop_control,
+    ));
+    let control_done = tokio::select! {
+        () = cancellation.cancelled() => false,
+        joined = main.join() => { joined?; false },
+        result = &mut polling => {
+            if result.is_err() { cancellation.cancel(); }
+            true
+        },
+    };
+    stop_control.cancel();
     // This is an independently retained, actual cleanup task. Main completion,
     // empty snapshots and native terminal publications cannot substitute for it.
     let run = request.fence.run_id;
@@ -142,10 +135,22 @@ where
         main.activation().clone(),
         tokio::spawn(resources::finish(resources, run, observe_main)),
     );
-    let joined = main.join().await?;
-    // This barrier is sent only after the actual retained main join. Cleanup
-    // must close/drain the final registered set after that observation too.
-    let _ = main_joined.send(());
+    let (joined, ()) = futures::join!(
+        async {
+            let joined = main.join().await?;
+            // Only the actual main join releases cleanup's final-drain barrier.
+            let _ = main_joined.send(());
+            Ok::<_, crabber_session::session_owner::SessionOwnerError>(joined)
+        },
+        async {
+            if !control_done {
+                // Keep polling the original Store future while main and actual
+                // cleanup progress; neither replaces this completion.
+                let _ = polling.await;
+            }
+        }
+    );
+    let joined = joined?;
     completion.observe_main(joined);
     let proof = joined
         .observe_resources(&mut cleanup)

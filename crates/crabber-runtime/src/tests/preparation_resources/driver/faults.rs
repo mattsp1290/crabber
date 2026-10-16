@@ -2,6 +2,8 @@
 use super::*;
 #[path = "faults/late.rs"]
 mod late;
+#[path = "faults/pending.rs"]
+mod pending;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn store_poll_panic_retains_actual_main_and_cleanup_until_their_joins() {

@@ -1802,6 +1802,9 @@ struct SettlementGate {
     driver_join_calls: AtomicUsize,
     driver_poll_panic: std::sync::atomic::AtomicBool,
     driver_poll_entered: Notify,
+    driver_poll_hold: std::sync::atomic::AtomicBool,
+    driver_poll_release: Notify,
+    driver_poll_completed: AtomicUsize,
     preparation_fault: AtomicUsize,
     unsupported_recovery_inspection: std::sync::atomic::AtomicBool,
     activation_fault: AtomicUsize,
@@ -2209,6 +2212,15 @@ impl Store for DelayedTerminalStore {
         {
             self.gate.driver_poll_entered.notify_one();
             panic!("driver control Store future panicked");
+        }
+        if authority.target().id.0.starts_with("driver-owner-")
+            && self.gate.driver_poll_hold.swap(false, Ordering::SeqCst)
+        {
+            self.gate.driver_poll_entered.notify_one();
+            self.gate.driver_poll_release.notified().await;
+            self.gate
+                .driver_poll_completed
+                .fetch_add(1, Ordering::SeqCst);
         }
         self.inner.pending_session_owner_cancel(authority).await
     }

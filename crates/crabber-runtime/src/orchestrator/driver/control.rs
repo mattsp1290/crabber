@@ -66,3 +66,35 @@ pub(super) async fn poll(
         .mutate_session_owner(renewal, Some(authority.clone()))
         .await;
 }
+
+/// Stop before starting another poll; an already started Store call must finish.
+pub(super) async fn supervise(
+    store: &dyn Store,
+    authority: &SessionOwnerAuthority,
+    cancellation: &CancellationToken,
+    stop: &CancellationToken,
+) -> Result<(), crabber_session::session_owner::SessionOwnerError> {
+    use std::time::Duration;
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut observed = None;
+    loop {
+        tokio::select! {
+            () = stop.cancelled() => return Ok(()),
+            _ = ticker.tick() => (),
+        }
+        // A delayed original poll can leave a tick ready alongside stop.
+        // Do not start another Store call after completing that original one.
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        super::store_call(async {
+            poll(store, authority, cancellation, &mut observed).await;
+            Ok(())
+        })
+        .await?;
+    }
+}

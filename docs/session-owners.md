@@ -445,7 +445,10 @@ the main still runs. The cleanup task remains alive until the main has actually
 joined and a final drain covers scopes registered later. Native Join retries
 reuse that same physical evidence and validate the original termination and
 creation binding. A Store response carrying another Run's genuine grant cannot
-dispatch this Run's work.
+dispatch this Run's work. Cancellation can start resource closure during a
+pending control Store call, while the original poll remains retained and is
+polled to completion alongside the actual main join. Retirement waits for that
+call too; a replacement poll or dropped future is not completion evidence.
 
 A selected execution-driver owner can be classified after its genuine main and
 resource-cleanup observations were durably joined. SQL readers require both the
