@@ -68,6 +68,7 @@ impl PreparationResourceContract {
 pub struct PreparationResourceContext {
     session: SessionContext,
     resources: ToolResources,
+    service_dependencies: crate::SessionServiceDependencies,
 }
 impl PreparationResourceContext {
     /// Trusted host bridge. This confers registration, not storage authority.
@@ -80,7 +81,11 @@ impl PreparationResourceContext {
         if resources.closing().is_none() {
             return Err(ResourceRegistrationError::Unsupported);
         }
-        Ok(Self { session, resources })
+        Ok(Self {
+            session,
+            resources,
+            service_dependencies: crate::SessionServiceDependencies::default(),
+        })
     }
     #[must_use]
     pub fn session(&self) -> &SessionContext {
@@ -89,6 +94,20 @@ impl PreparationResourceContext {
     #[must_use]
     pub fn cleanup(&self) -> PreparationCleanup {
         PreparationCleanup(self.resources.clone())
+    }
+    /// Install the trusted host capability already bound to this exact session
+    /// and original preparation. This carries no new storage authority itself.
+    #[must_use]
+    pub fn with_service_dependencies(
+        mut self,
+        services: crate::SessionServiceDependencies,
+    ) -> Self {
+        self.service_dependencies = services;
+        self
+    }
+    #[must_use]
+    pub fn service_dependencies(&self) -> &crate::SessionServiceDependencies {
+        &self.service_dependencies
     }
     /// Actual cooperative scope-close signal; observation never proves cleanup.
     pub async fn closing(&self) {
