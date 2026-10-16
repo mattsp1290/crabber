@@ -1,4 +1,6 @@
 //! Apply the exact task-returned native intent under the preparation gate.
+#[path = "native/control.rs"]
+mod control;
 use crate::session_owner::preparation::{PreparationCompletion, PreparedOperation};
 use crate::{KeyedAdmitOutcome, RetainedExecutionBinding};
 impl super::super::MemoryStore {
@@ -10,7 +12,7 @@ impl super::super::MemoryStore {
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
-        Ok(match operation {
+        let completed = match operation {
             PreparedOperation::AdmissionRecovery(recovery) => {
                 PreparationCompletion::AdmissionRecovery(
                     crate::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(Box::new(
@@ -86,6 +88,8 @@ impl super::super::MemoryStore {
                 }
                 PreparationCompletion::Keyed(outcome)
             }
-        })
+        };
+        control::verify(state, proof.grant, &completed)?;
+        Ok(completed)
     }
 }

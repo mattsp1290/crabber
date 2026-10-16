@@ -46,16 +46,15 @@ impl SqliteStore {
         if let Some(saved) = write::replay(tx, run, &claim.id, &digest).await? {
             return Ok((ApprovalClaimOutcome::Replayed(saved), false));
         }
-        let expected_revision = preparation
-            .map_or(Ok(claim.expected_revision), |proof| {
-                proof.control_revision(
-                    &crate::session_owner::preparation::PreparationKey::Approval(claim.id.clone()),
-                    &claim.session_id,
-                    &claim.run_id,
-                    claim.expected_revision,
-                )
-            })
-            .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
+            preparation,
+            crate::native_parent::CompletionOperation::ApprovalClaim,
+            &crate::session_owner::preparation::PreparationKey::Approval(claim.id.clone()),
+            (&claim.session_id, &claim.run_id),
+            claim.expected_revision,
+            &digest,
+        )
+        .map_err(|_| Error::SemanticConflict)?;
         if write::revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
@@ -74,7 +73,8 @@ impl SqliteStore {
             run_id: run.id.clone(),
             claim_token: activated.claim_token.clone(),
         };
-        super::super::records::save_run(tx, &activated)
+
+        super::super::records::save_run_with_completion(tx, &activated, completion.as_ref())
             .await
             .map_err(sql::unknown)?;
         let execution = SqliteExecution {

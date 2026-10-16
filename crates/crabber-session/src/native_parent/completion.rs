@@ -65,7 +65,39 @@ impl CompletionSource {
                 status,
                 crabber_core::RunStatus::Running | crabber_core::RunStatus::Paused
             ),
+            CompletionOperation::ApprovalClaim => status == crabber_core::RunStatus::Paused,
             _ => status == crabber_core::RunStatus::Running,
         }
+    }
+}
+
+impl CompletionSource {
+    pub(crate) fn optional(
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        operation: CompletionOperation,
+        digest: &InputFingerprint,
+    ) -> Result<Option<Self>, crate::session_owner::SessionOwnerError> {
+        preparation
+            .map(|proof| Self::from_preparation(proof, operation, digest.clone()))
+            .transpose()
+    }
+}
+
+impl CompletionSource {
+    pub(crate) fn control(
+        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        operation: CompletionOperation,
+        key: &crate::session_owner::preparation::PreparationKey,
+        scope: (&crabber_core::SessionId, &crabber_core::RunId),
+        revision: crabber_core::SessionRevision,
+        digest: &InputFingerprint,
+    ) -> Result<
+        (crabber_core::SessionRevision, Option<Self>),
+        crate::session_owner::SessionOwnerError,
+    > {
+        let revision = preparation.map_or(Ok(revision), |proof| {
+            proof.control_revision(key, scope.0, scope.1, revision)
+        })?;
+        Ok((revision, Self::optional(preparation, operation, digest)?))
     }
 }

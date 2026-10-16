@@ -83,18 +83,21 @@ impl MemoryStore {
             .filter(|run| run.session_id == original.session_id)
             .cloned()
             .ok_or(Error::NotFound)?;
-        let expected_revision = preparation
-            .map_or(Ok(request.expected_revision), |proof| {
-                proof.control_revision(
-                    &crate::session_owner::preparation::PreparationKey::ToolContinuation(
-                        request.id.clone(),
-                    ),
-                    &original.session_id,
-                    &original.run_id,
-                    request.expected_revision,
-                )
-            })
-            .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
+            preparation,
+            if frontend.is_some() {
+                crate::native_parent::CompletionOperation::FrontendRecovery
+            } else {
+                crate::native_parent::CompletionOperation::ToolRecovery
+            },
+            &crate::session_owner::preparation::PreparationKey::ToolContinuation(
+                request.id.clone(),
+            ),
+            (&original.session_id, &original.run_id),
+            request.expected_revision,
+            &digest,
+        )
+        .map_err(|_| Error::SemanticConflict)?;
         if revision(state, &run.session_id) != expected_revision {
             return Err(Error::RevisionConflict);
         }
@@ -132,11 +135,7 @@ impl MemoryStore {
         } else {
             Vec::new()
         };
-        let fence = RunFence {
-            run_id: run.id.clone(),
-            claim_token: activated.claim_token.clone(),
-        };
-        save_recovered_owner(state, &run, activated, &parent)?;
+        let fence = save_recovered_owner(state, &run, activated, &parent, completion.as_ref())?;
         record.capture_recovery(request, frontend)?;
         record.validate()?;
         state
@@ -343,14 +342,19 @@ fn save_recovered_owner(
     original: &Run,
     activated: Run,
     parent: &crate::attempt::AttemptRecord,
-) -> Result<(), Error> {
-    super::super::native_parent::record_run(state, Some(original), &activated)
+    completion: Option<&crate::native_parent::CompletionSource>,
+) -> Result<RunFence, Error> {
+    super::super::native_parent::record_run_completed(state, original, &activated, completion)
         .map_err(|_| Error::UnknownStoreOutcome)?;
+    let fence = RunFence {
+        run_id: original.id.clone(),
+        claim_token: activated.claim_token.clone(),
+    };
     state.runs.insert(original.id.clone(), activated);
     state
         .attempts
         .insert(parent.snapshot.target.id.clone(), parent.clone());
-    Ok(())
+    Ok(fence)
 }
 
 pub(in crate::memory) fn preparation_frontend_context(

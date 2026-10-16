@@ -85,18 +85,19 @@ impl PostgresStore {
         if let Some(saved) = write::replay(tx, run, &claim.id, &digest).await? {
             return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
         }
-        let expected_revision = preparation
-            .map_or(Ok(claim.expected_revision), |proof| {
-                proof.control_revision(
-                    &crate::session_owner::preparation::PreparationKey::ToolContinuation(
-                        claim.id.clone(),
-                    ),
-                    &claim.session_id,
-                    &claim.run_id,
-                    claim.expected_revision,
-                )
-            })
-            .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
+            preparation,
+            if frontend.is_some() {
+                crate::native_parent::CompletionOperation::FrontendClaim
+            } else {
+                crate::native_parent::CompletionOperation::ToolClaim
+            },
+            &crate::session_owner::preparation::PreparationKey::ToolContinuation(claim.id.clone()),
+            (&claim.session_id, &claim.run_id),
+            claim.expected_revision,
+            &digest,
+        )
+        .map_err(|_| Error::SemanticConflict)?;
         if revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
@@ -118,7 +119,8 @@ impl PostgresStore {
             crate::attempt::AttemptRecord::reserve(&activated, &reserve, Some(&previous.snapshot))
                 .map_err(|_| Error::CleanupBlocked)?;
         let authority = parent.authority().map_err(unknown)?;
-        super::super::save_run(tx, &activated)
+
+        super::super::save_run_with_completion(tx, &activated, completion.as_ref())
             .await
             .map_err(unknown)?;
         super::super::attempt::save_host_attempt(tx, &parent, true)

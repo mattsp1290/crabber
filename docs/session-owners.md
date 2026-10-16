@@ -304,7 +304,33 @@ Unstarted admission only after its current lease expires and a new authenticated
 source inspection succeeds.
 
 This protocol covers keyed admission recovery preparation. Generic expired-Run
-resume, completion-source association for other continuation claims, normal
+resume, complete-history verification of continuation claims, normal
 provider/service ownership, initializers, reapers and retained callbacks still
 require their own adoption. A component resource declaration or native terminal
 state does not establish whole-Run resource cleanup or deletion readiness.
+
+### Prepared continuation claim sources
+
+Prepared approval, checkpoint-tool and frontend claims and their Unstarted
+recoveries now associate the actual rotated native fence with the original
+preparation Join and full original control fingerprint in a version 3 issuance.
+Approval claim retains its real Paused issuance followed by the existing
+same-token Running status publication; approval recovery and tool/frontend
+activation retain their real Running state. Legacy direct controls keep their
+original issuance format.
+
+Before committing a fresh prepared continuation, bundled Stores corroborate
+its exact original Reserve/Begin/Join audits, adjacent native issuances and
+published native control receipt/event in that same transaction. The shared
+borrowed historical verifier authenticates those sources without a current Run
+or a capability. It treats legacy or unsupported domains as unproven. Neither
+this association nor an arbitrary resource declaration certifies resource policy,
+physical worker cleanup, whole-Run coverage or deletion readiness. Generic
+expired-Run preparation remains a separate follow-up.
+
+The per-claim historical result is not a complete-history verdict. A streaming
+reader must also require strictly increasing authenticated native control event
+cursors across rotating claims, rejecting duplicate or borrowed later sources.
+Status-only same-token publications are separate from rotating claims. Current
+historical reports keep noninitial claims unproven until that reader adopts the
+source verifier and its chronological checks.

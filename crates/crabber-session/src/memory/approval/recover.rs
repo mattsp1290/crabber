@@ -42,18 +42,15 @@ impl super::super::MemoryStore {
             .filter(|run| run.session_id == original.session_id)
             .cloned()
             .ok_or(Error::NotFound)?;
-        let expected_revision = preparation
-            .map_or(Ok(request.expected_revision), |proof| {
-                proof.control_revision(
-                    &crate::session_owner::preparation::PreparationKey::Approval(
-                        request.id.clone(),
-                    ),
-                    &original.session_id,
-                    &original.run_id,
-                    request.expected_revision,
-                )
-            })
-            .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
+            preparation,
+            crate::native_parent::CompletionOperation::ApprovalRecovery,
+            &crate::session_owner::preparation::PreparationKey::Approval(request.id.clone()),
+            (&original.session_id, &original.run_id),
+            request.expected_revision,
+            &digest,
+        )
+        .map_err(|_| Error::SemanticConflict)?;
         if revision(state, &run.session_id) != expected_revision {
             return Err(Error::RevisionConflict);
         }
@@ -72,7 +69,8 @@ impl super::super::MemoryStore {
         let calls = record.recovery_grants(&run, request, &parent, now)?;
         validate_native(state, &run, request, &record, now)?;
         super::claim::validate_calls(state, &run, &record)?;
-        let fence = activate(state, &run, request, now)?;
+
+        let fence = activate(state, &run, request, now, completion.as_ref())?;
         let execution = super::super::MemoryExecution {
             store: self.clone(),
             fence: fence.clone(),
@@ -128,13 +126,14 @@ fn activate(
     run: &crabber_core::Run,
     request: &ApprovalContinuationRecovery,
     now: time::OffsetDateTime,
+    completion: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<RunFence, Error> {
     let activated = approval::activate_recovery(request, run, now)?;
     let fence = RunFence {
         run_id: run.id.clone(),
         claim_token: activated.claim_token.clone(),
     };
-    super::super::native_parent::record_run(state, Some(run), &activated)
+    super::super::native_parent::record_run_completed(state, run, &activated, completion)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), activated);
     Ok(fence)

@@ -2,6 +2,8 @@
 //! produce authority, and absence is not reconstructed from mutable records.
 #[path = "native_parent/completion.rs"]
 mod completion;
+#[path = "native_parent/completion_history.rs"]
+pub(crate) mod completion_history;
 #[path = "native_parent/historical.rs"]
 mod historical;
 #[path = "native_parent/run.rs"]

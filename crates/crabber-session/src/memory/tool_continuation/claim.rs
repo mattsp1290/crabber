@@ -65,18 +65,19 @@ impl MemoryStore {
             .filter(|r| r.session_id == claim.session_id)
             .cloned()
             .ok_or(Error::NotFound)?;
-        let expected_revision = preparation
-            .map_or(Ok(claim.expected_revision), |proof| {
-                proof.control_revision(
-                    &crate::session_owner::preparation::PreparationKey::ToolContinuation(
-                        claim.id.clone(),
-                    ),
-                    &claim.session_id,
-                    &claim.run_id,
-                    claim.expected_revision,
-                )
-            })
-            .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
+            preparation,
+            if frontend.is_some() {
+                crate::native_parent::CompletionOperation::FrontendClaim
+            } else {
+                crate::native_parent::CompletionOperation::ToolClaim
+            },
+            &crate::session_owner::preparation::PreparationKey::ToolContinuation(claim.id.clone()),
+            (&claim.session_id, &claim.run_id),
+            claim.expected_revision,
+            &digest,
+        )
+        .map_err(|_| Error::SemanticConflict)?;
         if revision(state, &run.session_id) != expected_revision {
             return Err(Error::RevisionConflict);
         }
@@ -109,8 +110,14 @@ impl MemoryStore {
             run_id: run.id.clone(),
             claim_token: activated.claim_token.clone(),
         };
-        super::super::native_parent::record_run(state, Some(&run), &activated)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+
+        super::super::native_parent::record_run_completed(
+            state,
+            &run,
+            &activated,
+            completion.as_ref(),
+        )
+        .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);
         state
             .attempts

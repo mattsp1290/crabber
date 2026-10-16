@@ -143,6 +143,19 @@ pub(super) fn record_run(
     let previous = previous.map(RunState::from_run).transpose()?;
     record_run_states(state, previous.as_ref(), RunState::from_run(updated)?)
 }
+pub(super) fn record_run_completed(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<(), Error> {
+    record_run_states_with_completion(
+        state,
+        Some(&RunState::from_run(previous)?),
+        RunState::from_run(updated)?,
+        source.cloned(),
+    )
+}
 pub(super) fn record_owned_admission(
     state: &mut State,
     run: &Run,
@@ -242,3 +255,7 @@ mod tests;
 pub(super) fn verify_run(state: &State, run: &Run) -> Result<(), Error> {
     latest_run(state, run)?.ok_or(Error).map(|_| ())
 }
+
+#[cfg(test)]
+#[path = "native_parent/completion_tests.rs"]
+mod completion_tests;
