@@ -9,6 +9,9 @@ pub(super) async fn classified(
     record: &Record,
     proof: &mut Proof,
 ) -> Result<bool, Failure> {
+    if record.driver.is_some() {
+        return Box::pin(super::super::drivers::classified(tx, record, proof)).await;
+    }
     let Some(parent) = detached_parent(record) else {
         return Ok(false);
     };

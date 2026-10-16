@@ -405,3 +405,11 @@ Reading that original metadata does not validate later current owner state or it
 head and cannot issue a grant. Fresh registration additionally requires the
 protected preparation-root and child cohorts; activation requires the driver
 cohort and the original Begin revision fence.
+
+A selected execution-driver owner can be classified after its genuine main and
+resource-cleanup observations were durably joined. SQL readers require both the
+complete protected cohort and the exact protected selected record; coherent
+mutable Joined rows cannot supply that evidence. The original admission sources
+are checked under the same caller allowance. This component classification does
+not settle the admitted Run or establish complete issuer membership, terminal
+outcome, callback cleanup or whole-run resource policy.

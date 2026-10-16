@@ -1,6 +1,8 @@
 //! Atomic first-driver Reserve/Begin and fresh gated dispatch. No coverage claim.
 mod activation;
 mod fresh;
+mod history;
+pub(in crate::postgres) use history::classified;
 mod proof;
 mod source;
 use super::{

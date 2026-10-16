@@ -39,3 +39,31 @@ pub(crate) fn detached_parent(record: &Record) -> Option<&Witness> {
         && parent.source.kind == crate::native_parent::Kind::Phase)
         .then_some(parent)
 }
+
+/// A selected outer-worker join candidate, not a complete Run inventory. The
+/// adapter must still authenticate the original `DriverLink` and all its native
+/// admission sources after checking owner history under the same caller Proof.
+pub(crate) fn execution_driver(
+    record: &Record,
+) -> Result<
+    Option<&crate::session_owner::driver::DriverLink>,
+    crate::session_owner::SessionOwnerError,
+> {
+    let Some(driver) = record.driver.as_deref() else {
+        return Ok(None);
+    };
+    record.validate()?;
+    let Some(joined) = &record.owned_join else {
+        return Ok(None);
+    };
+    if record.snapshot.state != SessionOwnerState::Joined
+        || !matches!(
+            joined.disposition,
+            owned_scope::OwnedMainDisposition::Returned
+                | owned_scope::OwnedMainDisposition::NoDispatch
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(driver))
+}

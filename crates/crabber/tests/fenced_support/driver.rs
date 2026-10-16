@@ -5,3 +5,6 @@ pub use crabber::session::session_owner::driver::*;
 #[path = "../../../crabber-session/src/session_owner/driver/source.rs"]
 mod source;
 pub(crate) use source::DriverLink;
+
+#[path = "../../../crabber-session/src/session_owner/driver/history_fixture.rs"]
+pub(crate) mod history_fixture;

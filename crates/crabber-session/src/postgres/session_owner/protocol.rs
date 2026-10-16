@@ -24,7 +24,10 @@ pub(super) async fn selected(
     proof.charge(8).map_err(ReadError::Budget)?;
     let protocol: Option<i64> = sqlx::query_scalar("SELECT CAST(source_protocol AS BIGINT) FROM session_owner_current WHERE session_id=$1 AND owner_id=$2")
         .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(domain)?;
-    if audit.version < 3 && protocol == Some(0) {
+    proof.charge(1).map_err(ReadError::Budget)?;
+    let retained: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_publication_cohorts WHERE session_id=$1 AND owner_id=$2 UNION ALL SELECT 1 FROM session_owner_publications WHERE session_id=$1 AND owner_id=$2)")
+        .bind(&session.0).bind(&id.0).fetch_one(&mut **tx).await.map_err(domain)?;
+    if audit.version < 3 && protocol == Some(0) && !retained {
         return Ok(());
     }
     let original = source(
@@ -39,6 +42,28 @@ pub(super) async fn selected(
         != crate::session_owner::publication::digest(&original).map_err(domain)?
     {
         return Err(domain("selected owner publication differs"));
+    }
+    Ok(())
+}
+/// The selected record must itself be the actual protected native publication.
+pub(super) async fn require_record(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &super::Record,
+    proof: &mut Proof,
+) -> Result<(), Read> {
+    let session = &record.snapshot.binding.session_id;
+    let id = &record.snapshot.target.id;
+    require(tx, session, id, proof).await?;
+    let original = source(
+        tx,
+        session,
+        id,
+        i64::try_from(record.sequence).map_err(domain)?,
+        proof,
+    )
+    .await?;
+    if original.record != *record {
+        return Err(domain("selected owner record differs from publication"));
     }
     Ok(())
 }

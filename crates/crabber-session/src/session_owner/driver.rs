@@ -2,6 +2,8 @@
 //! Native sources cover a genuine first prepared keyed admission with its
 //! protected execution journal, or an explicitly anchored unkeyed admission. It
 //! describes main-task/resource joins, never complete provider/service coverage.
+#[cfg(test)]
+pub(crate) mod history_fixture;
 mod source;
 use super::{SessionOwnerError as Error, identifier};
 use crabber_core::{

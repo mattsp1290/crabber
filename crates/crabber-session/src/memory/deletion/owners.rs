@@ -22,6 +22,9 @@ pub(super) fn read(
     state
         .session_owners
         .checked_owner_history(session, 1024, safe, proof, |record, proof| {
+            if record.driver.is_some() {
+                return super::super::session_owner::classify_driver_join(state, record, proof);
+            }
             let Some(parent) = detached_parent(record) else {
                 return Ok(false);
             };

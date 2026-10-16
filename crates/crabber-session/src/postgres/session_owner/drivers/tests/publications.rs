@@ -49,6 +49,17 @@ async fn driver_original_publication_refuses_valid_projection_rewrites() {
                 .is_err()
             );
         }
+        marker_rewind_is_refused(&mut tx, audit).await;
+        assert!(
+            proof::read_audit(
+                &mut tx,
+                session,
+                &audit.receipt.operation_id,
+                &mut allowance()
+            )
+            .await
+            .is_err()
+        );
         sqlx::query(
             "UPDATE session_owner_audits SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
         )
@@ -85,4 +96,37 @@ async fn driver_original_publication_refuses_valid_projection_rewrites() {
 }
 fn allowance() -> Proof {
     Proof::bounded(32 * 1024 * 1024)
+}
+
+async fn marker_rewind_is_refused(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    audit: &crate::session_owner::audit::Audit,
+) {
+    sqlx::query("SAVEPOINT marker_corruption")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    sqlx::query("DROP TRIGGER session_owner_protocol_immutable ON session_owner_current")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    // The independent cohort's composite FK still protects the birth marker.
+    assert!(
+        sqlx::query(
+            "UPDATE session_owner_current SET source_protocol=0 WHERE session_id=$1 AND owner_id=$2"
+        )
+        .bind(&audit.receipt.session_id.0)
+        .bind(&audit.record.snapshot.target.id.0)
+        .execute(&mut **tx)
+        .await
+        .is_err()
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT marker_corruption")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    sqlx::query("RELEASE SAVEPOINT marker_corruption")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
 }
