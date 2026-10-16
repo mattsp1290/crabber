@@ -5,6 +5,8 @@ mod cleanup_failure;
 mod faults;
 #[path = "preparation_resources/provider_binding.rs"]
 mod provider_binding;
+#[path = "preparation_resources/recovery.rs"]
+mod recovery;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "preparation_resources/sql.rs"]
 mod sql;
@@ -131,15 +133,25 @@ impl Harness {
         Self::on_store(store, memory, gate)
     }
     fn on_store(store: Arc<dyn Store>, memory: Arc<dyn Store>, gate: Arc<SettlementGate>) -> Self {
+        Self::on_store_with_clock(store, memory, gate, None)
+    }
+    fn on_store_with_clock(
+        store: Arc<dyn Store>,
+        memory: Arc<dyn Store>,
+        gate: Arc<SettlementGate>,
+        clock: Option<Arc<dyn crabber_core::Clock>>,
+    ) -> Self {
         let provider = ScopedProvider::new();
         let fake = FakeProvider::scripted(vec![text_script("done")]);
-        let runtime = Orchestrator::builder()
+        let mut builder = Orchestrator::builder()
             .behavior_fingerprint(InputFingerprint::new("b".repeat(64)).unwrap())
             .store(store)
             .resolver(Arc::new(fake.clone()))
-            .plan_provider(provider.clone())
-            .build()
-            .unwrap();
+            .plan_provider(provider.clone());
+        if let Some(clock) = clock {
+            builder = builder.clock(clock);
+        }
+        let runtime = builder.build().unwrap();
         let mut input = request();
         input.session_id = Some(SessionId::new());
         Self {
@@ -192,7 +204,11 @@ impl Harness {
             self.child_state(descriptor).await,
             SessionOwnerState::Active
         );
-        assert_eq!(self.provider.cleanup_completed.load(Ordering::SeqCst), 0);
+        let calls = self.provider.calls.load(Ordering::SeqCst);
+        assert_eq!(
+            self.provider.cleanup_completed.load(Ordering::SeqCst),
+            calls - 1
+        );
         self.provider.cleanup_release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), async {
             while self.child_state(descriptor).await != SessionOwnerState::Joined {
@@ -201,7 +217,10 @@ impl Harness {
         })
         .await
         .unwrap();
-        assert_eq!(self.provider.cleanup_completed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            self.provider.cleanup_completed.load(Ordering::SeqCst),
+            calls
+        );
         tokio::time::timeout(Duration::from_secs(2), async {
             while !self
                 .runtime

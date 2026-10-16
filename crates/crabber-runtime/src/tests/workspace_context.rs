@@ -429,6 +429,15 @@ impl Store for DriftStore {
     > {
         self.inner.load_admission_execution(session, key).await
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        self.inner.inspect_admission_recovery(request).await
+    }
     async fn claim_unstarted_admission(
         &self,
         request: crabber_session::ClaimUnstartedAdmissionRequest,

@@ -2,7 +2,7 @@
 use super::{Error, Postgres, SessionId, Transaction, unknown};
 use crabber_core::{Run, RunId};
 use sqlx::Row;
-pub(super) async fn load(
+pub(in crate::postgres) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &RunId,

@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ExistingWorkTarget {
+    AdmissionRecovery {
+        key: crabber_core::AdmissionKey,
+        issuance: u64,
+    },
     ApprovalClaim(ContinuationTarget),
     ToolClaim(ContinuationTarget),
     FrontendClaim(ContinuationTarget),
@@ -26,6 +30,7 @@ pub enum ExistingWorkTarget {
 /// Only its target and semantic digest enter the immutable preparation origin.
 #[derive(Clone)]
 pub enum PreparationSource {
+    AdmissionRecovery(super::AdmissionRecoveryPreparation),
     ApprovalClaim(ApprovalContinuationClaim),
     ToolClaim(ToolContinuationClaim),
     FrontendClaim(crate::FrontendContinuationClaim),

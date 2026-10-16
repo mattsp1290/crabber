@@ -116,6 +116,9 @@ pub(crate) fn validate(
     grant.original_reservation().fingerprint()?;
     let reserved = &grant.original_reservation();
     let intent = match operation {
+        PreparedOperation::AdmissionRecovery(recovery) => {
+            verify_admission_recovery(grant, recovery)?
+        }
         PreparedOperation::Admit(bound) => verify_admit(grant, bound)?,
         PreparedOperation::AdmitKeyed(bound) => verify_admit_keyed(grant, bound)?,
         PreparedOperation::Queue { request, binding } => {
@@ -318,4 +321,37 @@ fn verify_frontend_recovery(
         return conflict();
     }
     Ok(request.fingerprint()?)
+}
+
+fn verify_admission_recovery(
+    grant: &PreparationGrant,
+    recovery: &super::PreparedAdmissionRecovery,
+) -> Result<InputFingerprint, Error> {
+    recovery.validate()?;
+    let source = &recovery.source;
+    let reserved = grant.original_reservation();
+    super::source_validation::validate(
+        &super::PreparationSource::AdmissionRecovery(source.clone()),
+        reserved,
+    )?;
+    binding_scope(grant, &recovery.binding.binding)?;
+    Ok(source.fingerprint()?)
+}
+
+/// Hash the exact retained capsule without materializing another private tree.
+pub(crate) fn execution_binding_digest(
+    binding: &crate::ExecutionBindingCapsule,
+) -> Result<InputFingerprint, SessionOwnerError> {
+    let mut writer = Writer {
+        digest: Sha256::new(),
+        bytes: 0,
+        cap: crate::execution_binding::MAX_BINDING_BYTES,
+    };
+    serde_json::to_writer(
+        &mut writer,
+        &("crabber.preparation.recovery-binding.v1", binding),
+    )
+    .map_err(|_| SessionOwnerError::InvalidRequest)?;
+    InputFingerprint::new(format!("{:x}", writer.digest.finalize()))
+        .map_err(|_| SessionOwnerError::InvalidRequest)
 }

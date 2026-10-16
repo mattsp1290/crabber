@@ -1120,6 +1120,15 @@ impl Store for MemoryStore {
         self.load_execution_record(session, key)
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crate::session_owner::preparation::AdmissionRecoveryPreparation,
+        crate::AdmissionExecutionError,
+    > {
+        self.inspect_admission_source(request)
+    }
     async fn claim_unstarted_admission(
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
@@ -1252,6 +1261,11 @@ impl Store for MemoryStore {
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         self.transact(|state| {
+            let scope = &state.runs.get(id).ok_or(StoreError::NotFound)?.session_id;
+            if state.session_owners.has_preparation(scope) {
+                return Err(StoreError::AdmissionRecoveryRequired);
+            }
+
             let now = self.clock.now();
             admission_journal::verify(state, id)?;
             if state

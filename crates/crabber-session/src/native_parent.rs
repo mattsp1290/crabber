@@ -1,5 +1,7 @@
 //! Private token issuance evidence for a genuine native Begin. Reads never
 //! produce authority, and absence is not reconstructed from mutable records.
+#[path = "native_parent/completion.rs"]
+mod completion;
 #[path = "native_parent/historical.rs"]
 mod historical;
 #[path = "native_parent/run.rs"]
@@ -8,6 +10,7 @@ use crate::{
     AttemptCleanup, AttemptReceipt, AttemptState, AttemptTarget, PhaseOperation, PhaseReceipt,
     PhaseTarget,
 };
+pub(crate) use completion::{CompletionOperation, CompletionSource};
 use crabber_core::{
     ControlId, EventCursor, EventRecord, InputFingerprint, Run, RunId, RunStatus, SessionId,
 };

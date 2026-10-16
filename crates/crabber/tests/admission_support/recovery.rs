@@ -109,11 +109,13 @@ pub(super) async fn child(
         )
         .await;
     if mode == "unstarted-claim-loss" {
+        let Err(error) = result else {
+            panic!("lost atomic recovery acknowledgment")
+        };
+        assert!(error.preparation_reconciliation().is_some());
         assert!(matches!(
-            result,
-            Err(RuntimeError::AdmissionExecution(
-                AdmissionExecutionError::UnknownStoreFailure
-            ))
+            error.operation_error(),
+            RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure)
         ));
         assert_eq!(count(&dir.join("ledger"), "provider"), 0);
         return;
@@ -157,6 +159,23 @@ pub(super) async fn child(
             | AdmissionExecutionError::AlreadyTerminal,
         )) if mode.starts_with("unstarted-race-") => {
             fs::write(dir.join(format!("{mode}-denied")), "denied").unwrap();
+        }
+        Err(error)
+            if mode.starts_with("unstarted-race-")
+                && error
+                    .preparation_reconciliation()
+                    .is_some_and(|p| &p.session_id == session)
+                && matches!(
+                    error.operation_error(),
+                    RuntimeError::PreparationRecoveryRequired
+                        | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
+                ) =>
+        {
+            fs::write(
+                dir.join(format!("{mode}-denied")),
+                "original preparation pending",
+            )
+            .unwrap();
         }
         other => panic!("unexpected recovery: {other:?}"),
     }

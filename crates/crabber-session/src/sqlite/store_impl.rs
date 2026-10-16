@@ -640,6 +640,15 @@ impl Store for SqliteStore {
         })
         .await
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crate::session_owner::preparation::AdmissionRecoveryPreparation,
+        crate::AdmissionExecutionError,
+    > {
+        admission_execution::inspect(self, request).await
+    }
     async fn claim_unstarted_admission(
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
@@ -767,6 +776,14 @@ impl Store for SqliteStore {
         let mut tx = self.begin_write().await?;
         let result = async {
             let mut run = load_run(&mut tx, id).await?;
+            super::session_owner::guard_native_claim(&mut tx, &run.session_id)
+                .await
+                .map_err(|error| match error {
+                    crate::session_owner::SessionOwnerError::Busy => {
+                        StoreError::AdmissionRecoveryRequired
+                    }
+                    _ => StoreError::Validation("preparation evidence unavailable".into()),
+                })?;
             if admission_execution::load_record(&mut tx, id)
                 .await?
                 .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)

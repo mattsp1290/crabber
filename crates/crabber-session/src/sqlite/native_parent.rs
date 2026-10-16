@@ -3,7 +3,7 @@
 mod run;
 use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
-pub(super) use run::change as record_run;
+pub(super) use run::{change as record_run, change_completed as record_completed};
 use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) async fn record_attempt(
@@ -141,4 +141,14 @@ pub(super) async fn verify_run(
     native: &Run,
 ) -> Result<(), Error> {
     run::latest(tx, native).await?.ok_or(Error)?.verify(native)
+}
+
+/// Authenticate the exact current issuer for preparation source inspection.
+pub(super) async fn current_issuance(
+    tx: &mut Transaction<'_, Sqlite>,
+    native: &Run,
+) -> Result<crate::native_parent::RunIssuance, Error> {
+    let value = run::latest(tx, native).await?.ok_or(Error)?;
+    value.verify(native)?;
+    Ok(value)
 }

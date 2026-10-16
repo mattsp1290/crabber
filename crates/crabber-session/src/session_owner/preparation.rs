@@ -61,12 +61,15 @@ impl ReservePreparation {
 mod origin;
 pub(crate) use origin::{Origin, origin};
 
+pub(crate) mod recovery;
+pub use recovery::{AdmissionRecoveryPreparation, PreparedAdmissionRecovery};
+
 mod completion;
 mod owned;
 mod resource_contract;
 pub use completion::{
-    JoinedPreparation, PreparationAdmissionReceipt, PreparationCompletion, PreparationGrant,
-    PreparationOperationKind, PreparedOperation,
+    AdmissionRecoveryOutcome, JoinedPreparation, PreparationAdmissionReceipt,
+    PreparationCompletion, PreparationGrant, PreparationOperationKind, PreparedOperation,
 };
 pub use resource_contract::{bind_resource_contract, resource_contract};
 
@@ -92,6 +95,7 @@ pub use source::{ExistingWorkTarget, PreparationSource};
 pub enum PreparationKey {
     Unkeyed(ControlId),
     Admission(AdmissionKey),
+    AdmissionRecovery { key: AdmissionKey, issuance: u64 },
     Queue(ControlId),
     Approval(ControlId),
     ToolContinuation(ControlId),

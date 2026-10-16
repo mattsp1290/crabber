@@ -1,4 +1,9 @@
-use super::records::{load_run, lookup_receipt, save_run};
+#[path = "admission_execution/prepared.rs"]
+mod prepared;
+pub(super) use prepared::claim_prepared;
+#[path = "admission_execution/inspection.rs"]
+mod inspection;
+use super::records::{load_run, lookup_receipt};
 use super::{SqliteExecution, SqliteStore, db};
 use crate::StoreError;
 use crate::{
@@ -6,6 +11,7 @@ use crate::{
     ClaimUnstartedAdmissionRequest, ClaimedAdmission,
 };
 use crabber_core::{Run, RunFence, RunId};
+pub(super) use inspection::{inspect, validate_source};
 use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) async fn load_record(
@@ -93,48 +99,62 @@ pub(super) async fn claim(
     store: &SqliteStore,
     request: ClaimUnstartedAdmissionRequest,
 ) -> Result<ClaimedAdmission, Error> {
-    // Ownership paths are run-first. No session row/advisory lock here.
     let mut tx = store.begin_write().await.map_err(unknown)?;
-    let result = async {
-        let mut run = load_run(&mut tx, &request.expected_fence.run_id)
-            .await
-            .map_err(unknown)?;
-        let record = load_record(&mut tx, &run.id)
-            .await
-            .map_err(unknown)?
-            .ok_or(Error::MissingEvidence)?;
-        let receipt = lookup_receipt(&mut tx, &request.session_id, &request.key)
-            .await
-            .map_err(unknown)?;
-        if receipt.as_ref() != Some(&record.receipt) {
-            return Err(Error::SemanticConflict);
-        }
-        validate_binding(&mut tx, &record, &run).await?;
-        record.verify_claim(&request, &run)?;
-        let now = store.clock.now();
-        if run.lease_until > now {
-            return Err(Error::LiveLease);
-        }
-        let lease = time::Duration::try_from(request.lease).map_err(|_| Error::SemanticConflict)?;
-        if lease <= time::Duration::ZERO {
-            return Err(Error::SemanticConflict);
-        }
-        run.owner = request.owner;
-        run.claim_token = uuid::Uuid::new_v4().to_string();
-        run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
-        run.updated_at = now;
-        save_run(&mut tx, &run).await.map_err(unknown)?;
-        Ok(ClaimedAdmission {
-            record,
-            fence: RunFence {
-                run_id: run.id.clone(),
-                claim_token: run.claim_token.clone(),
-            },
-            run,
-        })
+    let run = load_run(&mut tx, &request.expected_fence.run_id)
+        .await
+        .map_err(unknown)?;
+    super::session_owner::guard_native_claim(&mut tx, &request.session_id)
+        .await
+        .map_err(|error| match error {
+            crate::session_owner::SessionOwnerError::Busy => Error::PreparationBusy,
+            _ => Error::UnknownStoreFailure,
+        })?;
+    let value = claim_in_transaction(store, &mut tx, run, request, None).await?;
+    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
+    Ok(value)
+}
+pub(in crate::sqlite) async fn claim_in_transaction(
+    store: &SqliteStore,
+    tx: &mut Transaction<'_, Sqlite>,
+    mut run: Run,
+    request: ClaimUnstartedAdmissionRequest,
+    completion: Option<crate::native_parent::CompletionSource>,
+) -> Result<ClaimedAdmission, Error> {
+    let record = load_record(tx, &run.id)
+        .await
+        .map_err(unknown)?
+        .ok_or(Error::MissingEvidence)?;
+    let receipt = lookup_receipt(tx, &request.session_id, &request.key)
+        .await
+        .map_err(unknown)?;
+    if receipt.as_ref() != Some(&record.receipt) {
+        return Err(Error::SemanticConflict);
     }
-    .await;
-    super::transactions::finish(tx, result, unknown).await
+    validate_binding(tx, &record, &run).await?;
+    record.verify_claim(&request, &run)?;
+    let now = store.clock.now();
+    if run.lease_until > now {
+        return Err(Error::LiveLease);
+    }
+    let lease = time::Duration::try_from(request.lease).map_err(|_| Error::SemanticConflict)?;
+    if lease <= time::Duration::ZERO {
+        return Err(Error::SemanticConflict);
+    }
+    run.owner = request.owner;
+    run.claim_token = uuid::Uuid::new_v4().to_string();
+    run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
+    run.updated_at = now;
+    super::records::save_run_with_completion(tx, &run, completion.as_ref())
+        .await
+        .map_err(unknown)?;
+    Ok(ClaimedAdmission {
+        record,
+        fence: RunFence {
+            run_id: run.id.clone(),
+            claim_token: run.claim_token.clone(),
+        },
+        run,
+    })
 }
 
 fn unknown(_: StoreError) -> Error {
@@ -193,3 +213,7 @@ pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
     .await;
     super::transactions::finish(tx, result, unknown).await
 }
+
+#[cfg(test)]
+#[path = "admission_execution/source_tests.rs"]
+mod source_tests;

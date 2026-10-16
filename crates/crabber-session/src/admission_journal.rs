@@ -218,3 +218,35 @@ impl NoEffect {
         Ok(())
     }
 }
+
+impl Init {
+    /// Original bounded source verification, independent of mutable execution
+    /// state and current Run ownership. Used only for metadata-only recovery replay.
+    pub(crate) fn verify_recovery(
+        &self,
+        request: &crate::ClaimUnstartedAdmissionRequest,
+        initial: &RunIssuance,
+        receipt: &AdmissionReceipt,
+    ) -> Result<(), StoreError> {
+        self.issuance.validate().map_err(|_| invalid())?;
+        initial.validate().map_err(|_| invalid())?;
+        if self.version != 1
+            || self.issuance.sequence != 1
+            || self.issuance.state.status != RunStatus::Running
+            || self.issuance != *initial
+            || self.receipt != *receipt
+            || self.key != request.key
+            || receipt.session_id != request.session_id
+            || receipt.run_id != request.expected_fence.run_id
+            || self.issuance.state.session_id != request.session_id
+            || self.issuance.state.run_id != request.expected_fence.run_id
+            || receipt.fingerprint != request.fingerprint
+            || receipt.semantic_digest != request.semantic_digest
+            || self.capsule_digest != request.capsule_digest
+            || crate::snapshot::encoded_bytes(self, MAX_BYTES).is_none()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}

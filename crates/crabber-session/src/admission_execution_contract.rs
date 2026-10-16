@@ -1,4 +1,6 @@
 //! Shared contract for initial admission authority and denial of effect writes.
+#[path = "admission_execution_contract/inspection.rs"]
+pub(crate) mod inspection;
 use crate::*;
 use crabber_core::*;
 use std::{sync::Arc, time::Duration};
@@ -506,4 +508,5 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
             .unwrap()
             .is_none()
     );
+    Box::pin(inspection::run(&store, &clock)).await;
 }

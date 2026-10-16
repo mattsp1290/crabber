@@ -61,6 +61,21 @@ impl Store for FaultStore {
             joined.set_admission_lease(Duration::from_secs(1));
         }
         let completed = self.inner.complete_preparation(joined).await?;
+        if matches!(
+            &completed,
+            crabber_session::session_owner::preparation::PreparationCompletion::AdmissionRecovery(
+                crabber_session::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(_)
+            )
+        ) {
+            if self.mode == "unstarted-claim-loss" {
+                return Err(crabber_session::AdmissionExecutionError::UnknownStoreFailure.into());
+            }
+            if self.mode == "unstarted-before-begin" {
+                fs::write(self.dir.join("claimed"), "ready").unwrap();
+                wait(&self.dir.join("claim-release")).await;
+            }
+        }
+
         if let crabber_session::session_owner::preparation::PreparationCompletion::Keyed(outcome) =
             &completed
         {
@@ -354,6 +369,18 @@ impl Store for FaultStore {
         crabber_session::AdmissionExecutionError,
     > {
         self.inner.load_admission_execution(session, key).await
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        mut request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        if self.mode.starts_with("unstarted-") {
+            request.lease = Duration::from_secs(3);
+        }
+        self.inner.inspect_admission_recovery(request).await
     }
     async fn claim_unstarted_admission(
         &self,

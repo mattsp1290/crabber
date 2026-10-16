@@ -10,6 +10,20 @@ pub(crate) fn validate(
         return Err(Error::InvalidRequest);
     };
     let (key, session, run, target, revision, digest) = match source {
+        PreparationSource::AdmissionRecovery(recovery) => (
+            PreparationKey::AdmissionRecovery {
+                key: recovery.request().key.clone(),
+                issuance: recovery.expected_issuance(),
+            },
+            &recovery.request().session_id,
+            &recovery.request().expected_fence.run_id,
+            ExistingWorkTarget::AdmissionRecovery {
+                key: recovery.request().key.clone(),
+                issuance: recovery.expected_issuance(),
+            },
+            recovery.expected_revision(),
+            recovery.fingerprint().map_err(|_| Error::InvalidRequest)?,
+        ),
         PreparationSource::ApprovalClaim(claim) => (
             PreparationKey::Approval(claim.id.clone()),
             &claim.session_id,

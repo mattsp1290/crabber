@@ -84,6 +84,7 @@ impl PreparationGrant {
 /// lineage is authenticated in the committing transaction.
 #[derive(Clone)]
 pub enum PreparedOperation {
+    AdmissionRecovery(Box<super::PreparedAdmissionRecovery>),
     Admit(Box<BoundAdmitRequest>),
     AdmitKeyed(Box<BoundKeyedAdmitRequest>),
     Queue {
@@ -106,8 +107,16 @@ pub struct PreparationAdmissionReceipt {
     pub operation_id: crabber_core::ControlId,
 }
 
+/// Fresh recovery supplies only its actual claim; replay retains the original
+/// historical admission receipt and never reconstructs an execution fence.
+pub enum AdmissionRecoveryOutcome {
+    Claimed(Box<crate::ClaimedAdmission>),
+    Replayed(crabber_core::AdmissionReceipt),
+}
+
 pub enum PreparationCompletion {
     Admitted(AdmitOutcome),
+    AdmissionRecovery(AdmissionRecoveryOutcome),
     AdmissionReplayed(PreparationAdmissionReceipt),
     Keyed(KeyedAdmitOutcome),
     Queue(crate::QueueOutcome),
@@ -121,6 +130,9 @@ impl PreparationCompletion {
     pub fn is_replayed(&self) -> bool {
         match self {
             Self::Admitted(_) => false,
+            Self::AdmissionRecovery(outcome) => {
+                matches!(outcome, AdmissionRecoveryOutcome::Replayed(_))
+            }
             Self::AdmissionReplayed(_) => true,
             Self::Keyed(outcome) => matches!(outcome, KeyedAdmitOutcome::Replayed(_)),
             Self::Queue(outcome) => matches!(outcome, crate::QueueOutcome::Replayed(_)),
@@ -135,6 +147,7 @@ impl PreparationCompletion {
 /// Safe native-operation category; no capsule or dispatch authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreparationOperationKind {
+    AdmissionRecovery,
     Admission,
     KeyedAdmission,
     Queue,
@@ -235,6 +248,7 @@ impl JoinedPreparation {
     #[must_use]
     pub fn operation_kind(&self) -> PreparationOperationKind {
         match &self.operation {
+            PreparedOperation::AdmissionRecovery(_) => PreparationOperationKind::AdmissionRecovery,
             PreparedOperation::Admit(_) => PreparationOperationKind::Admission,
             PreparedOperation::AdmitKeyed(_) => PreparationOperationKind::KeyedAdmission,
             PreparedOperation::Queue { .. } => PreparationOperationKind::Queue,
@@ -252,7 +266,8 @@ impl JoinedPreparation {
         match &mut self.operation {
             PreparedOperation::Admit(bound) => bound.request.lease = lease,
             PreparedOperation::AdmitKeyed(bound) => bound.keyed.request.lease = lease,
-            PreparedOperation::Queue { .. }
+            PreparedOperation::AdmissionRecovery(_)
+            | PreparedOperation::Queue { .. }
             | PreparedOperation::ApprovalClaim(_)
             | PreparedOperation::FrontendClaim(_)
             | PreparedOperation::FrontendRecovery(_)
@@ -292,5 +307,6 @@ redacted!(
     PreparationGrant,
     PreparedOperation,
     PreparationCompletion,
+    AdmissionRecoveryOutcome,
     JoinedPreparation
 );

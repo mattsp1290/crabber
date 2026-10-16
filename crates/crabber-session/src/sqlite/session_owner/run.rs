@@ -2,7 +2,7 @@
 use super::{Error, SessionId, Sqlite, Transaction, unknown};
 use crabber_core::{Run, RunId};
 use sqlx::Row;
-pub(super) async fn load(
+pub(in crate::sqlite) async fn load(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     id: &RunId,

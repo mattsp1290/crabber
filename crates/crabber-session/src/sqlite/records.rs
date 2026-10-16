@@ -53,7 +53,18 @@ pub(super) async fn save_run(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
 ) -> Result<(), StoreError> {
-    super::native_parent::record_run(tx, run, false).await?;
+    save_run_with_completion(tx, run, None).await
+}
+pub(super) async fn save_run_with_completion(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<(), StoreError> {
+    if let Some(source) = source {
+        super::native_parent::record_completed(tx, run, source).await?;
+    } else {
+        super::native_parent::record_run(tx, run, false).await?;
+    }
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",

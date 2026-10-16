@@ -233,13 +233,8 @@ pub(super) async fn preparation_audits(
         .collect()
 }
 
-pub(super) async fn has_preparation(
-    tx: &mut Transaction<'_, Sqlite>,
-    session: &SessionId,
-) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_owner_audits a WHERE a.session_id=$1 AND a.state<>'Joined' AND NOT EXISTS(SELECT 1 FROM session_owner_audits later WHERE later.session_id=a.session_id AND later.owner_id=a.owner_id AND later.sequence>a.sequence) AND CASE WHEN length(CAST(a.data_json AS BLOB))>32768 THEN true ELSE json_type(a.data_json,'$.record.preparation') IS NOT NULL END)")
-        .bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)
-}
+mod preparation;
+pub(super) use preparation::has_preparation;
 
 pub(super) use publications::{preparation_order, publication_count};
 mod publications;

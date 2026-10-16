@@ -1,10 +1,16 @@
-use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt, save_run};
+#[path = "admission_execution/prepared.rs"]
+mod prepared;
+pub(super) use prepared::claim_prepared;
+#[path = "admission_execution/inspection.rs"]
+mod inspection;
+use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt};
 use crate::StoreError;
 use crate::{
     AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission,
 };
 use crabber_core::{Run, RunFence, RunId};
+pub(super) use inspection::{inspect, validate_source};
 use sqlx::{Postgres, Row, Transaction};
 
 pub(super) async fn load_record(
@@ -95,21 +101,38 @@ pub(super) async fn claim(
     store: &PostgresStore,
     request: ClaimUnstartedAdmissionRequest,
 ) -> Result<ClaimedAdmission, Error> {
-    let (mut tx, mut run) = store
+    let (mut tx, run) = store
         .run_transaction(&request.expected_fence.run_id)
         .await
         .map_err(unknown)?;
-    let record = load_record(&mut tx, &run.id)
+    super::session_owner::guard_native_claim(&mut tx, &request.session_id)
+        .await
+        .map_err(|error| match error {
+            crate::session_owner::SessionOwnerError::Busy => Error::PreparationBusy,
+            _ => Error::UnknownStoreFailure,
+        })?;
+    let value = claim_in_transaction(store, &mut tx, run, request, None).await?;
+    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
+    Ok(value)
+}
+pub(in crate::postgres) async fn claim_in_transaction(
+    store: &PostgresStore,
+    tx: &mut Transaction<'_, Postgres>,
+    mut run: Run,
+    request: ClaimUnstartedAdmissionRequest,
+    completion: Option<crate::native_parent::CompletionSource>,
+) -> Result<ClaimedAdmission, Error> {
+    let record = load_record(tx, &run.id)
         .await
         .map_err(unknown)?
         .ok_or(Error::MissingEvidence)?;
-    let receipt = lookup_receipt(&mut tx, &request.session_id, &request.key)
+    let receipt = lookup_receipt(tx, &request.session_id, &request.key)
         .await
         .map_err(unknown)?;
     if receipt.as_ref() != Some(&record.receipt) {
         return Err(Error::SemanticConflict);
     }
-    validate_binding(&mut tx, &record, &run).await?;
+    validate_binding(tx, &record, &run).await?;
     record.verify_claim(&request, &run)?;
     let now = store.clock.now();
     if run.lease_until > now {
@@ -123,8 +146,9 @@ pub(super) async fn claim(
     run.claim_token = uuid::Uuid::new_v4().to_string();
     run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
     run.updated_at = now;
-    save_run(&mut tx, &run).await.map_err(unknown)?;
-    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
+    super::save_run_with_completion(tx, &run, completion.as_ref())
+        .await
+        .map_err(unknown)?;
     Ok(ClaimedAdmission {
         record,
         fence: RunFence {
@@ -450,3 +474,7 @@ async fn failed_begin_update_rolls_back_started_and_can_be_retried() {
     );
     store.pool.close().await;
 }
+
+#[cfg(test)]
+#[path = "admission_execution/source_tests.rs"]
+mod source_tests;

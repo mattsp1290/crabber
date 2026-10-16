@@ -7,7 +7,7 @@ mod preparation;
 pub(super) mod public;
 mod reads;
 mod resources;
-mod run;
+pub(super) mod run;
 use super::SqliteStore;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
@@ -402,4 +402,16 @@ pub(super) async fn source_audit(
     id: &SessionOwnerOperationId,
 ) -> Result<Option<Audit>, Error> {
     reads::audit(tx, session, id).await
+}
+
+/// Legacy native claim entrypoints cannot pass an independently reserved preparation.
+pub(super) async fn guard_native_claim(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+) -> Result<(), Error> {
+    reads::scope(tx, session).await?;
+    if reads::has_preparation(tx, session).await? {
+        return Err(Error::Busy);
+    }
+    Ok(())
 }

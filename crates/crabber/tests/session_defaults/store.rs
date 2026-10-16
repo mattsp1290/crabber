@@ -452,6 +452,15 @@ impl Store for TestStore {
         }
         Ok(outcome)
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber::session::session_owner::preparation::AdmissionRecoveryPreparation,
+        AdmissionExecutionError,
+    > {
+        self.inner.inspect_admission_recovery(request).await
+    }
     async fn claim_unstarted_admission(
         &self,
         request: ClaimUnstartedAdmissionRequest,

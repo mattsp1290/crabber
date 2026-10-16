@@ -70,6 +70,16 @@ impl Store for FaultStore {
     > {
         use crabber_session::session_owner::preparation::PreparationCompletion;
         let completed = self.inner.complete_preparation(joined).await?;
+        if matches!(
+            &completed,
+            crabber_session::session_owner::preparation::PreparationCompletion::AdmissionRecovery(
+                crabber_session::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(_)
+            )
+        ) && self.fault == Fault::ClaimLost
+        {
+            return Err(AdmissionExecutionError::UnknownStoreFailure.into());
+        }
+
         if matches!(completed, PreparationCompletion::Admitted(_))
             && self.fault == Fault::UnkeyedAdmissionLost
         {
@@ -244,6 +254,15 @@ impl Store for FaultStore {
         crabber_session::AdmissionExecutionError,
     > {
         self.inner.load_admission_execution(session, key).await
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        self.inner.inspect_admission_recovery(request).await
     }
     async fn claim_unstarted_admission(
         &self,
@@ -596,6 +615,15 @@ async fn lost_admission_reply_completes_original_turn_and_replays_only_metadata(
                 | AdmissionExecutionError::AlreadyStarted
                 | AdmissionExecutionError::AlreadyTerminal,
             )) => (),
+            Err(error)
+                if error
+                    .preparation_reconciliation()
+                    .is_some_and(|p| p.session_id == session)
+                    && matches!(
+                        error.operation_error(),
+                        RuntimeError::PreparationRecoveryRequired
+                            | RuntimeError::Store(StoreError::AdmissionRecoveryRequired)
+                    ) => {}
             other => panic!("{other:?}"),
         }
     }
@@ -673,11 +701,13 @@ async fn claim_response_loss_and_begin_rollback_preserve_unstarted_liveness() {
             .recover_admission(session.clone(), "hello", options())
             .await;
         if kind == Fault::ClaimLost {
+            let Err(error) = result else {
+                panic!("lost atomic recovery acknowledgment")
+            };
+            assert!(error.preparation_reconciliation().is_some());
             assert!(matches!(
-                result,
-                Err(RuntimeError::AdmissionExecution(
-                    AdmissionExecutionError::UnknownStoreFailure
-                ))
+                error.operation_error(),
+                RuntimeError::AdmissionExecution(AdmissionExecutionError::UnknownStoreFailure)
             ));
         } else {
             let Admission::Started { handle, .. } = result.unwrap() else {

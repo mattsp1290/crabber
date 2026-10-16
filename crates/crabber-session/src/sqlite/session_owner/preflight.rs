@@ -66,64 +66,71 @@ impl super::SqliteStore {
                     source,
                     preparation,
                 )?;
-                match source {
-                    crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
-                        super::super::approval::preparation_context(tx, &run, claim)
-                            .await
-                            .map_err(Error::ApprovalSource)?;
-                    }
-                    crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
-                        super::super::tool_continuation::preparation_context(tx, &run, claim)
-                            .await
-                            .map_err(Error::ToolSource)?;
-                    }
-                    crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
-                        super::super::tool_continuation::preparation_frontend_context(
-                            tx, &run, claim,
-                        )
-                        .await
-                        .map_err(Error::ToolSource)?;
-                    }
-                    crate::session_owner::preparation::PreparationSource::FrontendRecovery(
-                        recovery,
-                    ) => {
-                        super::super::tool_continuation::preparation_frontend_recovery_context(
-                            tx,
-                            &run,
-                            recovery,
-                            self.clock.now(),
-                        )
-                        .await
-                        .map_err(Error::ToolSource)?;
-                    }
-                    crate::session_owner::preparation::PreparationSource::ApprovalRecovery(
-                        recovery,
-                    ) => {
-                        super::super::approval::preparation_recovery_context(
-                            tx,
-                            &run,
-                            recovery,
-                            self.clock.now(),
-                        )
-                        .await
-                        .map_err(Error::ApprovalSource)?;
-                    }
-                    crate::session_owner::preparation::PreparationSource::ToolRecovery(
-                        recovery,
-                    ) => {
-                        super::super::tool_continuation::preparation_recovery_context(
-                            tx,
-                            &run,
-                            recovery,
-                            self.clock.now(),
-                        )
-                        .await
-                        .map_err(Error::ToolSource)?;
-                    }
-                }
+                self.verify_preparation_native_source(tx, &run, source)
+                    .await?;
             }
         }
 
+        Ok(())
+    }
+    async fn verify_preparation_native_source(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &crabber_core::Run,
+        source: &crate::session_owner::preparation::PreparationSource,
+    ) -> Result<(), Error> {
+        match source {
+            crate::session_owner::preparation::PreparationSource::AdmissionRecovery(recovery) => {
+                super::super::admission_execution::validate_source(tx, recovery, self.clock.now())
+                    .await
+                    .map_err(unknown)?;
+            }
+            crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
+                super::super::approval::preparation_context(tx, run, claim)
+                    .await
+                    .map_err(Error::ApprovalSource)?;
+            }
+            crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
+                super::super::tool_continuation::preparation_context(tx, run, claim)
+                    .await
+                    .map_err(Error::ToolSource)?;
+            }
+            crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
+                super::super::tool_continuation::preparation_frontend_context(tx, run, claim)
+                    .await
+                    .map_err(Error::ToolSource)?;
+            }
+            crate::session_owner::preparation::PreparationSource::FrontendRecovery(recovery) => {
+                super::super::tool_continuation::preparation_frontend_recovery_context(
+                    tx,
+                    run,
+                    recovery,
+                    self.clock.now(),
+                )
+                .await
+                .map_err(Error::ToolSource)?;
+            }
+            crate::session_owner::preparation::PreparationSource::ApprovalRecovery(recovery) => {
+                super::super::approval::preparation_recovery_context(
+                    tx,
+                    run,
+                    recovery,
+                    self.clock.now(),
+                )
+                .await
+                .map_err(Error::ApprovalSource)?;
+            }
+            crate::session_owner::preparation::PreparationSource::ToolRecovery(recovery) => {
+                super::super::tool_continuation::preparation_recovery_context(
+                    tx,
+                    run,
+                    recovery,
+                    self.clock.now(),
+                )
+                .await
+                .map_err(Error::ToolSource)?;
+            }
+        }
         Ok(())
     }
 }

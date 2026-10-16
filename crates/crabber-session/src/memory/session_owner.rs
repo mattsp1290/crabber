@@ -327,6 +327,12 @@ fn validate_preparation_source(
             let source = request.source.as_ref().ok_or(Error::Unsupported)?;
             crate::session_owner::preparation::source_validation::validate(source, request)?;
             match source {
+                crate::session_owner::preparation::PreparationSource::AdmissionRecovery(
+                    recovery,
+                ) => {
+                    super::admission_execution::validate_source(state, recovery, now)
+                        .map_err(|_| Error::UnknownStoreOutcome)?;
+                }
                 crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
                     super::approval::preparation_context(state, run, claim)
                         .map_err(Error::ApprovalSource)?;

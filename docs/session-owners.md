@@ -272,3 +272,39 @@ post-settlement callback ownership still need explicit protocols. An original
 bridge declaration or a native preparation witness alone does not establish those
 joins or certify whole-session coverage. Legacy owner/invocation rows stay unknown;
 none of this enables deletion or upgrades old history retroactively.
+
+### Expired keyed admission recovery
+
+Bundled Stores expose `inspect_admission_recovery` as a coherent, read-only
+eligibility check. It authenticates the original admission Init, receipt and
+frozen execution binding, the current native issuer and fence, an expired
+Unstarted lease using the Store clock, and the current session revision. The
+returned `AdmissionRecoveryPreparation` carries metadata only. Unstarted Run
+carriers are limited to 32 KiB before transfer and must contain no executed
+checkpoint or error; recovery never silently drops or resets those fields. Custom adapters
+that have not implemented this read return `Unsupported` before Runtime restores
+providers or acquires plans.
+
+Runtime uses that captured source to reserve and begin preparation before
+restoration. The actual joined preparation commits its original root Join and
+native admission claim in one transaction. A version 3 native Run issuance binds
+the new fence to that exact original Join and recovery intent. Competing legacy
+claim methods cannot pass an active preparation. Source rotation before Reserve
+refuses the stale preparation; changes after Reserve must pass the same native
+source and revision checks at commit.
+
+Completion retries authenticate the exact old and successor issuances, original
+Init and receipt, and original preparation source audits. They return only the
+original admission receipt, even after execution starts or the Run settles. That
+historical receipt is unchanged and contains no new fence. Unknown completion
+ACKs keep the returned plan and resource child in the retained registry until
+explicit retry and actual cleanup. Retrying completion never runs the factory
+or business operation. A new controller may explicitly recover a still
+Unstarted admission only after its current lease expires and a new authenticated
+source inspection succeeds.
+
+This protocol covers keyed admission recovery preparation. Generic expired-Run
+resume, completion-source association for other continuation claims, normal
+provider/service ownership, initializers, reapers and retained callbacks still
+require their own adoption. A component resource declaration or native terminal
+state does not establish whole-Run resource cleanup or deletion readiness.

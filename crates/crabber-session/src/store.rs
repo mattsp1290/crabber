@@ -978,6 +978,21 @@ pub trait Store: Send + Sync {
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
         Ok(None)
     }
+    /// Coherent original recovery source/eligibility inspection, with no grant.
+    /// Authenticate original admission Init/receipt/capsule and actual current
+    /// native issuance/fence, then capture public revision under the same gate.
+    /// Store-clock expiry and Unstarted eligibility precede any factory work;
+    /// reservation/completion must revalidate this exact source. Never derive
+    /// an issuance sequence from caller labels or silently fall back to legacy.
+    async fn inspect_admission_recovery(
+        &self,
+        _request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crate::session_owner::preparation::AdmissionRecoveryPreparation,
+        crate::AdmissionExecutionError,
+    > {
+        Err(crate::AdmissionExecutionError::Unsupported)
+    }
     /// Claims only retained Unstarted evidence under the run ownership lock.
     async fn claim_unstarted_admission(
         &self,

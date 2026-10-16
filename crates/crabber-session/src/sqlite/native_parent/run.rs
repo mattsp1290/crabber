@@ -38,7 +38,7 @@ pub(in super::super) async fn change(
     if crate::SQLITE_SCHEMA_VERSION < 9 {
         return Ok(());
     }
-    change_inner(tx, run, creation)
+    change_inner(tx, run, creation, None)
         .await
         .map_err(|_| crate::StoreError::Validation("native run fence evidence unavailable".into()))
 }
@@ -46,6 +46,7 @@ async fn change_inner(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     creation: bool,
+    completion: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<(), Error> {
     let previous = if creation {
         None
@@ -65,14 +66,32 @@ async fn change_inner(
         Some(RunState::new(&run.session_id, &run.id, status, &token)?)
     };
     let latest = latest(tx, run).await?;
-    if let Some(value) =
+    if let Some(mut value) =
         crate::native_parent::advance(previous.as_ref(), RunState::from_run(run)?, latest.as_ref())?
     {
+        if let Some(source) = completion {
+            if latest.is_none() {
+                return Err(Error);
+            }
+            value = value.completed(previous.as_ref().ok_or(Error)?, source.clone())?;
+        }
         value.validate()?;
         sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES(?1,?2,?3,?4)")
             .bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(value.sequence).map_err(|_|Error)?)
             .bind(serde_json::to_string(&value).map_err(|_|Error)?)
             .execute(&mut **tx).await.map_err(|_|Error)?;
+    } else if completion.is_some() {
+        return Err(Error);
     }
     Ok(())
+}
+
+pub(in super::super) async fn change_completed(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: &crate::native_parent::CompletionSource,
+) -> Result<(), crate::StoreError> {
+    change_inner(tx, run, false, Some(source))
+        .await
+        .map_err(|_| crate::StoreError::Validation("native completion evidence unavailable".into()))
 }

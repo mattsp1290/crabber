@@ -1,6 +1,8 @@
 //! Bounded original metadata reconciliation, never replacement dispatch authority.
 #[path = "replay/admission.rs"]
 mod admission;
+#[path = "replay/recovery.rs"]
+mod recovery;
 use crate::session_owner::preparation::{
     JoinedPreparation, PreparationCompletion, PreparedOperation,
 };
@@ -14,6 +16,9 @@ impl super::super::MemoryStore {
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
     > {
+        if let Some(outcome) = Self::replay_recovery(state, joined)? {
+            return Ok(Some(outcome));
+        }
         if let Some(outcome) = Self::replay_admission(state, joined)? {
             return Ok(Some(outcome));
         }

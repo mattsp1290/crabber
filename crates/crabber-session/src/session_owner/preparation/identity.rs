@@ -5,7 +5,7 @@ use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
 
 pub(crate) fn ids(key: &PreparationKey, session: &SessionId) -> Result<Ids, Error> {
     match key {
-        PreparationKey::Admission(key) => {
+        PreparationKey::Admission(key) | PreparationKey::AdmissionRecovery { key, .. } => {
             crate::session_owner::identifier(key.as_str(), 512, false)?;
         }
         PreparationKey::Unkeyed(id)
@@ -14,6 +14,10 @@ pub(crate) fn ids(key: &PreparationKey, session: &SessionId) -> Result<Ids, Erro
         | PreparationKey::ToolContinuation(id) => {
             crate::session_owner::identifier(&id.0, 128, false)?;
         }
+    }
+    if matches!(key, PreparationKey::AdmissionRecovery { issuance, .. } if *issuance == 0 || *issuance >= i64::MAX as u64)
+    {
+        return Err(Error::InvalidRequest);
     }
     let digest = digest(&("crabber.preparation.identity.v1", session, key))?;
     let identity = digest.as_str();

@@ -332,3 +332,6 @@ pub(super) mod scope;
 pub use progress::{
     PreparationRetryProgress, RetainedPreparationProgress, RetainedPreparationStatus,
 };
+
+#[path = "preparation/admission_recovery.rs"]
+mod admission_recovery;

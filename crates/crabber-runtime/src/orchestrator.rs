@@ -2264,9 +2264,7 @@ impl Orchestrator {
         let runtime = self.clone();
         let session_id = request.session_id.clone().ok_or(StoreError::NotFound)?;
         self.own_preparation(session_id, async move {
-            runtime
-                .recover_retained_admission(request, options, context)
-                .await
+            Box::pin(runtime.recover_retained_admission(request, options, context)).await
         })
         .await
     }
@@ -2283,6 +2281,10 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         if let Some(receipt) = self.recovery_replay(&retained)? {
             return Ok(Admission::Replayed(receipt));
+        }
+        if self.store.supports_preparation_protocol() {
+            return Box::pin(self.recover_with_preparation(request, options, context, retained))
+                .await;
         }
         let admission::Retained {
             session: persisted,

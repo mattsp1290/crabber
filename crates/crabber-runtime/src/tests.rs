@@ -1774,6 +1774,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 #[derive(Default)]
 struct SettlementGate {
     preparation_fault: AtomicUsize,
+    unsupported_recovery_inspection: std::sync::atomic::AtomicBool,
     activation_fault: AtomicUsize,
     owned_join_fault: AtomicUsize,
     owned_join_calls: AtomicUsize,
@@ -1908,6 +1909,13 @@ impl Store for DelayedTerminalStore {
         if let Some(gate) = &self.gate.admission {
             use crabber_session::session_owner::preparation::PreparationCompletion;
             match &completed {
+                PreparationCompletion::AdmissionRecovery(
+                    crabber_session::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(
+                        claimed,
+                    ),
+                ) => {
+                    gate.hold(&claimed.run.session_id, &claimed.run.id).await;
+                }
                 PreparationCompletion::Admitted(admitted) => {
                     gate.hold(&admitted.session.id, &admitted.run.id).await;
                 }
@@ -2372,6 +2380,22 @@ impl Store for DelayedTerminalStore {
         crabber_session::AdmissionExecutionError,
     > {
         self.inner.load_admission_execution(session, key).await
+    }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        if self
+            .gate
+            .unsupported_recovery_inspection
+            .load(Ordering::SeqCst)
+        {
+            return Err(crabber_session::AdmissionExecutionError::Unsupported);
+        }
+        self.inner.inspect_admission_recovery(request).await
     }
     async fn claim_unstarted_admission(
         &self,

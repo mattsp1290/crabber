@@ -169,7 +169,18 @@ async fn lock_session_scope(
     Ok(())
 }
 async fn save_run(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), StoreError> {
-    native_parent::record_run(tx, run, false).await?;
+    save_run_with_completion(tx, run, None).await
+}
+async fn save_run_with_completion(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<(), StoreError> {
+    if let Some(source) = source {
+        native_parent::record_completed(tx, run, source).await?;
+    } else {
+        native_parent::record_run(tx, run, false).await?;
+    }
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
         .bind(&run.id.0)
         .bind(status(run.status))
@@ -1486,6 +1497,15 @@ impl Store for PostgresStore {
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         Ok(record)
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crate::session_owner::preparation::AdmissionRecoveryPreparation,
+        crate::AdmissionExecutionError,
+    > {
+        admission_execution::inspect(self, request).await
+    }
     async fn claim_unstarted_admission(
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
@@ -1598,6 +1618,14 @@ impl Store for PostgresStore {
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
         let (mut tx, mut run) = self.run_transaction(id).await?;
+        session_owner::guard_native_claim(&mut tx, &run.session_id)
+            .await
+            .map_err(|error| match error {
+                crate::session_owner::SessionOwnerError::Busy => {
+                    StoreError::AdmissionRecoveryRequired
+                }
+                _ => StoreError::Validation("preparation evidence unavailable".into()),
+            })?;
         if admission_execution::load_record(&mut tx, id)
             .await?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)

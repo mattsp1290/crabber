@@ -178,6 +178,15 @@ impl Store for SqliteFixture {
     ) -> Result<Option<crabber::session::AdmissionExecutionState>, StoreError> {
         self.store.admission_execution_state(run).await
     }
+    async fn inspect_admission_recovery(
+        &self,
+        request: crabber_session::ClaimUnstartedAdmissionRequest,
+    ) -> Result<
+        crabber_session::session_owner::preparation::AdmissionRecoveryPreparation,
+        crabber_session::AdmissionExecutionError,
+    > {
+        self.store.inspect_admission_recovery(request).await
+    }
     async fn claim_unstarted_admission(
         &self,
         request: crabber::session::ClaimUnstartedAdmissionRequest,

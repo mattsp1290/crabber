@@ -1,5 +1,8 @@
 //! Bounded original preparation lineage and independent publication order.
-use super::{BTreeMap, Error, Ledger, OffsetDateTime, RevisionState, SessionId, SessionOwnerState};
+use super::{
+    BTreeMap, Error, Ledger, OffsetDateTime, RevisionState, SessionId, SessionOwnerOperation,
+    SessionOwnerState,
+};
 impl Ledger {
     pub fn verify_preparation_join(
         &self,
@@ -36,6 +39,18 @@ impl Ledger {
     ) {
         assert!(self.audits.remove(&(session.clone(), id.clone())).is_some());
     }
+    #[cfg(test)]
+    pub(crate) fn erase_latest_preparation_for_test(
+        &mut self,
+        session: &SessionId,
+        begin: &crabber_core::SessionOwnerOperationId,
+    ) {
+        let audit = self
+            .audits
+            .get_mut(&(session.clone(), begin.clone()))
+            .unwrap();
+        assert!(audit.record.preparation.take().is_some());
+    }
     pub(super) fn check_preparation_order(
         &self,
         grant: &crate::session_owner::preparation::PreparationGrant,
@@ -66,9 +81,20 @@ impl Ledger {
         Ok(())
     }
     pub fn has_preparation(&self, session: &SessionId) -> bool {
+        if self.validate_scope(session).is_err() {
+            return true;
+        }
         let mut latest = BTreeMap::new();
+        let mut preparation_owners = std::collections::BTreeSet::new();
         for ((scope, _), audit) in &self.audits {
             if scope == session {
+                if audit.receipt.operation == SessionOwnerOperation::Reserve
+                    && (audit.record.preparation.is_some()
+                        || audit.receipt.owner.binding.kind
+                            == super::super::SessionOwnerKind::Preparation)
+                {
+                    preparation_owners.insert(&audit.receipt.owner.target.id);
+                }
                 let entry = latest
                     .entry(&audit.receipt.owner.target.id)
                     .or_insert(audit);
@@ -78,8 +104,14 @@ impl Ledger {
             }
         }
         latest.values().any(|audit| {
-            audit.record.preparation.is_some()
-                && audit.receipt.owner.state != SessionOwnerState::Joined
+            (audit.record.preparation.is_some()
+                || preparation_owners.contains(&audit.receipt.owner.target.id))
+                && (audit.receipt.owner.state != audit.record.snapshot.state
+                    || audit.record.snapshot.state != SessionOwnerState::Joined
+                    || !matches!(
+                        audit.receipt.operation,
+                        SessionOwnerOperation::Join | SessionOwnerOperation::ResolveJoined
+                    ))
         })
     }
     pub fn verify_preparation<'a>(

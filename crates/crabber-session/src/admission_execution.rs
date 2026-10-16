@@ -14,6 +14,8 @@ pub enum AdmissionExecutionError {
     Unsupported,
     #[error("admission execution evidence is missing")]
     MissingEvidence,
+    #[error("admission is reserved by a preparation")]
+    PreparationBusy,
     #[error("admission owner has a live lease")]
     LiveLease,
     #[error("admission owner changed")]

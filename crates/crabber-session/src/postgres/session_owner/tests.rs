@@ -316,3 +316,37 @@ async fn owned_scope_sources_and_join_hash_are_independent() {
         check::marker_refuses(&store, fixture).await;
     }
 }
+
+#[tokio::test]
+async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let (grant, _, _) =
+        crate::session_owner::preparation_contract::absent::fixture_for_order(&store).await;
+    let request = grant.original_reservation();
+    let session = &request.owner.binding.session_id;
+    let begin = request.reconciliation().unwrap().begin_id;
+    assert_eq!(
+        sqlx::query(
+            "UPDATE session_owner_audits SET state='Joined' WHERE session_id=$1 AND operation_id=$2"
+        )
+        .bind(&session.0)
+        .bind(&begin.0)
+        .execute(&store.pool)
+        .await
+        .unwrap()
+        .rows_affected(),
+        1
+    );
+    let mut tx = store.pool.begin().await.unwrap();
+    assert!(
+        super::reads::has_preparation(&mut tx, session)
+            .await
+            .unwrap()
+    );
+    tx.rollback().await.unwrap();
+}

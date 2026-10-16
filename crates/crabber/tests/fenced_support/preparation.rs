@@ -21,3 +21,6 @@ pub(crate) mod handoff;
 
 #[path = "../../../crabber-session/src/session_owner/preparation/admission.rs"]
 pub(crate) mod admission;
+
+#[path = "preparation_recovery.rs"]
+pub(crate) mod recovery;

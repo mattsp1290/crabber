@@ -115,6 +115,7 @@ impl Witness {
             sequence: 1,
             state: self.initial.clone(),
             ownership_handoff: Some(self.fingerprint()?),
+            completion_source: None,
         };
         issuance
             .validate()
@@ -159,6 +160,7 @@ impl Witness {
             sequence: 1,
             state: self.initial.clone(),
             ownership_handoff: None,
+            completion_source: None,
         }
         .validate()
         .map_err(|_| Error::UnknownStoreOutcome)

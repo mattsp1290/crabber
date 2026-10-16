@@ -175,6 +175,14 @@ pub(super) fn record_run_states(
     previous: Option<&RunState>,
     next: RunState,
 ) -> Result<(), Error> {
+    record_run_states_with_completion(state, previous, next, None)
+}
+pub(super) fn record_run_states_with_completion(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+) -> Result<(), Error> {
     let latest = state
         .native_run_issuances
         .range(
@@ -187,7 +195,13 @@ pub(super) fn record_run_states(
         )
         .next_back()
         .map(|(_, value)| value);
-    if let Some(issuance) = crate::native_parent::advance(previous, next, latest)? {
+    if completion.is_some() && latest.is_none() {
+        return Err(Error);
+    }
+    if let Some(mut issuance) = crate::native_parent::advance(previous, next, latest)? {
+        if let Some(source) = completion {
+            issuance = issuance.completed(previous.ok_or(Error)?, source)?;
+        }
         let key = (
             issuance.state.session_id.clone(),
             issuance.state.run_id.clone(),
@@ -197,10 +211,15 @@ pub(super) fn record_run_states(
             return Err(Error);
         }
         state.native_run_issuances.insert(key, issuance);
+    } else if completion.is_some() {
+        return Err(Error);
     }
     Ok(())
 }
-fn latest_run<'a>(state: &'a State, run: &Run) -> Result<Option<&'a RunIssuance>, Error> {
+pub(super) fn latest_run<'a>(
+    state: &'a State,
+    run: &Run,
+) -> Result<Option<&'a RunIssuance>, Error> {
     let scope = RunState::from_run(run)?;
     let latest = state
         .native_run_issuances
