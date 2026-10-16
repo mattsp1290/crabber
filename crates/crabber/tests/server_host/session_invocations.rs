@@ -236,11 +236,21 @@ async fn journey_archived(store: Arc<dyn Store>, archived: bool) {
 async fn assert_archived_rejects_new_work(store: Arc<dyn Store>, session: SessionId) {
     assert!(store.session_summary(&session).await.unwrap().archived);
     let provider = FakeProvider::scripted(vec![done()]);
-    let open_agent = make_agent(store, Arc::new(Fixture::default()), provider.clone());
-    assert!(matches!(
-        open_agent.prompt(Some(session), "new ordinary work").await,
-        Err(RuntimeError::Store(crabber::session::StoreError::Conflict))
-    ));
+    let open_agent = make_agent(
+        store.clone(),
+        Arc::new(Fixture::default()),
+        provider.clone(),
+    );
+    let revision = store.session_revision(&session).await.unwrap();
+    let refused = open_agent
+        .prompt(Some(session.clone()), "new ordinary work")
+        .await;
+    assert!(
+        matches!(refused, Err(ref error) if matches!(error.operation_error(),
+        RuntimeError::Store(crabber::session::StoreError::Conflict)
+        | RuntimeError::SessionOwner(crabber::session::session_owner::SessionOwnerError::InvalidTransition)))
+    );
+    assert_eq!(store.session_revision(&session).await.unwrap(), revision);
     assert_eq!(provider.requests().len(), 0);
     open_agent.close_extensions().await.unwrap();
 }

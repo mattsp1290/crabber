@@ -16,6 +16,7 @@ mod execution_binding;
 #[cfg(test)]
 mod lock_order_tests;
 mod management;
+mod migration;
 mod native_parent;
 mod phase;
 mod public_header;
@@ -476,6 +477,11 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        if migration::is_current(&mut tx).await? {
+            tx.commit().await.map_err(db)?;
+            pool.close().await;
+            return Ok(());
+        }
         for statement in concat!(
             include_str!("../migrations/0001_initial.sql"),
             "\n",
