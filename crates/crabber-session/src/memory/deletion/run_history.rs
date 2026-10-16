@@ -2,6 +2,8 @@
 //! These authenticate history; no provider declaration becomes resource coverage.
 #[path = "run_history/abandonment.rs"]
 mod abandonment;
+#[path = "run_history/approval.rs"]
+mod approval;
 use super::super::{OperationReceipt, State};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{EventKind, Run, SessionId};
@@ -19,10 +21,11 @@ pub(super) fn verify(
     for run in state.runs.values().filter(|run| &run.session_id == session) {
         input(state, run, proof)?;
         let terminal = terminal(state, run, proof)?;
+        let approved = approval::verify(state, run, proof)?;
         let abandoned = abandonment::verify(state, run, proof)?;
         unproven |= !(state.preparation_admissions.contains_key(&run.id)
             && state.admission_execution_protocols.contains(&run.id)
-            && (terminal || abandoned));
+            && (terminal || approved || abandoned));
     }
     Ok(unproven)
 }

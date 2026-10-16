@@ -1,4 +1,5 @@
-//! Original terminal v4 conclusion, with every leaf on the caller allowance.
+//! Exact terminal domains share one private-fields projection and allowance.
+mod approval;
 use crate::attempt::terminal::{self, TerminalFacts};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
@@ -13,6 +14,17 @@ struct Fields {
     usage: Usage,
 }
 pub(super) async fn verify(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    status: RunStatus,
+    proof: &mut Proof,
+) -> Result<bool> {
+    let attempted = attempt(tx, session, run, status, proof).await?;
+    let approved = approval::verify(tx, session, run, status, proof).await?;
+    Ok(attempted || approved)
+}
+async fn attempt(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: &RunId,
@@ -57,6 +69,29 @@ pub(super) async fn verify(
         tx, session, cursor, false, 32768, proof,
     )
     .await?;
+    let fields = fields(tx, session, run, status, proof).await?;
+    terminal::verify_scope(
+        TerminalFacts {
+            session,
+            run,
+            status,
+            error: fields.error.as_deref(),
+            usage: &fields.usage,
+        },
+        &receipt,
+        &event,
+        &original,
+    )
+    .map_err(unknown)?;
+    Ok(true)
+}
+async fn fields(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    status: RunStatus,
+    proof: &mut Proof,
+) -> Result<Fields> {
     super::super::super::super::super::read_proof::charge(
         tx,
         sqlx::query_scalar(COST).bind(&session.0).bind(&run.0),
@@ -77,20 +112,7 @@ pub(super) async fn verify(
     if fields.status != status {
         return Err(unknown("terminal state projection"));
     }
-    terminal::verify_scope(
-        TerminalFacts {
-            session,
-            run,
-            status,
-            error: fields.error.as_deref(),
-            usage: &fields.usage,
-        },
-        &receipt,
-        &event,
-        &original,
-    )
-    .map_err(unknown)?;
-    Ok(true)
+    Ok(fields)
 }
 const COST: &str = r"SELECT CAST(COALESCE(length(CAST(json_quote(json_extract(data,'$.error')) AS BLOB)),0)+COALESCE(length(CAST(json_extract(data,'$.usage') AS BLOB)),0)+COALESCE(length(CAST(json_extract(data,'$.status') AS BLOB)),0) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2";
 const FIELDS: &str = r"SELECT CASE WHEN json_type(data,'$.error') IN ('null','text') AND COALESCE(length(CAST(json_extract(data,'$.error') AS BLOB)),0)<=65536 AND length(CAST(json_object('status',json_extract(data,'$.status'),'error',json_extract(data,'$.error'),'usage',json_extract(data,'$.usage')) AS BLOB))<=524288 THEN json_object('status',json_extract(data,'$.status'),'error',json_extract(data,'$.error'),'usage',json_extract(data,'$.usage')) END AS fields FROM runs WHERE session_id=$1 AND id=$2";

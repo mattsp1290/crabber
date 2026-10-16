@@ -66,7 +66,7 @@ pub(in super::super) async fn rows(
         .map_err(super::super::db)
         .map_err(error)
 }
-async fn rows_with_proof(
+pub(in super::super) async fn rows_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     record: &approval::ApprovalRecord,
     select: Select,

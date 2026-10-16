@@ -163,7 +163,7 @@ pub(super) fn verify(
     verify_with_proof(state, run, record, releasing, &mut Proof::legacy())
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
-pub(super) fn verify_with_proof(
+pub(in super::super) fn verify_with_proof(
     state: &State,
     run: &Run,
     record: &ApprovalRecord,
