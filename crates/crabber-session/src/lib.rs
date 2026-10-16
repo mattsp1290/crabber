@@ -76,7 +76,12 @@ pub use run_control::{
     RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest, RunControlStatus,
     RunControlSummary, RunControlTarget, WaitingCancellation,
 };
+mod deletion;
 mod management;
+pub use deletion::{
+    DeleteSession, DeletionBlocker, DeletionError, DeletionOutcome, DeletionReceipt,
+    SessionDisposition,
+};
 pub mod management_contract;
 pub mod session_owner;
 pub mod session_owner_contract;

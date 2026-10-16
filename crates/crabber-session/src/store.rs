@@ -428,6 +428,31 @@ pub trait Store: Send + Sync {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
 
+    /// Pure guarded erasure. Refusal does not cancel or drain any work. Native
+    /// implementations must prove ownership coverage and physical joins before
+    /// purging history atomically with a permanent, minimal deletion receipt.
+    async fn delete_session(
+        &self,
+        _request: crate::DeleteSession,
+    ) -> Result<crate::DeletionOutcome, crate::DeletionError> {
+        Err(crate::DeletionError::Unsupported)
+    }
+    /// Original minimal deletion metadata, including after host shutdown.
+    async fn lookup_session_deletion(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::DeletionReceipt>, crate::DeletionError> {
+        Err(crate::DeletionError::Unsupported)
+    }
+    /// Distinguish authoritative erasure from absence without reading history.
+    async fn session_disposition(
+        &self,
+        _session: &SessionId,
+    ) -> Result<crate::SessionDisposition, crate::DeletionError> {
+        Err(crate::DeletionError::Unsupported)
+    }
+
     /// Pure host metadata control; never initializes runtime/provider/tool code.
     async fn manage_session(
         &self,
