@@ -75,6 +75,12 @@ pub(super) enum RecordMount {
     Owned(crate::OwnedMountHandle),
 }
 impl RecordMount {
+    pub(super) fn identity(&self) -> u64 {
+        match self {
+            Self::Legacy(mount) => mount.identity(),
+            Self::Owned(mount) => mount.identity(),
+        }
+    }
     pub(super) fn check_close_allowed(&self) -> Result<(), ExtensionError> {
         match self {
             Self::Legacy(mount) => mount.check_close_allowed(),

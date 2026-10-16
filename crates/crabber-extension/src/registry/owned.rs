@@ -35,6 +35,9 @@ impl OwnedMountHandle {
     pub(super) fn new(inner: MountHandle) -> Self {
         Self { inner }
     }
+    pub(crate) fn identity(&self) -> u64 {
+        self.inner.identity()
+    }
     pub fn deactivate(&self) {
         self.inner.deactivate();
     }

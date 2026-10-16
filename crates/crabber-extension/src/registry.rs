@@ -1142,6 +1142,9 @@ pub struct MountHandle {
     mount: Arc<Mount>,
 }
 impl MountHandle {
+    pub(crate) fn identity(&self) -> u64 {
+        self.mount.id
+    }
     pub(crate) fn check_close_allowed(&self) -> Result<(), ExtensionError> {
         if dispatch::is_active_mount(self.mount.id) {
             Err(ExtensionError::SelfClose)

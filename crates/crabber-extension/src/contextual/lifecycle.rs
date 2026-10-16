@@ -114,7 +114,7 @@ impl ContextualPlanProvider {
             if INITIALIZING.try_with(|_| ()).is_ok() {
                 return Err(ExtensionError::SelfClose);
             }
-            let mounts = self.inner.registry.begin_close_all()?;
+            let mut mounts = self.inner.registry.begin_close_all()?;
             self.inner.closed.store(true, Ordering::SeqCst);
             self.inner.initializers.close();
             let slots: Vec<_> = owners.slots.values().cloned().collect();
@@ -127,6 +127,27 @@ impl ContextualPlanProvider {
                 for slot in &slots {
                     super::initialization::join_slot(slot).await?;
                 }
+                // A contextual record and the registry retain the same physical
+                // mount. Let record cleanup own its close waiter, preserving its
+                // join/error retention without reporting each timeout twice.
+                let record_mounts: std::collections::BTreeSet<_> = slots
+                    .iter()
+                    .flat_map(|slot| {
+                        slot.state
+                            .lock()
+                            .unwrap()
+                            .records
+                            .iter()
+                            .filter_map(|record| {
+                                record
+                                    .mount
+                                    .as_ref()
+                                    .map(super::cleanup::RecordMount::identity)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                mounts.retain(|mount| !record_mounts.contains(&mount.identity()));
                 let (dependency_result, results, records) = tokio::join!(
                     super::dependencies::join(&dependencies, bound),
                     join_all(mounts.iter().rev().map(MountHandle::close)),
