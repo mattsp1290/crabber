@@ -72,3 +72,10 @@ pub use session_invocations::{
     SessionInvocationAdmission, SessionInvocationContext, SessionInvocationError,
     SessionInvocationRequest, SessionInvocationSpawner, SessionInvocationTask, SessionInvocations,
 };
+
+mod service_dependencies;
+pub use service_dependencies::{
+    SessionServiceDependencies, SessionServiceDependencyAdmission, SessionServiceDependencyContext,
+    SessionServiceDependencyControl, SessionServiceDependencyError, SessionServiceDependencyHandle,
+    SessionServiceDependencyTask, SessionServiceRegistrar,
+};
