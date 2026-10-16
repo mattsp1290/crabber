@@ -16,8 +16,46 @@ pub(crate) fn verify(
     terminal: (&PhaseReceipt, &EventRecord),
     settled: &EventRecord,
 ) -> Result<(), Error> {
-    crate::attempt_control::validate_phase(run, call, next)
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+    verify_scope(
+        &run.session_id,
+        &run.id,
+        next,
+        call,
+        current,
+        terminal,
+        settled,
+    )
+}
+pub(crate) fn verify_scope(
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    next: &crate::phase::PhaseRecord,
+    call: &ToolCallRecord,
+    current: (&PhaseReceipt, &EventRecord),
+    terminal: (&PhaseReceipt, &EventRecord),
+    settled: &EventRecord,
+) -> Result<(), Error> {
+    let quiescence = verify_history_scope(session, run_id, next, call, current, terminal, settled)?;
+    if quiescence != crate::PhaseQuiescence::Complete {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    Ok(())
+}
+/// Authenticate the immutable terminal result and report truthful cleanup state.
+/// Unlike retirement validation, a history reader may classify retained cleanup
+/// as an unsafe copy boundary after proving the result itself is coherent.
+pub(crate) fn verify_history_scope(
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    next: &crate::phase::PhaseRecord,
+    call: &ToolCallRecord,
+    current: (&PhaseReceipt, &EventRecord),
+    terminal: (&PhaseReceipt, &EventRecord),
+    settled: &EventRecord,
+) -> Result<crate::PhaseQuiescence, Error> {
+    let quiescence =
+        crate::attempt_control::validate_phase_history_scope(session, run_id, call, next)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
     for (receipt, event) in [current, terminal] {
         crate::phase::verify_receipt(receipt, event).map_err(|_| Error::UnknownStoreOutcome)?;
     }
@@ -26,8 +64,8 @@ pub(crate) fn verify(
     let logical = call.result.as_ref().ok_or(Error::UnknownStoreOutcome)?;
     if now.phase != next.snapshot
         || done.phase.target != next.snapshot.target
-        || done.phase.session_id != run.session_id
-        || done.phase.run_id != run.id
+        || done.phase.session_id != *session
+        || done.phase.run_id != *run_id
         || done.phase.call_binding != next.snapshot.call_binding
         || done.phase.state != next.snapshot.state
         || !matches!(
@@ -42,8 +80,8 @@ pub(crate) fn verify(
             .is_none_or(|cursor| cursor >= done.event_cursor)
         || settled.kind != EventKind::ToolCallSettled
         || settled.live_only
-        || settled.session_id != run.session_id
-        || settled.run_id != run.id
+        || settled.session_id != *session
+        || settled.run_id != *run_id
         || settled.payload.get("call_id") != Some(&serde_json::json!(call.id))
         || settled.correlation.as_deref() != Some(&call.id.0)
         || settled.payload.get("content") != Some(&serde_json::json!(logical.content))
@@ -58,5 +96,5 @@ pub(crate) fn verify(
     {
         return Err(Error::UnknownStoreOutcome);
     }
-    Ok(())
+    Ok(quiescence)
 }

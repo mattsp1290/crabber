@@ -33,23 +33,43 @@ pub(crate) fn validate_phase(
     call: &ToolCallRecord,
     phase: &PhaseRecord,
 ) -> Result<(), AttemptError> {
+    validate_phase_scope(&run.session_id, &run.id, call, phase)
+}
+pub(crate) fn validate_phase_scope(
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    call: &ToolCallRecord,
+    phase: &PhaseRecord,
+) -> Result<(), AttemptError> {
+    let quiescence = validate_phase_history_scope(session, run_id, call, phase)?;
+    if quiescence != PhaseQuiescence::Complete {
+        return Err(AttemptError::CleanupBlocked);
+    }
+    Ok(())
+}
+/// Authenticate closed presentation content while reporting actual cleanup state.
+/// This read proof grants no retirement or effect authority.
+pub(crate) fn validate_phase_history_scope(
+    session: &crabber_core::SessionId,
+    run_id: &crabber_core::RunId,
+    call: &ToolCallRecord,
+    phase: &PhaseRecord,
+) -> Result<PhaseQuiescence, AttemptError> {
     phase
         .validate()
         .map_err(|_| AttemptError::UnknownStoreOutcome)?;
-    if phase.snapshot.session_id != run.session_id
-        || phase.snapshot.run_id != run.id
+    if phase.snapshot.session_id != *session
+        || phase.snapshot.run_id != *run_id
         || phase.snapshot.target.call_id != call.id
         || phase.snapshot.call_binding
             != crate::phase::call_binding(call).map_err(|_| AttemptError::UnknownStoreOutcome)?
     {
         return Err(AttemptError::UnknownStoreOutcome);
     }
-    if phase.snapshot.quiescence != PhaseQuiescence::Complete
-        || !matches!(
-            phase.snapshot.state,
-            PhaseState::Completed | PhaseState::Failed
-        )
-    {
+    if !matches!(
+        phase.snapshot.state,
+        PhaseState::Completed | PhaseState::Failed
+    ) {
         return Err(AttemptError::CleanupBlocked);
     }
     let output = phase
@@ -64,7 +84,7 @@ pub(crate) fn validate_phase(
     {
         return Err(AttemptError::UnknownStoreOutcome);
     }
-    Ok(())
+    Ok(phase.snapshot.quiescence)
 }
 pub(crate) fn order_pending(
     run: &Run,
