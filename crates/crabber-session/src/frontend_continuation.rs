@@ -305,10 +305,12 @@ mod declaration_allocation {
 }
 
 /// Immutable read routing, deliberately unable to represent a Run or worker grant.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) struct FrontendReadScope {
     pub session_id: crabber_core::SessionId,
     pub id: crabber_core::RunId,
 }
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl FrontendReadScope {
     pub fn new(
         session: &crabber_core::SessionId,

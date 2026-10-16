@@ -5,6 +5,7 @@ mod conclusion;
 pub(crate) use conclusion::at as conclusion_at;
 pub(crate) mod current;
 mod origin;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use origin::OriginRunFacts;
 mod records;
 mod recovery;

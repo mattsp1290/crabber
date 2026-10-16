@@ -46,6 +46,7 @@ pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, StoreError> {
     }
     Ok(encoded)
 }
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, StoreError> {
     if value.len() > MAX_RECORD {
         return Err(corrupt());
