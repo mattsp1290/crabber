@@ -109,6 +109,8 @@ pub enum ExtensionError {
     #[error("preparation acquisition registration rejected: {0}")]
     PreparationRegistration(#[from] crate::ResourceRegistrationError),
     #[error(transparent)]
+    SessionServiceDependency(#[from] crate::SessionServiceDependencyError),
+    #[error(transparent)]
     DurableInteractionUnsupported(#[from] crate::DurableInteractionUnsupported),
     #[error("frozen registration declarations are unavailable")]
     RegistrationDescriptorUnavailable,

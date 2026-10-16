@@ -83,14 +83,15 @@ impl ContextualPlanProvider {
             }
             let dependencies = self.inner.dependencies.seal_context(context, workspace);
             self.inner.reapers.tracker().spawn(async move {
-                let ((), results) = tokio::join!(
-                    super::dependencies::join(&dependencies),
+                let (dependency_result, results) = tokio::join!(
+                    super::dependencies::join(&dependencies, bound),
                     join_all(slots.iter().map(|slot| async {
                         super::initialization::join_slot(slot).await?;
                         let _gate = slot.gate.lock().await;
                         provider.clean_records(slot).await
                     }))
                 );
+                dependency_result?;
                 results
                     .into_iter()
                     .collect::<Result<Vec<_>, _>>()
@@ -126,10 +127,11 @@ impl ContextualPlanProvider {
                 for slot in &slots {
                     super::initialization::join_slot(slot).await?;
                 }
-                let ((), results) = tokio::join!(
-                    super::dependencies::join(&dependencies),
+                let (dependency_result, results) = tokio::join!(
+                    super::dependencies::join(&dependencies, bound),
                     join_all(mounts.iter().rev().map(MountHandle::close))
                 );
+                dependency_result?;
                 let cleanup: Vec<_> = slots
                     .iter()
                     .flat_map(|slot| {

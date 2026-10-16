@@ -1,11 +1,14 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
+mod acquisition;
 mod cleanup;
 mod dependencies;
 mod generation;
 mod initialization;
 mod instances;
 mod lifecycle;
+mod native_dependency;
 mod profile;
+mod selection;
 pub use generation::{
     ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
     ServiceGenerationScope,
@@ -285,68 +288,20 @@ impl RunPlanProvider for ContextualPlanProvider {
         ))
     }
     async fn acquire_plan_in(&self, context: &SessionContext) -> Result<RunPlan, ExtensionError> {
-        if INITIALIZING
-            .try_with(|owner| match owner {
-                Owner::Shared => true,
-                Owner::Workspace(id) => id == context.workspace_id(),
-                Owner::Session(id) => id == context.session_id(),
-            })
-            .unwrap_or(false)
-        {
-            return Err(ExtensionError::SelfClose);
-        }
-        {
-            let mut owners = self.inner.owners.lock().unwrap();
-            self.check_open()?;
-            owners.validate(context)?;
-            self.inner.dependencies.bind_context(context)?;
-        }
-        self.wait_initialization(async {
-            self.ensure_owner(Owner::Shared, None).await?;
-            if self
-                .inner
-                .factories
-                .iter()
-                .any(|f| f.scope == FactoryScope::Workspace)
-            {
-                if context.workspace_id().is_empty() {
-                    return Err(ExtensionError::WorkspaceUnavailable);
-                }
-                self.ensure_owner(
-                    Owner::Workspace(context.workspace_id().into()),
-                    Some(context.clone()),
-                )
-                .await?;
-            }
-            if self
-                .inner
-                .factories
-                .iter()
-                .any(|f| f.scope == FactoryScope::Session)
-            {
-                self.ensure_owner(
-                    Owner::Session(context.session_id().clone()),
-                    Some(context.clone()),
-                )
-                .await?;
-            }
-            let mut owners = self.inner.owners.lock().unwrap();
-            self.check_open()?;
-            owners.validate(context)?;
-            let plan = self.inner.registry.try_acquire_in(context)?;
-            let generations = owners
-                .slots
-                .values()
-                .filter(|slot| match &slot.owner {
-                    Owner::Shared => true,
-                    Owner::Workspace(id) => id == context.workspace_id(),
-                    Owner::Session(id) => id == context.session_id(),
-                })
-                .filter_map(|slot| slot.state.lock().unwrap().generation.clone())
-                .collect();
-            self.inner.dependencies.track(context, generations, plan)
-        })
-        .await
+        self.acquire_context(context, None).await
+    }
+
+    async fn acquire_plan_in_preparation(
+        &self,
+        context: &crate::PreparationResourceContext,
+    ) -> Result<RunPlan, ExtensionError> {
+        let binding = native_dependency::Binding {
+            context: context.session().clone(),
+            services: context.service_dependencies().clone(),
+        };
+        context
+            .acquire_plan(|| self.acquire_context(context.session(), Some(binding)))
+            .await
     }
 }
 

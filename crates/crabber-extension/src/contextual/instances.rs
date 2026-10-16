@@ -1,7 +1,6 @@
 use super::cleanup::RecordCleanup;
 use super::{
-    ContextualPlanProvider, FactoryContext, FactoryRegistration, FactoryScope, INITIALIZING,
-    Initialization, Owner, Record, Slot, SlotState,
+    ContextualPlanProvider, FactoryContext, FactoryRegistration, FactoryScope, Owner, Record, Slot,
 };
 use crate::Registrar;
 use crate::{ComponentIdentity, Extension, ExtensionError, Scope, WorkspaceContext};
@@ -9,8 +8,7 @@ use async_trait::async_trait;
 use crabber_core::SessionContext;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as AsyncMutex;
+use std::sync::Arc;
 
 struct FrozenExtension {
     identity: ComponentIdentity,
@@ -40,85 +38,59 @@ impl ContextualPlanProvider {
     pub(super) async fn ensure_owner(
         &self,
         owner: Owner,
-        context: Option<SessionContext>,
+        context: Option<&SessionContext>,
     ) -> Result<(), ExtensionError> {
-        let (slot, initialization) = {
-            let mut owners = self.inner.owners.lock().unwrap();
-            self.check_open()?;
-            if let Some(context) = &context {
-                owners.validate(context)?;
-            }
-            let slot = owners
-                .slots
-                .entry(owner.clone())
-                .or_insert_with(|| {
-                    Arc::new(Slot {
-                        owner: owner.clone(),
-                        context: context.clone(),
-                        gate: AsyncMutex::new(()),
-                        state: Mutex::new(SlotState::default()),
-                    })
-                })
-                .clone();
-            if matches!(owner, Owner::Session(_)) && slot.context != context {
-                return Err(ExtensionError::ContextIdentityMismatch);
-            }
-            let mut state = slot.state.lock().unwrap();
-            if state.closed {
-                return Err(ExtensionError::ContextOwnerClosed);
-            }
-            if state.ready && state.initialization.is_none() {
-                return Ok(());
-            }
-            let initialization = if let Some(initialization) = &state.initialization {
-                initialization.clone()
-            } else {
-                let initialization = Arc::new(Initialization::default());
-                state.initialization = Some(initialization.clone());
-                let provider = self.clone();
-                let slot = slot.clone();
-                let ticket = initialization.clone();
-                // Registered under the owners lock: global close cannot miss setup.
-                let task = self.inner.initializers.tracker().spawn(async move {
-                    let result = INITIALIZING
-                        .scope(owner, async {
-                            AssertUnwindSafe(provider.initialize_slot(slot.clone()))
-                                .catch_unwind()
-                                .await
-                                .unwrap_or_else(|_| {
-                                    Err(ExtensionError::ContextInitializationFailed {
-                                        component: "contextual-profile".into(),
-                                    })
-                                })
-                        })
-                        .await;
-                    *ticket.result.lock().unwrap() = Some(result);
-                });
-                initialization.retain(task);
-                initialization
-            };
-            (slot.clone(), initialization)
-        };
-        initialization.join().await?;
-        {
-            let mut state = slot.state.lock().unwrap();
-            if state
-                .initialization
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &initialization))
-            {
-                state.initialization = None;
-            }
-        }
-        initialization
-            .result
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or(Err(ExtensionError::ContextInitializationIncomplete))
+        self.ensure_owner_registered(owner, context, None).await
     }
 
-    async fn initialize_slot(&self, slot: Arc<Slot>) -> Result<(), ExtensionError> {
+    pub(super) async fn ensure_owner_registered(
+        &self,
+        owner: Owner,
+        context: Option<&SessionContext>,
+        binding: Option<super::native_dependency::Binding>,
+    ) -> Result<(), ExtensionError> {
+        let (slot, initialization) = self.select_owner(owner, context, binding.clone())?;
+        if let Some(initialization) = initialization {
+            initialization.join().await?;
+            {
+                let mut state = slot.state.lock().unwrap();
+                if state
+                    .initialization
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &initialization))
+                {
+                    state.initialization = None;
+                }
+            }
+            initialization
+                .result
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(Err(ExtensionError::ContextInitializationIncomplete))?;
+        }
+        self.check_slot(&slot)?;
+        if let Some(binding) = binding {
+            let generation = slot
+                .state
+                .lock()
+                .unwrap()
+                .generation
+                .clone()
+                .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+            self.inner
+                .dependencies
+                .register(&binding.context, &generation, &binding.services)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn initialize_slot(
+        &self,
+        slot: Arc<Slot>,
+        binding: Option<super::native_dependency::Binding>,
+    ) -> Result<(), ExtensionError> {
         let _gate = slot.gate.lock().await;
         self.check_slot(&slot)?;
         if slot.state.lock().unwrap().ready {
@@ -127,8 +99,32 @@ impl ContextualPlanProvider {
         // A failed attempt's resources remain reachable until cleanup really ends.
         self.clean_records(&slot).await?;
         self.check_slot(&slot)?;
-        let generation = self.new_generation(&slot)?;
-        slot.state.lock().unwrap().generation = Some(generation);
+        let pending = slot
+            .state
+            .lock()
+            .unwrap()
+            .generation
+            .clone()
+            .filter(|generation| {
+                self.inner
+                    .dependencies
+                    .generation_uncertain(generation.id())
+            });
+        if pending.is_some() && binding.is_none() {
+            return Err(ExtensionError::PreparationResourcesUnsupported);
+        }
+        let generation = match pending {
+            Some(generation) => generation,
+            None => self.new_generation(&slot)?,
+        };
+        slot.state.lock().unwrap().generation = Some(generation.clone());
+        if let Some(binding) = binding {
+            self.inner
+                .dependencies
+                .register(&binding.context, &generation, &binding.services)
+                .await?;
+            self.check_slot(&slot)?;
+        }
         let result = AssertUnwindSafe(async {
             match &slot.owner {
                 Owner::Shared => self.install_shared(&slot).await,
