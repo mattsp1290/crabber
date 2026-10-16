@@ -59,6 +59,16 @@ impl SqliteStore {
         self.claim_compound_guarded(tx, run, claim, None, preparation)
             .await
     }
+    pub(in crate::sqlite) async fn claim_frontend_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &Run,
+        request: &crate::FrontendContinuationClaim,
+        preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.claim_compound_guarded(tx, run, &request.claim, Some(request), Some(preparation))
+            .await
+    }
     async fn claim_compound_guarded(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -222,4 +232,12 @@ pub(in crate::sqlite) async fn preparation_context(
     claim: &ToolContinuationClaim,
 ) -> Result<ToolContinuationRecord, Error> {
     ready(tx, run, claim, None).await
+}
+
+pub(in crate::sqlite) async fn preparation_frontend_context(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &Run,
+    request: &crate::FrontendContinuationClaim,
+) -> Result<ToolContinuationRecord, Error> {
+    ready(tx, run, &request.claim, Some(request)).await
 }

@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 pub enum ExistingWorkTarget {
     ApprovalClaim(ContinuationTarget),
     ToolClaim(ContinuationTarget),
+    FrontendClaim(ContinuationTarget),
     ApprovalRecovery {
+        continuation: ContinuationTarget,
+        attempt: crate::AttemptTarget,
+    },
+    FrontendRecovery {
         continuation: ContinuationTarget,
         attempt: crate::AttemptTarget,
     },
@@ -23,6 +28,8 @@ pub enum ExistingWorkTarget {
 pub enum PreparationSource {
     ApprovalClaim(ApprovalContinuationClaim),
     ToolClaim(ToolContinuationClaim),
+    FrontendClaim(crate::FrontendContinuationClaim),
+    FrontendRecovery(crate::FrontendContinuationRecovery),
     ApprovalRecovery(crate::ApprovalContinuationRecovery),
     ToolRecovery(crate::ToolContinuationRecovery),
 }

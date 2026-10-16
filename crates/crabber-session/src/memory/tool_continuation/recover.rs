@@ -17,14 +17,7 @@ impl MemoryStore {
         &self,
         request: &crate::FrontendContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let common = ToolContinuationRecovery {
-            id: request.id.clone(),
-            expected_revision: request.expected_revision,
-            original: request.original.claim.clone(),
-            attempt: request.attempt.clone(),
-            owner: request.owner.clone(),
-            lease_ms: request.lease_ms,
-        };
+        let common = domain::canonical::frontend_recovery(request);
         self.recover_compound(&common, Some(request))
     }
     fn recover_compound(
@@ -44,6 +37,19 @@ impl MemoryStore {
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         self.recover_compound_guarded(state, request, None, preparation)
+    }
+    pub(in crate::memory) fn recover_frontend_guarded(
+        &self,
+        state: &mut State,
+        request: &crate::FrontendContinuationRecovery,
+        preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.recover_compound_guarded(
+            state,
+            &domain::canonical::frontend_recovery(request),
+            Some(request),
+            Some(preparation),
+        )
     }
     fn recover_compound_guarded(
         &self,
@@ -344,5 +350,29 @@ fn save_recovered_owner(
     state
         .attempts
         .insert(parent.snapshot.target.id.clone(), parent.clone());
+    Ok(())
+}
+
+pub(in crate::memory) fn preparation_frontend_context(
+    state: &State,
+    run: &Run,
+    request: &crate::FrontendContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    eligible(
+        state,
+        run,
+        &domain::canonical::frontend_recovery(request),
+        Some(request),
+    )?;
+    if state
+        .attempts
+        .get(&request.attempt.id)
+        .ok_or(Error::NotFound)?
+        .lease_until
+        > now
+    {
+        return Err(Error::LiveOwner);
+    }
     Ok(())
 }

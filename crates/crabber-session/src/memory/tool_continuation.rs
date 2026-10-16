@@ -354,6 +354,8 @@ pub(super) fn release_terminal(state: &mut State, run: &Run) -> Result<(), Attem
 }
 
 pub(super) use claim::preparation_context;
+pub(super) use claim::preparation_frontend_context;
+pub(super) use recover::preparation_frontend_context as preparation_frontend_recovery_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
 

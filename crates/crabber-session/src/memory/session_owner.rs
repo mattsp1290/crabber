@@ -327,6 +327,18 @@ fn validate_preparation_source(
                     super::tool_continuation::preparation_context(state, run, claim)
                         .map_err(Error::ToolSource)?;
                 }
+                crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
+                    super::tool_continuation::preparation_frontend_context(state, run, claim)
+                        .map_err(Error::ToolSource)?;
+                }
+                crate::session_owner::preparation::PreparationSource::FrontendRecovery(
+                    recovery,
+                ) => {
+                    super::tool_continuation::preparation_frontend_recovery_context(
+                        state, run, recovery, now,
+                    )
+                    .map_err(Error::ToolSource)?;
+                }
                 crate::session_owner::preparation::PreparationSource::ApprovalRecovery(
                     recovery,
                 ) => {

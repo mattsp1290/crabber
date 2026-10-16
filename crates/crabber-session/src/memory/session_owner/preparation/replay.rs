@@ -24,6 +24,9 @@ impl super::super::MemoryStore {
             super::verify_replay(state, joined.observed_grant())?;
             return Ok(Some(PreparationCompletion::Queue(saved)));
         }
+        if let Some(outcome) = Self::replay_frontend(state, joined)? {
+            return Ok(Some(outcome));
+        }
         match joined.observed_operation() {
             PreparedOperation::ApprovalClaim(claim) => {
                 if let Some(saved) = super::super::super::approval::replay(
@@ -119,6 +122,50 @@ impl super::super::MemoryStore {
             return Ok(Some(PreparationCompletion::Keyed(outcome)));
         }
 
+        Ok(None)
+    }
+}
+
+impl super::super::MemoryStore {
+    fn replay_frontend(
+        state: &mut super::super::super::State,
+        joined: &JoinedPreparation,
+    ) -> Result<
+        Option<PreparationCompletion>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        match joined.observed_operation() {
+            PreparedOperation::FrontendClaim(claim) => {
+                if let Some(saved) = super::super::super::tool_continuation::replay(
+                    state,
+                    &claim.claim.session_id,
+                    &claim.claim.run_id,
+                    &claim.claim.id,
+                    &claim.fingerprint()?,
+                )? {
+                    super::verify_replay(state, joined.observed_grant())?;
+                    return Ok(Some(PreparationCompletion::ToolContinuation(
+                        crate::ToolContinuationClaimOutcome::Replayed(saved),
+                    )));
+                }
+            }
+            PreparedOperation::FrontendRecovery(recovery) => {
+                if let Some(saved) = super::super::super::tool_continuation::replay(
+                    state,
+                    &recovery.original.claim.session_id,
+                    &recovery.original.claim.run_id,
+                    &recovery.id,
+                    &recovery.fingerprint()?,
+                )? {
+                    recovery.verify_receipt(&saved)?;
+                    super::verify_replay(state, joined.observed_grant())?;
+                    return Ok(Some(PreparationCompletion::ToolContinuation(
+                        crate::ToolContinuationClaimOutcome::Replayed(saved),
+                    )));
+                }
+            }
+            _ => (),
+        }
         Ok(None)
     }
 }

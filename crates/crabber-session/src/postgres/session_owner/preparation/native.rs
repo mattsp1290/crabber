@@ -11,6 +11,23 @@ impl super::super::PostgresStore {
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         Ok(match operation {
+            PreparedOperation::FrontendClaim(claim) => {
+                let run = super::super::super::load_run(tx, &claim.claim.run_id, true).await?;
+                PreparationCompletion::ToolContinuation(
+                    self.claim_frontend_guarded(tx, &run, &claim, proof)
+                        .await?
+                        .0,
+                )
+            }
+            PreparedOperation::FrontendRecovery(recovery) => {
+                let run = super::super::super::load_run(tx, &recovery.original.claim.run_id, true)
+                    .await?;
+                PreparationCompletion::ToolContinuation(
+                    self.recover_frontend_guarded(tx, &run, &recovery, proof)
+                        .await?
+                        .0,
+                )
+            }
             PreparedOperation::ApprovalClaim(claim) => {
                 let run = super::super::super::load_run(tx, &claim.run_id, true).await?;
                 PreparationCompletion::Approval(

@@ -43,3 +43,18 @@ pub(crate) fn activated_run(
     activated.status = crabber_core::RunStatus::Running;
     Ok(activated)
 }
+
+/// Project the native recovery control without replacing the compound frontend
+/// digest. Callers still authenticate the complete original frontend results.
+pub(crate) fn frontend_recovery(
+    request: &crate::FrontendContinuationRecovery,
+) -> crate::ToolContinuationRecovery {
+    crate::ToolContinuationRecovery {
+        id: request.id.clone(),
+        expected_revision: request.expected_revision,
+        original: request.original.claim.clone(),
+        attempt: request.attempt.clone(),
+        owner: request.owner.clone(),
+        lease_ms: request.lease_ms,
+    }
+}

@@ -92,6 +92,8 @@ pub enum PreparedOperation {
     },
     ApprovalClaim(crate::ApprovalContinuationClaim),
     ToolClaim(crate::ToolContinuationClaim),
+    FrontendClaim(crate::FrontendContinuationClaim),
+    FrontendRecovery(crate::FrontendContinuationRecovery),
     ApprovalRecovery(crate::ApprovalContinuationRecovery),
     ToolRecovery(crate::ToolContinuationRecovery),
 }
@@ -129,6 +131,8 @@ pub enum PreparationOperationKind {
     ApprovalClaim,
     ApprovalRecovery,
     ToolClaim,
+    FrontendClaim,
+    FrontendRecovery,
     ToolRecovery,
 }
 
@@ -172,6 +176,8 @@ impl JoinedPreparation {
             PreparedOperation::ApprovalClaim(_) => PreparationOperationKind::ApprovalClaim,
             PreparedOperation::ApprovalRecovery(_) => PreparationOperationKind::ApprovalRecovery,
             PreparedOperation::ToolClaim(_) => PreparationOperationKind::ToolClaim,
+            PreparedOperation::FrontendClaim(_) => PreparationOperationKind::FrontendClaim,
+            PreparedOperation::FrontendRecovery(_) => PreparationOperationKind::FrontendRecovery,
             PreparedOperation::ToolRecovery(_) => PreparationOperationKind::ToolRecovery,
         }
     }
@@ -183,6 +189,8 @@ impl JoinedPreparation {
             PreparedOperation::AdmitKeyed(bound) => bound.keyed.request.lease = lease,
             PreparedOperation::Queue { .. }
             | PreparedOperation::ApprovalClaim(_)
+            | PreparedOperation::FrontendClaim(_)
+            | PreparedOperation::FrontendRecovery(_)
             | PreparedOperation::ToolClaim(_)
             | PreparedOperation::ApprovalRecovery(_)
             | PreparedOperation::ToolRecovery(_) => (),

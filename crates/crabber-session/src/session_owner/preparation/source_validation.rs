@@ -26,6 +26,25 @@ pub(crate) fn validate(
             claim.expected_revision,
             claim.fingerprint().map_err(|_| Error::InvalidRequest)?,
         ),
+        PreparationSource::FrontendClaim(frontend) => (
+            PreparationKey::ToolContinuation(frontend.claim.id.clone()),
+            &frontend.claim.session_id,
+            &frontend.claim.run_id,
+            ExistingWorkTarget::FrontendClaim(frontend.claim.continuation.clone()),
+            frontend.claim.expected_revision,
+            frontend.fingerprint().map_err(|_| Error::InvalidRequest)?,
+        ),
+        PreparationSource::FrontendRecovery(recovery) => (
+            PreparationKey::ToolContinuation(recovery.id.clone()),
+            &recovery.original.claim.session_id,
+            &recovery.original.claim.run_id,
+            ExistingWorkTarget::FrontendRecovery {
+                continuation: recovery.original.claim.continuation.clone(),
+                attempt: recovery.attempt.clone(),
+            },
+            recovery.expected_revision,
+            recovery.fingerprint().map_err(|_| Error::InvalidRequest)?,
+        ),
         PreparationSource::ApprovalRecovery(recovery) => (
             PreparationKey::Approval(recovery.id.clone()),
             &recovery.original.session_id,

@@ -144,3 +144,6 @@ pub(super) use claim::preparation_context;
 pub(super) use recover::preparation_context as preparation_recovery_context;
 #[cfg(test)]
 mod aggregate_proof_tests;
+
+pub(super) use claim::preparation_frontend_context;
+pub(super) use recover::preparation_frontend_context as preparation_frontend_recovery_context;

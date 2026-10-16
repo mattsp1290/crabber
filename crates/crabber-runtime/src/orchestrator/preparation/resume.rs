@@ -11,14 +11,35 @@ use crabber_session::session_owner::preparation::{
 use crabber_session::{ExecutionBindingCapsule, StoreError};
 fn operation(
     control: &ApprovalControl,
-) -> Result<Option<(PreparationSpec, PreparedOperation)>, RuntimeError> {
+) -> Result<(PreparationSpec, PreparedOperation), RuntimeError> {
     let (source, key, run, work, revision, intent, operation) = match control {
-        // Frontend14 retains its existing preparation/resource path until its
-        // result-set source is represented in the atomic preparation protocol.
         ApprovalControl::Tool {
-            control: ToolResumeControl::FrontendClaim(_) | ToolResumeControl::FrontendRecover(_),
+            control: ToolResumeControl::FrontendClaim(frontend),
             ..
-        } => return Ok(None),
+        } => (
+            PreparationSource::FrontendClaim(frontend.clone()),
+            PreparationKey::ToolContinuation(frontend.claim.id.clone()),
+            frontend.claim.run_id.clone(),
+            ExistingWorkTarget::FrontendClaim(frontend.claim.continuation.clone()),
+            frontend.claim.expected_revision,
+            frontend.fingerprint()?,
+            PreparedOperation::FrontendClaim(frontend.clone()),
+        ),
+        ApprovalControl::Tool {
+            control: ToolResumeControl::FrontendRecover(recovery),
+            ..
+        } => (
+            PreparationSource::FrontendRecovery(recovery.clone()),
+            PreparationKey::ToolContinuation(recovery.id.clone()),
+            recovery.original.claim.run_id.clone(),
+            ExistingWorkTarget::FrontendRecovery {
+                continuation: recovery.original.claim.continuation.clone(),
+                attempt: recovery.attempt.clone(),
+            },
+            recovery.expected_revision,
+            recovery.fingerprint()?,
+            PreparedOperation::FrontendRecovery(recovery.clone()),
+        ),
         ApprovalControl::Claim(claim) => (
             PreparationSource::ApprovalClaim(claim.clone()),
             PreparationKey::Approval(claim.id.clone()),
@@ -68,7 +89,7 @@ fn operation(
             PreparedOperation::ToolRecovery(recovery.clone()),
         ),
     };
-    Ok(Some((
+    Ok((
         PreparationSpec {
             purpose: PreparationPurpose::ExistingRun { run_id: run, work },
             key,
@@ -78,7 +99,7 @@ fn operation(
             source: Some(source),
         },
         operation,
-    )))
+    ))
 }
 impl Orchestrator {
     pub(in crate::orchestrator) async fn prepare_resume_resources(
@@ -90,8 +111,7 @@ impl Orchestrator {
         let native = approval
             .as_ref()
             .map(|control| operation(&control.control))
-            .transpose()?
-            .flatten();
+            .transpose()?;
         let Some((spec, operation)) = native else {
             return self.restore_resume_resources(run, binding).await;
         };

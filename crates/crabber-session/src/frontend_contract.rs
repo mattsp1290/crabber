@@ -257,4 +257,5 @@ pub(crate) async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>
             .unwrap_err(),
         ToolContinuationError::SemanticConflict
     );
+    crate::session_owner::preparation_contract::frontend::run(&store, &clock).await;
 }

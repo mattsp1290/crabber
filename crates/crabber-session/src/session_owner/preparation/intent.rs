@@ -121,6 +121,8 @@ pub(crate) fn validate(
         }
         PreparedOperation::ApprovalClaim(claim) => verify_approval_claim(grant, claim)?,
         PreparedOperation::ToolClaim(claim) => verify_tool_claim(grant, claim)?,
+        PreparedOperation::FrontendClaim(claim) => verify_frontend_claim(grant, claim)?,
+        PreparedOperation::FrontendRecovery(recovery) => verify_frontend_recovery(grant, recovery)?,
         PreparedOperation::ApprovalRecovery(recovery) => verify_approval_recovery(grant, recovery)?,
         PreparedOperation::ToolRecovery(recovery) => verify_tool_recovery(grant, recovery)?,
     };
@@ -283,4 +285,35 @@ fn verify_tool_recovery(
         return conflict();
     }
     Ok(recovery.fingerprint()?)
+}
+
+fn verify_frontend_claim(
+    grant: &PreparationGrant,
+    request: &crate::FrontendContinuationClaim,
+) -> Result<InputFingerprint, Error> {
+    let reserved = grant.original_reservation();
+    let claim = &request.claim;
+    if reserved.key != PreparationKey::ToolContinuation(claim.id.clone())
+        || claim.session_id != reserved.owner.binding.session_id
+        || claim.expected_revision != reserved.expected_revision
+        || !matches!(&reserved.purpose, PreparationPurpose::ExistingRun { run_id, work: super::ExistingWorkTarget::FrontendClaim(target) } if *run_id == claim.run_id && *target == claim.continuation)
+    {
+        return conflict();
+    }
+    Ok(request.fingerprint()?)
+}
+fn verify_frontend_recovery(
+    grant: &PreparationGrant,
+    request: &crate::FrontendContinuationRecovery,
+) -> Result<InputFingerprint, Error> {
+    let reserved = grant.original_reservation();
+    let claim = &request.original.claim;
+    if reserved.key != PreparationKey::ToolContinuation(request.id.clone())
+        || claim.session_id != reserved.owner.binding.session_id
+        || request.expected_revision != reserved.expected_revision
+        || !matches!(&reserved.purpose, PreparationPurpose::ExistingRun { run_id, work: super::ExistingWorkTarget::FrontendRecovery { continuation, attempt } } if *run_id == claim.run_id && *continuation == claim.continuation && *attempt == request.attempt)
+    {
+        return conflict();
+    }
+    Ok(request.fingerprint()?)
 }

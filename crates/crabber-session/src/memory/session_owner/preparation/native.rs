@@ -11,6 +11,14 @@ impl super::super::MemoryStore {
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         Ok(match operation {
+            PreparedOperation::FrontendClaim(claim) => PreparationCompletion::ToolContinuation(
+                self.claim_frontend_guarded(state, &claim, proof)?.0,
+            ),
+            PreparedOperation::FrontendRecovery(recovery) => {
+                PreparationCompletion::ToolContinuation(
+                    self.recover_frontend_guarded(state, &recovery, proof)?.0,
+                )
+            }
             PreparedOperation::ApprovalClaim(claim) => PreparationCompletion::Approval(
                 self.claim_approval_guarded(state, &claim, Some(proof))?.0,
             ),

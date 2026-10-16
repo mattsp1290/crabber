@@ -70,6 +70,25 @@ impl super::SqliteStore {
                             .await
                             .map_err(Error::ToolSource)?;
                     }
+                    crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
+                        super::super::tool_continuation::preparation_frontend_context(
+                            tx, &run, claim,
+                        )
+                        .await
+                        .map_err(Error::ToolSource)?;
+                    }
+                    crate::session_owner::preparation::PreparationSource::FrontendRecovery(
+                        recovery,
+                    ) => {
+                        super::super::tool_continuation::preparation_frontend_recovery_context(
+                            tx,
+                            &run,
+                            recovery,
+                            self.clock.now(),
+                        )
+                        .await
+                        .map_err(Error::ToolSource)?;
+                    }
                     crate::session_owner::preparation::PreparationSource::ApprovalRecovery(
                         recovery,
                     ) => {

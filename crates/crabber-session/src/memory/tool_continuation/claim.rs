@@ -36,6 +36,14 @@ impl MemoryStore {
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         self.claim_compound_guarded(state, claim, None, preparation)
     }
+    pub(in crate::memory) fn claim_frontend_guarded(
+        &self,
+        state: &mut State,
+        request: &crate::FrontendContinuationClaim,
+        preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.claim_compound_guarded(state, &request.claim, Some(request), Some(preparation))
+    }
     fn claim_compound_guarded(
         &self,
         state: &mut super::super::State,
@@ -272,4 +280,12 @@ pub(in crate::memory) fn preparation_context(
     claim: &ToolContinuationClaim,
 ) -> Result<ToolContinuationRecord, Error> {
     ready(state, run, claim, None)
+}
+
+pub(in crate::memory) fn preparation_frontend_context(
+    state: &State,
+    run: &Run,
+    request: &crate::FrontendContinuationClaim,
+) -> Result<ToolContinuationRecord, Error> {
+    ready(state, run, &request.claim, Some(request))
 }

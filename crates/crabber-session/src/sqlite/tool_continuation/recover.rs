@@ -28,14 +28,7 @@ impl SqliteStore {
         if crate::SQLITE_SCHEMA_VERSION < 10 {
             return Err(Error::Unsupported);
         }
-        let common = ToolContinuationRecovery {
-            id: request.id.clone(),
-            expected_revision: request.expected_revision,
-            original: request.original.claim.clone(),
-            attempt: request.attempt.clone(),
-            owner: request.owner.clone(),
-            lease_ms: request.lease_ms,
-        };
+        let common = domain::canonical::frontend_recovery(&request);
         self.recover_compound(&common, Some(&request)).await
     }
     async fn recover_compound(
@@ -66,6 +59,22 @@ impl SqliteStore {
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         self.recover_compound_guarded(tx, run, request, None, preparation)
             .await
+    }
+    pub(in crate::sqlite) async fn recover_frontend_guarded(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &Run,
+        request: &crate::FrontendContinuationRecovery,
+        preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+        self.recover_compound_guarded(
+            tx,
+            run,
+            &domain::canonical::frontend_recovery(request),
+            Some(request),
+            Some(preparation),
+        )
+        .await
     }
     async fn recover_compound_guarded(
         &self,
@@ -258,6 +267,29 @@ pub(in crate::sqlite) async fn preparation_context(
     now: time::OffsetDateTime,
 ) -> Result<(), Error> {
     eligible(tx, run, request, None).await?;
+    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+        .await
+        .map_err(unknown)?
+        .ok_or(Error::NotFound)?;
+    if parent.lease_until > now {
+        return Err(Error::LiveOwner);
+    }
+    Ok(())
+}
+
+pub(in crate::sqlite) async fn preparation_frontend_context(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &Run,
+    request: &crate::FrontendContinuationRecovery,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
+    eligible(
+        tx,
+        run,
+        &domain::canonical::frontend_recovery(request),
+        Some(request),
+    )
+    .await?;
     let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
         .await
         .map_err(unknown)?

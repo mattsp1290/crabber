@@ -2,7 +2,7 @@
 use super::super::preparation::{ExistingWorkTarget, PreparationKey, PreparationSource};
 use super::*;
 use crabber_core::{Clock, ManualClock, Run};
-async fn request(
+pub(super) async fn request(
     store: &impl Store,
     run: &Run,
     source: PreparationSource,
@@ -34,7 +34,7 @@ async fn request(
     .bind_key(key)
     .unwrap()
 }
-async fn complete(
+pub(super) async fn complete(
     store: &impl Store,
     request: &ReservePreparation,
     operation: PreparedOperation,
