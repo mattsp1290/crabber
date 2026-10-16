@@ -10,6 +10,7 @@ mod prompt_contribution;
 mod registry;
 mod result_transform;
 pub use prompt_contribution::*;
+mod input_tool;
 mod resumable;
 mod state;
 mod tool;
