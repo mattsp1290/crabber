@@ -1,5 +1,6 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
 mod cleanup;
+mod dependencies;
 mod generation;
 mod initialization;
 mod instances;
@@ -140,6 +141,7 @@ struct Inner {
     initializers: CleanupOwner,
     reapers: CleanupOwner,
     initialization_timeout: Duration,
+    dependencies: dependencies::Dependencies,
 }
 
 /// A frozen profile with real instances and retained initialization/cleanup owners.
@@ -211,6 +213,7 @@ impl ContextualPlanProvider {
                 initializers: CleanupOwner::new(),
                 reapers: CleanupOwner::new(),
                 initialization_timeout,
+                dependencies: dependencies::Dependencies::default(),
             }),
         })
     }
@@ -258,7 +261,8 @@ impl ContextualPlanProvider {
 impl RunPlanProvider for ContextualPlanProvider {
     fn check_preparation_context(&self, context: &SessionContext) -> Result<(), ExtensionError> {
         self.check_open()?;
-        self.inner.owners.lock().unwrap().check_context(context)
+        self.inner.owners.lock().unwrap().check_context(context)?;
+        self.inner.dependencies.check_context(context)
     }
     fn registration_fingerprint(
         &self,
@@ -295,6 +299,7 @@ impl RunPlanProvider for ContextualPlanProvider {
             let mut owners = self.inner.owners.lock().unwrap();
             self.check_open()?;
             owners.validate(context)?;
+            self.inner.dependencies.bind_context(context)?;
         }
         self.wait_initialization(async {
             self.ensure_owner(Owner::Shared, None).await?;
@@ -328,7 +333,18 @@ impl RunPlanProvider for ContextualPlanProvider {
             let mut owners = self.inner.owners.lock().unwrap();
             self.check_open()?;
             owners.validate(context)?;
-            self.inner.registry.try_acquire_in(context)
+            let plan = self.inner.registry.try_acquire_in(context)?;
+            let generations = owners
+                .slots
+                .values()
+                .filter(|slot| match &slot.owner {
+                    Owner::Shared => true,
+                    Owner::Workspace(id) => id == context.workspace_id(),
+                    Owner::Session(id) => id == context.session_id(),
+                })
+                .filter_map(|slot| slot.state.lock().unwrap().generation.clone())
+                .collect();
+            self.inner.dependencies.track(context, generations, plan)
         })
         .await
     }

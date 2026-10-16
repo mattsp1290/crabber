@@ -293,17 +293,26 @@ impl RunPlan {
     /// The observation fires after dropping this acquisition's lease reference;
     /// a panic from its final release callback leaves it unacknowledged.
     #[must_use]
-    pub fn observe_release(mut self) -> (Self, PlanReleaseObserver) {
+    pub fn observe_release(self) -> (Self, PlanReleaseObserver) {
         let observer = PlanReleaseObserver {
             released: tokio_util::sync::CancellationToken::new(),
         };
         let signal = observer.released.clone();
+        (self.after_lease_release(move || signal.cancel()), observer)
+    }
+
+    // Acknowledges only disposal of this acquisition's underlying lease
+    // reference. A failing underlying release never runs the acknowledgement.
+    pub(crate) fn after_lease_release(
+        mut self,
+        released: impl FnOnce() + Send + Sync + 'static,
+    ) -> Self {
         let lease = self.lease.take();
         self.lease = Some(Arc::new(PlanLease(Some(Box::new(move || {
             drop(lease);
-            signal.cancel();
+            released();
         })))));
-        (self, observer)
+        self
     }
 
     /// Attach the retained preparation lifetime without replacing an earlier

@@ -40,6 +40,9 @@ impl ContextualPlanProvider {
         let provider = self.clone();
         let task = {
             let mut owners = self.inner.owners.lock().unwrap();
+            if !workspace {
+                self.inner.dependencies.check_context(context)?;
+            }
             if owners
                 .roots
                 .get(context.workspace_id())
@@ -78,13 +81,16 @@ impl ContextualPlanProvider {
             for slot in &slots {
                 Self::signal_slot(slot);
             }
+            let dependencies = self.inner.dependencies.seal_context(context, workspace);
             self.inner.reapers.tracker().spawn(async move {
-                let results = join_all(slots.iter().map(|slot| async {
-                    super::initialization::join_slot(slot).await?;
-                    let _gate = slot.gate.lock().await;
-                    provider.clean_records(slot).await
-                }))
-                .await;
+                let ((), results) = tokio::join!(
+                    super::dependencies::join(&dependencies),
+                    join_all(slots.iter().map(|slot| async {
+                        super::initialization::join_slot(slot).await?;
+                        let _gate = slot.gate.lock().await;
+                        provider.clean_records(slot).await
+                    }))
+                );
                 results
                     .into_iter()
                     .collect::<Result<Vec<_>, _>>()
@@ -114,12 +120,16 @@ impl ContextualPlanProvider {
             for slot in &slots {
                 Self::signal_slot(slot);
             }
+            let dependencies = self.inner.dependencies.seal_all();
             self.inner.reapers.tracker().spawn(async move {
                 provider.inner.initializers.wait_drained().await;
                 for slot in &slots {
                     super::initialization::join_slot(slot).await?;
                 }
-                let results = join_all(mounts.iter().rev().map(MountHandle::close)).await;
+                let ((), results) = tokio::join!(
+                    super::dependencies::join(&dependencies),
+                    join_all(mounts.iter().rev().map(MountHandle::close))
+                );
                 let cleanup: Vec<_> = slots
                     .iter()
                     .flat_map(|slot| {
