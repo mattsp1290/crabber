@@ -132,8 +132,9 @@ impl ContextualPlanProvider {
                             .collect::<Vec<_>>()
                     })
                     .collect();
-                join_all(cleanup.iter().map(|owner| owner.wait_drained())).await;
+                let cleanup = join_all(cleanup.iter().map(|owner| owner.wait_drained())).await;
                 results.into_iter().collect::<Result<Vec<_>, _>>()?;
+                cleanup.into_iter().collect::<Result<Vec<_>, _>>()?;
                 for slot in slots {
                     slot.state.lock().unwrap().records.clear();
                 }
@@ -203,7 +204,7 @@ impl ContextualPlanProvider {
                     } else {
                         Ok(())
                     };
-                    cleanup.wait_drained().await;
+                    cleanup.wait_drained().await?;
                     result
                 }),
         )

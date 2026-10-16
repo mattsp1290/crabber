@@ -175,6 +175,13 @@ impl ToolResourceOwner {
     /// join handle retained here; later drains resume those same joins. Failure
     /// stays visible even after all tasks have terminated.
     pub async fn drain(&self, bound: Duration) -> ResourceDrain {
+        let _ = tokio::time::timeout(bound, self.join()).await;
+        self.snapshot()
+    }
+
+    // Reapers already own their bounded caller-facing wait. Retain the same
+    // actual joins until completion rather than inventing a second deadline.
+    pub(crate) async fn join(&self) -> ResourceDrain {
         self.close();
         let tasks = self
             .0
@@ -183,16 +190,13 @@ impl ToolResourceOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .tasks
             .clone();
-        let _ = tokio::time::timeout(bound, async {
-            let mut joins = futures::stream::FuturesUnordered::new();
-            for task in tasks {
-                joins.push(async move {
-                    task.join().await;
-                });
-            }
-            while joins.next().await.is_some() {}
-        })
-        .await;
+        let mut joins = futures::stream::FuturesUnordered::new();
+        for task in tasks {
+            joins.push(async move {
+                task.join().await;
+            });
+        }
+        while joins.next().await.is_some() {}
         self.snapshot()
     }
 }

@@ -1,9 +1,10 @@
+use super::cleanup::RecordCleanup;
 use super::{
     ContextualPlanProvider, FactoryContext, FactoryRegistration, FactoryScope, INITIALIZING,
     Initialization, Owner, Record, Slot, SlotState,
 };
 use crate::Registrar;
-use crate::{CleanupOwner, ComponentIdentity, Extension, ExtensionError, Scope, WorkspaceContext};
+use crate::{ComponentIdentity, Extension, ExtensionError, Scope, WorkspaceContext};
 use async_trait::async_trait;
 use crabber_core::SessionContext;
 use futures::FutureExt;
@@ -161,8 +162,13 @@ impl ContextualPlanProvider {
         }
     }
 
-    fn start_record(&self, slot: &Slot) -> Result<(usize, Arc<CleanupOwner>), ExtensionError> {
-        let cleanup = Arc::new(CleanupOwner::new());
+    fn start_record(&self, slot: &Slot) -> Result<(usize, Arc<RecordCleanup>), ExtensionError> {
+        let cleanup = Arc::new(match slot.owner {
+            Owner::Shared => RecordCleanup::Shared(crate::CleanupOwner::new()),
+            Owner::Workspace(_) | Owner::Session(_) => {
+                RecordCleanup::Factory(crate::ToolResourceOwner::new())
+            }
+        });
         let mut state = slot.state.lock().unwrap();
         if state.closed || self.is_closed() {
             return Err(ExtensionError::ContextOwnerClosed);
@@ -287,7 +293,9 @@ fn freeze(
         });
     }
     let mut config = serde_json::json!({
-        "contract":"crabber.contextual-factory.v1", "factory":registration.identity,
+        "contract":super::FACTORY_RESOURCE_CONTRACT, "factory":registration.identity,
+        "resource_contract":crate::TOOL_RESOURCE_CONTRACT_VERSION,
+        "resource_capacity":crate::MAX_TOOL_RESOURCE_TASKS,
         "factory_config":config_value(&registration.config_hash),
         "instance":{"id":id, "version":version, "config":config_value(&extension.config_hash())},
     });

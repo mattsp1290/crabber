@@ -1,4 +1,5 @@
 //! Owned initialization and contextual instantiation of a frozen registration profile.
+mod cleanup;
 mod initialization;
 mod instances;
 mod lifecycle;
@@ -30,6 +31,10 @@ pub enum FactoryScope {
 
 /// Context and owned cleanup for one factory invocation. No filesystem authority
 /// is granted. Workspace factories never receive an arbitrary first session ID.
+/// Cleanup registration is bounded by [`crate::MAX_TOOL_RESOURCE_TASKS`] and
+/// sealed when this owner closes. Retained trackers cannot start work afterward.
+/// Use [`CleanupTracker::spawn_checked`] to report cleanup failures; ordinary
+/// task return values remain data. Close retains actual joins after a timeout.
 #[derive(Clone)]
 pub struct FactoryContext {
     workspace: WorkspaceContext,
@@ -73,6 +78,8 @@ struct FactoryRegistration {
     factory: Arc<dyn ExtensionFactory>,
 }
 
+const FACTORY_RESOURCE_CONTRACT: &str = "crabber.contextual-factory.v2";
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Owner {
     Shared,
@@ -82,7 +89,7 @@ enum Owner {
 tokio::task_local! { static INITIALIZING: Owner; }
 
 struct Record {
-    cleanup: Arc<CleanupOwner>,
+    cleanup: Arc<cleanup::RecordCleanup>,
     mount: Option<MountHandle>,
 }
 #[derive(Default)]
