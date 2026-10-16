@@ -1,4 +1,6 @@
 //! FIFO public queue projection; never fetches QueueInput or preparation capsules.
+//! Budgets bound client transfer/materialization. Database JSON inspection work
+//! is not a transfer of the enclosing private audit input.
 use super::reads;
 use crate::public_session::{
     budget::Budget,
@@ -55,11 +57,13 @@ pub(in crate::postgres) async fn pending(
                 .fetch_one(&mut **tx)
                 .await
                 .map_err(unknown)?;
+            let allowance = proof.budget().remaining();
             proof.charge(usize::try_from(bytes).map_err(unknown)?)?;
-            let query = reads::SUMMARY.replacen("SELECT ", "SELECT CASE WHEN octet_length(CAST(a.data_json::json->'receipt' AS TEXT))<=16384 THEN CAST(a.data_json::json->'receipt' AS TEXT) END AS immutable_receipt, ", 1);
+            let query = reads::SUMMARY.replacen("SELECT ", "SELECT CASE WHEN octet_length(CAST(a.data_json::json->'receipt' AS TEXT))<=16384 AND octet_length(CAST(a.data_json::json->'receipt' AS TEXT))<=$3 THEN CAST(a.data_json::json->'receipt' AS TEXT) END AS immutable_receipt, ", 1);
             let row = sqlx::query(&query)
                 .bind(&session.0)
                 .bind(&id)
+                .bind(i64::try_from(allowance).map_err(unknown)?)
                 .fetch_one(&mut **tx)
                 .await
                 .map_err(unknown)?;

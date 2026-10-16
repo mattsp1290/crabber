@@ -303,3 +303,22 @@ mod declaration_allocation {
         );
     }
 }
+
+/// Immutable read routing, deliberately unable to represent a Run or worker grant.
+pub(crate) struct FrontendReadScope {
+    pub session_id: crabber_core::SessionId,
+    pub id: crabber_core::RunId,
+}
+impl FrontendReadScope {
+    pub fn new(
+        session: &crabber_core::SessionId,
+        run: &crabber_core::RunId,
+    ) -> Result<Self, Error> {
+        identity(&session.0, 512)?;
+        identity(&run.0, 128)?;
+        Ok(Self {
+            session_id: session.clone(),
+            id: run.clone(),
+        })
+    }
+}

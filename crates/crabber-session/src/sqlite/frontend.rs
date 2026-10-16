@@ -1,7 +1,9 @@
 //! SQLite schema 10 frontend origins, registered by the frontend slice.
 mod continuation;
 mod read;
-pub(super) use continuation::{mark_waiting, pending_call, recover_call, save_links, verify_batch};
+pub(super) use continuation::{
+    mark_waiting, pending_call, recover_call, save_links, verify_batch, verify_batch_with_proof,
+};
 mod stage;
 use super::{SqliteExecution, SqliteStore};
 use crate::frontend_continuation::FrontendOriginRecord;
@@ -94,3 +96,6 @@ pub(super) async fn origin(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod read_tests;

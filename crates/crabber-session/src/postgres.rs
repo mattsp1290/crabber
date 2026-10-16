@@ -7,6 +7,8 @@
 //! connect remains read-only and requires explicit migration to schema v10.
 #[path = "postgres/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "postgres/read_proof.rs"]
+mod read_proof;
 
 mod abandon;
 mod admission_execution;

@@ -1,5 +1,6 @@
 //! Frontend calls extend the same exact compound barrier and native ownership.
 use super::{Error, FrontendOriginRecord, origin, read, supported, unknown};
+use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crate::{
     FrozenFrontendCall, PhaseSnapshot, ToolContinuationSuspension,
     tool_continuation::ToolContinuationRecord,
@@ -65,22 +66,38 @@ pub(in super::super) async fn verify_batch(
     tx: &mut Transaction<'_, Sqlite>,
     record: &ToolContinuationRecord,
 ) -> Result<(), Error> {
+    verify_batch_with_proof(tx, record, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
+}
+pub(in super::super) async fn verify_batch_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    record: &ToolContinuationRecord,
+    proof: &mut Proof,
+) -> Result<(), ToolReadError> {
     if crate::SQLITE_SCHEMA_VERSION < 10 {
         record.batch.require_frontend_support(false)?;
         return Ok(());
     }
     if !record.batch.frontend.is_empty() {
-        let run = read::run(tx, &record.session_id, &record.run_id).await?;
+        let run = read::scope_with_proof(tx, &record.session_id, &record.run_id, proof).await?;
         for frozen in &record.batch.frontend {
-            let saved = origin(tx, &run, &frozen.target.call_id)
+            let saved = read::origin_with_proof(tx, &run, &frozen.target.call_id, proof)
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?;
             verify_frozen(&saved, frozen)?;
         }
     }
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(LINK_COST).bind(&record.batch.continuation.id.0),
+        proof,
+    )
+    .await
+    .map_err(ToolReadError::Budget)?;
     let rows = sqlx::query("SELECT CASE WHEN length(CAST(run_id AS BLOB))<=128 THEN run_id END AS run_id,CASE WHEN length(CAST(call_id AS BLOB))<=512 THEN call_id END AS call_id,CASE WHEN length(CAST(phase_id AS BLOB))<=128 THEN phase_id END AS phase_id FROM tool_continuation_frontend_calls WHERE continuation_id=$1 ORDER BY call_id LIMIT 65").bind(&record.batch.continuation.id.0).fetch_all(&mut **tx).await.map_err(unknown)?;
     if rows.len() != record.batch.frontend.len() {
-        return Err(Error::UnknownStoreOutcome);
+        return Err(Error::UnknownStoreOutcome.into());
     }
     let mut seen = std::collections::BTreeSet::new();
     for row in rows {
@@ -101,7 +118,7 @@ pub(in super::super) async fn verify_batch(
                 .iter()
                 .any(|f| f.target.call_id.0 == call && f.target.id.0 == phase)
         {
-            return Err(Error::UnknownStoreOutcome);
+            return Err(Error::UnknownStoreOutcome.into());
         }
     }
     Ok(())
@@ -161,3 +178,5 @@ pub(in super::super) fn recover_call(
     }
     Ok(true)
 }
+
+const LINK_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT length(CAST(run_id AS BLOB))+length(CAST(call_id AS BLOB))+length(CAST(phase_id AS BLOB)) AS bytes FROM tool_continuation_frontend_calls WHERE continuation_id=$1 ORDER BY call_id LIMIT 65) proof_links";

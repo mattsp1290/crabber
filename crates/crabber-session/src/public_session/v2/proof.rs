@@ -12,13 +12,25 @@ pub(crate) fn unknown(_: impl std::fmt::Debug) -> Failure {
 }
 /// One always-present shared proof context. Its Budget also serves the existing
 /// qualified approval and cross-domain readers without resetting the allowance.
-pub(crate) struct Proof(crate::public_session::budget::Budget);
+pub(crate) struct Proof(crate::public_session::budget::Budget, bool);
 impl Proof {
+    pub fn legacy() -> Self {
+        Self(
+            crate::public_session::budget::Budget::new(
+                usize::MAX,
+                crate::PublicSessionLimit::ProofBytes,
+            ),
+            false,
+        )
+    }
+    pub fn active(&self) -> bool {
+        self.1
+    }
     pub fn bounded(cap: usize) -> Self {
-        Self(crate::public_session::budget::Budget::new(
-            cap,
-            crate::PublicSessionLimit::ProofBytes,
-        ))
+        Self(
+            crate::public_session::budget::Budget::new(cap, crate::PublicSessionLimit::ProofBytes),
+            true,
+        )
     }
     pub fn charge(&mut self, bytes: usize) -> Result<(), Failure> {
         self.0.charge(bytes).map_err(Into::into)
@@ -73,4 +85,46 @@ pub(crate) fn owner(
         updated_at: snapshot.updated_at,
     })?;
     Ok(snapshot.into())
+}
+
+/// Preserve each legacy domain's exact error while carrying aggregate limits
+/// through nested proof readers. Budget failures cannot masquerade as corruption.
+#[derive(Debug)]
+pub(crate) enum ReadError<E> {
+    Domain(E),
+    Budget(Failure),
+}
+impl<E> From<E> for ReadError<E> {
+    fn from(error: E) -> Self {
+        Self::Domain(error)
+    }
+}
+impl<E> ReadError<E> {
+    pub fn into_domain_or(self, limited: E) -> E {
+        match self {
+            Self::Domain(error) => error,
+            Self::Budget(_) => limited,
+        }
+    }
+    pub fn map_domain<F>(self, map: impl FnOnce(E) -> F) -> ReadError<F> {
+        match self {
+            Self::Domain(error) => ReadError::Domain(map(error)),
+            Self::Budget(error) => ReadError::Budget(error),
+        }
+    }
+    pub fn public(self) -> Failure {
+        match self {
+            Self::Domain(_) => unknown("domain proof"),
+            Self::Budget(error) => error,
+        }
+    }
+}
+pub(crate) type ToolReadError = ReadError<crate::ToolContinuationError>;
+impl From<ReadError<crate::StoreError>> for ToolReadError {
+    fn from(error: ReadError<crate::StoreError>) -> Self {
+        match error {
+            ReadError::Domain(_) => Self::Domain(crate::ToolContinuationError::UnknownStoreOutcome),
+            ReadError::Budget(error) => Self::Budget(error),
+        }
+    }
 }

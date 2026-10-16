@@ -1,6 +1,7 @@
 //! Bound and legacy admission share the same transaction-only write helpers.
 use super::records::{decode_row, lookup_receipt};
 use super::{SqliteStore, db, text};
+use crate::public_session::v2::proof::{Proof, ReadError};
 
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionBindingCapsule, KeyedAdmitOutcome, KeyedAdmitRequest,
@@ -233,6 +234,26 @@ pub(super) async fn read(
     session: &SessionId,
     run: &RunId,
 ) -> Result<Option<RetainedExecutionBinding>, StoreError> {
+    read_with_proof(tx, session, run, &mut Proof::legacy())
+        .await
+        .map_err(|error| error.into_domain_or(StoreError::AdmissionConflict))
+}
+pub(super) async fn read_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<RetainedExecutionBinding>, ReadError<StoreError>> {
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(BINDING_PROOF_COST)
+            .bind(&run.0)
+            .bind(&session.0),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+
     // The scope filter precedes private decoding. Load only immutable run fields;
     // a malformed worker token cannot invalidate original binding evidence.
     let row = sqlx::query("SELECT b.capsule_version, CASE WHEN length(CAST(b.data_json AS BLOB)) <= 16777216 THEN b.data_json END AS binding, CASE WHEN length(CAST((json_extract(r.data, '$.config_hash')) AS BLOB)) <= 64 THEN json_extract(r.data, '$.config_hash') END AS config, CASE WHEN length(CAST((json_extract(r.data, '$.plan_fingerprint')) AS BLOB)) <= 64 THEN json_extract(r.data, '$.plan_fingerprint') END AS plan, CASE WHEN length(CAST((json_extract(s.data, '$.workspace_id')) AS BLOB)) <= 512 THEN json_extract(s.data, '$.workspace_id') END AS workspace, CASE WHEN length(CAST((json_extract(s.data, '$.directory')) AS BLOB)) <= 16384 THEN json_extract(s.data, '$.directory') END AS directory FROM run_execution_bindings b JOIN runs r ON r.id=b.run_id JOIN sessions s ON s.id=r.session_id WHERE r.id=$1 AND r.session_id=$2")
@@ -243,19 +264,19 @@ pub(super) async fn read(
     let version: i32 = row.try_get("capsule_version").map_err(db)?;
     let encoded: Option<String> = row.try_get("binding").map_err(db)?;
     if !matches!(version, 2 | 3) {
-        return Err(StoreError::AdmissionConflict);
+        return Err(StoreError::AdmissionConflict.into());
     }
     let binding =
         RetainedExecutionBinding::decode(encoded.as_deref().ok_or(StoreError::AdmissionConflict)?)?;
     if u32::try_from(version).ok() != Some(binding.capsule.version) {
-        return Err(StoreError::AdmissionConflict);
+        return Err(StoreError::AdmissionConflict.into());
     }
     let count = binding
         .capsule
         .input_envelope
         .as_ref()
         .map_or(1, |input| input.messages().len());
-    let messages = original_messages(tx, session, run, count).await?;
+    let messages = original_messages_with_proof(tx, session, run, count, proof).await?;
     let config: String = row
         .try_get::<Option<String>, _>("config")
         .map_err(db)?
@@ -276,7 +297,7 @@ pub(super) async fn read(
     if binding.capsule.request.workspace_id != workspace
         || binding.capsule.request.directory != directory
     {
-        return Err(StoreError::SessionIdentityMismatch);
+        return Err(StoreError::SessionIdentityMismatch.into());
     }
     Ok(Some(binding))
 }
@@ -313,3 +334,29 @@ mod tests;
 
 #[cfg(test)]
 mod process_tests;
+
+/// Charge the exact original-message prefix in this same transaction before transfer.
+pub(super) async fn original_messages_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    count: usize,
+    proof: &mut Proof,
+) -> Result<Vec<Message>, ReadError<StoreError>> {
+    if count == 0 || count > crabber_core::input::MAX_INPUT_MESSAGES {
+        return Err(StoreError::AdmissionConflict.into());
+    }
+    super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(ORIGINAL_PROOF_COST)
+            .bind(&session.0)
+            .bind(&run.0)
+            .bind(i64::try_from(count).map_err(|_| StoreError::AdmissionConflict)?),
+        proof,
+    )
+    .await
+    .map_err(ReadError::Budget)?;
+    Ok(original_messages(tx, session, run, count).await?)
+}
+const BINDING_PROOF_COST: &str = r"SELECT CAST(length(CAST(b.data_json AS BLOB))+COALESCE(length(CAST(json_extract(r.data,'$.config_hash') AS BLOB)),0)+COALESCE(length(CAST(json_extract(r.data,'$.plan_fingerprint') AS BLOB)),0)+COALESCE(length(CAST(json_extract(s.data,'$.workspace_id') AS BLOB)),0)+COALESCE(length(CAST(json_extract(s.data,'$.directory') AS BLOB)),0) AS BIGINT) FROM run_execution_bindings b JOIN runs r ON r.id=b.run_id JOIN sessions s ON s.id=r.session_id WHERE r.id=$1 AND r.session_id=$2";
+const ORIGINAL_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT length(CAST(data AS BLOB)) AS bytes FROM messages WHERE session_id=$1 AND run_id=$2 ORDER BY seq LIMIT $3) originals";
