@@ -7,6 +7,11 @@ use crabber_session::session_owner::{
     SessionOwnerOutcome as Outcome, SessionOwnerParent, SessionOwnerParentAuthority,
     SessionOwnerReceipt, SessionOwnerState, SessionOwnerTermination,
 };
+use sha2::{Digest, Sha256};
+pub(super) struct Started {
+    pub authority: SessionOwnerAuthority,
+    pub source: crabber_session::session_owner::owned_scope::OwnedScopeSource,
+}
 pub(super) fn validate_request(parent: &Parent, request: &Request) -> Result<(), Error> {
     for (value, bound) in [
         (&request.id.0, 128),
@@ -33,8 +38,16 @@ pub(super) fn validate_request(parent: &Parent, request: &Request) -> Result<(),
     }
     Ok(())
 }
-fn reserve(parent: &Parent, request: &Request) -> ReserveSessionOwner {
-    ReserveSessionOwner {
+fn reserve(parent: &Parent, request: &Request, scoped: bool) -> Result<ReserveSessionOwner, Error> {
+    let behavior_fingerprint = if scoped {
+        let encoded = serde_json::to_vec(&("crabber.runtime.detached.registered.v1", request))
+            .map_err(|_| Error::Rejected)?;
+        crabber_core::InputFingerprint::new(format!("{:x}", Sha256::digest(encoded)))
+            .map_err(|_| Error::Rejected)?
+    } else {
+        request.behavior_fingerprint.clone()
+    };
+    Ok(ReserveSessionOwner {
         id: request.reserve_id.clone(),
         binding: SessionOwnerBinding {
             session_id: parent.session.clone(),
@@ -43,7 +56,7 @@ fn reserve(parent: &Parent, request: &Request) -> ReserveSessionOwner {
             id: request.id.clone(),
             kind: SessionOwnerKind::DetachedInvocation,
             component_id: request.component_id.clone(),
-            behavior_fingerprint: request.behavior_fingerprint.clone(),
+            behavior_fingerprint,
             parent: Some(SessionOwnerParent {
                 run_id: parent.run.clone(),
                 call_id: Some(parent.phase.call_id.clone()),
@@ -52,7 +65,7 @@ fn reserve(parent: &Parent, request: &Request) -> ReserveSessionOwner {
         },
         owner: crabber_core::RunId::new().to_string(),
         lease_ms: 30_000,
-    }
+    })
 }
 fn valid_reserve(receipt: &SessionOwnerReceipt, request: &ReserveSessionOwner) -> bool {
     request
@@ -72,7 +85,7 @@ pub(super) async fn replay(
     request: &Request,
 ) -> Result<Admission, Error> {
     validate_request(parent, request)?;
-    let request = reserve(parent, request);
+    let request = reserve(parent, request, store.supports_owned_scopes())?;
     request.fingerprint().map_err(|_| Error::Rejected)?;
     match store
         .lookup_session_owner(&parent.session, &request.id)
@@ -87,8 +100,8 @@ pub(super) async fn start(
     store: &dyn Store,
     parent: &Parent,
     invocation: &Invocation,
-) -> Result<Option<SessionOwnerAuthority>, Error> {
-    let request = reserve(parent, &invocation.request);
+) -> Result<Option<Started>, Error> {
+    let request = reserve(parent, &invocation.request, store.supports_owned_scopes())?;
     request.fingerprint().map_err(|_| Error::Rejected)?;
     let target = crabber_session::session_owner::SessionOwnerTarget {
         id: invocation.request.id.clone(),
@@ -125,7 +138,7 @@ pub(super) async fn start(
         )
         .await
         .map_err(classify)?;
-    let authority = match outcome {
+    let (authority, reserved) = match outcome {
         Outcome::Replayed(receipt) if valid_reserve(&receipt, &request) => return Ok(None),
         Outcome::Applied {
             receipt,
@@ -134,7 +147,7 @@ pub(super) async fn start(
             && authority.session_id() == &parent.session
             && authority.target() == &receipt.owner.target =>
         {
-            authority
+            (authority, receipt)
         }
         _ => return Err(Error::UnknownOutcome),
     };
@@ -161,7 +174,14 @@ pub(super) async fn start(
             && receipt.owner.target == begin.target
             && receipt.owner.state == SessionOwnerState::Active =>
         {
-            Ok(Some(authority))
+            Ok(Some(Started {
+                authority,
+                source:
+                    crabber_session::session_owner::owned_scope::OwnedScopeSource::from_receipts(
+                        &reserved, &receipt,
+                    )
+                    .map_err(|_| Error::UnknownOutcome)?,
+            }))
         }
         // Replayed Begin is never permission to invoke the supplied task factory.
         _ => Err(Error::UnknownOutcome),

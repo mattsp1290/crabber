@@ -16,8 +16,8 @@ pub(super) async fn run(
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
 ) {
-    let authority = match super::registration::start(&*store, &parent, &invocation).await {
-        Ok(Some(authority)) => authority,
+    let started = match super::registration::start(&*store, &parent, &invocation).await {
+        Ok(Some(started)) => started,
         Ok(None) => {
             invocation.status(SessionInvocationStatus::Replayed);
             invocation.resources.close();
@@ -35,6 +35,11 @@ pub(super) async fn run(
             return;
         }
     };
+    if store.supports_owned_scopes() {
+        super::scoped::run(store, parent, invocation, task, sender, started).await;
+        return;
+    }
+    let authority = started.authority;
     invocation.status(SessionInvocationStatus::Active);
     super::cancellation::poll(&*store, &invocation, &authority).await;
     let resources = invocation.resources.clone();
@@ -75,23 +80,31 @@ pub(super) async fn run(
     )
     .await;
     if incomplete {
-        invocation.status(SessionInvocationStatus::Uncertain);
-        let uncertain = MutateSessionOwner {
-            id: crabber_core::SessionOwnerOperationId::new(),
-            session_id: parent.session.clone(),
-            target: authority.target().clone(),
-            command: Command::MarkUncertain {
-                claim: crabber_session::session_owner::SessionOwnerResolver {
-                    resolver_id: "crabber.runtime".into(),
-                    authority_claim: "observed detached task or resource cleanup failure".into(),
-                },
-            },
-        };
-        let _ = store.mutate_session_owner(uncertain, Some(authority)).await;
+        mark_uncertain(&*store, &invocation, authority).await;
         return;
     }
     let termination = SessionOwnerTermination::Returned;
     publish_join(&*store, parent, &invocation, authority, termination).await;
+}
+
+pub(super) async fn mark_uncertain(
+    store: &dyn Store,
+    invocation: &Invocation,
+    authority: SessionOwnerAuthority,
+) {
+    invocation.status(SessionInvocationStatus::Uncertain);
+    let uncertain = MutateSessionOwner {
+        id: crabber_core::SessionOwnerOperationId::new(),
+        session_id: invocation.session.clone(),
+        target: authority.target().clone(),
+        command: Command::MarkUncertain {
+            claim: crabber_session::session_owner::SessionOwnerResolver {
+                resolver_id: "crabber.runtime".into(),
+                authority_claim: "observed detached task or resource cleanup failure".into(),
+            },
+        },
+    };
+    let _ = store.mutate_session_owner(uncertain, Some(authority)).await;
 }
 
 async fn publish_join(
@@ -152,7 +165,11 @@ pub(super) fn discard_panic(error: tokio::task::JoinError) {
         }
     }
 }
-async fn renew(store: &dyn Store, invocation: &Invocation, authority: &SessionOwnerAuthority) {
+pub(super) async fn renew(
+    store: &dyn Store,
+    invocation: &Invocation,
+    authority: &SessionOwnerAuthority,
+) {
     super::cancellation::poll(store, invocation, authority).await;
     let renew = MutateSessionOwner {
         id: crabber_core::SessionOwnerOperationId::new(),

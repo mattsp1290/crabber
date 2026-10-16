@@ -1,6 +1,7 @@
 //! Retained registration and actual joins, independent of the parent run.
 mod cancellation;
 mod registration;
+mod scoped;
 mod worker;
 use async_trait::async_trait;
 use crabber_core::{SessionId, SessionOwnerId};
