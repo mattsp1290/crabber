@@ -68,7 +68,10 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
                 match self.task.as_mut().ok_or(Error::UnknownStoreOutcome)?.await {
                     Ok(Some(value)) => (OwnedMainDisposition::Returned, Some(value)),
                     Ok(None) => (OwnedMainDisposition::NoDispatch, None),
-                    Err(error) if error.is_panic() => (OwnedMainDisposition::Panicked, None),
+                    Err(error) if error.is_panic() => {
+                        discard_panic(error);
+                        (OwnedMainDisposition::Panicked, None)
+                    }
                     Err(_) => (OwnedMainDisposition::Aborted, None),
                 };
             self.task = None;
@@ -119,5 +122,14 @@ impl<T> JoinedOwnedTask<T> {
     #[must_use]
     pub fn value(&self) -> Option<&T> {
         self.value.as_ref()
+    }
+}
+
+// A user panic payload may itself panic when dropped. Dispose it without
+// unwinding through the owner before its actual join observation is retained.
+pub(super) fn discard_panic(error: tokio::task::JoinError) {
+    let payload = error.into_panic();
+    if let Err(nested) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload))) {
+        std::mem::forget(nested);
     }
 }

@@ -1774,12 +1774,18 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 #[derive(Default)]
 struct SettlementGate {
     driver_register_fault: AtomicUsize,
+    driver_register_request_override:
+        Mutex<Option<crabber_session::session_owner::driver::RegisterExecutionDriver>>,
+    driver_register_captured:
+        Mutex<Option<crabber_session::session_owner::driver::ExecutionDriverOutcome>>,
     driver_register_hold: std::sync::atomic::AtomicBool,
     driver_register_entered: Notify,
     driver_register_release: Notify,
     driver_activation_fault: AtomicUsize,
     driver_join_fault: AtomicUsize,
     driver_join_calls: AtomicUsize,
+    driver_poll_panic: std::sync::atomic::AtomicBool,
+    driver_poll_entered: Notify,
     preparation_fault: AtomicUsize,
     unsupported_recovery_inspection: std::sync::atomic::AtomicBool,
     activation_fault: AtomicUsize,
@@ -1950,7 +1956,19 @@ impl Store for DelayedTerminalStore {
         if point == 1 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
         }
-        let outcome = self.inner.register_execution_driver(request).await?;
+        let substitute = self
+            .gate
+            .driver_register_request_override
+            .lock()
+            .unwrap()
+            .take();
+        let outcome = self
+            .inner
+            .register_execution_driver(substitute.clone().unwrap_or(request))
+            .await?;
+        if substitute.is_some() {
+            *self.gate.driver_register_captured.lock().unwrap() = Some(outcome.clone());
+        }
         if self.gate.driver_register_hold.load(Ordering::SeqCst) {
             self.gate.driver_register_entered.notify_one();
             self.gate.driver_register_release.notified().await;
@@ -1990,6 +2008,7 @@ impl Store for DelayedTerminalStore {
             &self.gate.activation_fault
         };
         let point = fault.swap(0, Ordering::SeqCst);
+        assert_ne!(point, 3, "activation Store panic before publication");
         if point == 1 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
         }
@@ -1997,6 +2016,7 @@ impl Store for DelayedTerminalStore {
             .inner
             .publish_owned_scope_activation(request, authority, parent)
             .await?;
+        assert_ne!(point, 4, "activation Store panic after publication");
         if point == 2 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
         }
@@ -2013,10 +2033,12 @@ impl Store for DelayedTerminalStore {
         if authority.target().id.0.starts_with("driver-owner-") {
             self.gate.driver_join_calls.fetch_add(1, Ordering::SeqCst);
             let point = self.gate.driver_join_fault.swap(0, Ordering::SeqCst);
+            assert_ne!(point, 3, "Join Store panic before publication");
             if point == 1 {
                 return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
             }
             let outcome = self.inner.join_owned_scope(proof, authority).await?;
+            assert_ne!(point, 4, "Join Store panic after publication");
             if point == 2 {
                 return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
             }
@@ -2077,6 +2099,12 @@ impl Store for DelayedTerminalStore {
         Option<crabber_session::session_owner::SessionOwnerCancellation>,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        if authority.target().id.0.starts_with("driver-owner-")
+            && self.gate.driver_poll_panic.swap(false, Ordering::SeqCst)
+        {
+            self.gate.driver_poll_entered.notify_one();
+            panic!("driver control Store future panicked");
+        }
         self.inner.pending_session_owner_cancel(authority).await
     }
     async fn observe_session_owner_cancel(

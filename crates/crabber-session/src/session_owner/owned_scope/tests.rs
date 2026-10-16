@@ -178,3 +178,96 @@ async fn interrupted_main_observation_retains_the_actual_task_and_value() {
     assert_eq!(registration.join().await.unwrap().value(), Some(&42));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+struct PanicOnDrop;
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        panic!("panic payload destructor");
+    }
+}
+async fn genuine_registration() -> (
+    crate::MemoryStore,
+    super::super::driver::ExecutionDriverGrant,
+    OwnedTaskRegistration<()>,
+) {
+    use crate::Store;
+    let store = crate::MemoryStore::new();
+    let request = crate::driver_contract::request(&store).await;
+    let super::super::driver::ExecutionDriverOutcome::Applied { grant, .. } =
+        store.register_execution_driver(request).await.unwrap()
+    else {
+        panic!("fresh grant")
+    };
+    let main = OwnedTaskRegistration::register(grant.scope_source().unwrap(), || async {
+        std::panic::panic_any(PanicOnDrop);
+    })
+    .unwrap();
+    (store, *grant, main)
+}
+
+#[tokio::test]
+async fn actual_main_panic_payload_drop_preserves_repeated_join_evidence() {
+    use crate::Store;
+    use futures::FutureExt;
+    let (store, grant, mut main) = genuine_registration().await;
+    let OwnedScopeActivationOutcome::Applied { permit, .. } = store
+        .activate_owned_scope(
+            main.activation().clone(),
+            grant.authority().clone(),
+            Some(OwnedScopeParentAuthority::ExecutionDriver(Box::new(
+                grant.clone(),
+            ))),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("fresh activation")
+    };
+    main.dispatch(*permit).unwrap();
+    let first = std::panic::AssertUnwindSafe(async { main.join().await.unwrap().disposition() })
+        .catch_unwind()
+        .await;
+    assert!(matches!(first, Ok(OwnedMainDisposition::Panicked)));
+    assert_eq!(
+        main.join().await.unwrap().disposition(),
+        OwnedMainDisposition::Panicked
+    );
+    let mut cleanup =
+        OwnedCleanupTask::from_host_task(main.activation().clone(), tokio::spawn(async { Ok(()) }));
+    let proof = main
+        .join()
+        .await
+        .unwrap()
+        .observe_resources(&mut cleanup)
+        .await
+        .unwrap();
+    store
+        .join_owned_scope(proof, grant.authority().clone())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn actual_cleanup_panic_payload_drop_preserves_repeated_failure() {
+    use futures::FutureExt;
+    let (_store, _grant, mut main) = genuine_registration().await;
+    // This genuine registered gate is closed without dispatch. Cleanup still
+    // has an independent actual task; its panic supplies no native Join proof.
+    let joined = main.join().await.unwrap();
+    let mut cleanup = OwnedCleanupTask::from_host_task(
+        joined.activation().clone(),
+        tokio::spawn(async {
+            std::panic::panic_any(PanicOnDrop);
+        }),
+    );
+    let first = std::panic::AssertUnwindSafe(async {
+        joined.observe_resources(&mut cleanup).await.map(|_| ())
+    })
+    .catch_unwind()
+    .await;
+    assert!(matches!(first, Ok(Err(OwnedCleanupFailure::Panicked))));
+    assert!(matches!(
+        joined.observe_resources(&mut cleanup).await,
+        Err(OwnedCleanupFailure::Panicked)
+    ));
+}

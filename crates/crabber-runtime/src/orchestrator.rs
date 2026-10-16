@@ -1097,6 +1097,11 @@ impl RunHandle {
 }
 
 impl Orchestrator {
+    #[cfg(test)]
+    pub(crate) fn execution_tasks_for_test(&self) -> &crate::execution_tasks::ExecutionTasks {
+        &self.execution_tasks
+    }
+
     #[must_use]
     pub fn builder() -> OrchestratorBuilder {
         OrchestratorBuilder::default()

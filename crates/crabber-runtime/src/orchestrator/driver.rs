@@ -1,5 +1,7 @@
 //! Actual worker completion precedes native ownership retirement.
 mod control;
+mod resources;
+mod retirement;
 use super::{RunResult, RuntimeError};
 use crate::execution_tasks::ExecutionTasks;
 use crabber_session::{
@@ -7,11 +9,12 @@ use crabber_session::{
     session_owner::{
         driver::{ExecutionDriverOutcome, RegisterExecutionDriver},
         owned_scope::{
-            OwnedCleanupFailure, OwnedCleanupTask, OwnedScopeActivationOutcome,
-            OwnedScopeParentAuthority, OwnedTaskRegistration,
+            OwnedCleanupTask, OwnedScopeActivationOutcome, OwnedScopeParentAuthority,
+            OwnedTaskRegistration,
         },
     },
 };
+use futures::FutureExt;
 use std::{
     future::Future,
     sync::{Arc, Mutex},
@@ -74,19 +77,29 @@ where
     F: FnOnce() -> W + Send + 'static,
     W: Future<Output = ()> + Send + 'static,
 {
-    let ExecutionDriverOutcome::Applied { grant, .. } =
-        store.register_execution_driver(request.clone()).await?
+    let ExecutionDriverOutcome::Applied { grant, receipt } =
+        store_call(async { store.register_execution_driver(request.clone()).await }).await?
     else {
         return Err(RuntimeError::PreparationRecoveryRequired);
     };
+    if grant.original_request().fingerprint()? != request.fingerprint()?
+        || grant.receipt() != &receipt
+    {
+        return Err(RuntimeError::PreparationRecoveryRequired);
+    }
     let mut main = OwnedTaskRegistration::register(grant.scope_source()?, work)?;
-    let activation = store
-        .activate_owned_scope(
-            main.activation().clone(),
-            grant.authority().clone(),
-            Some(OwnedScopeParentAuthority::ExecutionDriver(grant.clone())),
-        )
-        .await;
+    // The registered task stays outside every untrusted Store future's unwind
+    // boundary. An adapter panic cannot drop/detach its actual join handle.
+    let activation = store_call(async {
+        store
+            .activate_owned_scope(
+                main.activation().clone(),
+                grant.authority().clone(),
+                Some(OwnedScopeParentAuthority::ExecutionDriver(grant.clone())),
+            )
+            .await
+    })
+    .await;
     let dispatch = match activation {
         Ok(OwnedScopeActivationOutcome::Applied { permit, .. }) => {
             main.dispatch(*permit).map_err(RuntimeError::from)
@@ -104,67 +117,58 @@ where
     let mut observed = None;
     loop {
         tokio::select! {
+            () = cancellation.cancelled() => break,
             joined = main.join() => { joined?; break; }
-            _ = ticker.tick() => control::poll(store.as_ref(), grant.authority(), &cancellation, &mut observed).await,
+            _ = ticker.tick() => {
+                let poll = store_call(async {
+                    control::poll(store.as_ref(), grant.authority(), &cancellation, &mut observed).await;
+                    Ok(())
+                }).await;
+                if poll.is_err() {
+                    cancellation.cancel();
+                    // Start real resource closure before awaiting the main:
+                    // a main may itself be waiting for a child to receive close.
+                    break;
+                }
+            },
         }
     }
     // This is an independently retained, actual cleanup task. Main completion,
     // empty snapshots and native terminal publications cannot substitute for it.
     let run = request.fence.run_id;
     let failed_run = run.clone();
+    let (main_joined, observe_main) = oneshot::channel();
     let mut cleanup = OwnedCleanupTask::from_host_task(
         main.activation().clone(),
-        tokio::spawn(async move {
-            resources
-                .finish_run_resources(&run)
-                .await
-                .map_err(|()| OwnedCleanupFailure::Failed)
-        }),
+        tokio::spawn(resources::finish(resources, run, observe_main)),
     );
     let joined = main.join().await?;
+    // This barrier is sent only after the actual retained main join. Cleanup
+    // must close/drain the final registered set after that observation too.
+    let _ = main_joined.send(());
     completion.observe_main(joined);
     let proof = joined
         .observe_resources(&mut cleanup)
         .await
         .map_err(|_| RuntimeError::AttemptCleanupIncomplete { run_id: failed_run })?;
-    let native = proof.request()?;
-    let fingerprint = proof.fingerprint()?;
-    let mut retry_wait = Duration::from_millis(50);
-    loop {
-        match store
-            .join_owned_scope(proof.clone(), grant.authority().clone())
-            .await
-        {
-            Ok(outcome) => {
-                let (crabber_session::session_owner::SessionOwnerOutcome::Applied {
-                    receipt,
-                    authority: None,
-                }
-                | crabber_session::session_owner::SessionOwnerOutcome::Replayed(receipt)) = outcome
-                else {
-                    return Err(RuntimeError::PreparationRecoveryRequired);
-                };
-                if receipt.operation != crabber_session::session_owner::SessionOwnerOperation::Join
-                    || receipt.owner.state
-                        != crabber_session::session_owner::SessionOwnerState::Joined
-                    || receipt.owner.binding != grant.receipt().begin.owner.binding
-                    || receipt.session_id != native.session_id
-                    || receipt.operation_id != native.id
-                    || receipt.owner.target != native.target
-                    || receipt.semantic_digest != fingerprint
-                {
-                    return Err(RuntimeError::PreparationRecoveryRequired);
-                }
-                break;
+    retirement::join(store.as_ref(), &grant, proof).await?;
+    dispatch
+}
+
+/// Catch construction and polling inside the caller's async block. No task or
+/// cleanup handle is moved into this boundary; callers retain physical owners.
+async fn store_call<T>(
+    call: impl Future<Output = Result<T, crabber_session::session_owner::SessionOwnerError>>,
+) -> Result<T, crabber_session::session_owner::SessionOwnerError> {
+    match std::panic::AssertUnwindSafe(call).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => {
+            if let Err(nested) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+            {
+                std::mem::forget(nested);
             }
-            Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome) => {
-                // Keep the original actual observations and authority. A retry
-                // reconciles only this join and can never dispatch another main.
-                tokio::time::sleep(retry_wait).await;
-                retry_wait = (retry_wait * 2).min(Duration::from_secs(1));
-            }
-            Err(error) => return Err(error.into()),
+            Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome)
         }
     }
-    dispatch
 }

@@ -1,4 +1,6 @@
 //! Actual driver lifetime and uncertain native acknowledgements.
+#[path = "driver/faults.rs"]
+mod faults;
 use super::*;
 use crabber_session::session_owner::driver::RegisterExecutionDriver;
 async fn driver_state(h: &Harness, run: &RunId) -> Option<SessionOwnerState> {

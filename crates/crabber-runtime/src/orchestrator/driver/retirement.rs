@@ -1,0 +1,61 @@
+//! Retries retain the exact physical observations and original authority.
+use super::RuntimeError;
+use crabber_session::{
+    Store,
+    session_owner::{
+        SessionOwnerCommand, SessionOwnerError, SessionOwnerOperation, SessionOwnerOutcome,
+        SessionOwnerState, driver::ExecutionDriverGrant, owned_scope::JoinedOwnedScope,
+    },
+};
+use std::time::Duration;
+
+pub(super) async fn join(
+    store: &dyn Store,
+    grant: &ExecutionDriverGrant,
+    proof: JoinedOwnedScope,
+) -> Result<(), RuntimeError> {
+    let native = proof.request()?;
+    let fingerprint = proof.fingerprint()?;
+    let SessionOwnerCommand::Join { termination } = native.command else {
+        return Err(RuntimeError::PreparationRecoveryRequired);
+    };
+    let mut retry_wait = Duration::from_millis(50);
+    loop {
+        match super::store_call(async {
+            store
+                .join_owned_scope(proof.clone(), grant.authority().clone())
+                .await
+        })
+        .await
+        {
+            Ok(outcome) => {
+                let (SessionOwnerOutcome::Applied {
+                    receipt,
+                    authority: None,
+                }
+                | SessionOwnerOutcome::Replayed(receipt)) = outcome
+                else {
+                    return Err(RuntimeError::PreparationRecoveryRequired);
+                };
+                if receipt.operation != SessionOwnerOperation::Join
+                    || receipt.owner.state != SessionOwnerState::Joined
+                    || receipt.owner.binding != grant.receipt().begin.owner.binding
+                    || receipt.owner.created_at != grant.receipt().begin.owner.created_at
+                    || receipt.owner.termination != Some(termination)
+                    || receipt.session_id != native.session_id
+                    || receipt.operation_id != native.id
+                    || receipt.owner.target != native.target
+                    || receipt.semantic_digest != fingerprint
+                {
+                    return Err(RuntimeError::PreparationRecoveryRequired);
+                }
+                return Ok(());
+            }
+            Err(SessionOwnerError::UnknownStoreOutcome) => {
+                tokio::time::sleep(retry_wait).await;
+                retry_wait = (retry_wait * 2).min(Duration::from_secs(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}

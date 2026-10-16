@@ -406,6 +406,15 @@ head and cannot issue a grant. Fresh registration additionally requires the
 protected preparation-root and child cohorts; activation requires the driver
 cohort and the original Begin revision fence.
 
+The initial Runtime driver retains its actual main and resource cleanup tasks
+outside custom Store future unwind boundaries. An activation panic leaves its
+gate closed; cancellation or a control panic starts real resource closure while
+the main still runs. The cleanup task remains alive until the main has actually
+joined and a final drain covers scopes registered later. Native Join retries
+reuse that same physical evidence and validate the original termination and
+creation binding. A Store response carrying another Run's genuine grant cannot
+dispatch this Run's work.
+
 A selected execution-driver owner can be classified after its genuine main and
 resource-cleanup observations were durably joined. SQL readers require both the
 complete protected cohort and the exact protected selected record; coherent

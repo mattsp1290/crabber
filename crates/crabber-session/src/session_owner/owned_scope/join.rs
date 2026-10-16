@@ -61,7 +61,10 @@ impl OwnedCleanupTask {
         }
         let result = match self.task.as_mut().ok_or(OwnedCleanupFailure::Failed)?.await {
             Ok(result) => result,
-            Err(error) if error.is_panic() => Err(OwnedCleanupFailure::Panicked),
+            Err(error) if error.is_panic() => {
+                super::task::discard_panic(error);
+                Err(OwnedCleanupFailure::Panicked)
+            }
             Err(_) => Err(OwnedCleanupFailure::Aborted),
         };
         self.task = None;
