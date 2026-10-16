@@ -66,6 +66,8 @@ pub use queue::{
 };
 mod management;
 pub mod management_contract;
+pub mod session_owner;
+pub mod session_owner_contract;
 pub use management::{
     ListSessions, ManageSession, ManagementError, ManagementReceipt, SessionChange,
     SessionDefaults, SessionListCursor, SessionListPage, SessionSummary,

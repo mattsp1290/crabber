@@ -159,6 +159,16 @@ fn admission_session(
         .session_id
         .clone()
         .unwrap_or_else(|| request.user_message.session_id.clone());
+    state
+        .session_owners
+        .context(&session_id, &request.workspace_id, &request.directory)
+        .map_err(|error| {
+            if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                StoreError::SessionIdentityMismatch
+            } else {
+                StoreError::Validation("session ownership proof unavailable".into())
+            }
+        })?;
     let session = if let Some(existing) = state.sessions.get(&session_id) {
         existing.ensure_identity(&request.workspace_id, &request.directory)?;
         existing.clone()

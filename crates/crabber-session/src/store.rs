@@ -305,6 +305,50 @@ pub trait Store: Send + Sync {
         Err(StoreError::HostUnsupported)
     }
 
+    /// Whether the adapter implements the owner ledger. This does not certify
+    /// that runtime/factory dispatch has adopted complete ownership coverage.
+    fn supports_session_owners(&self) -> bool {
+        false
+    }
+    /// Reserve before resource/factory dispatch, even before session creation.
+    /// Ownership operation IDs have a distinct typed namespace because these
+    /// receipts may precede the ordinary session/Run receipt FK graph.
+    async fn reserve_session_owner(
+        &self,
+        _request: crate::session_owner::ReserveSessionOwner,
+        _parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    async fn mutate_session_owner(
+        &self,
+        _request: crate::session_owner::MutateSessionOwner,
+        _authority: Option<crate::session_owner::SessionOwnerAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    async fn get_session_owner(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::SessionOwnerId,
+    ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
+    {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Original metadata only; never dispatches or replaces private authority.
+    async fn lookup_session_owner(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+
     /// Pure host metadata control; never initializes runtime/provider/tool code.
     async fn manage_session(
         &self,

@@ -58,13 +58,7 @@ fn insert(state: &mut State, witness: Witness) -> Result<(), Error> {
     Ok(())
 }
 // Owner-ledger integration consumes these proofs; metadata never grants tokens.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "owner-ledger handoff integration is a separate slice"
-    )
-)]
+
 pub(super) fn verify_attempt(
     state: &State,
     run: &Run,
@@ -92,13 +86,7 @@ pub(super) fn verify_attempt(
     witness.verify_attempt(run, attempt, receipt, event, issuance)?;
     Ok(witness.clone())
 }
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "owner-ledger handoff integration is a separate slice"
-    )
-)]
+
 pub(super) fn verify_phase(
     state: &State,
     run: &Run,

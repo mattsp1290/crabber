@@ -160,13 +160,7 @@ impl Witness {
         }
         Ok(())
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "owner-ledger handoff integration is a separate slice"
-        )
-    )]
+
     pub fn verify_attempt(
         &self,
         run: &Run,
@@ -182,13 +176,7 @@ impl Witness {
         }
         Ok(())
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "owner-ledger handoff integration is a separate slice"
-        )
-    )]
+
     pub fn verify_phase(
         &self,
         run: &Run,
@@ -250,13 +238,7 @@ fn token_hash(source: &Source, role: &str, token: &str) -> Result<InputFingerpri
     ))
     .map_err(|_| Error)
 }
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "owner-ledger handoff integration is a separate slice"
-    )
-)]
+
 pub(crate) fn attempt_source(receipt: &AttemptReceipt, event: &EventRecord) -> Result<(), Error> {
     if crate::snapshot::encoded_bytes(receipt, 8192).is_none()
         || crate::snapshot::encoded_bytes(event, 65536).is_none()
@@ -276,13 +258,7 @@ pub(crate) fn attempt_source(receipt: &AttemptReceipt, event: &EventRecord) -> R
     }
     Ok(())
 }
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "owner-ledger handoff integration is a separate slice"
-    )
-)]
+
 pub(crate) fn phase_source(receipt: &PhaseReceipt, event: &EventRecord) -> Result<(), Error> {
     if crate::snapshot::encoded_bytes(receipt, 8192).is_none()
         || crate::snapshot::encoded_bytes(event, 65536).is_none()

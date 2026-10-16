@@ -51,6 +51,23 @@ impl MemoryStore {
                 }
                 return Ok((saved, false));
             }
+            if let crate::SessionChange::Create {
+                workspace_id,
+                directory,
+                ..
+            } = &request.change
+            {
+                state
+                    .session_owners
+                    .context(&request.session_id, workspace_id, directory)
+                    .map_err(|error| {
+                        if error == crate::session_owner::SessionOwnerError::IdentityMismatch {
+                            Error::SemanticConflict
+                        } else {
+                            Error::UnknownStoreOutcome
+                        }
+                    })?;
+            }
             let existing = if state.sessions.contains_key(&request.session_id) {
                 Some(current(state, &request.session_id)?)
             } else {

@@ -31,6 +31,8 @@ mod public_header;
 mod public_run;
 #[path = "memory/public_state.rs"]
 mod public_state;
+#[path = "memory/session_owner.rs"]
+mod session_owner;
 #[path = "memory/tool_result.rs"]
 mod tool_result;
 
@@ -67,6 +69,8 @@ pub struct MemoryStore {
     #[cfg(test)]
     management_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -100,6 +104,7 @@ struct State {
     execution_bindings: BTreeMap<RunId, String>,
     receipts: BTreeMap<(SessionId, AdmissionKey), AdmissionReceipt>,
     sessions: BTreeMap<SessionId, Session>,
+    session_owners: crate::session_owner::Ledger,
     management: BTreeMap<SessionId, crate::management::Metadata>,
     management_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::management::Audit>,
     runs: BTreeMap<RunId, Run>,
@@ -167,6 +172,8 @@ impl MemoryStore {
             public_state_fault: Arc::default(),
             #[cfg(test)]
             management_fault: Arc::default(),
+            #[cfg(test)]
+            session_owner_fault: Arc::default(),
             #[cfg(test)]
             attempt_fault: Arc::default(),
             #[cfg(test)]
@@ -492,6 +499,52 @@ impl Store for MemoryStore {
         id: &crabber_core::QueueId,
     ) -> Result<crate::RetainedQueue, StoreError> {
         self.queue_private(session, id)
+    }
+
+    fn supports_session_owners(&self) -> bool {
+        true
+    }
+    async fn reserve_session_owner(
+        &self,
+        request: crate::session_owner::ReserveSessionOwner,
+        parent: Option<crate::session_owner::SessionOwnerParentAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.reserve_owner(&request, parent.as_ref())
+    }
+    async fn mutate_session_owner(
+        &self,
+        request: crate::session_owner::MutateSessionOwner,
+        authority: Option<crate::session_owner::SessionOwnerAuthority>,
+    ) -> Result<crate::session_owner::SessionOwnerOutcome, crate::session_owner::SessionOwnerError>
+    {
+        self.mutate_owner(&request, authority.as_ref())
+    }
+    async fn get_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+    ) -> Result<crate::session_owner::SessionOwnerSnapshot, crate::session_owner::SessionOwnerError>
+    {
+        self.state
+            .lock()
+            .unwrap()
+            .session_owners
+            .snapshot(session, id)
+    }
+    async fn lookup_session_owner(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<
+        Option<crate::session_owner::SessionOwnerReceipt>,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.state
+            .lock()
+            .unwrap()
+            .session_owners
+            .receipt(session, id)
     }
 
     async fn manage_session(

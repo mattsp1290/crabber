@@ -36,12 +36,35 @@ mod tests {
         *page
     }
 }
+#[path = "../../crabber-session/src/session_owner/audit.rs"]
+#[allow(dead_code)]
+mod session_owner_audit;
+#[path = "../../crabber-session/src/session_owner/ledger.rs"]
+#[allow(dead_code)]
+mod session_owner_ledger;
+#[path = "../../crabber-session/src/session_owner/record.rs"]
+#[allow(dead_code)]
+mod session_owner_record;
+#[path = "../../crabber-session/src/session_owner/validation.rs"]
+#[allow(dead_code)]
+mod session_owner_validation;
+mod session_owner {
+    pub(crate) use crate::session_owner_audit as audit;
+    pub(crate) use crate::session_owner_ledger::Ledger;
+    pub(crate) use crate::session_owner_record as record;
+    pub(crate) use crate::session_owner_validation as validation;
+    pub(crate) use crate::session_owner_validation::{identifier, resolver};
+    pub use crabber::session::session_owner::*;
+}
 #[path = "../../crabber-session/src/public_session/allocation.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_allocation;
 #[path = "../../crabber-session/src/public_session/budget.rs"]
 #[allow(dead_code)]
 pub(crate) mod public_session_budget;
+#[path = "../../crabber-session/src/session_owner_contract.rs"]
+#[allow(dead_code)]
+pub mod session_owner_contract;
 mod public_session {
     pub(crate) use crate::public_session_allocation as allocation;
     pub(crate) use crate::public_session_budget as budget;

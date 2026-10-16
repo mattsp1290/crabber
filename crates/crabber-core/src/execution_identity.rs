@@ -74,6 +74,12 @@ generation!(
     "Generation of one explicitly claimed tool phase, independently fenced by storage."
 );
 
+generation!(
+    SessionOwnerGeneration,
+    1,
+    "Generation of an independently fenced session resource or preparation owner."
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,20 +90,24 @@ mod tests {
         assert_eq!(AttemptGeneration::INITIAL.get(), 1);
         assert_eq!(ContinuationGeneration::INITIAL.get(), 1);
         assert_eq!(PhaseGeneration::INITIAL.get(), 1);
+        assert_eq!(SessionOwnerGeneration::INITIAL.get(), 1);
         assert!(serde_json::from_str::<AttemptGeneration>("0").is_err());
         assert!(serde_json::from_str::<ContinuationGeneration>("0").is_err());
         assert!(serde_json::from_str::<PhaseGeneration>("0").is_err());
+        assert!(serde_json::from_str::<SessionOwnerGeneration>("0").is_err());
         for invalid in ["-1", "1.5", "9223372036854775808", "18446744073709551615"] {
             assert!(serde_json::from_str::<SessionRevision>(invalid).is_err());
             assert!(serde_json::from_str::<AttemptGeneration>(invalid).is_err());
             assert!(serde_json::from_str::<ContinuationGeneration>(invalid).is_err());
             assert!(serde_json::from_str::<PhaseGeneration>(invalid).is_err());
+            assert!(serde_json::from_str::<SessionOwnerGeneration>(invalid).is_err());
         }
         let last = i64::MAX as u64;
         assert!(SessionRevision::new(last).unwrap().next().is_err());
         assert!(AttemptGeneration::new(last).unwrap().next().is_err());
         assert!(ContinuationGeneration::new(last).unwrap().next().is_err());
         assert!(PhaseGeneration::new(last).unwrap().next().is_err());
+        assert!(SessionOwnerGeneration::new(last).unwrap().next().is_err());
         assert_eq!(
             serde_json::to_string(&AttemptGeneration::new(17).unwrap()).unwrap(),
             "17"

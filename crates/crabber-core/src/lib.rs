@@ -30,7 +30,8 @@ pub use input::{
 
 mod execution_identity;
 pub use execution_identity::{
-    AttemptGeneration, ContinuationGeneration, PhaseGeneration, SessionRevision,
+    AttemptGeneration, ContinuationGeneration, PhaseGeneration, SessionOwnerGeneration,
+    SessionRevision,
 };
 
 mod provider_binding;
@@ -98,6 +99,8 @@ id!(TurnId);
 id!(AttemptId);
 id!(PhaseId);
 id!(InvocationId);
+id!(SessionOwnerId);
+id!(SessionOwnerOperationId);
 id!(QueueId);
 id!(ControlId);
 id!(InteractionId);
