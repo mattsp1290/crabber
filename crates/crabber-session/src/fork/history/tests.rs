@@ -228,7 +228,7 @@ fn missing_commit_and_unresolved_interrupt_require_an_explicit_earlier_cut() {
 fn presentation_ids_are_opaque_and_redaction_cannot_drop_a_paired_call() {
     assert!(validate_id(&"原".repeat(170)).is_ok());
     for bad in [
-        "".into(),
+        String::new(),
         "原".repeat(171),
         "provider\ncall".into(),
         "provider\0call".into(),
