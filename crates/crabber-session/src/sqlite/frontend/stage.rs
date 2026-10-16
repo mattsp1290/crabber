@@ -28,7 +28,7 @@ impl SqliteExecution {
             let now = self.store.clock.now();
             crate::attempt::verify_run(&run, &self.fence, now).map_err(|_|Error::StaleOwner)?;
             verify_parent(&mut tx, &run, &request, &authority, now).await?;
-            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE id=$1) OR EXISTS(SELECT 1 FROM frontend_tool_origins WHERE call_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE call_id=$1)")
+            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE id=$1) OR EXISTS(SELECT 1 FROM frontend_tool_origins WHERE call_id=$1) OR EXISTS(SELECT 1 FROM tool_phases WHERE call_id=$1) OR EXISTS(SELECT 1 FROM imported_tool_calls WHERE id=$1)")
                 .bind(&request.call.id.0).fetch_one(&mut *tx).await.map_err(unknown)?;
             if exists { return Err(Error::SemanticConflict); }
             read::binding(&mut tx, &run, &request).await?;

@@ -208,6 +208,15 @@ impl ExecutionStore for SqliteExecution {
             }
             insert_event(&mut tx, &run, &pending_event).await?;
             text(&call)?;
+            let imported: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imported_tool_calls WHERE id=$1)")
+                    .bind(&call.id.0)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            if imported {
+                return Err(StoreError::Conflict);
+            }
             let accounting = snapshot::call_record(&call)?;
             sqlx::query(
                 "INSERT INTO \

@@ -250,3 +250,9 @@ async fn memory_frontend_contract() {
 async fn memory_frontend_near_limit_recovery() {
     frontend_contract::large::run(|clock| crate::MemoryStore::with_clock(clock)).await;
 }
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+mod sql_fork_contract;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+mod fork_pending_contract;

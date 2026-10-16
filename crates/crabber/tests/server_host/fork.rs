@@ -62,11 +62,12 @@ async fn fork_request(agent: &Agent, store: &dyn Store, source: &SessionId) -> F
         max_proof_bytes: 32 * 1024 * 1024,
     }
 }
-#[tokio::test]
 #[allow(clippy::too_many_lines)] // Actual source→fork→refork→fresh target admission.
-async fn memory_safe_fork_never_reexecutes_imported_native_calls() {
-    let store = Arc::new(MemoryStore::new());
-    let source_provider = FakeProvider::scripted(vec![call("source-effect"), done()]);
+async fn native_fork_journey(store: Arc<dyn Store>) {
+    let source_provider = FakeProvider::scripted(vec![
+        call(&format!("source-effect-{}", SessionId::new().0)),
+        done(),
+    ]);
     let effects = Arc::new(AtomicUsize::new(0));
     let agent = worker(store.clone(), source_provider.clone(), effects.clone());
     let source = SessionId::new();
@@ -198,3 +199,39 @@ async fn memory_safe_fork_never_reexecutes_imported_native_calls() {
     assert!(matches!(outcome, Err(RuntimeError::Store(_))));
     reused.close_extensions().await.unwrap();
 }
+
+#[tokio::test]
+async fn memory_native_fork() {
+    Box::pin(native_fork_journey(Arc::new(MemoryStore::new()))).await;
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_native_fork() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fork.db");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    Box::pin(native_fork_journey(Arc::new(
+        crabber::session::SqliteStore::connect(&path).await.unwrap(),
+    )))
+    .await;
+}
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_native_fork() {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
+        return;
+    };
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    Box::pin(native_fork_journey(Arc::new(
+        crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap(),
+    )))
+    .await;
+}
+
+#[path = "fork/bounds.rs"]
+mod bounds;

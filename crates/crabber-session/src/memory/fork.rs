@@ -185,3 +185,7 @@ fn publish(
     state.sessions.insert(target.clone(), session);
     Ok(ForkOutcome::Applied(saved))
 }
+
+#[cfg(test)]
+#[path = "fork/test_support.rs"]
+mod test_support;

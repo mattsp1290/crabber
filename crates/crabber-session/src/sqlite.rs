@@ -10,6 +10,7 @@ mod approval;
 mod attempt;
 mod execution;
 mod execution_binding;
+mod fork;
 mod frontend;
 mod management;
 mod native_parent;

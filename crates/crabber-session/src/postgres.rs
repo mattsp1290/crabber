@@ -24,6 +24,7 @@ mod public_state;
 mod session_owner;
 mod tool_result;
 
+mod fork;
 mod frontend;
 mod queue;
 mod run_control;
@@ -1046,6 +1047,19 @@ impl Store for PostgresStore {
     ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
         self.recover_approval(&request).await
     }
+    async fn fork_session(
+        &self,
+        request: crate::ForkSession,
+    ) -> Result<crate::ForkOutcome, crate::ForkError> {
+        self.fork(request).await
+    }
+    async fn lookup_session_fork(
+        &self,
+        target: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::ForkReceipt>, crate::ForkError> {
+        self.fork_receipt(target, id).await
+    }
     async fn manage_session(
         &self,
         request: crate::ManageSession,
@@ -1644,6 +1658,15 @@ impl ExecutionStore for PostgresExecution {
         }
         if call.run_id != run.id || call.status != ToolCallStatus::Pending {
             return Err(StoreError::Validation("invalid new tool call".into()));
+        }
+        let imported: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM imported_tool_calls WHERE id=$1)")
+                .bind(&call.id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if imported {
+            return Err(StoreError::Conflict);
         }
         let accounting = snapshot::call_record(&call)?;
         sqlx::query("INSERT INTO tool_calls(id,run_id,status,data,snapshot_record,snapshot_parts,snapshot_text,snapshot_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")

@@ -55,9 +55,7 @@ fn supplied_pair() -> InputEnvelope {
     )
     .unwrap()
 }
-#[tokio::test]
-async fn memory_fork_preserves_supplied_pairs_without_claiming_native_execution() {
-    let store = Arc::new(MemoryStore::new());
+async fn admitted_fork_journey(store: Arc<dyn Store>) {
     let effects = Arc::new(AtomicUsize::new(0));
     let provider = FakeProvider::scripted(vec![done()]);
     let agent = worker(store.clone(), provider.clone(), effects.clone());
@@ -112,4 +110,37 @@ async fn memory_fork_preserves_supplied_pairs_without_claiming_native_execution(
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(provider.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn memory_admitted_fork() {
+    Box::pin(admitted_fork_journey(Arc::new(MemoryStore::new()))).await;
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_admitted_fork() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fork.db");
+    crabber::session::SqliteStore::migrate(&path).await.unwrap();
+    Box::pin(admitted_fork_journey(Arc::new(
+        crabber::session::SqliteStore::connect(&path).await.unwrap(),
+    )))
+    .await;
+}
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_admitted_fork() {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert!(std::env::var_os("CRABBER_REQUIRE_POSTGRES").is_none());
+        return;
+    };
+    crabber::session::PostgresStore::migrate(&url)
+        .await
+        .unwrap();
+    Box::pin(admitted_fork_journey(Arc::new(
+        crabber::session::PostgresStore::connect(&url)
+            .await
+            .unwrap(),
+    )))
+    .await;
 }
