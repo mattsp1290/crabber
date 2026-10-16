@@ -5,6 +5,8 @@ use crate::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT};
 use crabber_core::{RunStatus, ToolResultStatus};
 use crabber_extension::{EventPublished, ToolSettled, TransformOutput};
 use tokio::time::{Instant, timeout};
+#[path = "interrupted_runtime/owned.rs"]
+mod owned;
 
 fn settlement_notifications(
     log: Arc<Mutex<Vec<(String, Value)>>>,
