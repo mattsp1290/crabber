@@ -139,10 +139,20 @@ async fn pending_detached_cancel_before_begin_ack_skips_factory_and_reconciles_o
         .drain_session_invocations(&session, false, Duration::from_secs(2))
         .await;
     assert!(reports[0].local_joined);
+    assert!(reports[0].resources.sealed);
+    assert_eq!(reports[0].resources.pending, 0);
+    assert_eq!(
+        reports[0].resources.failures,
+        [] as [crabber_extension::ResourceFailure; 0]
+    );
     assert_eq!(reports[0].status, crate::SessionInvocationStatus::Joined);
     let id = request_id.lock().unwrap().clone().unwrap();
     let owner = memory.get_session_owner(&session, &id.id).await.unwrap();
     assert_eq!(owner.state, SessionOwnerState::Joined);
+    assert_eq!(
+        owner.termination,
+        Some(crabber_session::session_owner::SessionOwnerTermination::Cancelled)
+    );
     assert!(owner.cancellation.unwrap().observed.is_some());
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     let keys = gate.owner_observe_keys.lock().unwrap();
@@ -196,4 +206,51 @@ async fn pending_preparation_cancel_before_begin_ack_preserves_blocker_without_f
             .is_none()
     );
     assert_eq!(provider.requests().len(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_detached_activation_ack_stays_unknown_and_never_dispatches() {
+    for point in [1, 2] {
+        let memory = Arc::new(MemoryStore::new());
+        let gate = Arc::new(SettlementGate::default());
+        gate.release.notify_one();
+        gate.activation_fault.store(point, Ordering::SeqCst);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let request_id = Arc::new(Mutex::new(None));
+        let runtime = orchestrator(
+            Arc::new(DelayedTerminalStore {
+                inner: memory.clone(),
+                gate,
+            }),
+            FakeProvider::scripted(vec![
+                call_script(ToolCallId::new(), r#"{"text":"detach"}"#),
+                text_script("done"),
+            ]),
+            Arc::new(DetachedTool {
+                fault: 1,
+                effects: effects.clone(),
+                request: request_id.clone(),
+            }),
+            Arc::new(RecordingObserver::default()),
+        );
+        let handle = runtime.start(request()).await.unwrap();
+        let session = handle.session_id().clone();
+        assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
+        let reports = runtime
+            .drain_session_invocations(&session, false, Duration::from_secs(2))
+            .await;
+        assert!(reports[0].local_joined);
+        assert_eq!(reports[0].status, crate::SessionInvocationStatus::Joined);
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        let request = request_id.lock().unwrap().clone().unwrap();
+        let owner = memory
+            .get_session_owner(&session, &request.id)
+            .await
+            .unwrap();
+        assert_eq!(owner.state, SessionOwnerState::Joined);
+        assert_eq!(
+            owner.termination,
+            Some(crabber_session::session_owner::SessionOwnerTermination::Cancelled)
+        );
+    }
 }

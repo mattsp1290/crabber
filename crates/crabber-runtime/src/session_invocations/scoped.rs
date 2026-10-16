@@ -4,7 +4,8 @@ use crabber_extension::SessionInvocationTask;
 use crabber_session::{
     Store,
     session_owner::{
-        SessionOwnerAuthority, SessionOwnerOperation, SessionOwnerOutcome, SessionOwnerState,
+        SessionOwnerAuthority, SessionOwnerError, SessionOwnerOperation, SessionOwnerOutcome,
+        SessionOwnerState,
         owned_scope::{
             JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask, OwnedMainDisposition,
             OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedTaskRegistration,
@@ -52,18 +53,20 @@ pub(super) async fn run(
             )),
         )
         .await;
-    let dispatched = match activated {
-        Ok(OwnedScopeActivationOutcome::Applied { permit, .. }) => {
-            registration.dispatch(*permit).is_ok()
-        }
-        _ => false,
-    };
-    invocation.status(if dispatched {
+    let acknowledged = acknowledge_registration(
+        activated,
+        &mut registration,
+        &*store,
+        &invocation,
+        &authority,
+    )
+    .await;
+    invocation.status(if acknowledged {
         SessionInvocationStatus::Active
     } else {
         SessionInvocationStatus::Uncertain
     });
-    let _ = sender.send(if dispatched {
+    let _ = sender.send(if acknowledged {
         Ok(Admission::Started)
     } else {
         Err(Error::UnknownOutcome)
@@ -117,6 +120,31 @@ pub(super) async fn run(
     match proof {
         Ok(proof) if successful => publish_join(&*store, &invocation, authority, proof).await,
         _ => super::worker::mark_uncertain(&*store, &invocation, authority).await,
+    }
+}
+
+// A known cancelled registration still acknowledges its fresh Reserve+Begin.
+// Unknown activation never becomes a dispatch permit or a known cancellation.
+async fn acknowledge_registration<T: Send + 'static>(
+    activated: Result<OwnedScopeActivationOutcome, SessionOwnerError>,
+    registration: &mut OwnedTaskRegistration<T>,
+    store: &dyn Store,
+    invocation: &Invocation,
+    authority: &SessionOwnerAuthority,
+) -> bool {
+    match activated {
+        Ok(OwnedScopeActivationOutcome::Applied { permit, .. }) => {
+            registration.dispatch(*permit).is_ok()
+        }
+        Err(SessionOwnerError::CancellationPending) => {
+            // Reserve and Begin were acknowledged. Cancellation definitively
+            // keeps this registration's gate closed; join() still observes the
+            // actual waiting task and independently joined cleanup as NoDispatch.
+            invocation.cancel.cancel();
+            super::cancellation::poll(store, invocation, authority).await;
+            true
+        }
+        _ => false,
     }
 }
 
