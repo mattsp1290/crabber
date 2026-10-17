@@ -85,11 +85,16 @@ async fn original_checkpoint_origin_and_answers_are_anchored() {
                     .await
                     .unwrap();
             }
-            sqlx::query("DELETE FROM tool_continuations WHERE id=$1")
+            let error = sqlx::query("DELETE FROM tool_continuations WHERE id=$1")
                 .bind(&fixture.suspension.continuation.id.0)
                 .execute(&store.writer)
                 .await
-                .unwrap();
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("crabber_continuation_input_identity")
+            );
         }
         crate::tool_continuation_contract::corruption::refused(&store, &fixture, kind).await;
     }

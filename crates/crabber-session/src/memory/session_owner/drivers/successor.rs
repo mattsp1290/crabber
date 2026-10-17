@@ -150,3 +150,7 @@ mod tests;
 #[cfg(test)]
 #[path = "successor/approval_tests.rs"]
 mod approval_tests;
+
+#[cfg(test)]
+#[path = "successor/birth_source_tests.rs"]
+mod birth_source_tests;

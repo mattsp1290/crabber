@@ -62,5 +62,18 @@ pub(super) async fn apply_sources(tx: &mut Transaction<'_, Postgres>) -> Result<
             .await
             .map_err(db)?;
     }
+    let input_sources: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=20)")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    if !input_sources {
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0020_continuation_input_sources.sql"
+        ))
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    }
     Ok(())
 }

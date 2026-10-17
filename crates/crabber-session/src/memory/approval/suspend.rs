@@ -9,7 +9,7 @@ use crabber_core::{ContinuationGeneration, RunStatus, ToolCallStatus};
 impl super::super::MemoryExecution {
     pub(in super::super) fn suspend_approval(
         &self,
-        batch: ApprovalSuspension,
+        batch: &ApprovalSuspension,
         authority: &AttemptAuthority,
     ) -> Result<crate::ApprovalReceipt, Error> {
         #[cfg(test)]
@@ -29,7 +29,7 @@ impl super::super::MemoryExecution {
             if let Some(saved) = replay(state, &run.session_id, &run.id, &batch.id, &digest)? {
                 return Ok((saved, false));
             }
-            validate_batch(state, &run, &batch)?;
+            validate_batch(state, &run, batch)?;
             let now = self.store.clock.now();
             let mut record = approval::ApprovalRecord::new(
                 batch.clone(),
@@ -99,11 +99,13 @@ impl super::super::MemoryExecution {
                 batch.id.clone(),
                 digest,
                 ApprovalOutcome::Suspended {
-                    continuation: batch.continuation,
+                    continuation: batch.continuation.clone(),
                 },
                 now,
                 handoff.as_deref(),
             )?;
+            super::super::continuation_input::accept_approval_suspension(state, batch, &receipt)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             super::before_commit(fault)?;
             Ok((receipt, true))
         });

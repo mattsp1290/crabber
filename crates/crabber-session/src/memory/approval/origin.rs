@@ -51,5 +51,14 @@ pub(in super::super) fn verify_with_proof(
     proof
         .measure(&(&run.session_id, &run.id, run.created_at))
         .map_err(ApprovalReadError::Budget)?;
+    state
+        .continuation_inputs
+        .verify(
+            crate::continuation_input::Input::ApprovalSuspension(&record.batch),
+            crate::continuation_input::Receipt::Approval(&suspension),
+            audit,
+            proof,
+        )
+        .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     Ok(record.verify_origin(run, &suspension, audit, native, native_audit, source)?)
 }

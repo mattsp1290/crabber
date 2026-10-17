@@ -32,6 +32,15 @@ pub(in super::super) async fn scan_with_proof(
     run: Option<&RunId>,
     proof: &mut Proof,
 ) -> Result<Records, ToolReadError> {
+    super::super::continuation_input::consistent(
+        tx,
+        crate::continuation_input::Domain::Tool,
+        session,
+        run,
+        proof,
+    )
+    .await
+    .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let mut records = Records {
         latest: None,
         active: None,

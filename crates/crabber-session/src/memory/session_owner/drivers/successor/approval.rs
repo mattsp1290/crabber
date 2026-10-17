@@ -10,6 +10,7 @@ pub(super) fn fresh(
     now: time::OffsetDateTime,
     proof: &mut Proof,
 ) -> Result<(), Error> {
+    protected(state, run, target, proof)?;
     unstarted(state, run, parent, proof)?;
     let record = state
         .approvals
@@ -150,6 +151,28 @@ fn suspended(
         || old.snapshot.cleanup != crate::AttemptCleanup::Complete
     {
         return Err(Error::StaleOwner);
+    }
+    Ok(())
+}
+
+fn protected(
+    state: &State,
+    run: &Run,
+    target: &crate::ContinuationTarget,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Approval,
+        session: run.session_id.clone(),
+        run: run.id.clone(),
+        continuation: target.clone(),
+    };
+    if !state
+        .continuation_inputs
+        .protocol(&scope, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?
+    {
+        return Err(Error::Unsupported);
     }
     Ok(())
 }

@@ -65,6 +65,12 @@ impl super::super::MemoryStore {
                 outcome,
                 self.clock.now(),
             )?;
+            super::super::continuation_input::accept(
+                state,
+                crate::continuation_input::Input::ApprovalAnswer(answer),
+                crate::continuation_input::Receipt::Approval(&receipt),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             super::before_commit(fault)?;
             Ok((receipt, true))
         });

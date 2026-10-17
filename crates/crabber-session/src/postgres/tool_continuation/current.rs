@@ -23,6 +23,21 @@ pub(super) async fn verify_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Tool,
+        session: record.session_id.clone(),
+        run: record.run_id.clone(),
+        continuation: record.batch.continuation.clone(),
+    };
+    let inputs: Vec<_> = record
+        .questions
+        .iter()
+        .filter_map(|q| q.answer.as_ref())
+        .map(crate::continuation_input::Input::ToolAnswer)
+        .collect();
+    super::super::continuation_input::answers(tx, &scope, &inputs, proof)
+        .await
+        .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let mut audits = domain::CurrentAudits::default();
     let events = select(tx, record, "{event}#>>'{payload,outcome,continuation,id}'=$3 AND {event}#>>'{payload,kind}'='tool_continuation' AND {event}#>>'{payload,outcome,operation}'NOT IN ('reclaimed_unstarted','frontend_reclaimed_unstarted')", &record.batch.continuation.id.0, false, 67, proof).await?;
     if events.len() > 66 {

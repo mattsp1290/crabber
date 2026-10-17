@@ -47,6 +47,10 @@ pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
 
 /// Dependents first. Neither global signing state nor allocator sequences appear.
 pub(crate) const PURGE: &[&str] = &[
+    "DELETE FROM approval_input_sources WHERE session_id=$1",
+    "DELETE FROM approval_input_cohorts WHERE session_id=$1",
+    "DELETE FROM tool_input_sources WHERE session_id=$1",
+    "DELETE FROM tool_input_cohorts WHERE session_id=$1",
     "DELETE FROM run_control_progress WHERE session_id=$1",
     "DELETE FROM run_controls WHERE session_id=$1",
     "DELETE FROM future_queue_audit WHERE session_id=$1",

@@ -37,6 +37,13 @@ impl PostgresStore {
             let outcome = record.accept_answer(answer, now)?;
             save(&mut tx, &record).await?;
             let receipt = publish(&mut tx, &run, answer.id.clone(), digest, outcome, now).await?;
+            super::super::continuation_input::accept(
+                &mut tx,
+                crate::continuation_input::Input::ApprovalAnswer(answer),
+                crate::continuation_input::Receipt::Approval(&receipt),
+            )
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             sql::before_commit(fault)?;
             Ok((receipt, true))
         }

@@ -56,7 +56,8 @@ impl PostgresExecution {
                 .bind(&run.session_id.0).bind(&run.id.0).bind(&batch.continuation.id.0)
                 .execute(&mut *tx).await.map_err(db).map_err(sql::unknown)?;
             let receipt = write::publish_handoff(&mut tx, &run, batch.id.clone(), digest,
-                crate::ApprovalOutcome::Suspended { continuation: batch.continuation }, now, record.handoff.as_deref()).await?;
+                crate::ApprovalOutcome::Suspended { continuation: batch.continuation.clone() }, now, record.handoff.as_deref()).await?;
+            super::super::continuation_input::accept(&mut tx, crate::continuation_input::Input::ApprovalSuspension(&batch), crate::continuation_input::Receipt::Approval(&receipt)).await.map_err(|_| Error::UnknownStoreOutcome)?;
             sql::before_commit(fault)?;
             Ok((receipt, true))
         }.await;

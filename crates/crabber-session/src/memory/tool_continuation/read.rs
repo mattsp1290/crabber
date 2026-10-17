@@ -69,6 +69,12 @@ impl MemoryStore {
                 .tool_continuations
                 .insert(record.batch.continuation.id.clone(), record);
             let receipt = publish(state, &run, answer.id.clone(), digest, outcome, now)?;
+            super::super::continuation_input::accept(
+                state,
+                crate::continuation_input::Input::ToolAnswer(answer),
+                crate::continuation_input::Receipt::Tool(&receipt),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             before(fault)?;
             Ok((receipt, true))
         });

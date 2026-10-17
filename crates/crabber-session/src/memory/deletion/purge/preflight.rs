@@ -109,6 +109,13 @@ pub(super) fn continuations(
     calls: &Calls,
     proof: &mut Proof,
 ) -> Result<(), Failure> {
+    for domain in [
+        crate::continuation_input::Domain::Approval,
+        crate::continuation_input::Domain::Tool,
+    ] {
+        crate::memory::continuation_input::consistent(state, domain, session, None, proof)
+            .map_err(crate::public_session::v2::proof::ReadError::public)?;
+    }
     for (id, record) in &state.approvals {
         if &record.session_id == session || runs.contains(&record.run_id) {
             proof.measure(&(id, record))?;

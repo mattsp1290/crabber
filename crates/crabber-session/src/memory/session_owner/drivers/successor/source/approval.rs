@@ -48,6 +48,7 @@ pub(super) fn original(
     }
     bounded(&record.batch, 4 << 20, proof)?;
     let (suspension, suspension_event) = control(state, session, &record.batch.id, proof)?;
+    original_birth(state, &record.batch, suspension, suspension_event, proof)?;
     let pause_id = crate::approval::derived_id("suspend-attempt", &record.batch.id);
     let (pause_parent, pause_event) = super::attempt(state, session, &pause_id, proof)?;
     let pause_frame = state
@@ -187,4 +188,23 @@ fn initial_input<'a>(
             key: &record.key,
         }
     })
+}
+
+fn original_birth(
+    state: &State,
+    batch: &crate::ApprovalSuspension,
+    receipt: &crate::ApprovalReceipt,
+    event: &crabber_core::EventRecord,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    state
+        .continuation_inputs
+        .verify(
+            crate::continuation_input::Input::ApprovalSuspension(batch),
+            crate::continuation_input::Receipt::Approval(receipt),
+            event,
+            proof,
+        )
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    Ok(())
 }

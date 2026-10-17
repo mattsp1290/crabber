@@ -25,6 +25,14 @@ pub(super) fn run(
     ),
     Error,
 > {
+    super::super::continuation_input::consistent(
+        state,
+        crate::continuation_input::Domain::Tool,
+        &run.session_id,
+        Some(&run.id),
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut latest: Option<ToolContinuationRecord> = None;
     let mut active = None;
     let mut count = 0;
@@ -61,6 +69,14 @@ pub(super) fn run(
     Ok((latest, active))
 }
 pub(in super::super) fn pending(state: &State, session: &SessionId) -> Result<bool, Error> {
+    super::super::continuation_input::consistent(
+        state,
+        crate::continuation_input::Domain::Tool,
+        session,
+        None,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut count = 0;
     let mut pending = false;
     for record in state

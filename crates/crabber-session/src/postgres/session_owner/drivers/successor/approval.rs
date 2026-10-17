@@ -12,6 +12,7 @@ pub(super) async fn check(
     now: time::OffsetDateTime,
     proof: &mut Proof,
 ) -> Result<(), Error> {
+    protected(tx, run, target, proof).await?;
     witness::unstarted(tx, run, parent, proof).await?;
     let (record, _) =
         crate::postgres::approval::load_with_proof(tx, &run.session_id, &run.id, proof)
@@ -111,3 +112,24 @@ const BLOCKED: &str = "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$2 A
 const COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') LIMIT 65) AS bounded";
 const CALL_COST: &str = "SELECT CAST(octet_length(status)+octet_length(snapshot_record) AS BIGINT) FROM tool_calls WHERE run_id=$1 AND id=$2";
 const CALL: &str = "SELECT CASE WHEN octet_length(status)<=32 THEN status END AS status,CASE WHEN octet_length(snapshot_record)<=4194304 THEN snapshot_record END AS record FROM tool_calls WHERE run_id=$1 AND id=$2";
+
+async fn protected(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    target: &crate::ContinuationTarget,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Approval,
+        session: run.session_id.clone(),
+        run: run.id.clone(),
+        continuation: target.clone(),
+    };
+    if !crate::postgres::continuation_input::protocol(tx, &scope, proof)
+        .await
+        .map_err(unknown)?
+    {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}

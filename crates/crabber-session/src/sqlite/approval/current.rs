@@ -139,6 +139,21 @@ pub(in super::super) async fn verify_status_with_proof(
     releasing: bool,
     proof: &mut Proof,
 ) -> Result<(), ApprovalReadError> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Approval,
+        session: record.session_id.clone(),
+        run: record.run_id.clone(),
+        continuation: record.batch.continuation.clone(),
+    };
+    let inputs: Vec<_> = record
+        .questions
+        .iter()
+        .filter_map(|q| q.answer.as_ref())
+        .map(crate::continuation_input::Input::ApprovalAnswer)
+        .collect();
+    super::super::continuation_input::answers(tx, &scope, &inputs, proof)
+        .await
+        .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let answers = rows_with_proof(tx, record, Select::Answers, proof).await?;
     if answers.len() > 64 {
         return Err(Error::UnknownStoreOutcome.into());
@@ -453,6 +468,15 @@ pub(in super::super) async fn session_with_proof(
     session: &SessionId,
     proof: &mut Proof,
 ) -> Result<(), ApprovalReadError> {
+    super::super::continuation_input::consistent(
+        tx,
+        crate::continuation_input::Domain::Approval,
+        session,
+        None,
+        proof,
+    )
+    .await
+    .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let mut after = String::new();
     let mut count = 0_usize;
     let mut active = false;

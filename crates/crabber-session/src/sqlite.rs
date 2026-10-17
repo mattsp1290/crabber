@@ -9,6 +9,8 @@ mod run_facts;
 
 #[path = "sqlite/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "sqlite/continuation_input.rs"]
+mod continuation_input;
 
 mod abandon;
 mod abandon_history;
@@ -81,6 +83,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0014_owner_publications.sql"),
     "\nINSERT INTO schema_version(version) VALUES(14);\n",
     include_str!("../migrations/sqlite/0015_native_run_sources.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(15);\n",
+    include_str!("../migrations/sqlite/0016_continuation_input_sources.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

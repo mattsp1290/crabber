@@ -206,6 +206,14 @@ fn continuations(state: &State, session: &SessionId, proof: &mut Proof) -> Resul
     active |= state.approvals.values().any(|record| {
         &record.session_id == session && record.state != crate::ApprovalContinuationState::Released
     });
+    crate::memory::continuation_input::consistent(
+        state,
+        crate::continuation_input::Domain::Tool,
+        session,
+        None,
+        proof,
+    )
+    .map_err(ReadError::public)?;
     let mut count = 0usize;
     for (id, record) in &state.tool_continuations {
         if &record.session_id != session {

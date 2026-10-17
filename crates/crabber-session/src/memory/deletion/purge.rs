@@ -112,6 +112,7 @@ fn erase(
     state.approval_barriers.remove(session);
     state.ownership_origins.remove(session);
     state.ownership_protocol_sessions.remove(session);
+    state.continuation_inputs.purge(session);
     state.sessions.remove(session);
     state.management.remove(session);
     state.snapshot_revisions.remove(session);

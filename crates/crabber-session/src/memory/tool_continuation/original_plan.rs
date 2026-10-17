@@ -22,8 +22,26 @@ impl MemoryStore {
         if crate::snapshot::encoded_bytes(&record.batch, 4 * 1024 * 1024).is_none() {
             return Err(Error::UnknownStoreOutcome);
         }
-        let receipt =
-            super::receipt(&state, session, &record.batch.id)?.ok_or(Error::UnknownStoreOutcome)?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        proof
+            .measure(&record.batch)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let receipt = super::receipt_with_proof(&state, session, &record.batch.id, &mut proof)
+            .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
+            .ok_or(Error::UnknownStoreOutcome)?;
+        let event = state
+            .events
+            .get(receipt.event_cursor)
+            .ok_or(Error::UnknownStoreOutcome)?;
+        state
+            .continuation_inputs
+            .verify(
+                crate::continuation_input::Input::ToolSuspension(&record.batch),
+                crate::continuation_input::Receipt::Tool(&receipt),
+                event,
+                &mut proof,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         crate::continuation_origin::tool(&record.batch, session, run, target, &receipt)
     }
 }

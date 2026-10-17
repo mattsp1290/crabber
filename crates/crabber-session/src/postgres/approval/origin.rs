@@ -34,6 +34,15 @@ pub(in super::super) async fn verify_with_proof(
         proof,
     )
     .await?;
+    super::super::continuation_input::verify(
+        tx,
+        crate::continuation_input::Input::ApprovalSuspension(&record.batch),
+        crate::continuation_input::Receipt::Approval(&suspension),
+        &audit,
+        proof,
+    )
+    .await
+    .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let native_audit =
         super::super::read_proof::event(tx, &record.session_id, native.event_cursor, false, proof)
             .await?;

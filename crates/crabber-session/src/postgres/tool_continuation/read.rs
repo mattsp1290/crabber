@@ -200,6 +200,15 @@ async fn verify_with_proof(
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
+    super::super::continuation_input::verify(
+        tx,
+        crate::continuation_input::Input::ToolSuspension(&record.batch),
+        crate::continuation_input::Receipt::Tool(&origin),
+        &event,
+        proof,
+    )
+    .await
+    .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     for question in &record.questions {
         if let Some(answer) = &question.answer {
             let (accepted, _) = receipt_with_proof(tx, &record.session_id, &answer.id, proof)

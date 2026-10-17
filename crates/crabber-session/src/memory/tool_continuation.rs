@@ -205,6 +205,15 @@ pub(super) fn origin_record_with_proof(
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
+    state
+        .continuation_inputs
+        .verify(
+            crate::continuation_input::Input::ToolSuspension(&record.batch),
+            crate::continuation_input::Receipt::Tool(&original),
+            event,
+            proof,
+        )
+        .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     for question in &record.questions {
         if let Some(answer) = &question.answer {
             let accepted = receipt_with_proof(state, &record.session_id, &answer.id, proof)?

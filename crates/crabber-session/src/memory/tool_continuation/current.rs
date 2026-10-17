@@ -9,6 +9,20 @@ pub(super) fn verify_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Tool,
+        session: record.session_id.clone(),
+        run: record.run_id.clone(),
+        continuation: record.batch.continuation.clone(),
+    };
+    let inputs: Vec<_> = record
+        .questions
+        .iter()
+        .filter_map(|q| q.answer.as_ref())
+        .map(crate::continuation_input::Input::ToolAnswer)
+        .collect();
+    super::super::continuation_input::answers(state, &scope, &inputs, proof)
+        .map_err(|e| e.map_domain(|_| Error::UnknownStoreOutcome))?;
     let mut audits = domain::CurrentAudits::default();
     let run = state
         .runs

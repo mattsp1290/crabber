@@ -26,10 +26,7 @@ impl SqliteStore {
                 &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
             )
             .await?;
-            let receipt = super::receipt(&mut tx, session, &batch.id)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
-            crate::continuation_origin::approval(&batch, session, run, target, &receipt)
+            Ok(batch.expected_plan)
         }
         .await;
         tx.rollback().await.map_err(unknown)?;
@@ -37,7 +34,7 @@ impl SqliteStore {
     }
 }
 
-/// Exact immutable-batch projection; caller authenticates its suspension source.
+/// Exact immutable-batch projection; including its authenticated original birth.
 pub(in crate::sqlite) async fn batch_with_proof(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     session: &SessionId,
@@ -79,6 +76,23 @@ pub(in crate::sqlite) async fn batch_with_proof(
     if batch.continuation != *target {
         return Err(Error::UnknownStoreOutcome);
     }
+    let receipt = super::receipt_with_proof(tx, session, &batch.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
+        .ok_or(Error::UnknownStoreOutcome)?;
+    let event = super::super::read_proof::event(tx, session, receipt.event_cursor, false, proof)
+        .await
+        .map_err(unknown)?;
+    crate::continuation_origin::approval(&batch, session, run, target, &receipt)?;
+    super::super::continuation_input::verify(
+        tx,
+        crate::continuation_input::Input::ApprovalSuspension(&batch),
+        crate::continuation_input::Receipt::Approval(&receipt),
+        &event,
+        proof,
+    )
+    .await
+    .map_err(unknown)?;
     Ok(batch)
 }
 const COST: &str = r"WITH original AS (SELECT format_version,json_extract(data_json,'$.batch') AS batch FROM continuations WHERE session_id=?1 AND run_id=?2 AND id=?3 AND generation=?4) SELECT CAST(COALESCE(length(CAST(batch AS BLOB)),0)+8 AS BIGINT) FROM original";

@@ -12,6 +12,7 @@ pub(super) async fn check(
     now: time::OffsetDateTime,
     proof: &mut Proof,
 ) -> Result<(), Error> {
+    protected(tx, run, target, proof).await?;
     witness::unstarted(tx, run, parent, proof).await?;
     let (record, _) = crate::sqlite::approval::load_with_proof(tx, &run.session_id, &run.id, proof)
         .await
@@ -110,3 +111,24 @@ const BLOCKED: &str = "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=?2 A
 const COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=?1 AND status IN ('pending','running') LIMIT 65) AS bounded";
 const CALL_COST: &str = "SELECT CAST(length(CAST(status AS BLOB))+length(CAST(data AS BLOB)) AS BIGINT) FROM tool_calls WHERE run_id=?1 AND id=?2";
 const CALL: &str = "SELECT CASE WHEN length(CAST(status AS BLOB))<=32 THEN status END AS status,CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN data END AS record FROM tool_calls WHERE run_id=?1 AND id=?2";
+
+async fn protected(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    target: &crate::ContinuationTarget,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let scope = crate::continuation_input::Scope {
+        domain: crate::continuation_input::Domain::Approval,
+        session: run.session_id.clone(),
+        run: run.id.clone(),
+        continuation: target.clone(),
+    };
+    if !crate::sqlite::continuation_input::protocol(tx, &scope, proof)
+        .await
+        .map_err(unknown)?
+    {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}

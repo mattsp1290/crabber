@@ -18,7 +18,7 @@ pub(in super::super) async fn save(
 ) -> Result<(), Error> {
     record.validate().map_err(unknown)?;
     let query = if insert {
-        "INSERT INTO tool_continuations(session_id,run_id,id,generation,state,format_version,data_json) VALUES($1,$2,$3,$4,$5,1,$6)"
+        "INSERT INTO tool_continuations(session_id,run_id,id,generation,state,format_version,data_json,input_source_protocol) VALUES($1,$2,$3,$4,$5,1,$6,1)"
     } else {
         "UPDATE tool_continuations SET state=$5,data_json=$6 WHERE session_id=$1 AND run_id=$2 AND id=$3 AND generation=$4 AND format_version=1"
     };

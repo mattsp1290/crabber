@@ -184,6 +184,14 @@ fn tool_section(
     ),
     Failure,
 > {
+    crate::memory::continuation_input::consistent(
+        state,
+        crate::continuation_input::Domain::Tool,
+        &request.session_id,
+        None,
+        proof,
+    )
+    .map_err(crate::public_session::v2::proof::ReadError::public)?;
     let mut count = 0_usize;
     let mut latest = None;
     let mut active = None;
@@ -399,4 +407,40 @@ fn aggregate_v2_private_tool_proof_is_rejected_before_clone() {
         measured.bytes_max < 131_072,
         "private proof cloned before budget gate: {measured:?}"
     );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn birth_cohort_survives_erased_tool_record_barrier_and_event_projection() {
+    let store = crate::MemoryStore::default();
+    let (f, batch, _) = crate::frontend_contract::fixture::paused(&store).await;
+    let request = crate::public_session::v2::tests::request(
+        &store,
+        &f.request.session_id,
+        Some(&f.request.run_id),
+    )
+    .await;
+    assert!(matches!(
+        store
+            .public_control_header_v2(request.clone())
+            .await
+            .unwrap(),
+        PublicHeaderOutcomeV2::Header(_)
+    ));
+    {
+        let mut state = store.state.lock().unwrap();
+        state.tool_continuations.remove(&batch.continuation.id);
+        state.tool_barriers.remove(&f.request.session_id);
+        let events: Vec<_> = state
+            .events
+            .iter()
+            .filter(|event| !crate::memory::tool_continuation::scan::origin(event))
+            .cloned()
+            .collect();
+        state.events = crate::memory::events::EventLog::default();
+        for event in events {
+            state.events.append(event).unwrap();
+        }
+    }
+    assert!(store.public_control_header_v2(request).await.is_err());
 }

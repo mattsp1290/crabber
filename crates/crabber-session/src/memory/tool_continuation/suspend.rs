@@ -94,6 +94,12 @@ impl MemoryExecution {
                 now,
                 handoff.as_deref(),
             )?;
+            super::super::continuation_input::accept(
+                state,
+                crate::continuation_input::Input::ToolSuspension(batch),
+                crate::continuation_input::Receipt::Tool(&receipt),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             before(fault)?;
             Ok((receipt, true))
         });

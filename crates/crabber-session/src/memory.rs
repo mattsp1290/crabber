@@ -4,6 +4,8 @@ mod admission;
 mod approval;
 #[path = "memory/continuation_handoff.rs"]
 mod continuation_handoff;
+#[path = "memory/continuation_input.rs"]
+mod continuation_input;
 #[path = "memory/deletion.rs"]
 mod deletion;
 #[path = "memory/fork.rs"]
@@ -125,6 +127,7 @@ struct State {
     frontend_origins: BTreeMap<ToolCallId, crate::frontend_continuation::FrontendOriginRecord>,
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
+    continuation_inputs: crate::continuation_input::Ledger,
     tool_continuations:
         BTreeMap<crabber_core::ContinuationId, crate::tool_continuation::ToolContinuationRecord>,
     tool_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
@@ -1499,7 +1502,7 @@ impl ExecutionStore for MemoryExecution {
         batch: crate::ApprovalSuspension,
         authority: crate::AttemptAuthority,
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
-        self.suspend_approval(batch, &authority)
+        self.suspend_approval(&batch, &authority)
     }
 
     async fn conclude_attempt(

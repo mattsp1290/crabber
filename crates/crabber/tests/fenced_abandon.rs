@@ -81,6 +81,9 @@ pub(crate) mod tests {
         *page
     }
 }
+#[path = "../../crabber-session/src/continuation_input.rs"]
+#[allow(dead_code)]
+mod continuation_input;
 #[path = "fenced_support/preparation.rs"]
 mod preparation;
 #[path = "../../crabber-session/src/session_owner/preparation_contract.rs"]

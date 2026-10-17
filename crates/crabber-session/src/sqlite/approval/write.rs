@@ -188,7 +188,7 @@ pub(in super::super) async fn insert(
     if crate::snapshot::encoded_bytes(record, sql::MAX_RECORD_BYTES).is_none() {
         return Err(Error::InvalidRequest);
     }
-    sqlx::query("INSERT INTO continuations(id,session_id,run_id,generation,state,format_version,data_json) VALUES($1,$2,$3,$4,$5,1,$6)")
+    sqlx::query("INSERT INTO continuations(id,session_id,run_id,generation,state,format_version,data_json,input_source_protocol) VALUES($1,$2,$3,$4,$5,1,$6,1)")
         .bind(&record.batch.continuation.id.0).bind(&record.session_id.0).bind(&record.run_id.0)
         .bind(i64::try_from(record.batch.continuation.generation.get()).map_err(|_| Error::GenerationConflict)?)
         .bind(sql::enum_text(record.state)?).bind(serde_json::to_string(record).map_err(|_| Error::InvalidRequest)?)

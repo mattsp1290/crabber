@@ -128,6 +128,9 @@ impl SqliteExecution {
             )
             .await?;
 
+            super::super::continuation_input::accept_tool_suspension(&mut tx, &batch, &receipt)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             before(fault)?;
             Ok((receipt, true))
         })

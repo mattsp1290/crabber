@@ -38,6 +38,13 @@ impl PostgresStore {
                 now,
             )
             .await?;
+            super::super::continuation_input::accept(
+                &mut tx,
+                crate::continuation_input::Input::ToolAnswer(&answer),
+                crate::continuation_input::Receipt::Tool(&receipt),
+            )
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             before(fault)?;
             Ok((receipt, true))
         }
