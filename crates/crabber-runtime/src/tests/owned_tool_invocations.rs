@@ -181,3 +181,6 @@ async fn postgres_owned_tool_invocations() {
 
 #[path = "owned_tool_invocations/products.rs"]
 mod products;
+
+#[path = "owned_tool_invocations/workspace_fs_products.rs"]
+mod workspace_fs_products;

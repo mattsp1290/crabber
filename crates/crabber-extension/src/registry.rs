@@ -123,6 +123,7 @@ type Cleanup = Box<dyn FnOnce() + Send>;
 pub struct Registrar {
     services: HostServices,
     tools: Vec<Arc<ToolDefinition>>,
+    product_workspace_fs: Option<Arc<crate::contextual::product::workspace_fs::Node>>,
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
     product_providers:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
@@ -140,6 +141,7 @@ impl Registrar {
             services: HostServices::default(),
             tools: vec![],
             product_tools: std::collections::BTreeMap::new(),
+            product_workspace_fs: None,
             product_providers: std::collections::BTreeMap::new(),
             prompts: vec![],
             guards: vec![],
@@ -162,6 +164,14 @@ impl Registrar {
         let index = self.tools.len();
         self.tools.push(node.template()?);
         self.product_tools.insert(index, node);
+        Ok(())
+    }
+    pub(crate) fn product_workspace_fs(
+        &mut self,
+        node: Arc<crate::contextual::product::workspace_fs::Node>,
+    ) -> Result<(), ExtensionError> {
+        self.services.workspace_fs = Some(node.template()?);
+        self.product_workspace_fs = Some(node);
         Ok(())
     }
     pub(crate) fn product_provider(
@@ -746,6 +756,9 @@ impl Registry {
         for node in mount.registrar.lock().unwrap().product_tools.values() {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
+        if let Some(node) = &mount.registrar.lock().unwrap().product_workspace_fs {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
     }
@@ -927,11 +940,7 @@ impl Registry {
                     None => provider.clone(),
                 });
             }
-            let overrides = if mount.owned.is_some() {
-                owned::services::project(&r.services, &InvocationSource::new(mount))
-            } else {
-                r.services.clone()
-            };
+            let overrides = projected_services(mount, &r)?;
             services = services.with_overrides(&overrides);
             append_mount_components(mount, &r, plan_sequence, &mut components);
         }
@@ -3314,3 +3323,18 @@ mod tests {
 #[cfg(test)]
 #[path = "registry/prompt_contribution_tests.rs"]
 mod prompt_contribution_tests;
+
+fn projected_services(
+    mount: &Arc<Mount>,
+    registrar: &Registrar,
+) -> Result<HostServices, ExtensionError> {
+    if mount.owned.is_none() {
+        return Ok(registrar.services.clone());
+    }
+    let source = InvocationSource::new(mount);
+    let mut services = owned::services::project(&registrar.services, &source);
+    if let Some(node) = &registrar.product_workspace_fs {
+        services.workspace_fs = Some(node.project(source)?);
+    }
+    Ok(services)
+}

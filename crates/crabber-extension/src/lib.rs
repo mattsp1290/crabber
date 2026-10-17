@@ -99,3 +99,9 @@ pub use contextual::product::provider::{
     ContextualProviderBindingBody, ContextualProviderProduct, ContextualProviderProductFactory,
     ContextualStreamerProduct,
 };
+
+// Unique filesystem node; registered original disposal only, never physical policy.
+pub use contextual::product::workspace_fs::{
+    ContextualWorkspaceFsProduct, ContextualWorkspaceFsProductFactory,
+    ContextualWorkspaceFsProductObservation, DisposedContextualWorkspaceFsProduct,
+};
