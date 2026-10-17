@@ -9,7 +9,7 @@ use crabber_session::session_owner::preparation::{
     ExistingWorkTarget, PreparationKey, PreparationPurpose, PreparationSource, PreparedOperation,
 };
 use crabber_session::{ExecutionBindingCapsule, StoreError};
-fn operation(
+pub(super) fn operation(
     control: &ApprovalControl,
 ) -> Result<(PreparationSpec, PreparedOperation), RuntimeError> {
     let (source, key, run, work, revision, intent, operation) = match control {

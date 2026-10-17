@@ -4,6 +4,8 @@ mod approval;
 pub(super) mod fresh;
 #[path = "successor/inspection.rs"]
 mod inspection;
+#[path = "successor/pending_approval.rs"]
+mod pending_approval;
 mod source;
 use super::super::{
     Audit, Error, Record, SessionOwnerOperation, before, fault, finish, publish_revision, reads,

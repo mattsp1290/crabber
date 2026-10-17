@@ -106,7 +106,7 @@ pub(super) fn fresh(
     Ok(())
 }
 
-fn unstarted(
+pub(super) fn unstarted(
     state: &State,
     run: &Run,
     parent: &crate::AttemptTarget,
@@ -128,7 +128,7 @@ fn unstarted(
     Ok(())
 }
 
-fn suspended(
+pub(super) fn suspended(
     state: &State,
     batch: &crate::ApprovalSuspension,
     proof: &mut Proof,
@@ -155,7 +155,7 @@ fn suspended(
     Ok(())
 }
 
-fn protected(
+pub(super) fn protected(
     state: &State,
     run: &Run,
     target: &crate::ContinuationTarget,

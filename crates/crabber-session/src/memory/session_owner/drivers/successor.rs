@@ -3,6 +3,8 @@
 mod approval;
 #[path = "successor/inspection.rs"]
 mod inspection;
+#[path = "successor/pending_approval.rs"]
+mod pending_approval;
 #[path = "successor/source.rs"]
 mod source;
 use super::super::{Error, MemoryStore, before, bump_public_revision, fault, revision};

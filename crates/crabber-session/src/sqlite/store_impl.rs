@@ -156,6 +156,15 @@ impl Store for SqliteStore {
         crate::session_owner::preparation::driver_completion::validate_original(&joined)?;
         Box::pin(self.complete_preparation_captured(joined, true)).await
     }
+    async fn inspect_pending_approval_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectPendingApprovalPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PendingApprovalPreparationMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_pending_approval(&request).await
+    }
     fn supports_pending_execution_driver_origin(
         &self,
         origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,

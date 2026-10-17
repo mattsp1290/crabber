@@ -176,6 +176,20 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         let claim = request.claim(&run)?;
         let validated = self.validated_session(&run).await?;
+        let binding = self.stored_binding(&run.session_id, &run.id).await?;
+        if crabber_session::session_owner::preparation::resource_contract(
+            &binding.runtime_semantics,
+        )?
+        .is_some()
+        {
+            return Box::pin(self.spawn_pending_approval(
+                run,
+                validated,
+                binding,
+                ApprovalControl::Claim(claim),
+            ))
+            .await;
+        }
         let (sender, receiver) = oneshot::channel();
         let control = ApprovalResume {
             prepared: None,
@@ -247,17 +261,7 @@ impl Orchestrator {
                     Ok(None)
                 }
                 ApprovalClaimOutcome::Applied { receipt, grant } => {
-                    if grant.usage != run.usage
-                        || Some(grant.turns_used)
-                            != run
-                                .checkpoint
-                                .as_ref()
-                                .and_then(|checkpoint| checkpoint.get("turns_used"))
-                                .and_then(serde_json::Value::as_u64)
-                    {
-                        return Err(ApprovalError::UnknownStoreOutcome.into());
-                    }
-                    let authority = resume_authority(&receipt, *grant)?;
+                    let authority = prepared_approval_authority(run, &receipt, *grant)?;
                     let _ = control.sender.send(Claimed::Fresh(receipt));
                     Ok(Some(authority))
                 }
@@ -289,6 +293,26 @@ impl Orchestrator {
         }))
     }
 }
+pub(super) fn prepared_approval_authority(
+    run: &Run,
+    receipt: &ApprovalReceipt,
+    grant: ApprovalGrant,
+) -> Result<ResumeAuthority, RuntimeError> {
+    if receipt.run_id != run.id
+        || receipt.session_id != run.session_id
+        || grant.usage != run.usage
+        || Some(grant.turns_used)
+            != run
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.get("turns_used"))
+                .and_then(serde_json::Value::as_u64)
+    {
+        return Err(ApprovalError::UnknownStoreOutcome.into());
+    }
+    resume_authority(receipt, grant)
+}
+
 fn resume_authority(
     receipt: &ApprovalReceipt,
     grant: ApprovalGrant,

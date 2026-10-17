@@ -136,8 +136,30 @@ fn initial_input<'a>(
     request: &RegisterSuccessorExecutionDriver,
     proof: &mut Proof,
 ) -> Result<Input<'a>, Error> {
-    let run = &request.fence.run_id;
-    if issuer(state, request, 1, proof)?
+    input_for(
+        state,
+        request.context.session_id(),
+        &request.fence.run_id,
+        proof,
+    )
+}
+fn initial_issuer<'a>(
+    state: &'a State,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    proof: &mut Proof,
+) -> Result<&'a RunIssuance, Error> {
+    crate::memory::native_parent::source_protocol::original(state, session, run, 1, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?
+        .ok_or(Error::UnknownStoreOutcome)
+}
+pub(in crate::memory::session_owner::drivers::successor) fn input_for<'a>(
+    state: &'a State,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    proof: &mut Proof,
+) -> Result<Input<'a>, Error> {
+    if initial_issuer(state, session, run, proof)?
         .ownership_handoff
         .is_none()
     {
@@ -166,7 +188,7 @@ fn initial_input<'a>(
     if crate::snapshot::encoded_bytes(current, 16384).is_none() {
         return Err(Error::UnknownStoreOutcome);
     }
-    let initial = issuer(state, request, 1, proof)?;
+    let initial = initial_issuer(state, session, run, proof)?;
     if initial != original_issuer {
         return Err(Error::UnknownStoreOutcome);
     }

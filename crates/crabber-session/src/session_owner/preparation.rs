@@ -184,3 +184,8 @@ pub(crate) mod inspection;
 #[cfg(test)]
 #[path = "preparation/inspection_private_tests.rs"]
 mod inspection_private_tests;
+
+pub(crate) mod pending_approval;
+pub use pending_approval::{
+    InspectPendingApprovalPreparation, PendingApprovalPreparationMetadata, PendingApprovalSource,
+};

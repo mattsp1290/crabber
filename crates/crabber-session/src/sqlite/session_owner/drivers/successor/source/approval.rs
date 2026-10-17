@@ -84,23 +84,8 @@ pub(super) async fn original(
         original: original.as_ref().map(|(r, e)| (r, e)),
         status: status.as_ref(),
     };
-    let initial = original_admission(tx, request, proof).await?;
-    let input = if initial.witness.is_unkeyed() {
-        None
-    } else {
-        Some(read::<OriginalInput>(tx, &session.0, &run.0, INPUT_COST, INPUT, proof).await?)
-    };
-    let input = if let Some(input) = &input {
-        Input::Keyed {
-            init: initial.init.as_ref().ok_or(Error::UnknownStoreOutcome)?,
-            initial: &initial.initial,
-            capsule: &input.capsule,
-            receipt: &input.receipt,
-            key: &input.key,
-        }
-    } else {
-        Input::Unkeyed(&initial.witness)
-    };
+    let owned = owned_input(tx, session, run, proof).await?;
+    let input = owned.as_input()?;
     source::selected(
         request,
         previous,
@@ -110,25 +95,73 @@ pub(super) async fn original(
         binding,
     )
 }
-async fn original_admission(
+async fn original_admission_for(
     tx: &mut Transaction<'_, Sqlite>,
-    request: &RegisterSuccessorExecutionDriver,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
     proof: &mut Proof,
 ) -> Result<super::super::super::source::Original, Error> {
-    if issuer(tx, request, 1, proof)
-        .await?
+    if crate::sqlite::native_parent::source_protocol::original(tx, session, run, 1, proof)
+        .await
+        .map_err(unknown)?
+        .ok_or(Error::UnknownStoreOutcome)?
         .ownership_handoff
         .is_none()
     {
         return Err(Error::Unsupported);
     }
-    super::super::super::source::original(
-        tx,
-        request.context.session_id(),
-        &request.fence.run_id,
-        proof,
-    )
-    .await
+    super::super::super::source::original(tx, session, run, proof).await
+}
+pub(in crate::sqlite::session_owner::drivers::successor) async fn verify_input(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    owned_input(tx, session, run, proof)
+        .await?
+        .as_input()?
+        .verify(session, run, Some(binding))
+}
+pub(in crate::sqlite::session_owner::drivers::successor) struct OwnedInput {
+    original: super::super::super::source::Original,
+    input: Option<OriginalInput>,
+}
+impl OwnedInput {
+    pub(in crate::sqlite::session_owner::drivers::successor) fn as_input(
+        &self,
+    ) -> Result<Input<'_>, Error> {
+        Ok(if let Some(input) = &self.input {
+            Input::Keyed {
+                init: self
+                    .original
+                    .init
+                    .as_ref()
+                    .ok_or(Error::UnknownStoreOutcome)?,
+                initial: &self.original.initial,
+                capsule: &input.capsule,
+                receipt: &input.receipt,
+                key: &input.key,
+            }
+        } else {
+            Input::Unkeyed(&self.original.witness)
+        })
+    }
+}
+pub(in crate::sqlite::session_owner::drivers::successor) async fn owned_input(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    proof: &mut Proof,
+) -> Result<OwnedInput, Error> {
+    let original = original_admission_for(tx, session, run, proof).await?;
+    let input = if original.witness.is_unkeyed() {
+        None
+    } else {
+        Some(read::<OriginalInput>(tx, &session.0, &run.0, INPUT_COST, INPUT, proof).await?)
+    };
+    Ok(OwnedInput { original, input })
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]

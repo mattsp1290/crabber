@@ -4,7 +4,7 @@ use crate::native_parent::{Kind, Witness};
 use crabber_core::Run;
 use futures::TryStreamExt;
 use sqlx::{Row, Sqlite, Transaction};
-pub(super) async fn unstarted(
+pub(in crate::sqlite::session_owner::drivers::successor) async fn unstarted(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     parent: &crate::AttemptTarget,

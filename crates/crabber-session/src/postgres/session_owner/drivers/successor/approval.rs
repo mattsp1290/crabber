@@ -4,6 +4,7 @@ mod witness;
 use super::{Error, Proof, unknown};
 use crabber_core::Run;
 use sqlx::{Postgres, Row, Transaction};
+pub(super) use witness::unstarted;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
@@ -110,8 +111,8 @@ pub(super) async fn check(
 }
 const BLOCKED: &str = "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$2 AND attempt_id=$3) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=$1)";
 const COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running') LIMIT 65) AS bounded";
-const CALL_COST: &str = "SELECT CAST(octet_length(status)+octet_length(snapshot_record) AS BIGINT) FROM tool_calls WHERE run_id=$1 AND id=$2";
-const CALL: &str = "SELECT CASE WHEN octet_length(status)<=32 THEN status END AS status,CASE WHEN octet_length(snapshot_record)<=4194304 THEN snapshot_record END AS record FROM tool_calls WHERE run_id=$1 AND id=$2";
+pub(super) const CALL_COST: &str = "SELECT CAST(octet_length(status)+octet_length(snapshot_record) AS BIGINT) FROM tool_calls WHERE run_id=$1 AND id=$2";
+pub(super) const CALL: &str = "SELECT CASE WHEN octet_length(status)<=32 THEN status END AS status,CASE WHEN octet_length(snapshot_record)<=4194304 THEN snapshot_record END AS record FROM tool_calls WHERE run_id=$1 AND id=$2";
 
 async fn protected(
     tx: &mut Transaction<'_, Postgres>,

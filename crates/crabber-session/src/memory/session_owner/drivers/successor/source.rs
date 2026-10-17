@@ -1,6 +1,6 @@
 //! Selected protected sources, charged while borrowed before any private clone.
 #[path = "source/approval.rs"]
-mod approval;
+pub(super) mod approval;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, State};
 use crate::native_parent::{CompletionOperation, RunIssuance};
 use crate::session_owner::{

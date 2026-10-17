@@ -147,3 +147,47 @@ pub(crate) async fn commit_faults(store: &impl Store, clock: &ManualClock, fault
         }
     }
 }
+
+pub(crate) async fn unprepared(
+    store: &impl Store,
+    clock: &ManualClock,
+    recovery: bool,
+    unkeyed: bool,
+) -> crate::session_owner::preparation::InspectPendingApprovalPreparation {
+    use crate::session_owner::preparation::{
+        InspectPendingApprovalPreparation, PendingApprovalSource,
+    };
+    let (context, f) = Box::pin(staged(store, clock, unkeyed, false)).await;
+    let mut claim = crate::approval_contract::fixture::claim(store, &f).await;
+    if !recovery {
+        return InspectPendingApprovalPreparation {
+            context,
+            source: PendingApprovalSource::Claim(Box::new(claim)),
+        };
+    }
+    claim.lease_ms = 1;
+    let joined = prepare(
+        store,
+        &f.run,
+        PreparationSource::ApprovalClaim(claim.clone()),
+        PreparedOperation::ApprovalClaim(claim.clone()),
+        PreparationKey::Approval(claim.id.clone()),
+        ExistingWorkTarget::ApprovalClaim(claim.continuation.clone()),
+        claim.fingerprint().unwrap(),
+    )
+    .await;
+    store.complete_preparation(joined).await.unwrap();
+    clock.set(clock.now() + time::Duration::milliseconds(2));
+    let recovery = crate::ApprovalContinuationRecovery {
+        id: crabber_core::ControlId::new(),
+        expected_revision: store.session_revision(&f.run.session_id).await.unwrap(),
+        original: claim,
+        attempt: f.batch.next_attempt.clone(),
+        owner: "pending-preflight".into(),
+        lease_ms: 30000,
+    };
+    InspectPendingApprovalPreparation {
+        context,
+        source: PendingApprovalSource::Recovery(Box::new(recovery)),
+    }
+}

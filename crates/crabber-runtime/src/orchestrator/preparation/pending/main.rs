@@ -153,11 +153,4 @@ impl Metadata {
             ) => &receipt.run_id,
         }
     }
-    pub(super) fn admission(&self) -> Option<&crabber_core::AdmissionReceipt> {
-        match self {
-            Self::Initial(InitialAdmissionReplay::Keyed(receipt))
-            | Self::Successor(PendingSuccessorReplay::Admission(receipt)) => Some(receipt),
-            _ => None,
-        }
-    }
 }

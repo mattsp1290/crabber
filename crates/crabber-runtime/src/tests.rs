@@ -1986,6 +1986,86 @@ impl Store for DelayedTerminalStore {
     > {
         self.inner.lookup_preparation(session, key).await
     }
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crabber_session::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        !self.gate.successor_disabled.load(Ordering::SeqCst)
+            && self.inner.supports_pending_execution_driver_origin(origin)
+    }
+    async fn inspect_pending_approval_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::InspectPendingApprovalPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PendingApprovalPreparationMetadata,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        if self.gate.preparation_fault.load(Ordering::SeqCst) == 6 {
+            return Err(crabber_session::session_owner::SessionOwnerError::Unsupported);
+        }
+        let mut metadata = self
+            .inner
+            .inspect_pending_approval_preparation(request)
+            .await?;
+        if self.gate.preparation_fault.load(Ordering::SeqCst) == 5 {
+            metadata.source_digest = crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
+        }
+        Ok(metadata)
+    }
+    async fn inspect_prepared_approval_driver(
+        &self,
+        request: crabber_session::session_owner::preparation::InspectPreparedApprovalDriver,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.inspect_prepared_approval_driver(request).await
+    }
+    async fn complete_preparation_with_driver_source(
+        &self,
+        joined: crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparedDriverCompletion,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        self.gate
+            .record_initial_task(InitialTaskStage::CompletePreparation);
+        self.gate.preparation_calls.fetch_add(1, Ordering::SeqCst);
+        let fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        if fault == 1 {
+            return Err(
+                crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),
+            );
+        }
+        let mut completed = self
+            .inner
+            .complete_preparation_with_driver_source(joined)
+            .await?;
+        if self.gate.preparation_hold.load(Ordering::SeqCst) {
+            self.gate.preparation_entered.notify_one();
+            self.gate.preparation_release.notified().await;
+        }
+        if fault == 2 {
+            return Err(
+                crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),
+            );
+        }
+        if matches!(fault, 4 | 7) {
+            let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
+                crabber_session::ApprovalClaimOutcome::Applied { receipt, grant },
+            ) = &mut completed.completion
+            else {
+                panic!("actual approval completion")
+            };
+            if fault == 4 {
+                receipt.semantic_digest =
+                    crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
+            } else {
+                grant.fence.claim_token = "wrong actual completion fence".into();
+            }
+        }
+        Ok(completed)
+    }
     async fn complete_preparation(
         &self,
         joined: crabber_session::session_owner::preparation::JoinedPreparation,
@@ -2191,6 +2271,8 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::driver::SuccessorExecutionDriverOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        self.gate
+            .record_initial_task(InitialTaskStage::RegisterDriver);
         *self.gate.successor_request.lock().unwrap() = Some(request.clone());
         let point = self.gate.driver_register_fault.swap(0, Ordering::SeqCst);
         assert_ne!(point, 3, "successor Register store panic before commit");

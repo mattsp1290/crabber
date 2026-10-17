@@ -137,14 +137,27 @@ impl Orchestrator {
             .finish_pending_preparation(prepared, context, work, business)
             .await?
         {
-            PendingOutcome::Started { handle, metadata } => Ok(ExistingOutcome::Started {
+            PendingOutcome::Started {
                 handle,
-                receipt: metadata.admission().cloned(),
+                metadata: main::Metadata::Successor(PendingSuccessorReplay::Admission(receipt)),
+            } => Ok(ExistingOutcome::Started {
+                handle,
+                receipt: Some(receipt),
             }),
-            PendingOutcome::Replayed(main::Metadata::Successor(metadata)) => {
-                Ok(ExistingOutcome::Replayed(metadata))
+            PendingOutcome::Started {
+                handle,
+                metadata: main::Metadata::Successor(PendingSuccessorReplay::Expired(_)),
+            } => Ok(ExistingOutcome::Started {
+                handle,
+                receipt: None,
+            }),
+            PendingOutcome::Replayed(main::Metadata::Successor(
+                metadata @ (PendingSuccessorReplay::Admission(_)
+                | PendingSuccessorReplay::Expired(_)),
+            )) => Ok(ExistingOutcome::Replayed(metadata)),
+            PendingOutcome::Started { .. } | PendingOutcome::Replayed(_) => {
+                Err(RuntimeError::PreparationRecoveryRequired)
             }
-            PendingOutcome::Replayed(_) => Err(RuntimeError::PreparationRecoveryRequired),
         }
     }
     pub(in crate::orchestrator) async fn finish_pending_preparation<T, F, W, B, BW>(

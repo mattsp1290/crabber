@@ -4,6 +4,7 @@ mod witness;
 use super::{Error, Proof, unknown};
 use crabber_core::Run;
 use sqlx::{Row, Sqlite, Transaction};
+pub(super) use witness::unstarted;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
@@ -109,8 +110,8 @@ pub(super) async fn check(
 }
 const BLOCKED: &str = "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=?2 AND attempt_id=?3) OR EXISTS(SELECT 1 FROM tool_continuation_barriers WHERE session_id=?1)";
 const COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=?1 AND status IN ('pending','running') LIMIT 65) AS bounded";
-const CALL_COST: &str = "SELECT CAST(length(CAST(status AS BLOB))+length(CAST(data AS BLOB)) AS BIGINT) FROM tool_calls WHERE run_id=?1 AND id=?2";
-const CALL: &str = "SELECT CASE WHEN length(CAST(status AS BLOB))<=32 THEN status END AS status,CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN data END AS record FROM tool_calls WHERE run_id=?1 AND id=?2";
+pub(super) const CALL_COST: &str = "SELECT CAST(length(CAST(status AS BLOB))+length(CAST(data AS BLOB)) AS BIGINT) FROM tool_calls WHERE run_id=?1 AND id=?2";
+pub(super) const CALL: &str = "SELECT CASE WHEN length(CAST(status AS BLOB))<=32 THEN status END AS status,CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN data END AS record FROM tool_calls WHERE run_id=?1 AND id=?2";
 
 async fn protected(
     tx: &mut Transaction<'_, Sqlite>,

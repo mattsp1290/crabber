@@ -48,3 +48,6 @@ pub(crate) mod approval_driver;
 mod capture;
 #[path = "preparation_driver_completion.rs"]
 pub(crate) mod driver_completion;
+
+#[path = "preparation_pending_approval.rs"]
+pub(crate) mod pending_approval;

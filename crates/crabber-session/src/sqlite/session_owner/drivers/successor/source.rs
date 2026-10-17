@@ -1,6 +1,6 @@
 //! Original selected native closure. Every transferred carrier shares one budget.
 #[path = "source/approval.rs"]
-mod approval;
+pub(super) mod approval;
 use super::super::proof;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::{CompletionOperation, RunIssuance};

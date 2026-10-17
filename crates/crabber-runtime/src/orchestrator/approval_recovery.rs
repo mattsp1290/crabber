@@ -117,6 +117,20 @@ impl Orchestrator {
             .ok_or(StoreError::NotFound)?;
         let recovery = self.recovery_request(&request, &run).await?;
         let validated = self.validated_session(&run).await?;
+        let binding = self.stored_binding(&run.session_id, &run.id).await?;
+        if crabber_session::session_owner::preparation::resource_contract(
+            &binding.runtime_semantics,
+        )?
+        .is_some()
+        {
+            return Box::pin(self.spawn_pending_approval(
+                run,
+                validated,
+                binding,
+                ApprovalControl::Recover(recovery),
+            ))
+            .await;
+        }
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let control = ApprovalResume {
             prepared: None,
