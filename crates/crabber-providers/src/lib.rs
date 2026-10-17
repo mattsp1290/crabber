@@ -10,11 +10,11 @@
 
 mod binding;
 pub use binding::{
-    BoundProvider, ProviderBindingError, ProviderBindingFactory, ProviderReleaseObserver,
-    ProviderResourceContext, ProviderResourceContract, ProviderResourceFailure,
-    ProviderResourceHost, ProviderResourceRegistrationError, ProviderResourceTask,
-    ProviderServiceDependencies, ProviderServiceError, ProviderServiceHost, ProviderServiceSource,
-    VersionedAdapter, VersionedResolver,
+    BoundProvider, ProviderBindingError, ProviderBindingFactory, ProviderReleaseHolds,
+    ProviderReleaseObserver, ProviderResourceContext, ProviderResourceContract,
+    ProviderResourceFailure, ProviderResourceHost, ProviderResourceRegistrationError,
+    ProviderResourceTask, ProviderServiceDependencies, ProviderServiceError, ProviderServiceHost,
+    ProviderServiceSource, VersionedAdapter, VersionedResolver,
 };
 use crabber_core::ProviderBindingDescriptor;
 

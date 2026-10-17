@@ -1,5 +1,5 @@
 //! Dispose the real binding factory future before releasing its service lease.
-use crate::{BoundProvider, ProviderBindingError};
+use crate::{BoundProvider, ProviderBindingError, ProviderReleaseHolds};
 use std::{any::Any, future::Future, sync::Arc};
 type Lease = Arc<dyn Any + Send + Sync>;
 impl BoundProvider {
@@ -16,8 +16,12 @@ impl BoundProvider {
         F: FnOnce() -> W + Send + 'static,
         W: Future<Output = Result<Self, ProviderBindingError>> + Send + 'static,
     {
-        let (result, lease) =
-            crate::binding::future_release::observe(async move { factory().await }, lease).await;
+        let holds = ProviderReleaseHolds::capture_with_original(lease.clone());
+        let (result, lease) = holds
+            .scope(|| {
+                crate::binding::future_release::observe(async move { factory().await }, lease)
+            })
+            .await;
         result.map(|binding| binding.retain_service_lease(lease))
     }
 }

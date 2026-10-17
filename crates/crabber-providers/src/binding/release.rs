@@ -1,5 +1,5 @@
 //! Disposal of acquired references, including returned streams, is not service shutdown.
-use super::BoundProvider;
+use super::{BoundProvider, ProviderReleaseHolds};
 use crate::{DeltaStream, ModelRequest, ProviderError, Streamer};
 use futures::{FutureExt, Stream, channel::oneshot, future::Shared};
 use std::{
@@ -26,7 +26,7 @@ impl ProviderReleaseObserver {
         self.finished.clone().await;
     }
 }
-struct Signal {
+pub(super) struct Signal {
     released: Arc<AtomicBool>,
     sender: Option<oneshot::Sender<()>>,
 }
@@ -38,6 +38,27 @@ impl Drop for Signal {
         }
     }
 }
+pub(super) fn completion() -> (Arc<Signal>, ProviderReleaseObserver) {
+    let (sender, receiver) = oneshot::channel();
+    let released = Arc::new(AtomicBool::new(false));
+    let observer = ProviderReleaseObserver {
+        released: released.clone(),
+        finished: async move {
+            if receiver.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+        .boxed()
+        .shared(),
+    };
+    (
+        Arc::new(Signal {
+            released,
+            sender: Some(sender),
+        }),
+        observer,
+    )
+}
 struct ObservedStreamer {
     inner: Option<Arc<dyn Streamer>>,
     signal: Option<Arc<Signal>>,
@@ -46,48 +67,63 @@ impl Drop for ObservedStreamer {
     fn drop(&mut self) {
         // A panicking original destructor leaves the signal retained. Ordinary
         // field drop during unwind must never turn that panic into an ACK.
-        dispose(self.inner.take(), &mut self.signal);
+        let holds = ProviderReleaseHolds::capture_with_original(
+            self.signal.as_ref().expect("live provider signal").clone(),
+        );
+        let inner = self.inner.take();
+        holds.sync_scope(|| dispose(inner, &mut self.signal));
     }
 }
 #[async_trait::async_trait]
 impl Streamer for ObservedStreamer {
     async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
-        let (result, signal) = super::future_release::observe(
-            async {
-                self.inner
-                    .as_ref()
-                    .expect("live observed provider")
-                    .stream(request)
-                    .await
-            },
+        let holds = ProviderReleaseHolds::capture_with_original(
             self.signal.as_ref().expect("live provider signal").clone(),
-        )
-        .await;
+        );
+        let (result, signal) = holds
+            .scope(|| {
+                super::future_release::observe(
+                    async {
+                        self.inner
+                            .as_ref()
+                            .expect("live observed provider")
+                            .stream(request)
+                            .await
+                    },
+                    self.signal.as_ref().expect("live provider signal").clone(),
+                )
+            })
+            .await;
         let stream = result?;
         Ok(Box::pin(ObservedStream {
             inner: Some(stream),
             signal: Some(signal),
+            holds,
         }))
     }
 }
 struct ObservedStream {
     inner: Option<DeltaStream>,
     signal: Option<Arc<Signal>>,
+    holds: ProviderReleaseHolds,
 }
 impl Stream for ObservedStream {
     type Item = crate::StreamDelta;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut()
-            .inner
-            .as_mut()
-            .expect("live observed stream")
-            .as_mut()
-            .poll_next(cx)
+        let this = self.get_mut();
+        this.holds.sync_scope(|| {
+            this.inner
+                .as_mut()
+                .expect("live observed stream")
+                .as_mut()
+                .poll_next(cx)
+        })
     }
 }
 impl Drop for ObservedStream {
     fn drop(&mut self) {
-        dispose(self.inner.take(), &mut self.signal);
+        let inner = self.inner.take();
+        self.holds.sync_scope(|| dispose(inner, &mut self.signal));
     }
 }
 impl BoundProvider {
@@ -97,24 +133,10 @@ impl BoundProvider {
     /// Disposal acknowledges no physical provider/global-service cleanup.
     #[must_use]
     pub fn observe_release(mut self) -> (Self, ProviderReleaseObserver) {
-        let (sender, receiver) = oneshot::channel();
-        let released = Arc::new(AtomicBool::new(false));
-        let observer = ProviderReleaseObserver {
-            released: released.clone(),
-            finished: async move {
-                if receiver.await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
-            .boxed()
-            .shared(),
-        };
+        let (signal, observer) = completion();
         self.streamer = Arc::new(ObservedStreamer {
             inner: Some(self.streamer),
-            signal: Some(Arc::new(Signal {
-                released,
-                sender: Some(sender),
-            })),
+            signal: Some(signal),
         });
         (self, observer)
     }
