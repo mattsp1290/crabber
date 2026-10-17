@@ -515,3 +515,13 @@ pub(super) async fn save_host_call(
 
 #[path = "phase/terminal_history.rs"]
 pub(super) mod terminal_history;
+
+pub(super) use calls::load_with_proof as load_call_with_proof;
+pub(super) use records::latest_metadata_with_proof as latest_host_phase_with_proof;
+pub(super) async fn metadata_page_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &crate::PhasePageRequest,
+    proof: &mut Proof,
+) -> Result<crate::PhasePage, Error> {
+    records::page_with_proof(tx, request, proof).await
+}

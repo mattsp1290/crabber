@@ -8,8 +8,23 @@ pub(in super::super) fn validate(
     next: &PhaseRecord,
     call: &ToolCallRecord,
 ) -> Result<(), Error> {
-    let current = source(state, run, call, false)?;
-    let terminal = source(state, run, call, true)?;
+    validate_with_proof(
+        state,
+        run,
+        next,
+        call,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(in super::super) fn validate_with_proof(
+    state: &State,
+    run: &Run,
+    next: &PhaseRecord,
+    call: &ToolCallRecord,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let current = source(state, run, call, false, proof)?;
+    let terminal = source(state, run, call, true, proof)?;
     let settled = state
         .events
         .iter()
@@ -26,6 +41,9 @@ pub(in super::super) fn validate(
     {
         return Err(Error::UnknownStoreOutcome);
     }
+    proof
+        .measure(settled)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     crate::phase::terminal_history::verify(run, next, call, current, terminal, settled)
 }
 fn source<'a>(
@@ -33,6 +51,7 @@ fn source<'a>(
     run: &Run,
     call: &ToolCallRecord,
     terminal: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(&'a PhaseReceipt, &'a EventRecord), Error> {
     let event = state
         .events
@@ -56,6 +75,9 @@ fn source<'a>(
     if crate::snapshot::encoded_bytes(event, 65536).is_none() {
         return Err(Error::UnknownStoreOutcome);
     }
+    proof
+        .measure(event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let id = event
         .correlation
         .as_deref()
@@ -71,5 +93,8 @@ fn source<'a>(
     if crate::snapshot::encoded_bytes(receipt, 8192).is_none() {
         return Err(Error::UnknownStoreOutcome);
     }
+    proof
+        .measure(receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     Ok((receipt, event))
 }

@@ -3,6 +3,7 @@ use super::initial::RecoveryPublication;
 use super::verify::Scope;
 use crate::native_parent::{CompletionOperation, CompletionSource};
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
+use crate::session_owner::preparation::{ExpiredRunOutcome, ExpiredRunPreparation};
 use crate::{ClaimUnstartedAdmissionRequest, ClaimedAdmission};
 use crabber_core::{Run, RunFence};
 
@@ -21,6 +22,31 @@ pub(crate) fn measure_request(
         &request.capsule_digest,
         &request.owner,
         request.lease,
+    ))
+}
+pub(crate) fn measure_expired_request(
+    request: &crate::session_owner::preparation::InspectExpiredRunPreparation,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    proof.measure(&(
+        &request.session_id,
+        &request.expected_fence,
+        &request.owner,
+        request.lease,
+    ))
+}
+pub(crate) fn measure_expired(
+    source: &ExpiredRunPreparation,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    let request = source.request();
+    proof.measure(&(
+        &request.session_id,
+        &request.expected_fence,
+        &request.owner,
+        request.lease,
+        source.expected_revision(),
+        source.target(),
     ))
 }
 pub(crate) struct AdmissionRecovery<'a> {
@@ -65,7 +91,59 @@ impl<'a> AdmissionRecovery<'a> {
         })
     }
 }
-
+pub(crate) struct ExpiredRecovery<'a> {
+    pub source: &'a ExpiredRunPreparation,
+    pub previous: &'a Run,
+    pub updated: &'a Run,
+    pub completion: &'a CompletionSource,
+    pub outcome: &'a ExpiredRunOutcome,
+    pub publication: &'a RecoveryPublication,
+}
+impl<'a> ExpiredRecovery<'a> {
+    pub(super) fn verify(&self, proof: &mut Proof) -> Result<Scope<'a>, Failure> {
+        measure_expired(self.source, proof)?;
+        proof.measure(&(self.previous, self.updated, self.completion))?;
+        let ExpiredRunOutcome::Claimed { receipt, fence } = self.outcome else {
+            return Err(unknown("replayed expired result in fresh writer"));
+        };
+        proof.measure(&(
+            &receipt.session_id,
+            &receipt.run_id,
+            &receipt.operation_id,
+            receipt.issuance,
+            receipt.revision,
+            fence,
+        ))?;
+        let request = self.source.request();
+        if request.session_id != self.previous.session_id
+            || request.expected_fence.run_id != self.previous.id
+            || request.expected_fence.claim_token != self.previous.claim_token
+            || receipt.session_id != self.updated.session_id
+            || receipt.run_id != self.updated.id
+            || receipt.operation_id != self.completion.root_join_id
+            || Some(receipt.issuance) != self.source.expected_issuance().checked_add(1)
+            || receipt.issuance != self.publication.issuer.sequence
+            || self.completion.native_operation != CompletionOperation::ExpiredRunResume
+            || self.completion.native_semantic_digest
+                != self.source.fingerprint().map_err(unknown)?
+        {
+            return Err(unknown("actual expired recovery result"));
+        }
+        replacement(
+            self.previous,
+            self.updated,
+            fence,
+            &request.owner,
+            request.lease,
+            proof,
+        )?;
+        publication(self.publication, self.updated, Some(self.completion), proof)?;
+        Ok(Scope {
+            session: &self.previous.session_id,
+            run: &self.previous.id,
+        })
+    }
+}
 fn publication(
     actual: &RecoveryPublication,
     run: &Run,

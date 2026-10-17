@@ -331,3 +331,4 @@ const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT
 pub(super) use guards::guard_attempt_with_proof;
 
 pub(super) use current::session_with_proof as verify_session_with_proof;
+pub(super) use terminate::validate_terminal_phases_with_proof;

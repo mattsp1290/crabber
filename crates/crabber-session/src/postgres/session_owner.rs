@@ -464,3 +464,12 @@ pub(super) use protocol::selected as authenticate_source_audit;
 
 #[cfg(test)]
 pub(super) use drivers::classified as classify_driver_join;
+
+pub(super) async fn source_audit_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Audit>, Error> {
+    reads::audit_with_proof(tx, session, id, proof).await
+}

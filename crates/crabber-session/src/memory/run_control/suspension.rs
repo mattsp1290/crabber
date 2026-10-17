@@ -59,13 +59,27 @@ pub(in crate::memory) fn verify(
     state: &State,
     run: &Run,
 ) -> Result<Vec<crabber_core::ToolCallId>, Error> {
+    verify_with_proof(
+        state,
+        run,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(in crate::memory) fn verify_with_proof(
+    state: &State,
+    run: &Run,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<crabber_core::ToolCallId>, Error> {
     let proof = state.suspension_proofs.get(&run.id).ok_or(Error::Busy)?;
+    read_proof.measure(proof).map_err(run_control::unknown)?;
     let latest = state
         .attempts
         .values()
         .filter(|r| r.snapshot.run_id == run.id)
         .max_by_key(|r| r.snapshot.target.generation)
         .ok_or(Error::Busy)?;
+    crate::native_enrollment::caller::measure_record(latest, read_proof)
+        .map_err(run_control::unknown)?;
     latest.validate().map_err(run_control::unknown)?;
     let calls = proof.verify(run, &latest.snapshot)?;
     let Some(super::super::OperationReceipt::Attempt(saved)) = state
@@ -77,6 +91,15 @@ pub(in crate::memory) fn verify(
     if saved != &proof.receipt {
         return Err(Error::UnknownStoreOutcome);
     }
+    read_proof.measure(saved).map_err(run_control::unknown)?;
+    read_proof
+        .measure(
+            state
+                .events
+                .get(saved.event_cursor)
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(run_control::unknown)?;
     crate::attempt::verify_receipt(
         saved,
         state
@@ -96,6 +119,7 @@ pub(in crate::memory) fn verify(
         if pending.len() == 64 || call.id.0.len() > 512 {
             return Err(Error::Busy);
         }
+        read_proof.measure(call).map_err(run_control::unknown)?;
         pending.insert(call.id.clone());
     }
     if pending != calls.iter().cloned().collect() {
@@ -110,12 +134,19 @@ pub(in crate::memory) fn verify(
             .calls
             .get(&phase.snapshot.target.call_id)
             .ok_or(Error::UnknownStoreOutcome)?;
-        super::super::phase::terminal_history::validate(state, run, phase, call)
-            .map_err(|_| Error::Busy)?;
+        crate::native_enrollment::caller::measure_phase_record(phase, read_proof)
+            .map_err(run_control::unknown)?;
+        read_proof.measure(call).map_err(run_control::unknown)?;
+        super::super::phase::terminal_history::validate_with_proof(
+            state, run, phase, call, read_proof,
+        )
+        .map_err(|_| Error::Busy)?;
         let parent = state
             .attempts
             .get(&phase.snapshot.target.attempt.id)
             .ok_or(Error::UnknownStoreOutcome)?;
+        crate::native_enrollment::caller::measure_record(parent, read_proof)
+            .map_err(run_control::unknown)?;
         parent.validate().map_err(run_control::unknown)?;
         if parent.snapshot.target != phase.snapshot.target.attempt
             || parent.snapshot.run_id != run.id

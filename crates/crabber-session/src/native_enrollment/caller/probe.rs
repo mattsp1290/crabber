@@ -21,6 +21,7 @@ enum Identity {
     LegacyTool(RunId, ToolCallId),
     AdmissionBegin(RunId),
     AdmissionRecovery(RunId),
+    ExpiredRecovery(RunId),
 }
 impl Identity {
     fn matches(&self, fresh: &Fresh<'_>) -> bool {
@@ -30,6 +31,7 @@ impl Identity {
             (Self::Control(id), Fresh::Phase(p)) => *id == p.request.id,
             (Self::AdmissionBegin(run), Fresh::AdmissionBegin(a)) => *run == a.run.id,
             (Self::AdmissionRecovery(run), Fresh::AdmissionRecovery(a)) => *run == a.previous.id,
+            (Self::ExpiredRecovery(run), Fresh::ExpiredRecovery(a)) => *run == a.previous.id,
             (Self::LegacyTool(run, id), Fresh::LegacyTool(a)) => *run == a.run.id && id == a.id,
             _ => false,
         }
@@ -87,6 +89,15 @@ impl Probe {
             hits: Vec::new(),
         });
     }
+    pub(crate) fn arm_expired_recovery(&self, session: &SessionId, run: &RunId, refuse: bool) {
+        *self.0.lock().unwrap() = Some(Selection {
+            session: session.clone(),
+            operation: Identity::ExpiredRecovery(run.clone()),
+            refuse,
+            lose_ack: false,
+            hits: Vec::new(),
+        });
+    }
     pub(crate) fn after_admission_recovery(&self, run: &RunId) -> bool {
         self.after_commit(&Identity::AdmissionRecovery(run.clone()))
     }
@@ -133,6 +144,16 @@ impl Probe {
                 &i.result.prior_history,
             )),
 
+            Fresh::ExpiredRecovery(a) => {
+                crate::native_enrollment::caller::contract::snapshot_digest(&(
+                    "crabber.native.raw-expired-recovery.test.v1",
+                    a.previous,
+                    a.updated,
+                    a.completion,
+                    &a.publication.issuer,
+                    &a.publication.source,
+                ))
+            }
             Fresh::AdmissionRecovery(a) => {
                 crate::native_enrollment::caller::contract::snapshot_digest(&(
                     "crabber.native.raw-admission-recovery.test.v1",

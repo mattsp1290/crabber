@@ -432,3 +432,14 @@ pub(super) async fn pristine_for_expired(
 ) -> Result<(), crate::AttemptError> {
     pristine::check(tx, run).await
 }
+
+pub(super) async fn pristine_for_expired_with_proof(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &crabber_core::Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::AttemptError> {
+    if !proof.active() {
+        return pristine_for_expired(tx, run).await;
+    }
+    pristine::check_with_proof(tx, run, proof).await
+}

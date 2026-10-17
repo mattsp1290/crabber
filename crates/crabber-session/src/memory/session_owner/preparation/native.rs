@@ -16,7 +16,7 @@ impl super::super::MemoryStore {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
         let completed = match operation {
             PreparedOperation::ExpiredRunResume(prepared) => PreparationCompletion::ExpiredRun(
-                self.claim_prepared_expired(state, &prepared, proof)?,
+                self.claim_prepared_expired(state, &prepared, proof, read_proof)?,
             ),
             PreparedOperation::AdmissionRecovery(recovery) => {
                 PreparationCompletion::AdmissionRecovery(

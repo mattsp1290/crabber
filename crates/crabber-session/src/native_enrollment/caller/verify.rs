@@ -22,6 +22,7 @@ pub(crate) enum Fresh<'a> {
     LegacyTool(super::LegacyTool<'a>),
     AdmissionBegin(super::AdmissionBegin<'a>),
     AdmissionRecovery(super::recovery::AdmissionRecovery<'a>),
+    ExpiredRecovery(super::recovery::ExpiredRecovery<'a>),
     Phase(Phase<'a>),
     Initial(super::initial::Initial<'a>),
 }
@@ -62,6 +63,7 @@ impl<'a> Fresh<'a> {
             Self::LegacyTool(fresh) => fresh.verify(proof),
             Self::AdmissionBegin(fresh) => fresh.verify(proof),
             Self::AdmissionRecovery(fresh) => fresh.verify(proof),
+            Self::ExpiredRecovery(fresh) => fresh.verify(proof),
             Self::Phase(fresh) => fresh.verify(proof),
             Self::Initial(fresh) => fresh.verify(proof),
         }

@@ -7,9 +7,25 @@ pub(in crate::memory) fn read(
     session: &SessionId,
     run: &RunId,
 ) -> Result<Option<Box<Original>>, Error> {
+    read_with_proof(
+        state,
+        session,
+        run,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(in crate::memory) fn read_with_proof(
+    state: &State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Box<Original>>, Error> {
     let Some(witness) = state.preparation_admissions.get(run) else {
         return Ok(None);
     };
+    proof
+        .measure(witness)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     bounded(witness, 8192)?;
     witness.validate()?;
     if witness.run_id() != run || witness.session_id() != session {
@@ -35,6 +51,9 @@ pub(in crate::memory) fn read(
         .native_run_issuances
         .get(&(session.clone(), run.clone(), 1))
         .ok_or(Error::UnknownStoreOutcome)?;
+    proof
+        .measure(&(current, initial))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     bounded(current, 16384)?;
     bounded(initial, 2048)?;
     if state
@@ -51,6 +70,9 @@ pub(in crate::memory) fn read(
             .source_audit(session, &id)
             .ok_or(Error::UnknownStoreOutcome)?;
         bounded(audit, 32768)?;
+        proof
+            .measure(audit)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         audits.push(audit.clone());
     }
     let original = Box::new(Original {

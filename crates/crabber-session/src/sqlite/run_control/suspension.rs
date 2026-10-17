@@ -84,29 +84,48 @@ pub(in super::super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
 ) -> Result<(Vec<ToolCallId>, SuspensionProof), Error> {
+    verify_with_proof(
+        tx,
+        run,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(in super::super) async fn verify_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(Vec<ToolCallId>, SuspensionProof), Error> {
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data_json AS BLOB)) AS BIGINT) FROM run_suspension_proofs WHERE run_id=$1").bind(&run.id.0), read_proof).await.map_err(unknown)?;
     let data: Option<String> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(data_json AS BLOB))<=4227072 THEN data_json END FROM run_suspension_proofs WHERE run_id=$1")
         .bind(&run.id.0).fetch_optional(&mut **tx).await.map_err(unknown)?.ok_or(Error::Busy)?;
     let proof: SuspensionProof =
         serde_json::from_str(&data.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)?;
-    let (latest, revision) = super::super::attempt::records::load(tx, &run.id, None, true)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::Busy)?;
-    let ids = proof.verify(run, &latest.snapshot)?;
-    let original =
-        super::super::attempt::records::receipt(tx, &run.session_id, &proof.receipt.operation_id)
+    let (latest, revision) =
+        super::super::attempt::records::load_locked_with_proof(tx, &run.id, None, read_proof)
             .await
             .map_err(unknown)?
-            .ok_or(Error::UnknownStoreOutcome)?;
+            .ok_or(Error::Busy)?;
+    let ids = proof.verify(run, &latest.snapshot)?;
+    let original = super::super::attempt::records::receipt_with_proof(
+        tx,
+        &run.session_id,
+        &proof.receipt.operation_id,
+        read_proof,
+    )
+    .await
+    .map_err(unknown)?
+    .ok_or(Error::UnknownStoreOutcome)?;
     if original != proof.receipt {
         return Err(Error::UnknownStoreOutcome);
     }
-    super::super::approval::validate_terminal_phases(tx, run, revision)
+    super::super::approval::validate_terminal_phases_with_proof(tx, run, revision, read_proof)
         .await
         .map_err(|error| match error {
             crate::ApprovalError::UnknownStoreOutcome => Error::UnknownStoreOutcome,
             _ => Error::Busy,
         })?;
+    read_proof.charge(8).map_err(unknown)?;
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting')",
     )
@@ -118,9 +137,10 @@ pub(in super::super) async fn verify(
         return Err(Error::UnknownStoreOutcome);
     }
     for id in &ids {
-        let call = super::super::phase::load_call(tx, run, id)
+        let call = super::super::phase::load_call_with_proof(tx, run, id, read_proof)
             .await
             .map_err(unknown)?;
+        read_proof.charge(1).map_err(unknown)?;
         let phase: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND call_id=$2)",
         )

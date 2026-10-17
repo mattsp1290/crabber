@@ -28,11 +28,27 @@ pub(super) fn context(
     request: InspectExpiredRunPreparation,
     now: time::OffsetDateTime,
 ) -> Result<ExpiredRunPreparation, Error> {
+    context_with_proof(
+        state,
+        request,
+        now,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(super) fn context_with_proof(
+    state: &State,
+    request: InspectExpiredRunPreparation,
+    now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<ExpiredRunPreparation, Error> {
+    crate::native_enrollment::caller::recovery::measure_expired_request(&request, proof)
+        .map_err(unknown)?;
     request.validate()?;
     let run = state
         .runs
         .get(&request.expected_fence.run_id)
         .ok_or(Error::NotFound)?;
+    proof.measure(run).map_err(unknown)?;
     // A real suspended checkpoint is bounded by the native boundary contract;
     // no private Run is cloned before checking this finite carrier.
     if crate::snapshot::encoded_bytes(run, crate::MAX_RUN_BOUNDARY_BYTES + 32768).is_none()
@@ -50,15 +66,15 @@ pub(super) fn context(
     if super::has_pending_continuation(state, &run.session_id).map_err(unknown)? {
         return Err(Error::Busy);
     }
-    let binding = super::execution_binding::read(state, &run.session_id, &run.id)
+    let binding = super::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
-    let issuer = super::native_parent::latest_run(state, run)
+    let issuer = super::native_parent::current_issuance_with_proof(state, run, proof)
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
     let (native, origin) = match run.status {
         RunStatus::Paused => (
-            suspended(state, run)?,
+            suspended(state, run, proof)?,
             crate::session_owner::preparation::ExpiredRunOrigin::Suspended(
                 state
                     .suspension_proofs
@@ -69,7 +85,7 @@ pub(super) fn context(
                     .clone(),
             ),
         ),
-        RunStatus::Running => initial_source(state, run, &binding, now)?,
+        RunStatus::Running => initial_source(state, run, &binding, now, proof)?,
         _ => return Err(Error::InvalidTransition),
     };
     let crate::session_owner::audit::RevisionState::Present(revision) =
@@ -87,6 +103,7 @@ pub(super) fn context(
         owner: request.owner.clone(),
         lease: request.lease,
     };
+    proof.measure(&target).map_err(unknown)?;
     ExpiredRunPreparation::from_verified_source(request, revision, target)
 }
 fn initial_source(
@@ -94,6 +111,7 @@ fn initial_source(
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<
     (
         InputFingerprint,
@@ -101,13 +119,14 @@ fn initial_source(
     ),
     Error,
 > {
-    let initial = initial_provenance(state, run, binding)?;
-    unstarted::guard(state, run, binding, now, initial)
+    let initial = initial_provenance(state, run, binding, proof)?;
+    unstarted::guard_with_proof(state, run, binding, now, initial, proof)
 }
 fn initial_provenance(
     state: &State,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<
     (
         InputFingerprint,
@@ -115,11 +134,11 @@ fn initial_provenance(
     ),
     Error,
 > {
-    if let Some(original) = unkeyed::read(state, &run.session_id, &run.id)? {
+    if let Some(original) = unkeyed::read_with_proof(state, &run.session_id, &run.id, proof)? {
         original.verify_binding(&binding.capsule)?;
         return Ok((original.digest()?, original.origin()?));
     }
-    let digest = initial(state, run, binding)?;
+    let digest = initial(state, run, binding, proof)?;
     let key = state
         .admission_executions
         .get(&run.id)
@@ -131,7 +150,11 @@ fn initial_provenance(
         crate::session_owner::preparation::ExpiredRunOrigin::KeyedInitial(key),
     ))
 }
-fn suspended(state: &State, run: &Run) -> Result<InputFingerprint, Error> {
+fn suspended(
+    state: &State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<InputFingerprint, Error> {
     if state
         .phases
         .values()
@@ -149,17 +172,18 @@ fn suspended(state: &State, run: &Run) -> Result<InputFingerprint, Error> {
     {
         return Err(Error::Capacity);
     }
-    super::run_control::suspension::verify(state, run).map_err(unknown)?;
-    let proof = state
+    super::run_control::suspension::verify_with_proof(state, run, proof).map_err(unknown)?;
+    let original = state
         .suspension_proofs
         .get(&run.id)
         .ok_or(Error::UnknownStoreOutcome)?;
-    crate::session_owner::preparation::expired::suspension_digest(proof, run)
+    crate::session_owner::preparation::expired::suspension_digest(original, run)
 }
 fn initial(
     state: &State,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<InputFingerprint, Error> {
     use crate::admission_journal::{Kind, Source};
     if state
@@ -169,7 +193,7 @@ fn initial(
     {
         return Err(Error::UnknownStoreOutcome);
     }
-    super::admission_journal::verify(state, &run.id).map_err(unknown)?;
+    super::admission_journal::verify_with_proof(state, &run.id, proof).map_err(unknown)?;
     if !state.admission_execution_protocols.contains(&run.id) {
         return Err(Error::Unsupported);
     }
@@ -212,35 +236,8 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
 
-impl MemoryStore {
-    pub(in crate::memory) fn claim_prepared_expired(
-        &self,
-        state: &mut State,
-        prepared: &crate::session_owner::preparation::PreparedExpiredRunResume,
-        proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
-    ) -> Result<
-        crate::session_owner::preparation::ExpiredRunOutcome,
-        crate::session_owner::preparation::PreparationCommitError,
-    > {
-        use crate::session_owner::preparation::expired;
-        prepared.validate()?;
-        let source = &prepared.source;
-        let current = context(state, source.request().clone(), self.clock.now())?;
-        source.verify_source(&current)?;
-        let completion = expired::completion_source(source, proof, current.expected_revision())?;
-        let original = state
-            .runs
-            .get(&source.request().expected_fence.run_id)
-            .ok_or(Error::NotFound)?
-            .clone();
-        let next = expired::replacement(&original, source, self.clock.now())?;
-        super::native_parent::record_run_completed(state, &original, &next, Some(&completion))
-            .map_err(unknown)?;
-        let outcome = expired::claimed(source, &completion, current.expected_revision(), &next);
-        state.runs.insert(next.id.clone(), next);
-        Ok(outcome)
-    }
-}
+#[path = "expired/recovery.rs"]
+mod recovery;
 
 #[cfg(test)]
 #[path = "expired/tests.rs"]
