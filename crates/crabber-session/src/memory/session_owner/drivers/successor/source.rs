@@ -1,6 +1,8 @@
 //! Selected protected sources, charged while borrowed before any private clone.
 #[path = "source/approval.rs"]
 pub(super) mod approval;
+#[path = "source/tool.rs"]
+mod tool;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, State};
 use crate::native_parent::{CompletionOperation, RunIssuance};
 use crate::session_owner::{
@@ -71,7 +73,12 @@ pub(super) fn original(
         CompletionOperation::ApprovalClaim | CompletionOperation::ApprovalRecovery => {
             approval::original(state, request, previous, next, &audits, proof, binding)
         }
-        _ => Err(Error::Unsupported),
+        CompletionOperation::ToolClaim
+        | CompletionOperation::ToolRecovery
+        | CompletionOperation::FrontendClaim
+        | CompletionOperation::FrontendRecovery => {
+            tool::original(state, request, previous, next, &audits, proof, binding)
+        }
     }
 }
 fn expired(

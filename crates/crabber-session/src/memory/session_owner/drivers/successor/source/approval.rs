@@ -131,7 +131,7 @@ fn control<'a>(
     Ok((receipt, event))
 }
 
-fn initial_input<'a>(
+pub(super) fn initial_input<'a>(
     state: &'a State,
     request: &RegisterSuccessorExecutionDriver,
     proof: &mut Proof,

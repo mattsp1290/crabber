@@ -1,6 +1,8 @@
 //! Actual prepared native claims and distinct gated successor workers.
 #[path = "successor_driver_contract/approval.rs"]
 pub(crate) mod approval;
+#[path = "successor_driver_contract/tools.rs"]
+pub(crate) mod tools;
 use crate::{
     Store,
     session_owner::{driver::*, owned_scope::*, preparation::*},

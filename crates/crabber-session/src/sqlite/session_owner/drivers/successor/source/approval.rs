@@ -124,6 +124,7 @@ pub(in crate::sqlite::session_owner::drivers::successor) async fn verify_input(
         .as_input()?
         .verify(session, run, Some(binding))
 }
+
 pub(in crate::sqlite::session_owner::drivers::successor) struct OwnedInput {
     original: super::super::super::source::Original,
     input: Option<OriginalInput>,

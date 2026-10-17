@@ -17,7 +17,6 @@ pub(crate) struct Fixture {
     pub suspension: ToolContinuationSuspension,
     pub authority: ToolSuspensionAuthority,
 }
-#[allow(clippy::too_many_lines)] // One complete native lifecycle fixture/journey.
 pub(crate) async fn fixture(store: &impl Store) -> Fixture {
     let mut prepared = crate::typed_admission_contract::fixture(
         &crabber_core::SessionId::new(),
@@ -32,6 +31,11 @@ pub(crate) async fn fixture(store: &impl Store) -> Fixture {
         })
         .await
         .unwrap();
+    fixture_on(store, admitted).await
+}
+
+#[allow(clippy::too_many_lines)] // One complete native lifecycle fixture/journey.
+pub(crate) async fn fixture_on(store: &impl Store, admitted: AdmitOutcome) -> Fixture {
     let (admitted, execution, attempt, planned) =
         crate::phase_contract::fixture_for_admission(store, admitted).await;
     let (claimed, owner) = crate::phase_contract::applied(

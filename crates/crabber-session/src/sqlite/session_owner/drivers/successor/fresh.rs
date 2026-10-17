@@ -37,6 +37,9 @@ pub(in crate::sqlite::session_owner::drivers) async fn fresh(
         Some(&binding.capsule),
     ))
     .await?;
+    if selected.tool.is_some() {
+        return Err(Error::Unsupported);
+    }
     if latest.sequence != selected.head
         || crate::native_parent::issuance_digest(&latest).map_err(unknown)? != selected.head_digest
     {

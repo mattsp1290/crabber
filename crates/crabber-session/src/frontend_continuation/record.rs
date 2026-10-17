@@ -179,13 +179,25 @@ pub(crate) fn recovery_fingerprint(
     owner: &str,
     lease_ms: u64,
 ) -> Result<InputFingerprint, Error> {
-    use crate::tool_continuation::canonical::{digest, identity};
+    use crate::tool_continuation::canonical::identity;
     identity(&id.0, 128)?;
     identity(&attempt.id.0, 128)?;
     identity(owner, 512)?;
     if lease_ms == 0 || lease_ms > 900_000 {
         return Err(Error::InvalidRequest);
     }
+    recovery_semantics(id, revision, original, attempt)
+}
+
+pub(crate) fn recovery_semantics(
+    id: &crabber_core::ControlId,
+    revision: crabber_core::SessionRevision,
+    original: &InputFingerprint,
+    attempt: &crate::AttemptTarget,
+) -> Result<InputFingerprint, Error> {
+    use crate::tool_continuation::canonical::{digest, identity};
+    identity(&id.0, 128)?;
+    identity(&attempt.id.0, 128)?;
     digest(&(
         "crabber.frontend-continuation.recover-unstarted.v1",
         id,

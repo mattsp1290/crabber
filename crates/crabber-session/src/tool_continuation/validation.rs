@@ -149,22 +149,17 @@ impl ToolContinuationClaim {
     /// # Errors
     /// Rejects invalid identities and lease declarations.
     pub fn fingerprint(&self) -> Result<InputFingerprint, Error> {
-        for text in [&self.id.0, &self.continuation.id.0, &self.run_id.0] {
-            identity(text, 128)?;
-        }
-        identity(&self.session_id.0, 512)?;
         identity(&self.owner, 512)?;
         if self.lease_ms == 0 || self.lease_ms > 900_000 {
             return Err(Error::InvalidRequest);
         }
-        digest(&(
-            "crabber.tool-continuation.claim.v1",
+        super::canonical::claim_fingerprint(
             &self.id,
             &self.session_id,
             &self.run_id,
             &self.continuation,
             self.expected_revision,
             &self.expected_plan,
-        ))
+        )
     }
 }

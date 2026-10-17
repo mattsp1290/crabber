@@ -19,6 +19,10 @@ pub(crate) enum Native<'a> {
         evidence: super::approval::Evidence<'a>,
         input: super::input::Input<'a>,
     },
+    Tool {
+        evidence: super::tool::Evidence<'a>,
+        input: super::input::Input<'a>,
+    },
 }
 pub(crate) struct AuthenticatedClaim<'a> {
     pub next: &'a RunIssuance,
@@ -27,6 +31,7 @@ pub(crate) struct AuthenticatedClaim<'a> {
     pub head: u64,
     pub head_digest: crabber_core::InputFingerprint,
     pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
+    pub tool: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
 }
 impl<'a> AuthenticatedClaim<'a> {
     pub(crate) fn verify_binding(
@@ -74,13 +79,13 @@ impl<'a> AuthenticatedClaim<'a> {
             audit.validate()?;
         }
         let source = next.completion_source.as_ref().ok_or(Error::Unsupported)?;
-        let approval = match (source.native_operation, native) {
+        let (approval, tool) = match (source.native_operation, native) {
             (CompletionOperation::ExpiredRunResume, Native::Expired(native)) => {
                 crate::session_owner::preparation::expired::history::verify(
                     previous, next, audits, native,
                 )?
                 .ok_or(Error::Unsupported)?;
-                None
+                (None, None)
             }
             (
                 CompletionOperation::AdmissionRecovery,
@@ -91,7 +96,7 @@ impl<'a> AuthenticatedClaim<'a> {
                 },
             ) => {
                 admission(previous, next, audits, init, initial, receipt)?;
-                None
+                (None, None)
             }
             (
                 CompletionOperation::ApprovalClaim | CompletionOperation::ApprovalRecovery,
@@ -99,7 +104,18 @@ impl<'a> AuthenticatedClaim<'a> {
             ) => {
                 let facts = evidence.verify(previous, next, audits)?;
                 input.verify(&next.state.session_id, &next.state.run_id, None)?;
-                Some(facts)
+                (Some(facts), None)
+            }
+            (
+                CompletionOperation::ToolClaim
+                | CompletionOperation::ToolRecovery
+                | CompletionOperation::FrontendClaim
+                | CompletionOperation::FrontendRecovery,
+                Native::Tool { evidence, input },
+            ) => {
+                let facts = evidence.verify(previous, next, audits)?;
+                input.verify(&next.state.session_id, &next.state.run_id, None)?;
+                (None, Some(facts))
             }
             _ => return Err(Error::Unsupported),
         };
@@ -110,16 +126,18 @@ impl<'a> AuthenticatedClaim<'a> {
         else {
             return Err(Error::UnknownStoreOutcome);
         };
+        let continuation = approval.as_ref().or(tool.as_ref());
         Ok(Self {
             next,
             audits,
-            revision: approval.as_ref().map_or(revision, |a| a.revision),
-            head: approval.as_ref().map_or(next.sequence, |a| a.head),
-            head_digest: approval.as_ref().map_or_else(
+            revision: continuation.map_or(revision, |a| a.revision),
+            head: continuation.map_or(next.sequence, |a| a.head),
+            head_digest: continuation.map_or_else(
                 || crate::native_parent::issuance_digest(next).map_err(unknown),
                 |a| Ok(a.head_digest.clone()),
             )?,
             approval: approval.map(|a| (a.continuation, a.attempt)),
+            tool: tool.map(|a| (a.continuation, a.attempt)),
         })
     }
     pub(crate) fn matches_request(

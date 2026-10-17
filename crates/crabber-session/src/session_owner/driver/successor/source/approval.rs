@@ -1,8 +1,9 @@
 //! Exact original compound approval evidence, separate from capability holders.
 use super::super::Error;
+use super::ContinuationFacts as Facts;
 use crate::native_parent::{CompletionOperation as Operation, RunIssuance};
 use crate::session_owner::{audit::Audit, preparation::ExistingWorkTarget};
-use crabber_core::{EventRecord, SessionRevision};
+use crabber_core::EventRecord;
 
 pub(crate) struct Evidence<'a> {
     pub receipt: &'a crate::ApprovalReceipt,
@@ -17,13 +18,6 @@ pub(crate) struct Evidence<'a> {
     pub pause_frame: &'a EventRecord,
     pub original: Option<(&'a crate::ApprovalReceipt, &'a EventRecord)>,
     pub status: Option<&'a RunIssuance>,
-}
-pub(crate) struct Facts {
-    pub revision: SessionRevision,
-    pub head: u64,
-    pub head_digest: crabber_core::InputFingerprint,
-    pub continuation: crate::ContinuationTarget,
-    pub attempt: crate::AttemptTarget,
 }
 impl Evidence<'_> {
     pub(crate) fn verify(

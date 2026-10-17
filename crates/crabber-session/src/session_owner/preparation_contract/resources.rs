@@ -400,6 +400,45 @@ pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
     };
     *admitted
 }
+
+/// Preserve caller-selected original input/declarations before reserving the
+/// real initial preparation. No post-admission binding or witness rewrite.
+pub(crate) async fn initial_driver_with_input(
+    store: &impl Store,
+    mut bound: crate::BoundKeyedAdmitRequest,
+    unkeyed: bool,
+) -> crate::AdmitOutcome {
+    let contract = InputFingerprint::new("d".repeat(64)).unwrap();
+    declaration::bind(&mut bound, &contract);
+    let mut request = reservation(&bound);
+    request.owner.binding.component_id = OWNED_PREPARATION_COMPONENT.into();
+    request.resource_contract = Some(contract);
+    let operation = if unkeyed {
+        request.intent = crate::session_owner::preparation::admission_intent(
+            &bound.binding.request,
+            bound.binding.input_envelope.as_ref().unwrap(),
+            None,
+        )
+        .unwrap();
+        request = request
+            .bind_key(crate::session_owner::preparation::PreparationKey::Unkeyed(
+                ControlId::new(),
+            ))
+            .unwrap();
+        PreparedOperation::Admit(Box::new(crate::BoundAdmitRequest {
+            request: bound.keyed.request,
+            binding: bound.binding,
+        }))
+    } else {
+        PreparedOperation::AdmitKeyed(Box::new(bound))
+    };
+    let root = begin(store, &request).await;
+    match initial_driver_completion(store, root, operation).await {
+        PreparationCompletion::Admitted(value) => value,
+        PreparationCompletion::Keyed(KeyedAdmitOutcome::Started { admitted, .. }) => *admitted,
+        _ => panic!("fresh original admission"),
+    }
+}
 /// Genuine unkeyed native admission with original declaration and activated child.
 pub(crate) async fn initial_unkeyed_driver(store: &impl Store) -> crate::AdmitOutcome {
     let joined = initial_unkeyed_observation(store).await;

@@ -99,6 +99,14 @@ async fn fixture_for_admission_named(
     PhaseMutation,
 ) {
     let execution = store.execution(admitted.fence.clone()).await.unwrap();
+    if store
+        .admission_execution_state(&admitted.run.id)
+        .await
+        .unwrap()
+        == Some(crate::AdmissionExecutionState::Unstarted)
+    {
+        execution.begin_admission_execution().await.unwrap();
+    }
     let reserve = crate::attempt_contract::reserve(
         store.session_revision(&admitted.session.id).await.unwrap(),
     );

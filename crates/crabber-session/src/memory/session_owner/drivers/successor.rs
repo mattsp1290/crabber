@@ -112,6 +112,11 @@ pub(in crate::memory::session_owner) fn fresh(
         return Err(Error::UnknownStoreOutcome);
     }
     let selected = source::original(state, request, proof, Some(&binding.capsule))?;
+    // Original Tool metadata is authenticated independently, but fresh Tool
+    // dispatch remains unsupported until the complete current-phase guard lands.
+    if selected.tool.is_some() {
+        return Err(Error::Unsupported);
+    }
     if latest.sequence != selected.head
         || crate::native_parent::issuance_digest(latest).map_err(|_| Error::UnknownStoreOutcome)?
             != selected.head_digest
@@ -158,3 +163,7 @@ mod approval_tests;
 #[cfg(test)]
 #[path = "successor/birth_source_tests.rs"]
 mod birth_source_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_source_tests.rs"]
+mod tool_source_tests;

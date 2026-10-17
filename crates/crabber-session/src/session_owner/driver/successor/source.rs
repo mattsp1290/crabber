@@ -5,6 +5,8 @@ pub(crate) mod approval;
 pub(crate) mod claim;
 #[path = "source/input.rs"]
 pub(crate) mod input;
+#[path = "source/tool.rs"]
+pub(crate) mod tool;
 use super::{Error, RegisterSuccessorExecutionDriver};
 pub(crate) use claim::AuthenticatedClaim;
 use crabber_core::{InputFingerprint, RunId, SessionId};
@@ -18,6 +20,14 @@ pub(crate) struct SelectedClaim {
     pub head_digest: InputFingerprint,
     pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
     pub approval_receipt: Option<crate::ApprovalReceipt>,
+    pub tool: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
+}
+pub(crate) struct ContinuationFacts {
+    pub revision: crabber_core::SessionRevision,
+    pub head: u64,
+    pub head_digest: InputFingerprint,
+    pub continuation: crate::ContinuationTarget,
+    pub attempt: crate::AttemptTarget,
 }
 pub(crate) fn selected(
     request: &RegisterSuccessorExecutionDriver,
@@ -27,7 +37,7 @@ pub(crate) fn selected(
     native: claim::Native<'_>,
     binding: Option<&crate::ExecutionBindingCapsule>,
 ) -> Result<SelectedClaim, Error> {
-    if let claim::Native::Approval { input, .. } = &native {
+    if let claim::Native::Approval { input, .. } | claim::Native::Tool { input, .. } = &native {
         input.verify(&next.state.session_id, &next.state.run_id, binding)?;
     }
     let approval_receipt = match &native {
@@ -46,6 +56,7 @@ pub(crate) fn selected(
         head_digest: verified.head_digest,
         approval: verified.approval,
         approval_receipt,
+        tool: verified.tool,
     })
 }
 

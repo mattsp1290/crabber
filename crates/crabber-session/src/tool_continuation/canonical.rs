@@ -21,6 +21,51 @@ pub(crate) fn digest(value: &impl Serialize) -> Result<InputFingerprint, Error> 
     ))
     .map_err(|_| Error::InvalidRequest)
 }
+
+/// Original semantic fields only. Native source readers supply the revision
+/// authenticated by the original preparation, without inventing worker data.
+pub(crate) fn claim_fingerprint(
+    id: &crabber_core::ControlId,
+    session: &crabber_core::SessionId,
+    run: &crabber_core::RunId,
+    continuation: &crate::ContinuationTarget,
+    revision: crabber_core::SessionRevision,
+    plan: &InputFingerprint,
+) -> Result<InputFingerprint, Error> {
+    for text in [&id.0, &continuation.id.0, &run.0] {
+        identity(text, 128)?;
+    }
+    identity(&session.0, 512)?;
+    digest(&(
+        "crabber.tool-continuation.claim.v1",
+        id,
+        session,
+        run,
+        continuation,
+        revision,
+        plan,
+    ))
+}
+
+pub(crate) fn recovery_fingerprint(
+    id: &crabber_core::ControlId,
+    revision: crabber_core::SessionRevision,
+    original_id: &crabber_core::ControlId,
+    original_digest: &InputFingerprint,
+    attempt: &crate::AttemptTarget,
+) -> Result<InputFingerprint, Error> {
+    identity(&id.0, 128)?;
+    identity(&original_id.0, 128)?;
+    identity(&attempt.id.0, 128)?;
+    digest(&(
+        "crabber.tool-continuation.recover-unstarted.v1",
+        id,
+        revision,
+        original_id,
+        original_digest,
+        attempt,
+    ))
+}
 pub(crate) fn activated_run(
     run: &crabber_core::Run,
     owner: &str,
@@ -56,5 +101,45 @@ pub(crate) fn frontend_recovery(
         attempt: request.attempt.clone(),
         owner: request.owner.clone(),
         lease_ms: request.lease_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn original_source_rehash_preserves_v1_canonical_bytes() {
+        let id = crabber_core::ControlId::from("claim");
+        let claim = claim_fingerprint(
+            &id,
+            &crabber_core::SessionId("session".into()),
+            &crabber_core::RunId("run".into()),
+            &crate::ContinuationTarget {
+                id: crabber_core::ContinuationId::from("continuation"),
+                generation: crabber_core::ContinuationGeneration::INITIAL,
+            },
+            crabber_core::SessionRevision::new(7).unwrap(),
+            &InputFingerprint::new("a".repeat(64)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            claim.as_str(),
+            "9eaa6af9249cc3c1519cbe8a5c8ac0e4ddcd5a68770eebcf7a6e6d93a7f69fa9"
+        );
+        let recovery = recovery_fingerprint(
+            &crabber_core::ControlId::from("recovery"),
+            crabber_core::SessionRevision::new(9).unwrap(),
+            &id,
+            &claim,
+            &crate::AttemptTarget {
+                id: crabber_core::AttemptId::from("attempt"),
+                generation: crabber_core::AttemptGeneration::new(2).unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            recovery.as_str(),
+            "9a4f8c8dc8961aa19bb2db1e62737dbb921310701108fc2074e0298727360714"
+        );
     }
 }

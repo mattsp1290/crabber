@@ -9,18 +9,10 @@ pub(crate) struct Fixture {
     pub authority: AttemptAuthority,
     pub request: FrontendCallStaging,
 }
-#[allow(clippy::too_many_lines)] // Original admission, native Begin, and assistant declaration form one fixture.
 pub(crate) async fn fixture(store: &impl Store) -> Fixture {
     let now = OffsetDateTime::UNIX_EPOCH;
     let mut prepared = crate::typed_admission_contract::fixture(&SessionId::new(), now, "frontend");
-    let descriptor = FrontendTool {
-        name: "frontend".into(),
-        description: "External only".into(),
-        input_parameters: serde_json::json!({"type":"object","required":["location"],"properties":{"location":{"type":"string"}}}),
-        result_contract: Some(
-            serde_json::json!({"type":"object","required":["content","is_error"],"properties":{"content":{"type":"array","minItems":1},"is_error":{"type":"boolean"}}}),
-        ),
-    };
+    let descriptor = descriptor();
     let mut wire = serde_json::to_value(prepared.binding.input_envelope.as_ref().unwrap()).unwrap();
     wire["frontend_tools"] = serde_json::json!([descriptor]);
     prepared = crate::typed_admission_contract::prepare(
@@ -36,6 +28,26 @@ pub(crate) async fn fixture(store: &impl Store) -> Fixture {
         })
         .await
         .unwrap();
+    fixture_on(store, admitted, descriptor).await
+}
+
+pub(crate) fn descriptor() -> FrontendTool {
+    FrontendTool {
+        name: "frontend".into(),
+        description: "External only".into(),
+        input_parameters: serde_json::json!({"type":"object","required":["location"],"properties":{"location":{"type":"string"}}}),
+        result_contract: Some(
+            serde_json::json!({"type":"object","required":["content","is_error"],"properties":{"content":{"type":"array","minItems":1},"is_error":{"type":"boolean"}}}),
+        ),
+    }
+}
+
+pub(crate) async fn fixture_on(
+    store: &impl Store,
+    admitted: AdmitOutcome,
+    descriptor: FrontendTool,
+) -> Fixture {
+    let now = OffsetDateTime::UNIX_EPOCH;
     let (admitted, execution, authority, planned) =
         crate::phase_contract::fixture_for_admission(store, admitted).await;
     let call = ToolCallRecord {

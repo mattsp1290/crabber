@@ -198,3 +198,7 @@ async fn publish(
 #[cfg(test)]
 #[path = "successor/approval_tests.rs"]
 pub(super) mod approval_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_source_tests.rs"]
+mod tool_source_tests;

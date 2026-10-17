@@ -27,14 +27,13 @@ impl ToolContinuationRecovery {
         if self.lease_ms == 0 || self.lease_ms > 900_000 {
             return Err(Error::InvalidRequest);
         }
-        super::canonical::digest(&(
-            "crabber.tool-continuation.recover-unstarted.v1",
+        super::canonical::recovery_fingerprint(
             &self.id,
             self.expected_revision,
             &self.original.id,
-            self.original.fingerprint()?,
+            &self.original.fingerprint()?,
             &self.attempt,
-        ))
+        )
     }
     /// Check the retained original recovery request against metadata only.
     /// # Errors
