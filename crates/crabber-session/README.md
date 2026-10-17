@@ -12,6 +12,10 @@ backup and restore.
 
 Set `CRABBER_TEST_POSTGRES_URL` to run the live contract tests. Set `CRABBER_REQUIRE_POSTGRES=1` to fail if that URL is missing.
 
+New Runs also retain their original raw execution birth. These records preserve
+negative enrollment facts and do not certify a main-task join or resource policy.
+See [native execution enrollment](../../docs/native-execution-enrollment.md).
+
 ## Keyed admission (MemoryStore and PostgreSQL)
 
 `SqliteStore` provides the same keyed contract (`sqlite_admission_contract`).

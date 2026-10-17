@@ -79,9 +79,16 @@ pub(super) fn verify_previous(
 
 /// All validation precedes the first mutation; publishing the prepared entries
 /// cannot fail halfway through updating the protected maps.
-pub(super) fn append(state: &mut State, issuer: &RunIssuance, creation: bool) -> Result<(), Error> {
+pub(super) fn append_with_proof(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
+    use crate::public_session::v2::proof::ReadError;
+    proof.measure(issuer).map_err(ReadError::Budget)?;
     if crate::snapshot::encoded_bytes(issuer, 2048).is_none() {
-        return Err(Error);
+        return Err(Error.into());
     }
     issuer.validate()?;
     let scope = (issuer.state.session_id.clone(), issuer.state.run_id.clone());
@@ -100,7 +107,7 @@ pub(super) fn append(state: &mut State, issuer: &RunIssuance, creation: bool) ->
             .keys()
             .any(|(session, run, _)| run == &scope.1 && session != &scope.0)
     {
-        return Err(Error);
+        return Err(Error.into());
     }
     if creation {
         if protocol
@@ -110,7 +117,7 @@ pub(super) fn append(state: &mut State, issuer: &RunIssuance, creation: bool) ->
                 .keys()
                 .any(|(_, run, _)| run == &scope.1)
         {
-            return Err(Error);
+            return Err(Error.into());
         }
     } else if !protocol {
         // Retained legacy state is usable but never promoted by a later write.
@@ -120,30 +127,44 @@ pub(super) fn append(state: &mut State, issuer: &RunIssuance, creation: bool) ->
                 .keys()
                 .any(|(_, run, _)| run == &scope.1)
         {
-            Err(Error)
+            Err(Error.into())
         } else {
             Ok(())
         };
     }
     if state.native_run_sources.contains_key(&key) {
-        return Err(Error);
+        return Err(Error.into());
     }
     let previous = state.native_run_source_heads.get(&scope);
     if creation != previous.is_none() {
-        return Err(Error);
+        return Err(Error.into());
     }
     if let Some(head) = previous {
         head.validate()?;
         let previous_key = (scope.0.clone(), scope.1.clone(), head.sequence);
         let source = state.native_run_sources.get(&previous_key).ok_or(Error)?;
         let original = state.native_run_issuances.get(&previous_key).ok_or(Error)?;
+        proof
+            .measure(&(head, source, original))
+            .map_err(ReadError::Budget)?;
         source.verify(original)?;
         if source.chain_digest != head.chain_digest {
-            return Err(Error);
+            return Err(Error.into());
         }
     }
     let source = JournalSource::new(previous, issuer)?;
     let head = JournalHead::advance(previous, &source)?;
+    let birth = if creation {
+        Some(
+            crate::memory::native_enrollment::prepare_birth(state, issuer, &source, proof)
+                .map_err(ReadError::Budget)?,
+        )
+    } else {
+        None
+    };
+    if let Some(birth) = birth {
+        crate::memory::native_enrollment::publish_birth(state, birth).map_err(ReadError::Budget)?;
+    }
     state.native_run_protocols.insert(scope.clone());
     state.native_run_sources.insert(key, source);
     state.native_run_source_heads.insert(scope, head);

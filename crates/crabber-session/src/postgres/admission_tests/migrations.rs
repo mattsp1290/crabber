@@ -543,6 +543,7 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .await
             .unwrap();
         assert_eq!(sources, 0, "legacy admission has no execution-start source");
+        strip_enrollment_fixture(&store.pool).await;
         sqlx::query("DROP TABLE admission_execution_sources")
             .execute(&store.pool)
             .await
@@ -588,12 +589,7 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
         };
         let mut before = Vec::new();
         for table in &tables {
-            let value: serde_json::Value = sqlx::query_scalar(&format!(
-                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
-            ))
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+            let value = pre_enrollment_rows(&store.pool, table).await;
             before.push(value);
         }
         assert!(PostgresStore::connect(&isolated_url).await.is_err());
@@ -601,14 +597,12 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
         PostgresStore::migrate(&isolated_url).await.unwrap();
         let reopened = PostgresStore::connect(&isolated_url).await.unwrap();
         for (table, expected) in tables.iter().zip(before) {
-            let value: serde_json::Value = sqlx::query_scalar(&format!(
-                "SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {table} t"
-            ))
-            .fetch_one(&reopened.pool)
-            .await
-            .unwrap();
+            let value = pre_enrollment_rows(&reopened.pool, table).await;
             assert_eq!(value, expected, "v{baseline} retained {table}");
         }
+        let enrollment: (i32, Option<String>) = sqlx::query_as("SELECT CAST(execution_enrollment_protocol AS INTEGER),execution_enrollment_origin_id FROM runs WHERE id=$1")
+            .bind(&receipt.run_id.0).fetch_one(&reopened.pool).await.unwrap();
+        assert_eq!(enrollment, (0, None), "migration never adopts an old Run");
         assert_eq!(
             reopened.lookup_admission(&session, &key).await.unwrap(),
             Some(receipt)
@@ -637,6 +631,38 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
             .unwrap();
     }
     admin.close().await;
+}
+
+/// A downgraded version roster must not retain the newer immutable birth DDL.
+/// Removing it models a predecessor, rather than replaying migration22 over its
+/// already-created columns and protected raw sources.
+async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        "DROP TRIGGER runs_execution_identity ON runs;
+        ALTER TABLE runs DROP COLUMN execution_enrollment_origin_id;
+        DROP TABLE native_execution_unclassified,native_execution_origins CASCADE;
+        ALTER TABLE runs DROP COLUMN execution_enrollment_protocol CASCADE;
+        DROP INDEX native_run_sources_issuer_identity;
+        DROP FUNCTION crabber_execution_run_identity();
+        DROP FUNCTION crabber_execution_source_guard();",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn pre_enrollment_rows(pool: &sqlx::PgPool, table: &str) -> serde_json::Value {
+    let projection = if table == "runs" {
+        "to_jsonb(t)-'execution_enrollment_protocol'-'execution_enrollment_origin_id'"
+    } else {
+        "to_jsonb(t)"
+    };
+    sqlx::query_scalar(&format!(
+        "SELECT coalesce(jsonb_agg({projection}), '[]'::jsonb) FROM {table} t"
+    ))
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

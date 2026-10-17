@@ -309,7 +309,7 @@ impl MemoryStore {
             now,
             preparation,
         )?;
-        let admitted = self.queue_admission(state, &mut change, preparation)?;
+        let admitted = self.queue_admission(state, &mut change, preparation, read_proof)?;
         super::bump_public_revision(state, &request.session_id)?;
         let saved = QueueReceipt {
             session_id: request.session_id.clone(),
@@ -366,10 +366,11 @@ impl MemoryStore {
         state: &mut State,
         change: &mut Change,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Option<Box<crate::AdmitOutcome>>, StoreError> {
         if let Some(proof) = &change.admission {
             let bound = proof.bound();
-            let outcome = super::admission::admit_keyed_guarded(
+            let outcome = super::admission::admit_keyed_with_proof(
                 state,
                 &bound.keyed,
                 self.clock.now(),
@@ -379,6 +380,7 @@ impl MemoryStore {
                         preparation,
                     }
                 }),
+                read_proof,
             )?;
             let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {
                 return Err(StoreError::AdmissionConflict);

@@ -230,8 +230,8 @@ impl SqliteStore {
                 .map_err(db)?;
         }
         sqlx::query(
-            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) \
-                VALUES($1,$2,$3,$4,$5,$6,1)",
+            "INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) \
+                VALUES($1,$2,$3,$4,$5,$6,1,1,$1)",
         )
         .bind(&run.id.0)
         .bind(&session_id.0)

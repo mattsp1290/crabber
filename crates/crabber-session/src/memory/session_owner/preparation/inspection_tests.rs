@@ -106,6 +106,9 @@ async fn initial_inspection_never_upgrades_legacy_originals() {
         let scope = (admitted.session.id.clone(), admitted.run.id.clone());
         state.native_session_protocols.remove(&admitted.session.id);
         state.native_run_protocols.remove(&scope);
+        state.execution_enrollment_protocols.remove(&scope);
+        state.execution_enrollment_origins.remove(&scope);
+        state.execution_enrollment_unclassified.remove(&scope);
         state.native_run_source_heads.remove(&scope);
         state
             .native_run_sources

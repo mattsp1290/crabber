@@ -519,6 +519,9 @@ async fn legacy_run_without_source_membership_refuses_fresh_begin() {
         state.native_run_sources.clear();
         state.native_run_source_heads.clear();
         state.native_run_protocols.clear();
+        state.execution_enrollment_protocols.clear();
+        state.execution_enrollment_origins.clear();
+        state.execution_enrollment_unclassified.clear();
         state.native_session_protocols.clear();
         state
             .session_owners

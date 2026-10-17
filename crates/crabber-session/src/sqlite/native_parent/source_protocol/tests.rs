@@ -278,8 +278,24 @@ async fn sqlite_native_source_uniqueness_and_revision_guards_cover_replace_and_i
             .as_database_error()
             .unwrap()
             .message()
+            .contains("crabber_execution_run_identity_immutable")
+    );
+    // Verify native19's independent earlier guard as well. Roll back this
+    // isolated DDL change, preserving both guards for every later operation.
+    let mut guard_test = store.writer.begin().await.unwrap();
+    sqlx::query("DROP TRIGGER runs_execution_insert")
+        .execute(&mut *guard_test)
+        .await
+        .unwrap();
+    let collision=sqlx::query("INSERT OR REPLACE INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) SELECT $2,session_id,status,claim_token,lease_until,data,1 FROM runs WHERE id=$1").bind(&receipt.run_id.0).bind(crabber_core::RunId::new().0).execute(&mut *guard_test).await.unwrap_err();
+    assert!(
+        collision
+            .as_database_error()
+            .unwrap()
+            .message()
             .contains("crabber_native_run_identity_immutable")
     );
+    guard_test.rollback().await.unwrap();
     sqlx::query("UPDATE sessions SET public_revision=public_revision+1 WHERE id=$1")
         .bind(&receipt.session_id.0)
         .execute(&store.writer)

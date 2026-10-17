@@ -27,6 +27,23 @@ pub(super) fn admit_transaction_guarded(
     allow_create: bool,
     guard: crate::queue::AdmissionGuard<'_>,
 ) -> Result<AdmitOutcome, StoreError> {
+    admit_transaction_with_proof(
+        state,
+        request,
+        now,
+        allow_create,
+        guard,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn admit_transaction_with_proof(
+    state: &mut State,
+    request: &AdmitRequest,
+    now: OffsetDateTime,
+    allow_create: bool,
+    guard: crate::queue::AdmissionGuard<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<AdmitOutcome, StoreError> {
     guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
         request.validate_messages()?;
@@ -93,7 +110,7 @@ pub(super) fn admit_transaction_guarded(
         insert_message(state, &run, message)?;
     }
     let new_session = !state.sessions.contains_key(&session_id);
-    record_ownership(state, &session, &run, new_session, guard)?;
+    record_ownership(state, &session, &run, new_session, guard, proof)?;
     if new_session {
         super::native_parent::source_protocol::session_birth(state, &session_id)
             .map_err(|_| StoreError::Conflict)?;
@@ -217,6 +234,21 @@ pub(super) fn admit_keyed_guarded(
     now: OffsetDateTime,
     guard: crate::queue::AdmissionGuard<'_>,
 ) -> Result<KeyedAdmitOutcome, StoreError> {
+    admit_keyed_with_proof(
+        state,
+        keyed,
+        now,
+        guard,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn admit_keyed_with_proof(
+    state: &mut State,
+    keyed: &KeyedAdmitRequest,
+    now: OffsetDateTime,
+    guard: crate::queue::AdmissionGuard<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<KeyedAdmitOutcome, StoreError> {
     let digest = keyed.validated_digest()?;
     let request = &keyed.request;
     let session_id = request
@@ -242,7 +274,7 @@ pub(super) fn admit_keyed_guarded(
     {
         return Err(StoreError::AdmissionConflict);
     }
-    let admitted = admit_transaction_guarded(state, request, now, true, guard)?;
+    let admitted = admit_transaction_with_proof(state, request, now, true, guard, proof)?;
     let receipt = AdmissionReceipt {
         session_id: session_id.clone(),
         run_id: admitted.run.id.clone(),
@@ -286,6 +318,7 @@ fn record_ownership(
     run: &Run,
     new_session: bool,
     guard: crate::queue::AdmissionGuard<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
     let invalid = |_| StoreError::Validation("preparation admission evidence unavailable".into());
     let witness = guard
@@ -312,14 +345,15 @@ fn record_ownership(
         } else {
             None
         };
-        super::native_parent::record_owned_admission(state, run, witness)
+        super::native_parent::record_owned_admission_with_proof(state, run, witness, proof)
             .map_err(|_| StoreError::Conflict)?;
         if let Some(origin) = origin {
             state.ownership_protocol_sessions.insert(session.id.clone());
             state.ownership_origins.insert(session.id.clone(), origin);
         }
     } else {
-        super::native_parent::record_run(state, None, run).map_err(|_| StoreError::Conflict)?;
+        super::native_parent::record_run_with_proof(state, None, run, proof)
+            .map_err(|_| StoreError::Conflict)?;
     }
     Ok(())
 }

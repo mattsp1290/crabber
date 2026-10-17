@@ -35,6 +35,8 @@ mod execution_binding;
 mod expired;
 #[path = "memory/management.rs"]
 mod management;
+#[path = "memory/native_enrollment.rs"]
+mod native_enrollment;
 #[path = "memory/native_parent.rs"]
 mod native_parent;
 #[path = "memory/phase.rs"]
@@ -119,6 +121,10 @@ struct State {
         BTreeMap<(SessionId, RunId, u64), crate::native_parent::source_protocol::JournalSource>,
     native_run_source_heads:
         BTreeMap<(SessionId, RunId), crate::native_parent::source_protocol::JournalHead>,
+    execution_enrollment_protocols: BTreeSet<(SessionId, RunId)>,
+    execution_enrollment_origins: BTreeMap<(SessionId, RunId), crate::native_enrollment::Origin>,
+    execution_enrollment_unclassified:
+        BTreeMap<(SessionId, RunId), crate::native_enrollment::Unclassified>,
     native_parent_witnesses: BTreeMap<crabber_core::EventCursor, crate::native_parent::Witness>,
     suspension_proofs: BTreeMap<RunId, crate::run_control::SuspensionProof>,
     run_controls: BTreeMap<(SessionId, crabber_core::ControlId), crate::run_control::Record>,

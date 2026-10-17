@@ -124,6 +124,17 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
     let mut state = store.state.lock().unwrap();
     state.native_session_protocols.remove(&receipt.session_id);
+    // This fixture imports a predecessor cohort, including absence of the later
+    // enrollment birth. Partial erasure is covered by the corruption fixtures.
+    state
+        .execution_enrollment_protocols
+        .retain(|(session, _)| session != &receipt.session_id);
+    state
+        .execution_enrollment_origins
+        .retain(|(session, _), _| session != &receipt.session_id);
+    state
+        .execution_enrollment_unclassified
+        .retain(|(session, _), _| session != &receipt.session_id);
     state
         .session_owners
         .legacy_native_session_for_test(&receipt.session_id);

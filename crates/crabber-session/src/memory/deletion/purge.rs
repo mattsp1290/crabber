@@ -52,6 +52,15 @@ fn erase(
     state
         .native_run_source_heads
         .retain(|(scope, _), _| scope != session);
+    state
+        .execution_enrollment_protocols
+        .retain(|(scope, _)| scope != session);
+    state
+        .execution_enrollment_origins
+        .retain(|(scope, _), _| scope != session);
+    state
+        .execution_enrollment_unclassified
+        .retain(|(scope, _), _| scope != session);
     state.run_order.retain(|id| !runs.contains(id));
     state.calls.retain(|id, _| !calls.contains(id));
     state

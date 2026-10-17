@@ -59,12 +59,13 @@ impl super::super::MemoryStore {
             }
             PreparedOperation::Admit(bound) => {
                 bound.binding.validate(&bound.request)?;
-                let admitted = super::super::super::admission::admit_transaction_guarded(
+                let admitted = super::super::super::admission::admit_transaction_with_proof(
                     state,
                     &bound.request,
                     self.clock.now(),
                     false,
                     guard,
+                    read_proof,
                 )?;
                 let retained = RetainedExecutionBinding::new(
                     &admitted.run,
@@ -77,11 +78,12 @@ impl super::super::MemoryStore {
                 PreparationCompletion::Admitted(admitted)
             }
             PreparedOperation::AdmitKeyed(bound) => {
-                let outcome = super::super::super::admission::admit_keyed_guarded(
+                let outcome = super::super::super::admission::admit_keyed_with_proof(
                     state,
                     &bound.keyed,
                     self.clock.now(),
                     guard,
+                    read_proof,
                 )?;
                 if let KeyedAdmitOutcome::Started { admitted, .. } = &outcome {
                     let retained = RetainedExecutionBinding::new(

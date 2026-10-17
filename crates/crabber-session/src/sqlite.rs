@@ -24,6 +24,7 @@ mod execution_binding;
 mod fork;
 mod frontend;
 mod management;
+mod native_enrollment;
 mod native_parent;
 mod ownership_origin;
 mod phase;
@@ -88,6 +89,8 @@ const SCHEMA: &str = concat!(
     "\n",
     "\nINSERT INTO schema_version(version) VALUES(16);\n",
     include_str!("../migrations/sqlite/0017_queue_publications.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(17);\n",
+    include_str!("../migrations/sqlite/0018_native_execution_enrollment.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

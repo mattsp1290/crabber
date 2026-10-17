@@ -45,6 +45,9 @@ pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
  UNION ALL SELECT 1 FROM future_queue q WHERE q.session_id=$1 AND q.source_protocol=1 AND NOT EXISTS(SELECT 1 FROM queue_publication_cohorts c WHERE c.session_id=q.session_id AND c.queue_id=q.queue_id)
  UNION ALL SELECT 1 FROM queue_publication_cohorts c LEFT JOIN future_queue q ON q.session_id=c.session_id AND q.queue_id=c.queue_id WHERE (c.session_id=$1 OR q.session_id=$1) AND (q.queue_id IS NULL OR q.source_protocol<>c.protocol_version)
  UNION ALL SELECT 1 FROM queue_publication_sources s LEFT JOIN queue_publication_cohorts c ON c.session_id=s.session_id AND c.queue_id=s.queue_id WHERE (s.session_id=$1 OR c.session_id=$1) AND c.queue_id IS NULL
+ UNION ALL SELECT 1 FROM runs r LEFT JOIN native_execution_origins o ON o.run_id=r.id LEFT JOIN native_execution_unclassified u ON u.run_id=r.id WHERE r.session_id=$1 AND (r.execution_enrollment_protocol NOT IN(0,1) OR (r.execution_enrollment_protocol=0 AND (r.execution_enrollment_origin_id IS NOT NULL OR o.run_id IS NOT NULL OR u.run_id IS NOT NULL)) OR (r.execution_enrollment_protocol=1 AND (r.execution_enrollment_origin_id IS NULL OR r.execution_enrollment_origin_id<>r.id OR o.run_id IS NULL OR u.run_id IS NULL)))
+ UNION ALL SELECT 1 FROM native_execution_origins o LEFT JOIN runs r ON r.id=o.run_id LEFT JOIN native_execution_unclassified u ON u.run_id=o.unclassified_run_id LEFT JOIN native_run_sources n ON n.run_id=o.run_id AND n.sequence=o.first_sequence WHERE (o.session_id=$1 OR r.session_id=$1 OR u.session_id=$1 OR n.session_id=$1) AND (r.id IS NULL OR r.execution_enrollment_protocol<>1 OR r.execution_enrollment_origin_id IS NULL OR r.execution_enrollment_origin_id<>o.run_id OR r.session_id<>o.session_id OR o.protocol_version<>1 OR o.first_sequence<>1 OR o.birth_kind<>'raw' OR o.unclassified_run_id IS NULL OR o.unclassified_run_id<>o.run_id OR u.run_id IS NULL OR u.run_id<>o.run_id OR u.session_id<>o.session_id OR u.origin_digest<>o.origin_digest OR n.run_id IS NULL OR n.session_id<>o.session_id OR n.issuance_digest<>o.first_issuer_digest)
+ UNION ALL SELECT 1 FROM native_execution_unclassified u LEFT JOIN native_execution_origins o ON o.run_id=u.run_id LEFT JOIN runs r ON r.id=u.run_id WHERE (u.session_id=$1 OR o.session_id=$1 OR r.session_id=$1) AND (o.run_id IS NULL OR r.id IS NULL OR o.session_id<>u.session_id OR r.session_id<>u.session_id OR o.origin_digest<>u.origin_digest OR r.execution_enrollment_protocol<>1)
  UNION ALL SELECT 1 FROM inbox i JOIN runs r ON r.id=i.consumed_by_run WHERE i.session_id<>r.session_id AND (i.session_id=$1 OR r.session_id=$1)
 )";
 
@@ -91,6 +94,8 @@ pub(crate) const PURGE: &[&str] = &[
     "DELETE FROM run_execution_bindings WHERE run_id IN (SELECT id FROM runs WHERE session_id=$1)",
     "DELETE FROM run_suspension_proofs WHERE run_id IN (SELECT id FROM runs WHERE session_id=$1)",
     "DELETE FROM preparation_admission_witnesses WHERE session_id=$1",
+    "DELETE FROM native_execution_unclassified WHERE session_id=$1",
+    "DELETE FROM native_execution_origins WHERE session_id=$1",
     "DELETE FROM native_run_source_heads WHERE session_id=$1",
     "DELETE FROM native_run_sources WHERE session_id=$1",
     "DELETE FROM native_run_issuances WHERE session_id=$1",

@@ -174,6 +174,10 @@ async fn later_native_write_preserves_legacy_without_promoting_source_membership
     {
         // Retained pre-protocol state has ordinary issuances but no new cohort.
         let mut state = store.state.lock().unwrap();
+        let scope = (receipt.session_id.clone(), receipt.run_id.clone());
+        state.execution_enrollment_protocols.remove(&scope);
+        state.execution_enrollment_origins.remove(&scope);
+        state.execution_enrollment_unclassified.remove(&scope);
         state.native_session_protocols.remove(&receipt.session_id);
         state
             .session_owners
@@ -202,6 +206,19 @@ async fn later_native_write_preserves_legacy_without_promoting_source_membership
         .unwrap();
     let state = store.state.lock().unwrap();
     assert!(!history(&state, &receipt.session_id, &receipt.run_id, &mut proof()).unwrap());
+    assert_eq!(
+        crate::memory::native_enrollment::original(
+            &state,
+            &receipt.session_id,
+            &receipt.run_id,
+            &mut proof()
+        )
+        .unwrap(),
+        crate::native_enrollment::Status::Legacy
+    );
+    assert!(state.execution_enrollment_protocols.is_empty());
+    assert!(state.execution_enrollment_origins.is_empty());
+    assert!(state.execution_enrollment_unclassified.is_empty());
     assert!(
         original(
             &state,

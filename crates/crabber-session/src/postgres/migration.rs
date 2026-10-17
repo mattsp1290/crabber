@@ -86,5 +86,18 @@ pub(super) async fn apply_sources(tx: &mut Transaction<'_, Postgres>) -> Result<
             .await
             .map_err(db)?;
     }
+    let enrollment_sources: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=22)")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    if !enrollment_sources {
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0022_native_execution_enrollment.sql"
+        ))
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    }
     Ok(())
 }

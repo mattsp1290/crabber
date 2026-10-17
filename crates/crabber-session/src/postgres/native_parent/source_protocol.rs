@@ -53,7 +53,7 @@ pub(in super::super) async fn protocol(
     }
 }
 
-pub(super) async fn source(
+pub(in super::super) async fn source(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,
@@ -146,6 +146,13 @@ pub(in super::super) async fn append(
     sqlx::query("INSERT INTO native_run_sources(session_id,run_id,sequence,issuance_digest,previous_digest,chain_digest) VALUES($1,$2,$3,$4,$5,$6)")
         .bind(&session.0).bind(&run.0).bind(i64::try_from(value.sequence).map_err(bad)?).bind(value.issuance_digest.as_str()).bind(value.previous_digest.as_ref().map(InputFingerprint::as_str)).bind(value.chain_digest.as_str())
         .execute(&mut **tx).await.map_err(bad)?;
+    if creation {
+        Box::pin(super::super::native_enrollment::birth(
+            tx, issuer, &value, proof,
+        ))
+        .await
+        .map_err(ReadError::Budget)?;
+    }
     Ok(())
 }
 
@@ -259,6 +266,11 @@ pub(in super::super) async fn history(
     proof: &mut Proof,
 ) -> Result<bool> {
     if !protocol(tx, session, run, proof).await? {
+        Box::pin(super::super::native_enrollment::original(
+            tx, session, run, proof,
+        ))
+        .await
+        .map_err(ReadError::Budget)?;
         return Ok(false);
     }
     let head = head(tx, session, run, proof)
@@ -287,6 +299,11 @@ pub(in super::super) async fn history(
     if extra {
         return Err(bad("unregistered issuer projection"));
     }
+    Box::pin(super::super::native_enrollment::original(
+        tx, session, run, proof,
+    ))
+    .await
+    .map_err(ReadError::Budget)?;
     Ok(true)
 }
 

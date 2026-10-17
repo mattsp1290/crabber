@@ -88,20 +88,7 @@ impl MemoryStore {
                     );
                 }
                 if require_approval_birth {
-                    let scope =
-                        crate::session_owner::preparation::driver_completion::protected_scope(
-                            joined,
-                        )?;
-                    if !state
-                        .continuation_inputs
-                        .protocol(
-                            &scope,
-                            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-                        )
-                        .map_err(|_| crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?
-                    {
-                        return Err(crate::session_owner::SessionOwnerError::Unsupported.into());
-                    }
+                    verify_approval_birth(state, joined, &mut read_proof.borrow_mut())?;
                 }
                 let before = revision(state, &session);
                 let mut proof = state
@@ -135,6 +122,21 @@ impl MemoryStore {
         after_commit(self, &outcome.completion)?;
         Ok(outcome)
     }
+}
+fn verify_approval_birth(
+    state: &super::super::State,
+    joined: &JoinedPreparation,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+    let scope = crate::session_owner::preparation::driver_completion::protected_scope(joined)?;
+    if !state
+        .continuation_inputs
+        .protocol(&scope, proof)
+        .map_err(|_| crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?
+    {
+        return Err(crate::session_owner::SessionOwnerError::Unsupported.into());
+    }
+    Ok(())
 }
 fn storage_error(error: crate::session_owner::SessionOwnerError) -> StoreError {
     match error {

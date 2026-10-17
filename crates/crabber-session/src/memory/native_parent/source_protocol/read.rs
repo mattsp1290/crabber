@@ -47,6 +47,7 @@ pub(in crate::memory) fn history(
         {
             return Err(unknown("legacy native source membership"));
         }
+        crate::memory::native_enrollment::original(state, session, run, proof)?;
         return Ok(false);
     }
     let head = head.ok_or_else(|| unknown("native source head"))?;
@@ -84,6 +85,7 @@ pub(in crate::memory) fn history(
         }
     }
     stream.finish(head).map_err(unknown)?;
+    crate::memory::native_enrollment::original(state, session, run, proof)?;
     Ok(true)
 }
 
@@ -212,5 +214,5 @@ pub(in crate::memory) fn routes(
             return Err(unknown("orphaned native source slot"));
         }
     }
-    Ok(())
+    crate::memory::native_enrollment::routes(state, session, proof)
 }

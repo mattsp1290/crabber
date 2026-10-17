@@ -28,6 +28,7 @@ mod execution_binding;
 mod lock_order_tests;
 mod management;
 mod migration;
+mod native_enrollment;
 mod native_parent;
 mod ownership_origin;
 mod phase;
@@ -870,7 +871,7 @@ impl PostgresStore {
                 .await
                 .map_err(db)?;
         }
-        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol) VALUES($1,$2,$3,$4,$5,$6,1)")
+        sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) VALUES($1,$2,$3,$4,$5,$6,1,1,$1)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
         if !guard.has_owned_resources() {
             native_parent::record_run_with_proof(tx, &run, true, None, read_proof).await?;

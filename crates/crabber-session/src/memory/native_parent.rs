@@ -142,8 +142,45 @@ pub(super) fn record_run(
     previous: Option<&Run>,
     updated: &Run,
 ) -> Result<(), Error> {
+    record_run_with_proof(
+        state,
+        previous,
+        updated,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn record_run_with_proof(
+    state: &mut State,
+    previous: Option<&Run>,
+    updated: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    proof
+        .measure(&(
+            &updated.id,
+            &updated.session_id,
+            updated.status,
+            &updated.claim_token,
+        ))
+        .map_err(|_| Error)?;
+    if let Some(previous) = previous {
+        proof
+            .measure(&(
+                &previous.id,
+                &previous.session_id,
+                previous.status,
+                &previous.claim_token,
+            ))
+            .map_err(|_| Error)?;
+    }
     let previous = previous.map(RunState::from_run).transpose()?;
-    record_run_states(state, previous.as_ref(), RunState::from_run(updated)?)
+    record_run_states_with_completion_with_proof(
+        state,
+        previous.as_ref(),
+        RunState::from_run(updated)?,
+        None,
+        proof,
+    )
 }
 pub(super) fn record_run_completed(
     state: &mut State,
@@ -158,11 +195,13 @@ pub(super) fn record_run_completed(
         source.cloned(),
     )
 }
-pub(super) fn record_owned_admission(
+pub(super) fn record_owned_admission_with_proof(
     state: &mut State,
     run: &Run,
     witness: crate::session_owner::preparation::admission::Witness,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
+    proof.measure(&witness).map_err(|_| Error)?;
     let issuance = witness.initial_issuance(run).map_err(|_| Error)?;
     let key = (run.session_id.clone(), run.id.clone(), 1);
     let join = (
@@ -178,7 +217,7 @@ pub(super) fn record_owned_admission(
     {
         return Err(Error);
     }
-    source_protocol::append(state, &issuance, true)?;
+    source_protocol::append_with_proof(state, &issuance, true, proof).map_err(|_| Error)?;
     state
         .preparation_admission_joins
         .insert(join, run.id.clone());
@@ -199,7 +238,13 @@ pub(super) fn record_run_states_with_completion(
     next: RunState,
     completion: Option<crate::native_parent::CompletionSource>,
 ) -> Result<(), Error> {
-    record_run_states_captured(state, previous, next, completion).map(|_| ())
+    record_run_states_with_completion_with_proof(
+        state,
+        previous,
+        next,
+        completion,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
 }
 pub(super) fn record_run_completed_captured(
     state: &mut State,
@@ -212,13 +257,24 @@ pub(super) fn record_run_completed_captured(
         Some(&RunState::from_run(previous)?),
         RunState::from_run(updated)?,
         source.cloned(),
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
     )
+}
+fn record_run_states_with_completion_with_proof(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    record_run_states_captured(state, previous, next, completion, proof).map(|_| ())
 }
 fn record_run_states_captured(
     state: &mut State,
     previous: Option<&RunState>,
     next: RunState,
     completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<u64>, Error> {
     crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
@@ -251,7 +307,8 @@ fn record_run_states_captured(
         if state.native_run_issuances.contains_key(&key) {
             return Err(Error);
         }
-        source_protocol::append(state, &issuance, previous.is_none())?;
+        source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)
+            .map_err(|_| Error)?;
         let sequence = issuance.sequence;
         state.native_run_issuances.insert(key, issuance);
         return Ok(Some(sequence));
