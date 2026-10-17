@@ -3,6 +3,8 @@
 mod ack;
 #[path = "driver/faults.rs"]
 mod faults;
+#[path = "driver/initial_cancel.rs"]
+mod initial_cancel;
 #[path = "driver/task_identity.rs"]
 mod task_identity;
 use super::*;

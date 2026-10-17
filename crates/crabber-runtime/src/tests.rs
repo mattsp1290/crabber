@@ -1787,6 +1787,7 @@ struct SettlementGate {
     // Diagnostics only: task identity is never execution authority.
     initial_task_diagnostics: std::sync::atomic::AtomicBool,
     initial_task_ids: Mutex<Vec<(InitialTaskStage, Option<tokio::task::Id>)>>,
+    initial_preparation_session: Mutex<Option<SessionId>>,
     preparation_heartbeat: Option<Arc<preparation_resources::heartbeat::Gate>>,
     service_register_fault: AtomicUsize,
     service_register_calls: AtomicUsize,
@@ -1994,6 +1995,17 @@ impl Store for DelayedTerminalStore {
     > {
         self.gate
             .record_initial_task(InitialTaskStage::CompletePreparation);
+        if self.gate.initial_task_diagnostics.load(Ordering::SeqCst) {
+            *self.gate.initial_preparation_session.lock().unwrap() = Some(
+                joined
+                    .observed_grant()
+                    .original_reservation()
+                    .owner
+                    .binding
+                    .session_id
+                    .clone(),
+            );
+        }
         self.gate.preparation_calls.fetch_add(1, Ordering::SeqCst);
         let preparation_fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
         if preparation_fault == 1 {
