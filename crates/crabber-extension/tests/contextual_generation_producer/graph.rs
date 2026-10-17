@@ -162,7 +162,7 @@ impl ContextualGenerationHost for RosterHost {
         &self,
         work: ContextualGenerationWork,
     ) -> BoxFuture<'static, ContextualGenerationAdmission> {
-        *self.0.lock().unwrap() = Some(work.observation());
+        *self.0.lock().unwrap() = Some(work.observation().unwrap());
         Box::pin(async { ContextualGenerationAdmission::Admitted(work) })
     }
 }
@@ -222,5 +222,64 @@ async fn frozen_roster_distinguishes_entered_cleanup_from_never_entered_construc
             ContextualGenerationMemberDisposition::CleanupJoined,
             ContextualGenerationMemberDisposition::NotEntered,
         ]
+    );
+}
+
+struct RetainedRefusal {
+    calls: AtomicUsize,
+    original: Mutex<Option<ContextualGenerationWork>>,
+}
+impl ContextualGenerationHost for RetainedRefusal {
+    fn register(
+        &self,
+        work: ContextualGenerationWork,
+    ) -> BoxFuture<'static, ContextualGenerationAdmission> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        if first {
+            *self.original.lock().unwrap() = Some(work);
+            Box::pin(async { ContextualGenerationAdmission::Refused })
+        } else {
+            Box::pin(async { ContextualGenerationAdmission::Admitted(work) })
+        }
+    }
+}
+#[tokio::test]
+async fn retained_refused_work_never_uses_a_reconstructed_generation() {
+    let host = Arc::new(RetainedRefusal {
+        calls: AtomicUsize::new(0),
+        original: Mutex::new(None),
+    });
+    let make = || {
+        ContextualPlanProvider::new_with_generation_host(
+            Registry::new(),
+            vec![],
+            vec![Arc::new(Factory {
+                seen: Seen::new(false, false, false),
+                scope: FactoryScope::Session,
+            })],
+            Duration::from_secs(1),
+            host.clone(),
+        )
+        .unwrap()
+    };
+    let old = make();
+    let context = context("retained-work");
+    let refused = old.acquire_plan_in(&context).await;
+    old.close_all(Duration::from_secs(1)).await.unwrap();
+    drop(old);
+    let replacement = make();
+    let plan = replacement.acquire_plan_in(&context).await.unwrap();
+    let original = host.original.lock().unwrap().take().unwrap();
+    let observed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| original.observation()));
+    drop(plan);
+    replacement.close_all(Duration::from_secs(1)).await.unwrap();
+    assert!(refused.is_err());
+    assert!(
+        matches!(
+            observed,
+            Ok(Err(ExtensionError::ContextInitializationIncomplete))
+        ),
+        "an expired genuine carrier must return a typed refusal instead of panicking"
     );
 }

@@ -47,7 +47,10 @@ close its own initialization receives `SelfClose` before mutating that owner;
 close from another caller still signals and observes the retained tasks.
 
 `work.observation()` retains that exact generation independently of acquisition
-waiters and the scheduling carrier. `request_close()` signals only the original
+waiters and the scheduling carrier. Capture it during the original host call.
+If only a refused carrier survives after its registration expires, `observation()`
+returns `ContextInitializationIncomplete`; it never consults a replacement slot.
+`request_close()` signals only the original
 slot; it refuses a replacement generation and detects initializer/mount
 self-close. `registered_graph_join(bound)` waits for the original initializer,
 host and constructor task observations, original factory cleanup, and actual owned

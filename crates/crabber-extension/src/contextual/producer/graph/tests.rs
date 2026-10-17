@@ -19,7 +19,7 @@ impl ContextualGenerationHost for Host {
         &self,
         work: ContextualGenerationWork,
     ) -> BoxFuture<'static, ContextualGenerationAdmission> {
-        let observation = work.observation();
+        let observation = work.observation().unwrap();
         *observation
             .registration
             .graph

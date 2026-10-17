@@ -51,7 +51,10 @@ impl ContextualGenerationHost for Host {
         work: ContextualGenerationWork,
     ) -> BoxFuture<'static, ContextualGenerationAdmission> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.observations.lock().unwrap().push(work.observation());
+        self.observations
+            .lock()
+            .unwrap()
+            .push(work.observation().unwrap());
         assert_eq!(work.members().len(), 1);
         assert_eq!(work.members()[0].identity().id, "local-producer-fixture");
         self.generations

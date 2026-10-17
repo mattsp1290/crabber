@@ -46,20 +46,20 @@ pub struct ContextualGenerationWork {
 impl ContextualGenerationWork {
     /// Retain the original registered graph independently of this scheduling carrier.
     /// This supplies no native authority or physical-object disposal proof.
+    /// # Errors
+    /// Returns `ContextInitializationIncomplete` if this original registration
+    /// has expired. A replacement slot is never consulted.
     /// # Panics
-    /// Panics if an internal registration lock is poisoned or the producer
-    /// violates its invariant of retaining the original work before host entry.
-    #[must_use]
-    pub fn observation(&self) -> ContextualGenerationObservation {
-        ContextualGenerationObservation {
-            registration: self
-                .source
-                .registration
-                .lock()
-                .unwrap()
-                .upgrade()
-                .expect("original registration retained before host call"),
-        }
+    /// Panics if an internal registration lock is poisoned.
+    pub fn observation(&self) -> Result<ContextualGenerationObservation, ExtensionError> {
+        let registration = self
+            .source
+            .registration
+            .lock()
+            .unwrap()
+            .upgrade()
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+        Ok(ContextualGenerationObservation { registration })
     }
 
     #[must_use]
