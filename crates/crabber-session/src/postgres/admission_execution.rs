@@ -1,7 +1,11 @@
+#[cfg(test)]
+use crate::ClaimUnstartedAdmissionRequest;
 #[path = "admission_execution/recovery.rs"]
 mod recovery;
+pub(super) use recovery::claim;
 pub(in crate::postgres) use recovery::claim_in_transaction;
-pub(super) use recovery::{claim, claim_with_proof};
+#[cfg(test)]
+pub(super) use recovery::claim_with_proof;
 #[path = "admission_execution/prepared.rs"]
 mod prepared;
 pub(super) use prepared::claim_prepared;
@@ -10,7 +14,7 @@ mod inspection;
 use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt};
 use crate::StoreError;
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
-use crabber_core::{Run, RunFence, RunId};
+use crabber_core::{Run, RunId};
 pub(super) use inspection::{inspect, validate_source};
 use sqlx::{Postgres, Row, Transaction};
 

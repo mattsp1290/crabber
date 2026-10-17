@@ -100,6 +100,8 @@ impl MemoryStore {
             .updated
             .as_ref()
             .ok_or(Error::UnknownStoreFailure)?;
+        // Reserve the actual retained output before the final refusal boundary.
+        proof.measure(&outcome.run).map_err(unknown)?;
         super::super::native_enrollment::record_raw_native(
             state,
             Caller::Raw,
@@ -115,7 +117,6 @@ impl MemoryStore {
             &self.native_raw_probe,
         )
         .map_err(unknown)?;
-        proof.measure(&outcome.run).map_err(unknown)?;
         state
             .runs
             .insert(outcome.run.id.clone(), outcome.run.clone());

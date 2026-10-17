@@ -1,17 +1,19 @@
 #[path = "admission_execution/recovery.rs"]
 mod recovery;
+pub(super) use recovery::claim;
 pub(in crate::sqlite) use recovery::claim_in_transaction;
-pub(super) use recovery::{claim, claim_with_proof};
+#[cfg(test)]
+pub(super) use recovery::claim_with_proof;
 #[path = "admission_execution/prepared.rs"]
 mod prepared;
 pub(super) use prepared::claim_prepared;
 #[path = "admission_execution/inspection.rs"]
 mod inspection;
-use super::records::{load_run, lookup_receipt};
+use super::records::lookup_receipt;
 use super::{SqliteExecution, SqliteStore, db};
 use crate::StoreError;
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
-use crabber_core::{Run, RunFence, RunId};
+use crabber_core::{Run, RunId};
 pub(super) use inspection::{inspect, validate_source};
 use sqlx::{Row, Sqlite, Transaction};
 

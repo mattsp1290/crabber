@@ -31,6 +31,18 @@ impl MemoryStore {
             return Ok(selected);
         }
         match joined.observed_operation() {
+            crate::session_owner::preparation::PreparedOperation::AdmissionRecovery(recovery) => {
+                recovery
+                    .source
+                    .measure_original(proof)
+                    .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
+                crate::memory::admission_execution::validate_source_with_proof(
+                    state,
+                    &recovery.source,
+                    self.clock.now(),
+                    proof,
+                )?;
+            }
             crate::session_owner::preparation::PreparedOperation::Admit(bound) => {
                 proof
                     .measure(&(&bound.request, &bound.binding))

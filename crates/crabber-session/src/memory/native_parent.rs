@@ -327,24 +327,6 @@ pub(super) fn record_run_completed_publication_with_proof(
         capture,
     )
 }
-pub(super) fn record_run_completed_captured_with_proof(
-    state: &mut State,
-    previous: &Run,
-    updated: &Run,
-    source: Option<&crate::native_parent::CompletionSource>,
-    proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Option<u64>, Error> {
-    proof
-        .measure(&(previous, updated, source))
-        .map_err(|_| Error)?;
-    record_run_states_captured(
-        state,
-        Some(&RunState::from_run(previous)?),
-        RunState::from_run(updated)?,
-        source.cloned(),
-        proof,
-    )
-}
 fn record_run_states_with_completion_with_proof(
     state: &mut State,
     previous: Option<&RunState>,

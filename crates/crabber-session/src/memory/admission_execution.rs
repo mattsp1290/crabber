@@ -7,7 +7,7 @@ mod recovery;
 use super::{MemoryExecution, MemoryStore};
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
 use crabber_core::{AdmissionKey, SessionId};
-pub(super) use inspection::validate_source;
+pub(super) use inspection::{validate_source, validate_source_with_proof};
 
 impl MemoryStore {
     pub(super) fn load_execution_record(
