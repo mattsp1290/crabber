@@ -48,9 +48,17 @@ impl fmt::Debug for AdmissionKey {
 }
 
 /// SHA-256 hex metadata; construction and deserialization both validate its bound.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
 pub struct InputFingerprint(String);
+impl Serialize for InputFingerprint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
 impl InputFingerprint {
     /// Accepts exactly 64 lowercase hexadecimal characters.
     /// # Errors
@@ -108,4 +116,31 @@ pub struct AdmissionReceipt {
     pub fingerprint: InputFingerprint,
     pub semantic_digest_version: u32,
     pub semantic_digest: InputFingerprint,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputFingerprint;
+
+    #[test]
+    fn fingerprint_serialization_preserves_string_wire_format() {
+        for value in ["0".repeat(64), "0123456789abcdef".repeat(4)] {
+            let fingerprint = InputFingerprint::new(value).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&fingerprint).unwrap(),
+                serde_json::to_vec(&String::from(fingerprint.clone())).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_fingerprint_input_keeps_canonical_string_wire_format() {
+        let wire = format!("\"{}\"", "\\u0061".repeat(64));
+        let fingerprint: InputFingerprint = serde_json::from_str(&wire).unwrap();
+        assert_eq!(fingerprint.as_str(), "a".repeat(64));
+        assert_eq!(
+            serde_json::to_vec(&fingerprint).unwrap(),
+            serde_json::to_vec(&String::from(fingerprint)).unwrap()
+        );
+    }
 }
