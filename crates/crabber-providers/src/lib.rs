@@ -9,6 +9,7 @@
 //! types come from `reqwest` 0.12.
 
 mod binding;
+mod scripted;
 pub use binding::{
     BoundProvider, ProviderBindingError, ProviderBindingFactory, ProviderReleaseHolds,
     ProviderReleaseObserver, ProviderResourceContext, ProviderResourceContract,
@@ -17,6 +18,7 @@ pub use binding::{
     ProviderServiceSource, VersionedAdapter, VersionedResolver,
 };
 use crabber_core::ProviderBindingDescriptor;
+pub use scripted::{ScriptedError, ScriptedProvider, ScriptedStream};
 
 use async_trait::async_trait;
 use crabber_core::{Message, RunId, SessionId, ToolCallId, ToolInfo, TurnId, Usage};
