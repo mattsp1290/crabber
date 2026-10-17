@@ -124,6 +124,7 @@ pub struct Registrar {
     services: HostServices,
     tools: Vec<Arc<ToolDefinition>>,
     product_workspace_fs: Option<Arc<crate::contextual::product::workspace_fs::Node>>,
+    product_subprocess: Option<Arc<crate::contextual::product::subprocess::Node>>,
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
     product_providers:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
@@ -142,6 +143,7 @@ impl Registrar {
             tools: vec![],
             product_tools: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
+            product_subprocess: None,
             product_providers: std::collections::BTreeMap::new(),
             prompts: vec![],
             guards: vec![],
@@ -172,6 +174,14 @@ impl Registrar {
     ) -> Result<(), ExtensionError> {
         self.services.workspace_fs = Some(node.template()?);
         self.product_workspace_fs = Some(node);
+        Ok(())
+    }
+    pub(crate) fn product_subprocess(
+        &mut self,
+        node: Arc<crate::contextual::product::subprocess::Node>,
+    ) -> Result<(), ExtensionError> {
+        self.services.subprocess = Some(node.template()?);
+        self.product_subprocess = Some(node);
         Ok(())
     }
     pub(crate) fn product_provider(
@@ -757,6 +767,9 @@ impl Registry {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
         if let Some(node) = &mount.registrar.lock().unwrap().product_workspace_fs {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
+        if let Some(node) = &mount.registrar.lock().unwrap().product_subprocess {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
         inner.mounts.push(Arc::clone(&mount));
@@ -3334,7 +3347,10 @@ fn projected_services(
     let source = InvocationSource::new(mount);
     let mut services = owned::services::project(&registrar.services, &source);
     if let Some(node) = &registrar.product_workspace_fs {
-        services.workspace_fs = Some(node.project(source)?);
+        services.workspace_fs = Some(node.project(source.clone())?);
+    }
+    if let Some(node) = &registrar.product_subprocess {
+        services.subprocess = Some(node.project(source)?);
     }
     Ok(services)
 }

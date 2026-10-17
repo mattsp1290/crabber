@@ -299,6 +299,18 @@ impl ContextualPlanProvider {
                 .await?;
                 Ok(None)
             }
+            super::FactoryBody::SubprocessProduct(_) => {
+                super::product::subprocess::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
             super::FactoryBody::ProviderProduct(_) => {
                 super::product::provider::install(
                     self,

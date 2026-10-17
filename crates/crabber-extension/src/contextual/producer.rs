@@ -237,6 +237,16 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_subprocess(
+        &self,
+        index: usize,
+        node: Arc<super::product::subprocess::Node>,
+    ) {
+        self.graph.subprocess(index, node);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_provider(&self, index: usize, node: Arc<super::product::provider::Node>) {
         self.graph.provider(index, node);
         if self.source.closing.is_cancelled() {

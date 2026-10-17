@@ -105,3 +105,9 @@ pub use contextual::product::workspace_fs::{
     ContextualWorkspaceFsProduct, ContextualWorkspaceFsProductFactory,
     ContextualWorkspaceFsProductObservation, DisposedContextualWorkspaceFsProduct,
 };
+
+// Unique subprocess node; no OS-process termination or physical policy claim.
+pub use contextual::product::subprocess::{
+    ContextualSubprocessProduct, ContextualSubprocessProductFactory,
+    ContextualSubprocessProductObservation, DisposedContextualSubprocessProduct,
+};

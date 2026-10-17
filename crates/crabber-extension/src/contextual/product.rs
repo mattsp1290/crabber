@@ -4,6 +4,7 @@ mod construction;
 pub(crate) mod provider;
 mod reference;
 mod registration;
+pub(crate) mod subprocess;
 pub(crate) mod tool;
 pub(crate) mod workspace_fs;
 use super::{FactoryContext, FactoryScope};
