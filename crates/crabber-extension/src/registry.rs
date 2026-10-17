@@ -128,6 +128,8 @@ pub struct Registrar {
     product_workspace_reader_resolver:
         Option<Arc<crate::contextual::product::workspace_reader::Node>>,
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
+    product_guards:
+        std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool_guard::Node>>,
     product_providers:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
     prompts: Vec<Arc<PromptSection>>,
@@ -144,6 +146,7 @@ impl Registrar {
             services: HostServices::default(),
             tools: vec![],
             product_tools: std::collections::BTreeMap::new(),
+            product_guards: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
             product_subprocess: None,
             product_workspace_reader_resolver: None,
@@ -161,6 +164,15 @@ impl Registrar {
     /// behavior/configuration is versioned by the extension's declared metadata.
     pub fn host_services(&mut self, services: HostServices) {
         self.services = std::mem::take(&mut self.services).overlay(services);
+    }
+    pub(crate) fn product_tool_guard(
+        &mut self,
+        node: Arc<crate::contextual::product::tool_guard::Node>,
+    ) -> Result<(), ExtensionError> {
+        let index = self.guards.len();
+        self.guards.push(node.template()?);
+        self.product_guards.insert(index, node);
+        Ok(())
     }
     pub(crate) fn product_tool(
         &mut self,
@@ -774,6 +786,9 @@ impl Registry {
             #[cfg(test)]
             drain_hook: Mutex::new(None),
         });
+        for node in mount.registrar.lock().unwrap().product_guards.values() {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
         for node in mount.registrar.lock().unwrap().product_tools.values() {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
@@ -951,14 +966,14 @@ impl Registry {
                 prompt_invocation.as_ref(),
             );
             if let Some(captured) = &mount.registration {
-                guards.extend(
-                    r.guards
-                        .iter()
-                        .zip(&captured.guards)
-                        .map(|(guard, identity)| {
-                            owned::guards::project(guard, identity, InvocationSource::new(mount))
-                        }),
-                );
+                for (index, (guard, identity)) in r.guards.iter().zip(&captured.guards).enumerate()
+                {
+                    let source = InvocationSource::new(mount);
+                    guards.push(match r.product_guards.get(&index) {
+                        Some(node) => node.project(source)?,
+                        None => owned::guards::project(guard, identity, source),
+                    });
+                }
             } else {
                 guards.extend(r.guards.iter().cloned());
             }

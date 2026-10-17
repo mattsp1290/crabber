@@ -227,6 +227,16 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_tool_guard(
+        &self,
+        index: usize,
+        node: Arc<super::product::tool_guard::Node>,
+    ) {
+        self.graph.tool_guard(index, node);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_workspace_fs(
         &self,
         index: usize,

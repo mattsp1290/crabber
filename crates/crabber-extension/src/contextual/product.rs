@@ -6,6 +6,7 @@ mod reference;
 mod registration;
 pub(crate) mod subprocess;
 pub(crate) mod tool;
+pub(crate) mod tool_guard;
 pub(crate) mod workspace_fs;
 pub(crate) mod workspace_reader;
 use super::{FactoryContext, FactoryScope};

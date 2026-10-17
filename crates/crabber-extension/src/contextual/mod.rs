@@ -110,6 +110,7 @@ enum FactoryBody {
     Extension(Arc<dyn ExtensionFactory>),
     ProductRoot(Arc<dyn ContextualProductFactory>),
     ToolProduct(Arc<dyn product::tool::ContextualToolProductFactory>),
+    ToolGuardProduct(Arc<dyn product::tool_guard::ContextualToolGuardProductFactory>),
     WorkspaceFsProduct(Arc<dyn product::workspace_fs::ContextualWorkspaceFsProductFactory>),
     SubprocessProduct(Arc<dyn product::subprocess::ContextualSubprocessProductFactory>),
     WorkspaceReaderResolverProduct(

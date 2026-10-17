@@ -113,6 +113,11 @@ factory!(
     create_workspace_reader_resolver,
     ContextualWorkspaceReaderResolverProduct
 );
+factory!(
+    ContextualToolGuardProductFactory,
+    create_tool_guard,
+    ContextualToolGuardProduct
+);
 #[derive(Default)]
 struct Host(Mutex<Vec<ContextualGenerationObservation>>);
 impl ContextualGenerationHost for Host {
@@ -133,6 +138,12 @@ fn provider(family: &str, factory: Arc<Factory>, host: Arc<Host>) -> ContextualP
         "tool" => {
             ContextualPlanProvider::new_with_tool_products(registry, vec![factory], BOUND, host)
         }
+        "guard" => ContextualPlanProvider::new_with_tool_guard_products(
+            registry,
+            vec![factory],
+            BOUND,
+            host,
+        ),
         "fs" => ContextualPlanProvider::new_with_workspace_fs_products(
             registry,
             vec![factory],
@@ -247,4 +258,13 @@ async fn ordinary_factory_errors_keep_completed_original_cleanup_semantics() {
     for family in ["root", "tool", "fs", "subprocess", "reader"] {
         exercise(family, Mode::SemanticError).await;
     }
+}
+
+regression!(
+    literal_guard_factory_poll_and_drop_panics_fail_without_abort,
+    "guard"
+);
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordinary_guard_factory_error_preserves_original_cleanup_semantics() {
+    exercise("guard", Mode::SemanticError).await;
 }

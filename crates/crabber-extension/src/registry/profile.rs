@@ -129,6 +129,7 @@ impl Registrar {
             services: self.services.clone(),
             tools: self.tools.clone(),
             product_tools: std::collections::BTreeMap::new(),
+            product_guards: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
             product_subprocess: None,
             product_workspace_reader_resolver: None,

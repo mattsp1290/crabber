@@ -287,6 +287,18 @@ impl ContextualPlanProvider {
                 .await?;
                 Ok(None)
             }
+            super::FactoryBody::ToolGuardProduct(_) => {
+                super::product::tool_guard::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
             super::FactoryBody::WorkspaceFsProduct(_) => {
                 super::product::workspace_fs::install(
                     self,

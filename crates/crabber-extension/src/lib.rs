@@ -119,3 +119,9 @@ pub use contextual::product::workspace_reader::{
     ContextualWorkspaceReaderResolverProductObservation,
     DisposedContextualWorkspaceReaderResolverProduct,
 };
+
+// Unique synchronous guard node; original call/object joins only, no policy credit.
+pub use contextual::product::tool_guard::{
+    ContextualToolGuardProduct, ContextualToolGuardProductFactory,
+    ContextualToolGuardProductObservation, DisposedContextualToolGuardProduct,
+};
