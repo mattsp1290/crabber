@@ -192,3 +192,6 @@ async fn dropped_collector_retains_original_prompt_disposal_in_mount_and_parent(
         assert_eq!(closed.is_err(), panic, "{closed:?}");
     }
 }
+
+#[path = "owned_prompt_invocations/literal.rs"]
+mod literal;

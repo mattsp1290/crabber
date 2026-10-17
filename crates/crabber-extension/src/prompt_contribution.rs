@@ -166,14 +166,34 @@ async fn invoke_prompt(
     invocation: PromptAttemptContext,
     resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
 ) -> Result<Option<String>, ()> {
-    match callback {
-        MountedPromptCallback::Legacy(callback) => callback(invocation).await.map_err(|_| ()),
+    let cancellation = invocation.cancellation().clone();
+    let observed = match callback {
+        MountedPromptCallback::Legacy(callback) => {
+            crate::dispatch::original::original(
+                || callback(invocation),
+                |result| result.map_err(|_| ()),
+                &cancellation,
+            )
+            .await
+        }
         MountedPromptCallback::SystemPrompt(callback) => {
             let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
                 .with_cancellation(invocation.cancellation().clone())
                 .with_cleanup(invocation.cleanup().clone());
-            callback.contribute(typed).await.map_err(|_| ())
+            crate::dispatch::original::original(
+                || callback.contribute(typed),
+                |result| result.map_err(|_| ()),
+                &cancellation,
+            )
+            .await
         }
+    };
+    match observed {
+        Ok(Some(result)) => result,
+        Ok(None) => Err(()),
+        // The retained Source must remember original observation failure;
+        // ordinary callback errors above remain successful task observations.
+        Err(()) => panic!("original prompt future observation failed"),
     }
 }
 
