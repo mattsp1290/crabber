@@ -22,6 +22,29 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+pub(crate) enum Input {
+    Provider {
+        parent: Arc<Owned<dyn Streamer>>,
+        request: Box<ModelRequest>,
+    },
+    Scripted {
+        source: Arc<crate::contextual::product::scripted::State>,
+        selection: crabber_providers::Selection,
+    },
+}
+pub(crate) enum CreationError {
+    Provider(ProviderError),
+    Scripted(crate::LibraryScriptedError),
+}
+impl CreationError {
+    fn provider(self) -> ProviderError {
+        match self {
+            Self::Provider(error) => error,
+            Self::Scripted(error) => unavailable(error),
+        }
+    }
+}
+
 pub(super) struct Binding {
     pub(super) owner: Owner,
     pub(super) body: Arc<Owned<dyn Streamer>>,
@@ -37,7 +60,7 @@ impl Drop for Binding {
         }
     }
 }
-pub(super) struct OriginalStream(Mutex<Option<DeltaStream>>);
+pub(crate) struct OriginalStream(Mutex<Option<DeltaStream>>);
 impl OriginalStream {
     fn poll_next(&self, context: &mut Context<'_>) -> Poll<Option<StreamDelta>> {
         let mut original = self
@@ -111,89 +134,147 @@ impl Stream for Endpoint {
 #[async_trait]
 impl Streamer for Binding {
     async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
-        let owner = crate::registry::current_callback_invocations()
-            .ok_or_else(|| unavailable("provider stream requires an actual caller owner"))?;
-        let streams = self.streams.lock().unwrap().clone();
-        for stream in streams {
-            stream.reap_join().await;
+        open(
+            self.owner.clone(),
+            &self.source,
+            &self.streams,
+            Input::Provider {
+                parent: self.body.clone(),
+                request: Box::new(request),
+            },
+        )
+        .await
+        .map_err(CreationError::provider)
+    }
+}
+pub(crate) async fn open(
+    source_owner: Owner,
+    source: &InvocationSource,
+    streams: &Mutex<Vec<Arc<Owned<OriginalStream>>>>,
+    input: Input,
+) -> Result<DeltaStream, CreationError> {
+    let ordinary = matches!(&input, Input::Provider { .. });
+    let owner = crate::registry::current_callback_invocations().ok_or_else(|| {
+        CreationError::Provider(unavailable(
+            "provider stream requires an actual caller owner",
+        ))
+    })?;
+    let existing = streams.lock().unwrap().clone();
+    for stream in existing {
+        stream.reap_join().await;
+    }
+    let cell = allocate_stream(&source_owner, streams, &input)?;
+    let parent_use = match &input {
+        Input::Provider { parent, .. } => match parent.admit_use() {
+            Ok(id) => Some((parent.clone(), id)),
+            Err(error) => {
+                cell.constructor_done(false);
+                cell.close();
+                return Err(CreationError::Provider(unavailable(error)));
+            }
+        },
+        Input::Scripted { .. } => None,
+    };
+    let completion = match cell.admit_completion() {
+        Ok(completion) => completion,
+        Err(error) => {
+            if let Some((parent, using)) = &parent_use {
+                parent.refused_use(*using);
+            }
+            cell.constructor_done(false);
+            cell.close();
+            return Err(CreationError::Provider(unavailable(error)));
         }
-        let cell = {
-            let mut streams = self.streams.lock().unwrap();
-            streams.retain(|stream| stream.observed() != Some(true));
-            if streams.len() >= 64 {
-                return Err(unavailable("active original stream capacity"));
+    };
+    let close = Arc::new(StreamClose {
+        parent_use,
+        cell: cell.clone(),
+        completion,
+        entered: AtomicBool::new(false),
+    });
+    let actual = close.clone();
+    let (send, receive) = oneshot::channel();
+    let (demand, requests) = mpsc::channel::<Demand>(1);
+    let actor = match source
+        .register_actor(close.clone(), move |cancel| {
+            Box::pin(run_stream(actual, input, send, requests, cancel))
+        })
+        .await
+    {
+        Ok(actor) => Arc::new(actor),
+        Err(error) => {
+            if let Some((parent, using)) = &close.parent_use {
+                parent.refused_use(*using);
             }
-            let cell = Owned::new(self.owner.clone(), true);
-            streams.push(cell.clone());
-            cell
-        };
-        let using = match self.body.admit_use() {
-            Ok(using) => using,
-            Err(error) => {
-                cell.constructor_done(false);
-                cell.close();
-                return Err(unavailable(error));
-            }
-        };
-        let completion = match cell.admit_completion() {
-            Ok(completion) => completion,
-            Err(error) => {
-                self.body.refused_use(using);
-                cell.constructor_done(false);
-                cell.close();
-                return Err(unavailable(error));
-            }
-        };
-        let close = Arc::new(StreamClose {
-            parent: self.body.clone(),
-            using,
-            cell: cell.clone(),
-            completion,
-            entered: AtomicBool::new(false),
-        });
-        let actual = close.clone();
-        let (send, receive) = oneshot::channel();
-        let (demand, requests) = mpsc::channel::<Demand>(1);
-        let actor = match self
-            .source
-            .register_actor(close.clone(), move |cancel| {
-                Box::pin(run_stream(actual, request, send, requests, cancel))
-            })
-            .await
-        {
-            Ok(actor) => Arc::new(actor),
-            Err(error) => {
-                close.parent.refused_use(close.using);
-                close.cell.refused_completion(close.completion);
-                close.cell.constructor_done(false);
-                close.close();
-                return Err(unavailable(error));
-            }
-        };
-        let mut waiter = actor.waiter();
-        let created = receive.await;
-        if let Ok(Ok(())) = created {
-            let reference = cell.reference().map_err(unavailable)?;
-            waiter.disarm();
-            Ok(Box::pin(Endpoint {
-                actor,
-                demand,
-                pending: None,
-                owner,
-                _reference: reference,
-            }))
-        } else {
-            actor.close();
-            let joined = actor.join().await;
-            waiter.disarm();
-            joined.map_err(unavailable)?;
-            Err(created.err().map_or_else(
+            close.cell.refused_completion(close.completion);
+            close.cell.constructor_done(false);
+            close.close();
+            return Err(CreationError::Provider(unavailable(error)));
+        }
+    };
+    let mut waiter = actor.waiter();
+    let created = receive.await;
+    if let Ok(Ok(())) = created {
+        let reference = cell
+            .reference()
+            .map_err(|error| CreationError::Provider(unavailable(error)))?;
+        waiter.disarm();
+        Ok(Box::pin(Endpoint {
+            actor,
+            demand,
+            pending: None,
+            owner,
+            _reference: reference,
+        }))
+    } else {
+        actor.close();
+        let joined = actor.join().await;
+        waiter.disarm();
+        joined.map_err(|error| CreationError::Provider(unavailable(error)))?;
+        if ordinary {
+            // Preserve the existing generic binding's complete error selection.
+            return Err(CreationError::Provider(created.err().map_or_else(
                 || unavailable("provider stream creation refused"),
                 unavailable,
-            ))
+            )));
+        }
+        match created {
+            Ok(Err(error)) => Err(error),
+            _ => Err(CreationError::Provider(unavailable(
+                "provider stream creation refused",
+            ))),
         }
     }
 }
+
+fn allocate_stream(
+    source_owner: &Owner,
+    streams: &Mutex<Vec<Arc<Owned<OriginalStream>>>>,
+    input: &Input,
+) -> Result<Arc<Owned<OriginalStream>>, CreationError> {
+    let _admission = match input {
+        Input::Scripted { source, .. } => Some(
+            source
+                .child_admission()
+                .map_err(|e| CreationError::Scripted(e.into()))?,
+        ),
+        Input::Provider { .. } => None,
+    };
+    let cell = {
+        let mut streams = streams.lock().unwrap();
+        streams.retain(|stream| stream.observed() != Some(true));
+        if streams.len() >= 64 {
+            return Err(CreationError::Provider(unavailable(
+                "active original stream capacity",
+            )));
+        }
+        let cell = Owned::new(source_owner.clone(), true);
+        streams.push(cell.clone());
+        cell
+    };
+    Ok(cell)
+}
+
 struct Constructed {
     cell: Arc<Owned<OriginalStream>>,
     done: bool,
@@ -207,32 +288,57 @@ impl Drop for Constructed {
     }
 }
 async fn create_original(
-    parent: &Arc<Owned<dyn Streamer>>,
+    input: Input,
     cell: &Arc<Owned<OriginalStream>>,
-    request: ModelRequest,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<Result<(), ProviderError>, ()> {
+) -> Result<Result<(), CreationError>, ()> {
+    if let Input::Scripted { source, selection } = input {
+        return super::original::original(
+            || source.creation(selection),
+            |result| {
+                result
+                    .map(|stream| cell.install(Box::new(OriginalStream(Mutex::new(Some(stream))))))
+            },
+            cancel,
+        )
+        .await
+        .map(|value| {
+            value.unwrap_or_else(|| {
+                Err(CreationError::Provider(unavailable(
+                    "original stream creation cancelled",
+                )))
+            })
+        });
+    }
+    let Input::Provider { parent, request } = input else {
+        unreachable!()
+    };
     let borrowed = match parent.borrow() {
         Ok(borrowed) => borrowed,
-        Err(error) => return Ok(Err(unavailable(error))),
+        Err(error) => return Ok(Err(CreationError::Provider(unavailable(error)))),
     };
     let result = super::original::original(
-        || borrowed.get().stream(request),
+        || borrowed.get().stream(*request),
         |result| {
-            result.map(|stream| cell.install(Box::new(OriginalStream(Mutex::new(Some(stream))))))
+            result
+                .map_err(CreationError::Provider)
+                .map(|stream| cell.install(Box::new(OriginalStream(Mutex::new(Some(stream))))))
         },
         cancel,
     )
     .await;
     drop(borrowed);
     result.map(|result| {
-        result.unwrap_or_else(|| Err(unavailable("original stream creation cancelled")))
+        result.unwrap_or_else(|| {
+            Err(CreationError::Provider(unavailable(
+                "original stream creation cancelled",
+            )))
+        })
     })
 }
 
 struct StreamClose {
-    parent: Arc<Owned<dyn Streamer>>,
-    using: u64,
+    parent_use: Option<(Arc<Owned<dyn Streamer>>, u64)>,
     cell: Arc<Owned<OriginalStream>>,
     completion: u64,
     entered: AtomicBool,
@@ -249,7 +355,9 @@ impl ActorClose for StreamClose {
             self.cell.constructor_done(false);
             self.cell.close();
         }
-        self.parent.observed_use(self.using, success);
+        if let Some((parent, using)) = &self.parent_use {
+            parent.observed_use(*using, success);
+        }
     }
     fn released(&self, success: bool) -> futures::future::BoxFuture<'static, bool> {
         self.cell.observed_completion(self.completion, success);
@@ -260,8 +368,8 @@ impl ActorClose for StreamClose {
 
 async fn run_stream(
     actual: Arc<StreamClose>,
-    request: ModelRequest,
-    send: oneshot::Sender<Result<(), ProviderError>>,
+    input: Input,
+    send: oneshot::Sender<Result<(), CreationError>>,
     mut requests: mpsc::Receiver<Demand>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> bool {
@@ -270,7 +378,7 @@ async fn run_stream(
         cell: actual.cell.clone(),
         done: false,
     };
-    let created = create_original(&actual.parent, &actual.cell, request, &cancel).await;
+    let created = create_original(input, &actual.cell, &cancel).await;
     actual.cell.constructor_done(created.is_err());
     done.done = true;
     let Ok(created) = created else {

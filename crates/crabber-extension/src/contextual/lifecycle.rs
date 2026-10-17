@@ -111,7 +111,10 @@ impl ContextualPlanProvider {
         let provider = self.clone();
         let task = {
             let owners = self.inner.owners.lock().unwrap();
-            if INITIALIZING.try_with(|_| ()).is_ok() {
+            if INITIALIZING
+                .try_with(|owner| !matches!(owner, Owner::LibraryScripted(_)))
+                .unwrap_or(false)
+            {
                 return Err(ExtensionError::SelfClose);
             }
             let mut mounts = self.inner.registry.begin_close_all()?;

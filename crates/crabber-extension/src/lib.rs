@@ -130,3 +130,9 @@ pub use contextual::product::tool_guard::{
     ContextualToolGuardProduct, ContextualToolGuardProductFactory,
     ContextualToolGuardProductObservation, DisposedContextualToolGuardProduct,
 };
+
+// Concrete value-only source; no native permission or resource policy.
+pub use contextual::product::scripted::{
+    LibraryScriptedActive, LibraryScriptedError, LibraryScriptedSource,
+    LibraryScriptedSourceObservation, LibraryScriptedStream,
+};

@@ -78,6 +78,23 @@ impl OwnedMountHandle {
         self.check_close_allowed()?;
         close(&self.inner.mount, bound).await
     }
+    pub(crate) fn scripted_source(
+        &self,
+    ) -> Result<(InvocationSource, OriginalRoster), ExtensionError> {
+        let source = InvocationSource::new(&self.inner.mount);
+        let roster = source.original_roster()?;
+        Ok((source, roster))
+    }
+    pub(crate) fn start_scripted_close(
+        &self,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<(), ExtensionError> {
+        let _runtime = runtime.enter();
+        start(
+            &self.inner.mount,
+            self.inner.mount.owned.as_ref().expect("owned mount"),
+        )
+    }
     pub(crate) fn signal_close(&self) {
         self.inner.deactivate();
         signal(&self.inner.mount);
@@ -164,7 +181,7 @@ pub(super) async fn close(
     mount: &Arc<Mount>,
     bound: Duration,
 ) -> Result<OwnedMountJoin, ExtensionError> {
-    if dispatch::is_active_mount(mount.id) {
+    if dispatch::is_active_mount(mount.frame) {
         return Err(ExtensionError::SelfClose);
     }
     let owned = mount.owned.as_ref().expect("owned close path");

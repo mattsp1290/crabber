@@ -13,6 +13,7 @@ impl ContextualPlanProvider {
                 Owner::Shared => true,
                 Owner::Workspace(id) => id == context.workspace_id(),
                 Owner::Session(id) => id == context.session_id(),
+                Owner::LibraryScripted(_) => false,
             })
             .unwrap_or(false)
         {
@@ -69,6 +70,7 @@ impl ContextualPlanProvider {
                     Owner::Shared => true,
                     Owner::Workspace(id) => id == context.workspace_id(),
                     Owner::Session(id) => id == context.session_id(),
+                    Owner::LibraryScripted(_) => false,
                 })
                 .filter_map(|slot| slot.state.lock().unwrap().generation.clone())
                 .collect();

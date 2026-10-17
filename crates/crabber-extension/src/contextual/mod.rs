@@ -135,6 +135,7 @@ enum Owner {
     Shared,
     Workspace(String),
     Session(SessionId),
+    LibraryScripted(u64),
 }
 tokio::task_local! { static INITIALIZING: Owner; }
 /// Propagate only an actual existing initializer identity into retained owned

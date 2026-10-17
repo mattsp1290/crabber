@@ -23,6 +23,7 @@ async fn result_handlers_preserve_native_phase_cleanup_and_standalone_mount_clea
                     mount_seq: 0,
                     registration_seq: 0,
                     mount_id: 1,
+                    frame: crate::dispatch::MountFrame::fixture(1),
                     phase: transform_phase,
                     cleanup: mount.tracker(),
                     callback: HandlerFn::ResultTransform(Arc::new(move |context, output| {

@@ -184,6 +184,7 @@ impl ContextualPlanProvider {
                 Owner::Shared => self.install_shared(slot).await,
                 Owner::Workspace(_) => self.install_factories(slot, FactoryScope::Workspace).await,
                 Owner::Session(_) => self.install_factories(slot, FactoryScope::Session).await,
+                Owner::LibraryScripted(_) => Err(ExtensionError::PreparationResourcesUnsupported),
             }
         })
         .catch_unwind()
@@ -208,6 +209,9 @@ impl ContextualPlanProvider {
     fn start_record(&self, slot: &Slot) -> Result<(usize, Arc<RecordCleanup>), ExtensionError> {
         let cleanup = Arc::new(match slot.owner {
             Owner::Shared => RecordCleanup::Shared(crate::CleanupOwner::new()),
+            Owner::LibraryScripted(_) => {
+                return Err(ExtensionError::PreparationResourcesUnsupported);
+            }
             Owner::Workspace(_) | Owner::Session(_) => {
                 RecordCleanup::Factory(FactoryCleanup::new())
             }

@@ -86,7 +86,7 @@ impl Source {
             return Err(ExtensionError::ContextOwnerClosed);
         }
         observation.succeeded = false;
-        crate::dispatch::with_mount_inline(mount.id, || {
+        crate::dispatch::with_mount_inline(mount.frame, || {
             match std::panic::catch_unwind(AssertUnwindSafe(call)) {
                 Ok(value) => {
                     observation.succeeded = true;

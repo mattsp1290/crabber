@@ -134,7 +134,9 @@ impl Registration {
         let scope = match slot.owner {
             Owner::Workspace(_) => FactoryScope::Workspace,
             Owner::Session(_) => FactoryScope::Session,
-            Owner::Shared => return Err(ExtensionError::PreparationResourcesUnsupported),
+            Owner::Shared | Owner::LibraryScripted(_) => {
+                return Err(ExtensionError::PreparationResourcesUnsupported);
+            }
         };
         let selected = || provider.inner.factories.iter().filter(|f| f.scope == scope);
         if selected().take(MAX_MEMBERS + 1).count() > MAX_MEMBERS {

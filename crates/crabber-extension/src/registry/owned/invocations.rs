@@ -276,7 +276,7 @@ impl Source {
         if let Some(owner) = &owner {
             owner.reap().await;
         }
-        let context = dispatch::CallbackTaskContext::capture(mount.id);
+        let context = dispatch::CallbackTaskContext::capture(mount.frame);
         let (send, receive) = oneshot::channel();
         let cancel = CancellationToken::new();
         let waiter = CancelOnDrop(cancel.clone());

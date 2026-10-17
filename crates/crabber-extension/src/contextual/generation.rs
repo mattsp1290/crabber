@@ -119,6 +119,9 @@ impl ContextualPlanProvider {
                     serde_json::json!([base, shared]),
                 )
             }
+            Owner::LibraryScripted(_) => {
+                return Err(ExtensionError::PreparationResourcesUnsupported);
+            }
             owner => {
                 let context = slot.context.as_ref().expect("factory owner has context");
                 let (scope, factory_scope) = match owner {
@@ -137,7 +140,7 @@ impl ContextualPlanProvider {
                         },
                         FactoryScope::Session,
                     ),
-                    Owner::Shared => unreachable!(),
+                    Owner::Shared | Owner::LibraryScripted(_) => unreachable!(),
                 };
                 let factories = self
                     .inner

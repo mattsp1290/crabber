@@ -300,6 +300,7 @@ impl Registrar {
             mount_seq: 0,
             registration_seq: self.handlers.len(),
             mount_id: 0,
+            frame: dispatch::MountFrame::UNREGISTERED,
             phase,
             cleanup: CleanupTracker::detached(),
             callback,
@@ -441,6 +442,7 @@ impl Drop for MountMemberLease {
 }
 struct Mount {
     id: u64,
+    frame: dispatch::MountFrame,
     seq: u64,
     scope: Scope,
     extension: Arc<dyn Extension>,
@@ -757,6 +759,7 @@ impl Registry {
             drop(inner);
             return Err(error);
         }
+        let frame = dispatch::MountFrame::new()?;
         inner.next_id += 1;
         let id = inner.next_id;
         let cleanup = CleanupOwner::new();
@@ -768,16 +771,19 @@ impl Registry {
         for handler in &mut registrar.handlers {
             handler.cleanup = tracker.clone();
             handler.mount_id = id;
+            handler.frame = frame;
             handler.mount_seq = id;
             handler.scope_rank = scope.rank();
         }
         for contributor in &mut registrar.contributors {
             contributor.cleanup = tracker.clone();
             contributor.mount_id = id;
+            contributor.frame = frame;
             contributor.mount_seq = id;
         }
         let mount = Arc::new(Mount {
             id,
+            frame,
             seq: id,
             scope,
             extension,
@@ -872,7 +878,11 @@ impl Registry {
     pub(crate) fn begin_close_all(&self) -> Result<Vec<MountHandle>, ExtensionError> {
         let mounts = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.mounts.iter().any(|m| dispatch::is_active_mount(m.id)) {
+            if inner
+                .mounts
+                .iter()
+                .any(|m| dispatch::is_active_mount(m.frame))
+            {
                 return Err(ExtensionError::SelfClose);
             }
             inner.closed = true;
@@ -1411,7 +1421,7 @@ impl MountHandle {
         self.mount.id
     }
     pub(crate) fn check_close_allowed(&self) -> Result<(), ExtensionError> {
-        if dispatch::is_active_mount(self.mount.id) {
+        if dispatch::is_active_mount(self.mount.frame) {
             Err(ExtensionError::SelfClose)
         } else {
             Ok(())
@@ -1441,7 +1451,7 @@ impl MountHandle {
                 .await
                 .map(|_| ());
         }
-        if dispatch::is_active_mount(self.mount.id) {
+        if dispatch::is_active_mount(self.mount.frame) {
             return Err(ExtensionError::SelfClose);
         }
         let leader = {

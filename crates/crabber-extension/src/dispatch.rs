@@ -1,5 +1,8 @@
 //! Ordered, bounded extension callback dispatch.
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+mod mount_frame;
+pub(crate) use mount_frame::MountFrame;
+
 use crate::{
     CleanupTracker, ExtensionError, FINAL_REDACTION_DEADLINE, ResultTransformCallback,
     ToolResultContext, ToolResultOutcome, TransformOutput, TransformPhase, json_result_transform,
@@ -78,6 +81,7 @@ pub struct Handler {
     pub(crate) mount_seq: u64,
     pub(crate) registration_seq: usize,
     pub(crate) mount_id: u64,
+    pub(crate) frame: MountFrame,
     pub(crate) phase: TransformPhase,
     pub(crate) cleanup: CleanupTracker,
     pub(crate) callback: HandlerFn,
@@ -135,7 +139,7 @@ impl Dispatcher {
                 let mount_id = handler.mount_id;
                 let input = value.clone();
                 let source = self.owned.get(&mount_id).cloned();
-                let _ = AssertUnwindSafe(invoke(source, mount_id, move || callback(input)))
+                let _ = AssertUnwindSafe(invoke(source, handler.frame, move || callback(input)))
                     .catch_unwind()
                     .await;
             }
@@ -149,7 +153,7 @@ impl Dispatcher {
                 let input = value.clone();
                 invoke(
                     self.owned.get(&handler.mount_id).cloned(),
-                    handler.mount_id,
+                    handler.frame,
                     move || callback(input),
                 )
                 .await?;
@@ -179,7 +183,7 @@ impl Dispatcher {
                 let callback = callback.clone();
                 value = invoke(
                     self.owned.get(&handler.mount_id).cloned(),
-                    handler.mount_id,
+                    handler.frame,
                     move || callback(value),
                 )
                 .await?;
@@ -416,7 +420,7 @@ impl Dispatcher {
                 let input = value.clone();
                 if invoke(
                     self.owned.get(&handler.mount_id).cloned(),
-                    handler.mount_id,
+                    handler.frame,
                     move || callback(input),
                 )
                 .await?
@@ -525,7 +529,7 @@ async fn invoke_result_handler(
         match source {
             Some(source) => source.invoke(move || Box::pin(invoke)).await?,
             // Legacy result handlers constructed inside their mount frame.
-            None => with_mount(handler.mount_id, invoke).await,
+            None => with_mount(handler.frame, invoke).await,
         }
     })
     .catch_unwind()
@@ -615,6 +619,7 @@ fn around_at(
         };
         let callback = Arc::clone(callback);
         let mount_id = handler.mount_id;
+        let frame = handler.frame;
         let shared = Arc::new(NextShared {
             state: Mutex::new(NextState {
                 active: true,
@@ -647,14 +652,14 @@ fn around_at(
                 ACTIVE_NEXT
                     .scope(
                         callback_token,
-                        invoke(Some(source), mount_id, move || callback(value, next)),
+                        invoke(Some(source), frame, move || callback(value, next)),
                     )
                     .await
             }
             // Preserve legacy construction before both task-local frames.
             None => {
                 ACTIVE_NEXT
-                    .scope(callback_token, with_mount(mount_id, callback(value, next)))
+                    .scope(callback_token, with_mount(frame, callback(value, next)))
                     .await
             }
         };
@@ -681,18 +686,18 @@ static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[path = "dispatch/phase_cleanup_tests.rs"]
 mod phase_cleanup_tests;
 tokio::task_local! { static ACTIVE_NEXT: u64; }
-tokio::task_local! { static ACTIVE_MOUNTS: Vec<u64>; }
+tokio::task_local! { static ACTIVE_MOUNTS: Vec<MountFrame>; }
 /// Explicit propagation for actual owned callback tasks; Tokio does not inherit
 /// task locals. Preserve ancestor mounts and the exact around continuation.
 pub(crate) struct CallbackTaskContext {
-    mounts: Vec<u64>,
+    mounts: Vec<MountFrame>,
     next: Option<u64>,
     initialization: crate::contextual::InitializationContext,
     state: Option<Arc<dyn crate::StateSink>>,
     callbacks: Option<crate::CallbackInvocationCapability>,
 }
 impl CallbackTaskContext {
-    pub(crate) fn capture(mount: u64) -> Self {
+    pub(crate) fn capture(mount: MountFrame) -> Self {
         let mut context = Self::capture_existing();
         context.mounts.push(mount);
         context
@@ -734,26 +739,26 @@ impl CallbackTaskContext {
 }
 async fn invoke<T: Send + 'static>(
     owned: Option<crate::registry::InvocationSource>,
-    mount_id: u64,
+    frame: MountFrame,
     construct: impl FnOnce() -> BoxFuture<'static, Result<T, ExtensionError>> + Send + 'static,
 ) -> Result<T, ExtensionError> {
     match owned {
         Some(source) => source.invoke(construct).await?,
         // Legacy ordinary constructors were evaluated before with_mount.
-        None => with_mount(mount_id, construct()).await,
+        None => with_mount(frame, construct()).await,
     }
 }
-pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T {
+pub(crate) async fn with_mount<T>(id: MountFrame, future: impl Future<Output = T>) -> T {
     let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
     stack.push(id);
     ACTIVE_MOUNTS.scope(stack, future).await
 }
-pub(crate) fn with_mount_inline<T>(id: u64, call: impl FnOnce() -> T) -> T {
+pub(crate) fn with_mount_inline<T>(id: MountFrame, call: impl FnOnce() -> T) -> T {
     let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
     stack.push(id);
     ACTIVE_MOUNTS.sync_scope(stack, call)
 }
-pub(crate) fn is_active_mount(id: u64) -> bool {
+pub(crate) fn is_active_mount(id: MountFrame) -> bool {
     ACTIVE_MOUNTS
         .try_with(|stack| stack.contains(&id))
         .unwrap_or(false)
@@ -784,6 +789,7 @@ mod tests {
             mount_seq: 0,
             registration_seq: 0,
             mount_id: 1,
+            frame: MountFrame::fixture(1),
             phase: TransformPhase::Ordinary,
             cleanup: CleanupTracker::detached(),
             callback,
@@ -1291,6 +1297,7 @@ mod driver_tests {
             mount_seq: 0,
             registration_seq: 0,
             mount_id: 1,
+            frame: MountFrame::fixture(1),
             phase,
             cleanup: CleanupTracker::detached(),
             callback,
@@ -1792,7 +1799,7 @@ mod driver_tests {
                 HandlerFn::ResultTransform(Arc::new(move |_, v| {
                     let probe = Arc::clone(&probe);
                     async move {
-                        if is_active_mount(1) {
+                        if is_active_mount(MountFrame::fixture(1)) {
                             probe.fetch_add(1, Ordering::SeqCst);
                         }
                         Ok(TransformOutput::new(v))

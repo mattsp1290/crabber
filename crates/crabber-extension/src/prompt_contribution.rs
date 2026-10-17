@@ -141,6 +141,7 @@ pub struct MountedPromptContributor {
     pub name: String,
     pub order: i32,
     pub(crate) mount_id: u64,
+    pub(crate) frame: crate::dispatch::MountFrame,
     pub(crate) mount_seq: u64,
     pub(crate) cleanup: CleanupTracker,
     pub(crate) identity: PromptContributorIdentity,
@@ -230,6 +231,7 @@ impl MountedPromptContributor {
             name,
             order,
             mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::Legacy,
@@ -248,6 +250,7 @@ impl MountedPromptContributor {
             name,
             order,
             mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::SystemPrompt(descriptor),
@@ -266,6 +269,7 @@ impl MountedPromptContributor {
             order,
             identity,
             mount_id: 0,
+            frame: crate::dispatch::MountFrame::UNREGISTERED,
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             invocation: None,
@@ -350,7 +354,7 @@ pub async fn collect_prompt_contributions_with_resolver(
         let deadline =
             attempt_deadline.min(tokio::time::Instant::now() + PROMPT_CONTRIBUTION_DEADLINE);
         let mut future = InFlight::new(
-            AssertUnwindSafe(with_mount(contributor.mount_id, async move {
+            AssertUnwindSafe(with_mount(contributor.frame, async move {
                 let construct = move || -> BoxFuture<'static, _> {
                     Box::pin(invoke_prompt(callback, invocation, resolver, creator))
                 };
@@ -445,6 +449,7 @@ mod tests {
     fn contributor(name: &str, callback: PromptContributor) -> MountedPromptContributor {
         let mut contributor = MountedPromptContributor::legacy(name.into(), 0, callback);
         contributor.mount_id = 42;
+        contributor.frame = crate::dispatch::MountFrame::fixture(42);
         contributor.mount_seq = 42;
         contributor
     }
@@ -717,7 +722,7 @@ mod tests {
             let cb = {
                 let close = close.clone();
                 Arc::new(move |_| {
-                    assert!(is_active_mount(42));
+                    assert!(is_active_mount(crate::dispatch::MountFrame::fixture(42)));
                     close.cancel();
                     Box::pin(futures::future::pending()) as BoxFuture<'static, _>
                 })

@@ -86,6 +86,23 @@ impl CallbackInvocationCapability {
             Err(ResourceFailure::CleanupFailed)
         }
     }
+    pub(crate) fn retain_scripted_source(
+        &self,
+        source: Arc<crate::contextual::product::scripted::State>,
+    ) -> Result<(), ResourceRegistrationError> {
+        let closing = self
+            .parent
+            .closing()
+            .ok_or(ResourceRegistrationError::Unsupported)?;
+        self.parent.spawn(async move {
+            tokio::select! { () = closing => {}, () = source.closing() => {} }
+            source.signal_close();
+            source
+                .join()
+                .await
+                .map_err(|_| ResourceFailure::CleanupFailed)
+        })
+    }
     pub(crate) fn matches_current(&self) -> bool {
         !self.is_closed()
             && current().is_some_and(|current| Arc::ptr_eq(&self.state, &current.state))

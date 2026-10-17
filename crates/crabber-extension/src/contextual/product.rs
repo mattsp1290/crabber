@@ -7,6 +7,7 @@ pub(crate) mod prompt;
 pub(crate) mod provider;
 mod reference;
 mod registration;
+pub(crate) mod scripted;
 pub(in crate::contextual) use registration::capture;
 pub(crate) mod subprocess;
 pub(crate) mod tool;

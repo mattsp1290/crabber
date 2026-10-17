@@ -135,8 +135,8 @@ impl Source {
             .invocations;
         state.reap().await;
         owner.reap().await;
-        let context = dispatch::CallbackTaskContext::capture(mount.id);
-        let observer_context = dispatch::CallbackTaskContext::capture(mount.id);
+        let context = dispatch::CallbackTaskContext::capture(mount.frame);
+        let observer_context = dispatch::CallbackTaskContext::capture(mount.frame);
         let cancel = CancellationToken::new();
         let task;
         {

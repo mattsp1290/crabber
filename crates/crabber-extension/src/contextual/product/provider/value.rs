@@ -33,7 +33,7 @@ struct Task {
     handle: Option<JoinHandle<bool>>,
     result: Option<bool>,
 }
-pub(super) struct Owned<T: ?Sized + Send + Sync + 'static> {
+pub(in crate::contextual::product) struct Owned<T: ?Sized + Send + Sync + 'static> {
     state: Mutex<State<T>>,
     root: Arc<Cell>,
     require_owner: bool,
@@ -49,7 +49,7 @@ impl<T: ?Sized + Send + Sync + 'static> Drop for Retain<T> {
         }
     }
 }
-pub(super) struct Reference<T: ?Sized + Send + Sync + 'static> {
+pub(in crate::contextual::product) struct Reference<T: ?Sized + Send + Sync + 'static> {
     original: Arc<Owned<T>>,
     id: u64,
 }
@@ -66,13 +66,13 @@ impl<T: ?Sized + Send + Sync + 'static> Drop for Reference<T> {
         self.original.changed.notify_waiters();
     }
 }
-pub(super) struct Borrow<T: ?Sized + Send + Sync + 'static> {
+pub(in crate::contextual::product) struct Borrow<T: ?Sized + Send + Sync + 'static> {
     original: Arc<Owned<T>>,
     id: u64,
     value: Option<Arc<Value<T>>>,
 }
 impl<T: ?Sized + Send + Sync + 'static> Borrow<T> {
-    pub(super) fn get(&self) -> &T {
+    pub(in crate::contextual::product) fn get(&self) -> &T {
         self.value.as_ref().unwrap().0.as_ref()
     }
 }
@@ -87,7 +87,10 @@ impl<T: ?Sized + Send + Sync + 'static> Drop for Borrow<T> {
     }
 }
 impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
-    pub(super) fn new(owner: Owner, close_on_last_reference: bool) -> Arc<Self> {
+    pub(in crate::contextual::product) fn new(
+        owner: Owner,
+        close_on_last_reference: bool,
+    ) -> Arc<Self> {
         let original = Arc::new(Self {
             state: Mutex::new(State {
                 value: None,
@@ -131,7 +134,7 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         let _ = release.send(());
         original
     }
-    pub(super) fn install(self: &Arc<Self>, value: Box<T>) {
+    pub(in crate::contextual::product) fn install(self: &Arc<Self>, value: Box<T>) {
         // Capture the real install frame; no arbitrary host context is accepted.
         let context = self.root.with_callback_drop_context(self.require_owner);
         let mut state = self.state.lock().unwrap();
@@ -147,7 +150,7 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         self.state.lock().unwrap().holds.push(holds);
         self.changed.notify_waiters();
     }
-    pub(super) fn constructor_done(self: &Arc<Self>, failed: bool) {
+    pub(in crate::contextual::product) fn constructor_done(self: &Arc<Self>, failed: bool) {
         let mut state = self.state.lock().unwrap();
         state.constructor_done = true;
         state.failed |= failed;
@@ -155,7 +158,7 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         self.progress(&mut state);
         self.changed.notify_waiters();
     }
-    pub(super) fn close(self: &Arc<Self>) {
+    pub(in crate::contextual::product) fn close(self: &Arc<Self>) {
         let mut state = self.state.lock().unwrap();
         state.closed = true;
         self.progress(&mut state);
@@ -168,7 +171,9 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
             .ok_or(ResourceRegistrationError::Capacity)?;
         Ok(state.next)
     }
-    pub(super) fn reference(self: &Arc<Self>) -> Result<Reference<T>, ExtensionError> {
+    pub(in crate::contextual::product) fn reference(
+        self: &Arc<Self>,
+    ) -> Result<Reference<T>, ExtensionError> {
         let mut state = self.state.lock().unwrap();
         if state.closed || state.value.is_none() {
             return Err(ExtensionError::ContextOwnerClosed);
@@ -183,7 +188,9 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
             id,
         })
     }
-    pub(super) fn borrow(self: &Arc<Self>) -> Result<Borrow<T>, ExtensionError> {
+    pub(in crate::contextual::product) fn borrow(
+        self: &Arc<Self>,
+    ) -> Result<Borrow<T>, ExtensionError> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(ExtensionError::ContextOwnerClosed);
@@ -201,7 +208,9 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         })
     }
     /// Actual task-use admission, retired only by that original observed join.
-    pub(super) fn admit_use(self: &Arc<Self>) -> Result<u64, ExtensionError> {
+    pub(in crate::contextual::product) fn admit_use(
+        self: &Arc<Self>,
+    ) -> Result<u64, ExtensionError> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(ExtensionError::ContextOwnerClosed);
@@ -214,10 +223,10 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         Ok(id)
     }
     /// Explicit original reservation refused before any task was published.
-    pub(super) fn refused_use(self: &Arc<Self>, id: u64) {
+    pub(in crate::contextual::product) fn refused_use(self: &Arc<Self>, id: u64) {
         self.observed_use(id, true);
     }
-    pub(super) fn observed_use(self: &Arc<Self>, id: u64, success: bool) {
+    pub(in crate::contextual::product) fn observed_use(self: &Arc<Self>, id: u64, success: bool) {
         let mut state = self.state.lock().unwrap();
         state.failed |= !success;
         if success {
@@ -228,7 +237,9 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
     }
     // Constructor/stream-main joins gate final release, not starting the child
     // destructor that may be needed to unblock that same constructor/main.
-    pub(super) fn admit_completion(self: &Arc<Self>) -> Result<u64, ExtensionError> {
+    pub(in crate::contextual::product) fn admit_completion(
+        self: &Arc<Self>,
+    ) -> Result<u64, ExtensionError> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(ExtensionError::ContextOwnerClosed);
@@ -240,10 +251,10 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
         state.completions.insert(id);
         Ok(id)
     }
-    pub(super) fn refused_completion(&self, id: u64) {
+    pub(in crate::contextual::product) fn refused_completion(&self, id: u64) {
         self.observed_completion(id, true);
     }
-    pub(super) fn observed_completion(&self, id: u64, success: bool) {
+    pub(in crate::contextual::product) fn observed_completion(&self, id: u64, success: bool) {
         let mut state = self.state.lock().unwrap();
         state.failed |= !success;
         if success {
@@ -310,16 +321,16 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
             }
         }
     }
-    pub(super) async fn body_join(&self) -> Result<(), ExtensionError> {
+    pub(in crate::contextual::product) async fn body_join(&self) -> Result<(), ExtensionError> {
         self.root.join().await
     }
-    pub(super) fn is_closed(&self) -> bool {
+    pub(in crate::contextual::product) fn is_closed(&self) -> bool {
         self.state.lock().unwrap().closed
     }
-    pub(super) fn observed(&self) -> Option<bool> {
+    pub(in crate::contextual::product) fn observed(&self) -> Option<bool> {
         self.task.try_lock().ok().and_then(|task| task.result)
     }
-    pub(super) async fn reap_join(&self) {
+    pub(in crate::contextual::product) async fn reap_join(&self) {
         let finished = self
             .task
             .try_lock()
@@ -328,7 +339,7 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
             let _ = self.join().await;
         }
     }
-    pub(super) async fn join(&self) -> Result<(), ExtensionError> {
+    pub(in crate::contextual::product) async fn join(&self) -> Result<(), ExtensionError> {
         let mut task = self.task.lock().await;
         if let Some(handle) = task.handle.as_mut() {
             let joined = match handle.await {
