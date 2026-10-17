@@ -76,6 +76,42 @@ mod tests {
     use crate::Store;
     use crate::native_enrollment::access::contract;
 
+    #[async_trait::async_trait]
+    impl crate::driver_raw_access_contract::Damage for crate::MemoryStore {
+        type Saved = crate::native_enrollment::Unclassified;
+        async fn damage(
+            &self,
+            session: &crabber_core::SessionId,
+            run: &crabber_core::RunId,
+        ) -> Self::Saved {
+            self.state
+                .lock()
+                .unwrap()
+                .execution_enrollment_unclassified
+                .remove(&(session.clone(), run.clone()))
+                .unwrap()
+        }
+        async fn restore(
+            &self,
+            session: &crabber_core::SessionId,
+            run: &crabber_core::RunId,
+            saved: Self::Saved,
+        ) {
+            self.state
+                .lock()
+                .unwrap()
+                .execution_enrollment_unclassified
+                .insert((session.clone(), run.clone()), saved);
+        }
+    }
+    #[tokio::test]
+    async fn raw_driver_registration_and_activation_authenticate_birth() {
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = crate::MemoryStore::with_clock(clock.clone());
+        crate::driver_raw_access_contract::run(&store, &clock).await;
+    }
     #[tokio::test]
     async fn public_raw_credentials_require_original_enrollment_before_return() {
         let store = crate::MemoryStore::new();

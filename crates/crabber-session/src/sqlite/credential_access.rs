@@ -117,6 +117,38 @@ mod tests {
         tx.commit().await.unwrap();
     }
 
+    #[async_trait::async_trait]
+    impl crate::driver_raw_access_contract::Damage for crate::SqliteStore {
+        type Saved = String;
+        async fn damage(&self, _: &crabber_core::SessionId, run: &RunId) -> Self::Saved {
+            let saved = sqlx::query_scalar(
+                "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
+            )
+            .bind(&run.0)
+            .fetch_one(&self.readers)
+            .await
+            .unwrap();
+            replace(self, run, "{}").await;
+            saved
+        }
+        async fn restore(&self, _: &crabber_core::SessionId, run: &RunId, saved: Self::Saved) {
+            replace(self, run, &saved).await;
+        }
+    }
+    #[tokio::test]
+    async fn raw_driver_registration_and_activation_authenticate_birth() {
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raw-driver.sqlite");
+        crate::SqliteStore::migrate(&path).await.unwrap();
+        let store = crate::SqliteStore::connect(&path)
+            .await
+            .unwrap()
+            .with_clock(clock.clone());
+        crate::driver_raw_access_contract::run(&store, &clock).await;
+    }
     #[tokio::test]
     async fn public_raw_credentials_require_original_enrollment_before_return() {
         let directory = tempfile::tempdir().unwrap();
