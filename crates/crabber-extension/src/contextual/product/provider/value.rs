@@ -120,7 +120,9 @@ impl<T: ?Sized + Send + Sync + 'static> Owned<T> {
             }
             let original = retained.0.as_ref().unwrap();
             let success = original.drive().await;
-            if original.state.lock().unwrap().value.is_none() {
+            // Failed original disposal must keep its extra release holds even
+            // after every external graph/manager reference disappears.
+            if success && original.state.lock().unwrap().value.is_none() {
                 retained.0.take();
             }
             success

@@ -21,6 +21,7 @@ use std::{
 
 #[derive(Default)]
 struct Seen {
+    panic_streamer: std::sync::atomic::AtomicBool,
     binds: AtomicUsize,
     creates: AtomicUsize,
     polls: AtomicUsize,
@@ -50,6 +51,10 @@ struct Backend(Arc<Seen>);
 impl Drop for Backend {
     fn drop(&mut self) {
         self.0.streamers.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            !self.0.panic_streamer.swap(false, Ordering::SeqCst),
+            "original returned streamer Drop panic"
+        );
     }
 }
 #[async_trait]
@@ -323,4 +328,51 @@ async fn sequential_actual_joins_reap_capacity_and_original_owner_cannot_be_repl
     assert_eq!(seen.binds.load(Ordering::SeqCst), 70);
     assert_eq!(seen.streams.load(Ordering::SeqCst), 70);
     assert_eq!(seen.streamers.load(Ordering::SeqCst), 70);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_streamer_drop_retains_original_release_after_graph_metadata_drops() {
+    use futures::FutureExt;
+    let seen = Arc::new(Seen::default());
+    let (provider, host) = setup(seen.clone());
+    let context = context();
+    let plan = provider.acquire_plan_in(&context).await.unwrap();
+    let adapter = plan.providers[0].clone();
+    let resources = ToolResourceOwner::new();
+    let owner = CallbackInvocationOwner::attach(resources.resources()).unwrap();
+    let released = with_callback_invocations(owner.capability(), async {
+        let (first, released) = adapter.bind(&selection()).await.unwrap().observe_release();
+        // This genuine second registration reaps the first successful original
+        // constructor actor, independently of the still-live returned Box.
+        let (second, second_release) = adapter.bind(&selection()).await.unwrap().observe_release();
+        drop(second);
+        tokio::time::timeout(Duration::from_secs(2), second_release.released())
+            .await
+            .unwrap();
+        seen.panic_streamer.store(true, Ordering::SeqCst);
+        drop(first);
+        released
+    })
+    .await;
+    drop(adapter);
+    drop(plan);
+    let graph = host.0.lock().unwrap().last().unwrap().clone();
+    graph.request_close().unwrap();
+    let joined = graph.registered_graph_join(Duration::from_secs(2)).await;
+    drop(owner);
+    let report = resources.drain(Duration::from_secs(2)).await;
+    drop(resources);
+    drop(graph);
+    drop(provider);
+    drop(host);
+    assert!(
+        joined.is_err(),
+        "the original Box destructor actually failed"
+    );
+    assert_eq!(report.pending, 0);
+    assert_eq!(seen.streamers.load(Ordering::SeqCst), 2);
+    assert!(
+        released.released().now_or_never().is_none(),
+        "failed original Box disposal must never acknowledge release merely because its manager/graph metadata disappeared"
+    );
 }
