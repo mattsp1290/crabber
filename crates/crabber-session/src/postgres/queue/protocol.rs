@@ -335,6 +335,7 @@ pub(super) async fn publish(
     } else {
         return Ok(());
     };
+    proof.measure(&value).map_err(budget)?;
     sqlx::query("INSERT INTO queue_publication_sources(session_id,queue_id,protocol_version,queue_sequence,operation_id,sequence,kind,revision,previous_digest,source_digest,data_json) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10)").bind(&value.scope.session.0).bind(&value.scope.queue.0).bind(i64::try_from(value.queue_sequence).map_err(|_| corrupt())?).bind(&value.operation.0).bind(i64::try_from(value.sequence).map_err(|_| corrupt())?).bind(value.kind.name()).bind(i64::try_from(value.revision.get()).map_err(|_| corrupt())?).bind(value.previous.as_ref().map(crabber_core::InputFingerprint::as_str)).bind(value.digest.as_str()).bind(serde_json::to_string(&value).map_err(|_| corrupt())?).execute(&mut **tx).await.map_err(db)?;
     if value.sequence == 1 {
         sqlx::query("INSERT INTO queue_publication_cohorts(session_id,queue_id,origin_operation,origin_digest,head_sequence,head_digest) VALUES($1,$2,$3,$4,1,$4)").bind(&value.scope.session.0).bind(&value.scope.queue.0).bind(&value.operation.0).bind(value.digest.as_str()).execute(&mut **tx).await.map_err(db)?;

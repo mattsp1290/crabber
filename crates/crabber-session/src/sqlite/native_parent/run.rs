@@ -48,7 +48,9 @@ async fn change_inner(
     creation: bool,
     completion: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Option<u64>, Error> {
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    proof.measure(&(run, completion)).map_err(|_| Error)?;
     let previous = if creation {
         None
     } else {
@@ -83,18 +85,55 @@ async fn change_inner(
             value = value.completed(previous.as_ref().ok_or(Error)?, source.clone())?;
         }
         value.validate()?;
-        super::source_protocol::append(tx, &value, creation, proof)
-            .await
-            .map_err(|_| Error)?;
+        let captured = match capture {
+            crate::native_enrollment::caller::initial::Capture::Original => {
+                super::source_protocol::append_captured(tx, &value, creation, proof)
+                    .await
+                    .map_err(|_| Error)?
+            }
+            crate::native_enrollment::caller::initial::Capture::None => {
+                super::source_protocol::append(tx, &value, creation, proof)
+                    .await
+                    .map_err(|_| Error)?;
+                crate::native_enrollment::caller::initial::SourcePublication::default()
+            }
+        };
         sqlx::query("INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES(?1,?2,?3,?4)")
             .bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(value.sequence).map_err(|_|Error)?)
             .bind(serde_json::to_string(&value).map_err(|_|Error)?)
             .execute(&mut **tx).await.map_err(|_|Error)?;
-        return Ok(Some(value.sequence));
+        return Ok(crate::native_enrollment::caller::initial::RunPublication {
+            sequence: Some(value.sequence),
+            first: captured.first,
+            updated: captured.updated,
+        });
     } else if completion.is_some() {
         return Err(Error);
     }
-    Ok(None)
+    Ok(crate::native_enrollment::caller::initial::RunPublication {
+        sequence: None,
+        first: None,
+        updated: None,
+    })
+}
+
+pub(in super::super) async fn initial_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, crate::StoreError> {
+    change_inner(
+        tx,
+        run,
+        true,
+        None,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )
+    .await
+    .map_err(|_| crate::StoreError::Conflict)?
+    .first
+    .ok_or(crate::StoreError::Conflict)
 }
 
 pub(in super::super) async fn change_with_proof(
@@ -104,7 +143,7 @@ pub(in super::super) async fn change_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::StoreError> {
-    change_captured_with_proof(tx, run, creation, source, proof)
+    super::record_run_captured_with_proof(tx, run, creation, source, proof)
         .await
         .map(|_| ())
         .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
@@ -117,7 +156,28 @@ pub(in super::super) async fn change_captured_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<u64>, crate::StoreError> {
-    change_inner(tx, run, creation, source, proof)
+    change_inner(
+        tx,
+        run,
+        creation,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .await
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+    .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
+}
+
+pub(in super::super) async fn publication_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    creation: bool,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, crate::StoreError> {
+    change_inner(tx, run, creation, source, proof, capture)
         .await
         .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
 }

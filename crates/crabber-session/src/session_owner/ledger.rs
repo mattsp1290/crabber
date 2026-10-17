@@ -52,6 +52,28 @@ enum ReservationSource {
     Driver(Box<super::driver::DriverLink>),
 }
 impl Ledger {
+    #[cfg(test)]
+    pub(crate) fn raw_initial_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> crabber_core::InputFingerprint {
+        crate::native_enrollment::caller::contract::snapshot_digest(&(
+            self.contexts.get(session),
+            self.native_sessions.get(session),
+            self.records
+                .iter()
+                .filter(|((s, _), _)| s == session)
+                .collect::<Vec<_>>(),
+            self.audits
+                .iter()
+                .filter(|((s, _), _)| s == session)
+                .collect::<Vec<_>>(),
+            self.publications
+                .iter()
+                .filter(|((s, _), _)| s == session)
+                .collect::<Vec<_>>(),
+        ))
+    }
     pub(crate) fn source_audit(
         &self,
         session: &SessionId,
@@ -134,6 +156,24 @@ impl Ledger {
         self.contexts
             .get(session)
             .map(|context| context.native_run_protocol)
+    }
+    pub(crate) fn context_with_proof(
+        &self,
+        session: &SessionId,
+        workspace: &str,
+        directory: &str,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        proof
+            .measure(&(session, workspace, directory))
+            .map_err(|_| Error::Capacity)?;
+        if let Some(context) = self.contexts.get(session) {
+            proof.measure(context).map_err(|_| Error::Capacity)?;
+            if let Some(origin) = self.audits.get(&(session.clone(), context.origin.clone())) {
+                proof.measure(origin).map_err(|_| Error::Capacity)?;
+            }
+        }
+        self.context(session, workspace, directory)
     }
     pub fn context(
         &self,

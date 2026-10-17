@@ -295,3 +295,10 @@ pub(crate) mod terminal_history;
 #[path = "phase/grant_ack.rs"]
 mod grant_ack;
 pub(crate) use grant_ack::{grant_ack_identity, grant_ack_meter, validate_grant_ack_authority};
+// Kept inside the defining module: opaque grant contents never cross a public API.
+pub(crate) fn measure_native_authority(
+    authority: &PhaseAuthority,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::Failure> {
+    proof.measure(&grant_ack_meter(authority))
+}

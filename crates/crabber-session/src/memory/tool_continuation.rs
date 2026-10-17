@@ -24,6 +24,7 @@ mod current;
 #[path = "tool_continuation/scan.rs"]
 pub(super) mod scan;
 pub(super) use scan::pending as pending_in_session;
+pub(super) use scan::pending_with_proof as pending_in_session_with_proof;
 fn active(state: &State, run: &Run) -> Result<Option<ToolContinuationRecord>, Error> {
     scan::run(state, run).map(|(_, active)| active)
 }
@@ -369,6 +370,27 @@ pub(super) use claim::preparation_frontend_context;
 pub(super) use recover::preparation_frontend_context as preparation_frontend_recovery_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
+
+pub(super) fn guard_attempt_with_proof(
+    state: &State,
+    run: &Run,
+    request: &AttemptMutation,
+    proof: &mut Proof,
+) -> Result<(), AttemptError> {
+    let Some(record) = scan::run_with_proof(state, run, proof)
+        .map_err(|_| AttemptError::UnknownStoreOutcome)?
+        .1
+    else {
+        return Ok(());
+    };
+    if record.run_id != run.id
+        || record.state != ToolContinuationState::Claimed
+        || record.batch.next_attempt != *request.command.target()
+    {
+        return Err(AttemptError::Busy);
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

@@ -217,10 +217,11 @@ pub(in super::super) async fn cancel_waiting(
     Ok(())
 }
 
-pub(in super::super) async fn validate_terminal_phases(
+pub(in super::super) async fn validate_terminal_phases_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     revision: crabber_core::SessionRevision,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    terminal_phases::validate(tx, run, revision).await
+    terminal_phases::validate_with_proof(tx, run, revision, proof).await
 }

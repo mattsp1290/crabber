@@ -7,6 +7,8 @@ use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
 pub(super) use run::change_captured_with_proof as record_run_captured_with_proof;
 pub(super) use run::change_with_proof as record_run_with_proof;
+pub(super) use run::initial_with_proof as record_initial_run_with_proof;
+pub(super) use run::publication_with_proof as record_run_publication_with_proof;
 use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) async fn record_attempt(
@@ -39,13 +41,20 @@ pub(super) async fn record_phase(
     run: &Run,
     phase: &crate::phase::PhaseRecord,
     receipt: &crate::PhaseReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::PhaseError> {
     if crate::SQLITE_SCHEMA_VERSION >= 9 && receipt.operation == crate::PhaseOperation::Begin {
-        let attempt = super::attempt::load_owned(tx, &run.id, &phase.snapshot.target.attempt.id)
-            .await
-            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
-            .ok_or(crate::PhaseError::UnknownStoreOutcome)?;
-        let Some(issuance) = run::latest(tx, run)
+        let attempt = super::attempt::load_host_attempt_with_proof(
+            tx,
+            &run.id,
+            Some(&phase.snapshot.target.attempt.id),
+            proof,
+        )
+        .await
+        .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        .ok_or(crate::PhaseError::UnknownStoreOutcome)?
+        .0;
+        let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
             .await
             .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
         else {
@@ -153,6 +162,22 @@ pub(super) async fn current_issuance(
     native: &Run,
 ) -> Result<crate::native_parent::RunIssuance, Error> {
     let value = run::latest(tx, native).await?.ok_or(Error)?;
+    value.verify(native)?;
+    Ok(value)
+}
+
+pub(super) async fn current_issuance_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    native: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_parent::RunIssuance, Error> {
+    if !proof.active() {
+        return current_issuance(tx, native).await;
+    }
+    let value = source_protocol::current(tx, &native.session_id, &native.id, proof)
+        .await
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
     value.verify(native)?;
     Ok(value)
 }

@@ -12,7 +12,7 @@ pub(crate) fn unknown(_: impl std::fmt::Debug) -> Failure {
 }
 /// One always-present shared proof context. Its Budget also serves the existing
 /// qualified approval and cross-domain readers without resetting the allowance.
-pub(crate) struct Proof(crate::public_session::budget::Budget, bool);
+pub(crate) struct Proof(crate::public_session::budget::Budget, bool, Option<usize>);
 impl Proof {
     pub fn legacy() -> Self {
         Self(
@@ -21,6 +21,7 @@ impl Proof {
                 crate::PublicSessionLimit::ProofBytes,
             ),
             false,
+            None,
         )
     }
     pub fn active(&self) -> bool {
@@ -30,7 +31,19 @@ impl Proof {
         Self(
             crate::public_session::budget::Budget::new(cap, crate::PublicSessionLimit::ProofBytes),
             true,
+            None,
         )
+    }
+    // Ephemeral selected-carrier bookkeeping only. A replacement Proof starts
+    // outside this scope even if it occupies the same stack address.
+    pub(crate) fn replace_selected_scope(&mut self, scope: Option<usize>) -> Option<usize> {
+        std::mem::replace(&mut self.2, scope)
+    }
+    pub(crate) fn has_any_selected_scope(&self) -> bool {
+        self.2.is_some()
+    }
+    pub(crate) fn has_selected_scope(&self, scope: usize) -> bool {
+        self.2 == Some(scope)
     }
     pub fn charge(&mut self, bytes: usize) -> Result<(), Failure> {
         if self.active() {

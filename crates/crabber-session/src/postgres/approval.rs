@@ -14,7 +14,7 @@ mod recover;
 mod suspend;
 mod terminal_history;
 mod terminate;
-pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
+pub(super) use terminate::cancel_waiting;
 pub(super) mod write;
 use super::{PostgresStore, db};
 use crate::postgres::transaction::Transaction;
@@ -331,3 +331,8 @@ async fn verify_questions_with_proof(
 }
 const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(r.semantic_digest),0)+8+COALESCE(octet_length(e.run_id),0)+CASE WHEN r.kind='approval' THEN COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
 const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT octet_length(id)+octet_length(call_id) AS bytes FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded_questions";
+
+pub(super) use guards::guard_attempt_with_proof;
+
+pub(super) use current::session_with_proof as verify_session_with_proof;
+pub(super) use terminate::validate_terminal_phases_with_proof;

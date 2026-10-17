@@ -81,6 +81,19 @@ fn checked_audit(
     }
     Ok(audit)
 }
+pub(super) async fn context_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    workspace: &str,
+    directory: &str,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    proof
+        .measure(&(session, workspace, directory))
+        .map_err(|_| Error::Capacity)?;
+    super::super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(COALESCE((SELECT octet_length(data_json) FROM session_owner_contexts WHERE session_id=$1),0)+COALESCE((SELECT octet_length(data_json)+octet_length(owner_id)+octet_length(operation_id)+octet_length(operation)+octet_length(state)+8 FROM session_owner_audits WHERE session_id=$1 AND operation='Reserve' ORDER BY ordinal LIMIT 1),0) AS BIGINT)").bind(&session.0),proof).await.map_err(|_|Error::Capacity)?;
+    context(tx, session, workspace, directory).await
+}
 pub(super) async fn context(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -344,7 +357,7 @@ pub(super) async fn preparation_audits(
 mod preparation;
 pub(super) use preparation::has_preparation;
 
-pub(super) use publications::{preparation_order, publication_count};
+pub(super) use publications::{preparation_order, preparation_order_with_proof, publication_count};
 mod publications;
 
 async fn verify_cancellation(

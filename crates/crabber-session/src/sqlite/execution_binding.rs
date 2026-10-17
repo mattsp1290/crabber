@@ -1,5 +1,4 @@
 //! Bound and legacy admission share the same transaction-only write helpers.
-use super::records::{decode_row, lookup_receipt};
 use super::{SqliteStore, db, text};
 use crate::public_session::v2::proof::{Proof, ReadError};
 
@@ -7,7 +6,7 @@ use crate::{
     AdmitOutcome, AdmitRequest, ExecutionBindingCapsule, KeyedAdmitOutcome, KeyedAdmitRequest,
     RetainedExecutionBinding, StoreError,
 };
-use crabber_core::{AdmissionReceipt, Message, RunId, Session, SessionId};
+use crabber_core::{AdmissionReceipt, Message, RunId, SessionId};
 use sqlx::{Row, Sqlite, Transaction};
 
 async fn finish<T>(
@@ -26,6 +25,31 @@ async fn finish<T>(
     }
 }
 impl SqliteStore {
+    pub(super) async fn finish_initial(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        input: crate::native_enrollment::caller::initial::Input<'_>,
+        captured: crate::native_enrollment::caller::initial::CapturedAdmission,
+        proof: &mut Proof,
+    ) -> Result<AdmitOutcome, StoreError> {
+        super::native_enrollment::record_raw_native(
+            tx,
+            crate::native_enrollment::caller::Caller::Raw,
+            &crate::native_enrollment::caller::Fresh::Initial(
+                crate::native_enrollment::caller::initial::Initial {
+                    input,
+                    result: &captured.admitted,
+                    first: &captured.first,
+                },
+            ),
+            proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )
+        .await
+        .map_err(|_| StoreError::Conflict)?;
+        Ok(captured.admitted)
+    }
     pub(super) async fn admit_keyed_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -55,27 +79,87 @@ impl SqliteStore {
         guard: crate::queue::AdmissionGuard<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        let digest = keyed.validated_digest()?;
+        let captured = self
+            .admit_keyed_captured(
+                tx,
+                &keyed,
+                guard,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
+                read_proof,
+            )
+            .await?;
+        match captured {
+            crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(
+                receipt,
+            ) => Ok(KeyedAdmitOutcome::Replayed(receipt)),
+            crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started {
+                receipt,
+                admitted,
+            } => {
+                let admitted = self
+                    .finish_initial(
+                        tx,
+                        crate::native_enrollment::caller::initial::Input::Keyed {
+                            request: &keyed,
+                            receipt: &receipt,
+                        },
+                        *admitted,
+                        read_proof,
+                    )
+                    .await?;
+                Ok(KeyedAdmitOutcome::Started {
+                    receipt,
+                    admitted: Box::new(admitted),
+                })
+            }
+        }
+    }
+    pub(super) async fn admit_keyed_captured(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        keyed: &KeyedAdmitRequest,
+        guard: crate::queue::AdmissionGuard<'_>,
+        caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
+        read_proof: &mut Proof,
+    ) -> Result<crate::native_enrollment::caller::initial::CapturedKeyedAdmission, StoreError> {
         let request = &keyed.request;
         let session = request
             .session_id
             .as_ref()
             .ok_or(StoreError::AdmissionConflict)?;
-        if let Some(row) = sqlx::query("SELECT data FROM sessions WHERE id=$1")
-            .bind(&session.0)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?
+        if let Some(receipt) =
+            super::records::lookup_receipt(tx, session, &keyed.options.key).await?
         {
-            let existing: Session = decode_row(&row, "data")?;
-            existing.ensure_identity(&request.workspace_id, &request.directory)?;
-        }
-        if let Some(receipt) = lookup_receipt(tx, session, &keyed.options.key).await? {
+            // Preserve historical replay-domain validation; no new fresh witness.
+            if let Some((existing, _)) =
+                super::admission_reads::session(tx, session, &mut Proof::legacy()).await?
+            {
+                existing.ensure_identity(&request.workspace_id, &request.directory)?;
+            }
+            let digest = keyed.validated_digest()?;
             if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest
             {
                 return Err(StoreError::AdmissionConflict);
             }
-            return Ok(KeyedAdmitOutcome::Replayed(receipt));
+            return Ok(
+                crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(
+                    receipt,
+                ),
+            );
+        }
+        crate::native_enrollment::caller::initial::input_keyed(
+            keyed,
+            caller.selected(),
+            read_proof,
+        )
+        .map_err(|_| StoreError::Conflict)?;
+        let digest = keyed.validated_digest()?;
+        if let Some((existing, _)) =
+            super::admission_reads::session(tx, session, read_proof).await?
+        {
+            existing.ensure_identity(&request.workspace_id, &request.directory)?;
         }
         if guard.is_ordinary() && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND admission_key=$2)").bind(&session.0).bind(keyed.options.key.as_str()).fetch_one(&mut **tx).await.map_err(db)? { return Err(StoreError::AdmissionConflict); }
         let session_id = session.clone();
@@ -85,14 +169,15 @@ impl SqliteStore {
         } else {
             1
         };
-        let admitted = self
-            .admit_transaction_guarded_with_proof(tx, keyed.request, true, guard, read_proof)
+        let captured = self
+            .admit_transaction_captured(tx, &keyed.request, true, guard, caller, read_proof)
             .await?;
+        let admitted = &captured.admitted;
         let receipt = AdmissionReceipt {
             session_id,
             run_id: admitted.run.id.clone(),
             user_message_id,
-            fingerprint: keyed.options.fingerprint,
+            fingerprint: keyed.options.fingerprint.clone(),
             semantic_digest_version,
             semantic_digest: digest,
         };
@@ -109,34 +194,18 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(db)?;
-        if let Some(capsule) = keyed.execution {
-            let version =
-                i32::try_from(capsule.version).map_err(|_| StoreError::AdmissionConflict)?;
-            let record = crate::AdmissionExecutionRecord {
-                receipt: receipt.clone(),
-                key: keyed.options.key.clone(),
-                capsule,
-                state: crate::AdmissionExecutionState::Unstarted,
-            };
-            sqlx::query(
-                    "INSERT INTO \
-                        admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,source_protocol) \
-                        VALUES($1,$2,$3,$4,'Unstarted',$5,1)",
-                )
-                .bind(&receipt.run_id.0)
-                .bind(&receipt.session_id.0)
-                .bind(keyed.options.key.as_str())
-                .bind(version)
-                .bind(record.encode()?)
-                .execute(&mut **tx)
-                .await
-                .map_err(db)?;
-            super::admission_journal::init(tx, &record, &admitted.run, read_proof).await?;
-        }
-        Ok(KeyedAdmitOutcome::Started {
-            receipt,
-            admitted: Box::new(admitted),
-        })
+        save_execution(tx, keyed, &receipt, admitted, read_proof).await?;
+        read_proof
+            .charge(std::mem::size_of::<
+                crate::native_enrollment::caller::initial::CapturedAdmission,
+            >())
+            .map_err(|_| StoreError::Conflict)?;
+        Ok(
+            crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started {
+                receipt,
+                admitted: Box::new(captured),
+            },
+        )
     }
 
     pub(super) async fn admit_with_binding(
@@ -144,32 +213,65 @@ impl SqliteStore {
         request: AdmitRequest,
         binding: Option<ExecutionBindingCapsule>,
     ) -> Result<AdmitOutcome, StoreError> {
-        #[cfg(test)]
-        let is_bound = binding.is_some();
+        let mut proof = Proof::bounded(32 << 20);
+        proof
+            .measure(&(&request, &binding))
+            .map_err(|_| StoreError::Conflict)?;
         if let Some(binding) = &binding {
             binding.validate(&request)?;
         }
         let mut tx = self.begin_write().await?;
-        let user = request.user_message.clone();
         let result = async {
-            let admitted = self.admit_transaction(&mut tx, request, false).await?;
-            if let Some(capsule) = binding {
+            if binding.is_none() {
+                return self
+                    .admit_transaction_guarded_with_proof(
+                        &mut tx,
+                        &request,
+                        false,
+                        crate::queue::AdmissionGuard::Ordinary,
+                        &mut proof,
+                    )
+                    .await;
+            }
+
+            let captured = self
+                .admit_transaction_captured(
+                    &mut tx,
+                    &request,
+                    false,
+                    crate::queue::AdmissionGuard::Ordinary,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(
+                        crate::native_enrollment::caller::Caller::Raw,
+                    ),
+                    &mut proof,
+                )
+                .await?;
+            let input = if let Some(capsule) = &binding {
                 save(
                     &mut tx,
-                    &RetainedExecutionBinding::new(&admitted.run, &user, capsule),
+                    &RetainedExecutionBinding::new(
+                        &captured.admitted.run,
+                        &request.user_message,
+                        capsule.clone(),
+                    ),
                 )
                 .await?;
                 #[cfg(test)]
                 crate::binding_fault::trip(&self.binding_fault, 1)?;
-            }
-            Ok(admitted)
+                crate::native_enrollment::caller::initial::Input::Bound {
+                    request: &request,
+                    binding: capsule,
+                }
+            } else {
+                crate::native_enrollment::caller::initial::Input::Ordinary(&request)
+            };
+            self.finish_initial(&mut tx, input, captured, &mut proof)
+                .await
         }
         .await;
         let result = finish(tx, result).await?;
         #[cfg(test)]
-        if is_bound {
-            crate::binding_fault::trip(&self.binding_fault, 2)?;
-        }
+        crate::binding_fault::trip(&self.binding_fault, 2)?;
         Ok(result)
     }
     pub(super) async fn admit_keyed_with_binding(
@@ -177,44 +279,91 @@ impl SqliteStore {
         request: KeyedAdmitRequest,
         binding: Option<ExecutionBindingCapsule>,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        #[cfg(test)]
-        let is_bound = binding.is_some();
+        let mut proof = Proof::bounded(32 << 20);
+        proof
+            .measure(&(&request, &binding))
+            .map_err(|_| StoreError::Conflict)?;
         if let Some(binding) = &binding {
             binding.validate_keyed(&request)?;
         } else {
             request.validated_digest()?;
         }
+        request.request.session_id.as_ref().ok_or_else(|| {
+            StoreError::Validation("keyed admission requires a stable session ID".into())
+        })?;
         let mut tx = self.begin_write().await?;
-        let user = request.request.user_message.clone();
         let result = async {
-            let outcome = self.admit_keyed_transaction(&mut tx, request).await?;
-            if let Some(capsule) = binding {
-                match &outcome {
-                    KeyedAdmitOutcome::Started { admitted, .. } => {
+            match self
+                .admit_keyed_captured(
+                    &mut tx,
+                    &request,
+                    crate::queue::AdmissionGuard::Ordinary,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(
+                        crate::native_enrollment::caller::Caller::Raw,
+                    ),
+                    &mut proof,
+                )
+                .await?
+            {
+                crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(
+                    receipt,
+                ) => {
+                    if let Some(capsule) = &binding
+                        && read_with_proof(
+                            &mut tx,
+                            &receipt.session_id,
+                            &receipt.run_id,
+                            &mut proof,
+                        )
+                        .await
+                        .map_err(|e| e.into_domain_or(StoreError::AdmissionConflict))?
+                        .is_none_or(|original| original.capsule != *capsule)
+                    {
+                        return Err(StoreError::AdmissionConflict);
+                    }
+                    Ok(KeyedAdmitOutcome::Replayed(receipt))
+                }
+                crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started {
+                    receipt,
+                    admitted,
+                } => {
+                    let input = if let Some(capsule) = &binding {
                         save(
                             &mut tx,
-                            &RetainedExecutionBinding::new(&admitted.run, &user, capsule),
+                            &RetainedExecutionBinding::new(
+                                &admitted.admitted.run,
+                                &request.request.user_message,
+                                capsule.clone(),
+                            ),
                         )
                         .await?;
                         #[cfg(test)]
                         crate::binding_fault::trip(&self.binding_fault, 1)?;
-                    }
-                    KeyedAdmitOutcome::Replayed(receipt) => {
-                        if read(&mut tx, &receipt.session_id, &receipt.run_id)
-                            .await?
-                            .is_none_or(|original| original.capsule != capsule)
-                        {
-                            return Err(StoreError::AdmissionConflict);
+                        crate::native_enrollment::caller::initial::Input::BoundKeyed {
+                            request: &request,
+                            binding: capsule,
+                            receipt: &receipt,
                         }
-                    }
+                    } else {
+                        crate::native_enrollment::caller::initial::Input::Keyed {
+                            request: &request,
+                            receipt: &receipt,
+                        }
+                    };
+                    let admitted = self
+                        .finish_initial(&mut tx, input, *admitted, &mut proof)
+                        .await?;
+                    Ok(KeyedAdmitOutcome::Started {
+                        receipt,
+                        admitted: Box::new(admitted),
+                    })
                 }
             }
-            Ok(outcome)
         }
         .await;
         let result = finish(tx, result).await?;
         #[cfg(test)]
-        if is_bound && matches!(&result, KeyedAdmitOutcome::Started { .. }) {
+        if matches!(&result, KeyedAdmitOutcome::Started { .. }) {
             crate::binding_fault::trip(&self.binding_fault, 2)?;
         }
         Ok(result)
@@ -376,3 +525,36 @@ pub(super) async fn original_messages_with_proof(
 }
 const BINDING_PROOF_COST: &str = r"SELECT CAST(length(CAST(b.data_json AS BLOB))+COALESCE(length(CAST(json_extract(r.data,'$.config_hash') AS BLOB)),0)+COALESCE(length(CAST(json_extract(r.data,'$.plan_fingerprint') AS BLOB)),0)+COALESCE(length(CAST(json_extract(s.data,'$.workspace_id') AS BLOB)),0)+COALESCE(length(CAST(json_extract(s.data,'$.directory') AS BLOB)),0) AS BIGINT) FROM run_execution_bindings b JOIN runs r ON r.id=b.run_id JOIN sessions s ON s.id=r.session_id WHERE r.id=$1 AND r.session_id=$2";
 const ORIGINAL_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT length(CAST(data AS BLOB)) AS bytes FROM messages WHERE session_id=$1 AND run_id=$2 ORDER BY seq LIMIT $3) originals";
+
+async fn save_execution(
+    tx: &mut Transaction<'_, Sqlite>,
+    keyed: &KeyedAdmitRequest,
+    receipt: &AdmissionReceipt,
+    admitted: &AdmitOutcome,
+    read_proof: &mut Proof,
+) -> Result<(), StoreError> {
+    if let Some(capsule) = &keyed.execution {
+        let version = i32::try_from(capsule.version).map_err(|_| StoreError::AdmissionConflict)?;
+        let record = crate::AdmissionExecutionRecord {
+            receipt: receipt.clone(),
+            key: keyed.options.key.clone(),
+            capsule: capsule.clone(),
+            state: crate::AdmissionExecutionState::Unstarted,
+        };
+        sqlx::query(
+                    "INSERT INTO \
+                        admission_executions(run_id,session_id,admission_key,capsule_version,start_state,data,source_protocol) \
+                        VALUES($1,$2,$3,$4,'Unstarted',$5,1)",
+                )
+                .bind(&receipt.run_id.0)
+                .bind(&receipt.session_id.0)
+                .bind(keyed.options.key.as_str())
+                .bind(version)
+                .bind(record.encode()?)
+                .execute(&mut **tx)
+                .await
+                .map_err(db)?;
+        super::admission_journal::init(tx, &record, &admitted.run, read_proof).await?;
+    }
+    Ok(())
+}

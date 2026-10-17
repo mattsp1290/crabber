@@ -7,7 +7,7 @@ pub(in super::super) async fn services_with_proof(
     root: &SessionOwnerId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Vec<Record>, Error> {
-    let ids = service_ids(tx, session, root).await?;
+    let ids = service_ids_with_proof(tx, session, root, proof).await?;
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         super::super::public::preflight(tx, session, &id.0, proof)
@@ -59,3 +59,25 @@ SELECT owner_id FROM session_owner_current WHERE session_id=$1 AND CASE WHEN oct
 UNION SELECT owner_id FROM session_owner_audits WHERE session_id=$1 AND operation='Reserve' AND CASE WHEN octet_length(data_json)>32768 THEN true ELSE data_json::json #>> '{record,service,root,root,id}'=$2 END
 UNION SELECT owner_id FROM session_owner_publications WHERE session_id=$1 AND sequence=1 AND data_json::json #>> '{record,service,root,root,id}'=$2
 ) candidates ORDER BY owner_id LIMIT 4";
+
+pub(in super::super) async fn service_ids_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    root: &SessionOwnerId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Vec<SessionOwnerId>, Error> {
+    let costs = QUERY.replacen(
+        "SELECT CASE WHEN octet_length(owner_id)<=128 THEN owner_id END AS id",
+        "SELECT CAST(octet_length(owner_id) AS BIGINT) AS bytes",
+        1,
+    );
+    let query = format!("SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM ({costs}) selected");
+    super::super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&query).bind(&session.0).bind(&root.0),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::Capacity)?;
+    service_ids(tx, session, root).await
+}

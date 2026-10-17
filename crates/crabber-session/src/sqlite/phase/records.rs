@@ -97,6 +97,15 @@ pub(in super::super) async fn latest(
         .map(|(data, _)| sql::decode_metadata(data))
         .transpose()
 }
+pub(super) async fn latest_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    call: &ToolCallId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<PhaseSnapshot>, Error> {
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(SUM(length(CAST(outcome_json AS BLOB))+4096) AS BIGINT) FROM tool_phases WHERE run_id=$1 AND call_id=$2").bind(&run.0).bind(&call.0), proof).await.map_err(|_| Error::UnknownStoreOutcome)?;
+    latest(tx, run, call).await
+}
 pub(super) async fn receipt(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
@@ -191,8 +200,8 @@ pub(super) async fn publish(
     digest: InputFingerprint,
     revision: SessionRevision,
     now: OffsetDateTime,
-) -> Result<PhaseReceipt, Error> {
-    let event = phase::event(run, request, snapshot, now, digest.clone())?;
+) -> Result<(PhaseReceipt, crabber_core::EventRecord), Error> {
+    let mut event = phase::event(run, request, snapshot, now, digest.clone())?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )
@@ -218,7 +227,8 @@ pub(super) async fn publish(
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'phase',$3,$4,$5)")
         .bind(&run.session_id.0).bind(&request.id.0).bind(receipt.semantic_digest.as_str()).bind(seq).bind(serde_json::to_string(&receipt).map_err(|_| Error::UnknownStoreOutcome)?)
         .execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
-    Ok(receipt)
+    event.cursor = Some(receipt.event_cursor);
+    Ok((receipt, event))
 }
 
 pub(super) async fn page(
@@ -234,9 +244,7 @@ pub(super) async fn page(
     {
         return Err(Error::RevisionConflict);
     }
-    let query = format!(
-        "SELECT CASE WHEN {BOUNDS} AND length(CAST(json_extract(p.outcome_json,'$.call_binding') AS BLOB))<=64 THEN (json_object('version',json_extract(p.outcome_json,'$.version'),'snapshot',{SNAPSHOT})) END AS record FROM tool_phases p LEFT JOIN execution_attempts a ON a.run_id=p.run_id AND a.id=p.attempt_id LEFT JOIN runs r ON r.id=p.run_id LEFT JOIN sessions s ON s.id=r.session_id WHERE p.run_id=$1 AND (CAST($2 AS TEXT) IS NULL OR p.id COLLATE BINARY>$2 COLLATE BINARY) ORDER BY p.id COLLATE BINARY LIMIT $3"
-    );
+    let query = page_query();
     let rows = sqlx::query(&query)
         .bind(&request.run_id.0)
         .bind(request.after.as_ref().map(|id| id.0.as_str()))
@@ -297,3 +305,54 @@ pub(in super::super) async fn receipt_with_proof(
     Ok(receipt(tx, session, id).await?)
 }
 const RECEIPT_PROOF_COST: &str = "SELECT CAST(COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(r.semantic_digest AS BLOB)),0)+7+COALESCE(length(CAST(e.run_id AS BLOB)),0)+CASE WHEN r.kind='phase' THEN COALESCE(length(CAST(e.data AS BLOB)),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
+
+fn page_query() -> String {
+    format!(
+        "SELECT CASE WHEN {BOUNDS} AND length(CAST(json_extract(p.outcome_json,'$.call_binding') AS BLOB))<=64 THEN (json_object('version',json_extract(p.outcome_json,'$.version'),'snapshot',{SNAPSHOT})) END AS record FROM tool_phases p LEFT JOIN execution_attempts a ON a.run_id=p.run_id AND a.id=p.attempt_id LEFT JOIN runs r ON r.id=p.run_id LEFT JOIN sessions s ON s.id=r.session_id WHERE p.run_id=$1 AND (CAST($2 AS TEXT) IS NULL OR p.id COLLATE BINARY>$2 COLLATE BINARY) ORDER BY p.id COLLATE BINARY LIMIT $3"
+    )
+}
+pub(super) async fn page_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &crate::PhasePageRequest,
+    proof: &mut Proof,
+) -> Result<crate::PhasePage, Error> {
+    proof.charge(8).map_err(|_| Error::UnknownStoreOutcome)?;
+    let query = page_query();
+    let cost = format!(
+        "SELECT CAST(SUM(length(CAST(record AS BLOB))) AS BIGINT) FROM ({query}) selected_phase_page"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&request.run_id.0)
+            .bind(request.after.as_ref().map(|id| id.0.as_str()))
+            .bind(i64::from(request.limit) + 1),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    page(tx, request).await
+}
+
+pub(in super::super) async fn latest_metadata_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    call: &ToolCallId,
+    proof: &mut Proof,
+) -> Result<Option<PhaseSnapshot>, Error> {
+    let query = record_query(false, false);
+    let cost = format!(
+        "SELECT CAST(length(CAST(record AS BLOB)) AS BIGINT) FROM ({query}) selected_phase"
+    );
+    super::super::read_proof::charge(
+        tx,
+        sqlx::query_scalar(&cost)
+            .bind(&run.0)
+            .bind(Option::<&str>::None)
+            .bind(&call.0),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    latest(tx, run, call).await
+}

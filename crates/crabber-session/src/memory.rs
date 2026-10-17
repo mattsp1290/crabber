@@ -8,15 +8,14 @@ mod continuation_handoff;
 mod continuation_input;
 #[path = "memory/deletion.rs"]
 mod deletion;
+#[path = "memory/events.rs"]
+mod events;
 #[path = "memory/fork.rs"]
 mod fork;
 #[path = "memory/frontend.rs"]
 mod frontend;
 #[path = "memory/tool_continuation.rs"]
 mod tool_continuation;
-use admission::{admit_keyed_transaction, admit_transaction};
-#[path = "memory/events.rs"]
-mod events;
 use events::EventLog;
 #[path = "memory/history.rs"]
 mod history;
@@ -33,6 +32,8 @@ mod attempt;
 mod execution_binding;
 #[path = "memory/expired.rs"]
 mod expired;
+#[path = "memory/legacy_execution.rs"]
+mod legacy_execution;
 #[path = "memory/management.rs"]
 mod management;
 #[path = "memory/native_enrollment.rs"]
@@ -90,6 +91,8 @@ pub struct MemoryStore {
     session_owner_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
@@ -232,6 +235,8 @@ impl MemoryStore {
             #[cfg(test)]
             attempt_fault: Arc::default(),
             #[cfg(test)]
+            native_raw_probe: Arc::default(),
+            #[cfg(test)]
             phase_fault: Arc::default(),
             #[cfg(test)]
             approval_fault: Arc::default(),
@@ -258,6 +263,27 @@ impl MemoryStore {
         let mut guard = self.state.lock().expect("memory store poisoned");
         let mut next = guard.clone();
         let output = operation(&mut next)?;
+        *guard = next;
+        Ok(output)
+    }
+
+    // Selected borrowed carriers are charged under the same lock before the
+    // inherited whole-State clone. This does not bound that entire clone.
+    fn transact_selected<T, E>(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+        selected: impl FnOnce(
+            &State,
+            &mut crate::public_session::v2::proof::Proof,
+        ) -> Result<Option<T>, E>,
+        operation: impl FnOnce(&mut State, &mut crate::public_session::v2::proof::Proof) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(replayed) = selected(&guard, proof)? {
+            return Ok(replayed);
+        }
+        let mut next = guard.clone();
+        let output = operation(&mut next, proof)?;
         *guard = next;
         Ok(output)
     }
@@ -1177,7 +1203,7 @@ impl Store for MemoryStore {
         request.fingerprint()?;
         self.host_phase(
             &request.run_id,
-            request.mutation(),
+            &request.mutation(),
             crate::phase::PhaseEffect::Uncertainty(&request),
         )
     }
@@ -1188,7 +1214,7 @@ impl Store for MemoryStore {
         request.fingerprint()?;
         self.host_phase(
             &request.run_id,
-            request.mutation(),
+            &request.mutation(),
             crate::phase::PhaseEffect::Cleanup(&request),
         )
     }
@@ -1263,27 +1289,26 @@ impl Store for MemoryStore {
             .unwrap_or(crabber_core::SessionRevision::INITIAL))
     }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.transact(|state| admit_transaction(state, &request, self.clock.now(), false))
+        self.admit_raw(&request)
     }
 
     async fn admit_keyed_run(
         &self,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        keyed.validated_digest()?;
-        self.transact(|state| admit_keyed_transaction(state, &keyed, self.clock.now()))
+        self.admit_keyed_raw(&keyed)
     }
     async fn admit_bound_run(
         &self,
         request: crate::BoundAdmitRequest,
     ) -> Result<AdmitOutcome, StoreError> {
-        self.admit_with_binding(request)
+        self.admit_with_binding(&request)
     }
     async fn admit_bound_keyed_run(
         &self,
         request: crate::BoundKeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_with_binding(request)
+        self.admit_keyed_with_binding(&request)
     }
     async fn execution_binding(
         &self,
@@ -1344,7 +1369,7 @@ impl Store for MemoryStore {
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
     ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
-        self.claim_admission(request)
+        self.claim_admission(&request)
     }
     async fn abandon_run(
         &self,
@@ -1471,52 +1496,11 @@ impl Store for MemoryStore {
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        self.transact(|state| {
-            let scope = &state.runs.get(id).ok_or(StoreError::NotFound)?.session_id;
-            if state.session_owners.has_preparation(scope) {
-                return Err(StoreError::AdmissionRecoveryRequired);
-            }
-
-            let now = self.clock.now();
-            admission_journal::verify(state, id)?;
-            if state
-                .admission_executions
-                .get(id)
-                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-            {
-                return Err(StoreError::AdmissionRecoveryRequired);
-            }
-            let scoped = state.runs.get(id).ok_or(StoreError::NotFound)?;
-            if tool_continuation::pending_in_session(state, &scoped.session_id)
-                .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
-            {
-                return Err(StoreError::Busy);
-            }
-            let previous = crate::native_parent::RunState::from_run(
-                state.runs.get(id).ok_or(StoreError::NotFound)?,
-            )
-            .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
-            let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
-            if run.status.is_terminal() || run.lease_until > now {
-                return Err(StoreError::Conflict);
-            }
-            owner.clone_into(&mut run.owner);
-            run.claim_token = uuid::Uuid::new_v4().to_string();
-            run.lease_until = now + time::Duration::seconds(30);
-            run.updated_at = now;
-            crate::ensure_storable(run)?;
-            let fence = RunFence {
-                run_id: id.clone(),
-                claim_token: run.claim_token.clone(),
-            };
-            let updated = crate::native_parent::RunState::from_run(run).map_err(|_| {
-                StoreError::Validation("native run fence evidence unavailable".into())
-            })?;
-            native_parent::record_run_states(state, Some(&previous), updated).map_err(|_| {
-                StoreError::Validation("native run fence evidence unavailable".into())
-            })?;
-            Ok(fence)
-        })
+        self.claim_legacy_expired_with_proof(
+            id,
+            owner,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn get_extension_state(
@@ -1624,7 +1608,7 @@ impl ExecutionStore for MemoryExecution {
         request: crate::PhaseMutation,
         authority: Option<crate::PhaseWriteAuthority>,
     ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
-        self.change_phase(request, authority.as_ref())
+        self.change_phase(&request, authority.as_ref())
     }
     async fn mutate_attempt(
         &self,
@@ -1741,36 +1725,11 @@ impl ExecutionStore for MemoryExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        self.store.fenced(&self.fence, |state, run| {
-            if frontend::origin(state, run, id)
-                .map_err(|_| StoreError::Validation("frontend origin integrity failure".into()))?
-                .is_some()
-            {
-                return Err(StoreError::Conflict);
-            }
-            if state
-                .phases
-                .values()
-                .any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id)
-            {
-                return Err(StoreError::Conflict);
-            }
-            let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-                return Err(StoreError::Conflict);
-            }
-            insert_event(state, run, running_event)?;
-            state
-                .calls
-                .get_mut(id)
-                .expect("validated call exists")
-                .status = ToolCallStatus::Running;
-            *state
-                .snapshot_revisions
-                .entry(run.session_id.clone())
-                .or_default() += 1;
-            Ok(())
-        })
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn settle_tool_call(

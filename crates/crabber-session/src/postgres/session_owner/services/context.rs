@@ -22,7 +22,7 @@ impl crate::postgres::PostgresStore {
         verify_owner(tx, session, &original.owner.binding.id, strict, proof).await?;
         let root = reads::current(tx, session, &original.owner.binding.id).await?;
         self.preparation_source_context(tx, original, proof).await?;
-        reads::preparation_order(tx, grant).await?;
+        reads::preparation_order_with_proof(tx, grant, proof).await?;
         let child = if let Some(authority) = grant.retained_resources_authority() {
             verify_owner(tx, session, &authority.target().id, strict, proof).await?;
             Some(reads::current(tx, session, &authority.target().id).await?)

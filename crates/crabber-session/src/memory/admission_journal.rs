@@ -90,29 +90,65 @@ pub(super) fn verify(state: &State, run: &RunId) -> Result<(), StoreError> {
     }
     Ok(())
 }
-pub(super) fn begin(state: &mut State, id: &RunId) -> Result<(), StoreError> {
-    verify(state, id)?;
-    let run = state.runs.get(id).ok_or_else(invalid)?;
-    if state.admission_execution_protocols.contains(&run.id) {
-        let Some(Source::Init(init)) = state
-            .admission_execution_sources
-            .get(&(run.id.clone(), Kind::Init))
-        else {
-            return Err(invalid());
-        };
-        let issuance = issuer(state, run, None)?;
-        issuance.verify(run).map_err(|_| invalid())?;
-        let source = Source::Begin(Begin::new(init, issuance.clone())?);
-        source.encode()?;
-        if state
-            .admission_execution_sources
-            .insert((run.id.clone(), Kind::Begin), source)
-            .is_some()
-        {
-            return Err(invalid());
+pub(super) fn verify_with_proof(
+    state: &State,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    let bounded = |_| StoreError::AdmissionConflict;
+    proof.measure(run).map_err(bounded)?;
+    if let Some(record) = state.admission_executions.get(run) {
+        proof.measure(record).map_err(bounded)?;
+    }
+    for kind in [Kind::Init, Kind::Begin] {
+        if let Some(source) = state.admission_execution_sources.get(&(run.clone(), kind)) {
+            proof.measure(source).map_err(bounded)?;
+            let issuance = source.issuance();
+            if let Some(actual) = state.native_run_issuances.get(&(
+                issuance.state.session_id.clone(),
+                run.clone(),
+                issuance.sequence,
+            )) {
+                proof.measure(actual).map_err(bounded)?;
+            }
         }
     }
-    Ok(())
+    verify(state, run)
+}
+
+pub(super) fn begin_captured_with_proof(
+    state: &mut State,
+    id: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<(Init, Begin)>, StoreError> {
+    verify_with_proof(state, id, proof)?;
+    let run = state.runs.get(id).ok_or_else(invalid)?;
+    if !state.admission_execution_protocols.contains(id) {
+        return Ok(None);
+    }
+    let Some(Source::Init(init)) = state
+        .admission_execution_sources
+        .get(&(id.clone(), Kind::Init))
+    else {
+        return Err(invalid());
+    };
+    let issuance =
+        super::native_parent::source_protocol::current(state, &run.session_id, &run.id, proof)
+            .map_err(|_| invalid())?
+            .ok_or_else(invalid)?;
+    proof.measure(&(init, issuance)).map_err(|_| invalid())?;
+    issuance.verify(run).map_err(|_| invalid())?;
+    let begin = Begin::new(init, issuance.clone())?;
+    proof.measure(&begin).map_err(|_| invalid())?;
+    let init = init.clone();
+    if state
+        .admission_execution_sources
+        .insert((id.clone(), Kind::Begin), Source::Begin(begin.clone()))
+        .is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(Some((init, begin)))
 }
 
 #[cfg(test)]

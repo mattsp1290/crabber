@@ -3,6 +3,8 @@
 mod inspection;
 #[path = "preparation/native.rs"]
 mod native;
+#[path = "preparation/preflight.rs"]
+mod preflight;
 #[path = "preparation/queue.rs"]
 mod queue;
 #[path = "preparation/queue_inspection.rs"]
@@ -30,6 +32,25 @@ impl MemoryStore {
         require_input_birth: bool,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
+        self.complete_preparation_captured_with_proof(
+            joined,
+            require_input_birth,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+    }
+    pub(in crate::memory) fn complete_preparation_captured_with_proof(
+        &self,
+        joined: &JoinedPreparation,
+        require_input_birth: bool,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        let read_proof = std::cell::RefCell::new(read_proof);
+        crate::native_enrollment::caller::initial::preparation_input(
+            joined,
+            &mut read_proof.borrow_mut(),
+        )
+        .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
         joined.verify_original_intent()?;
         let session = joined
             .observed_grant()
@@ -38,57 +59,25 @@ impl MemoryStore {
             .binding
             .session_id
             .clone();
-        let read_proof =
-            std::cell::RefCell::new(crate::public_session::v2::proof::Proof::bounded(32 << 20));
         let queue_selection = std::cell::RefCell::new(None);
         let outcome = self.transact_or_replay(
-            |state| {
-                match queue::before(
-                    state,
-                    joined,
-                    &mut read_proof.borrow_mut(),
-                    self.clock.now(),
-                )? {
-                    queue::Before::Other => (),
-                    queue::Before::Replayed(outcome) => {
-                        return Ok(Some(
-                            crate::session_owner::preparation::driver_completion::replayed(
-                                *outcome,
-                            ),
-                        ));
-                    }
-                    queue::Before::Selected(selected) => {
-                        *queue_selection.borrow_mut() = Some(*selected);
-                    }
+            |state| match self.before_prepared_native(
+                state,
+                joined,
+                &mut read_proof.borrow_mut(),
+            )? {
+                queue::Before::Other => Ok(None),
+                queue::Before::Selected(selected) => {
+                    *queue_selection.borrow_mut() = Some(*selected);
+                    Ok(None)
                 }
-                if let crate::session_owner::preparation::PreparedOperation::ExpiredRunResume(
-                    prepared,
-                ) = joined.observed_operation()
-                {
-                    super::super::deletion::ensure_live(state, &session)?;
-                    if let Some(outcome) = Self::replay_expired(state, joined)? {
-                        return Ok(Some(
-                            crate::session_owner::preparation::driver_completion::replayed(outcome),
-                        ));
-                    }
-                    let current = super::super::expired::context(
-                        state,
-                        prepared.source.request().clone(),
-                        self.clock.now(),
-                    )?;
-                    prepared.source.verify_source(&current)?;
-                }
-                Ok(None)
+                queue::Before::Replayed(outcome) => Ok(Some(
+                    crate::session_owner::preparation::driver_completion::replayed(*outcome),
+                )),
             },
             |state| -> Result<_, crate::session_owner::preparation::PreparationCommitError> {
                 super::super::deletion::ensure_live(state, &session)?;
                 let now = self.clock.now();
-                // Original native reconciliation precedes current owner/CAS checks.
-                if let Some(outcome) = self.replay_prepared(state, joined)? {
-                    return Ok(
-                        crate::session_owner::preparation::driver_completion::replayed(outcome),
-                    );
-                }
                 ensure_input_birth(
                     state,
                     joined,
@@ -98,7 +87,12 @@ impl MemoryStore {
                 let before = revision(state, &session);
                 let mut proof = state
                     .session_owners
-                    .verify_preparation(joined.observed_grant(), before, now)
+                    .verify_preparation_with_proof(
+                        joined.observed_grant(),
+                        before,
+                        now,
+                        &mut read_proof.borrow_mut(),
+                    )
                     .map_err(storage_error)?;
                 proof.bind_observed_operation(joined)?;
                 state

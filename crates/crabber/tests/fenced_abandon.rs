@@ -7,7 +7,7 @@ mod continuation_origin;
 #[path = "../../crabber-session/src/frontend_contract.rs"]
 #[allow(dead_code)]
 mod frontend_contract;
-#[path = "../../crabber-session/src/native_enrollment.rs"]
+#[path = "fenced_support/native_enrollment.rs"]
 mod native_enrollment;
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;

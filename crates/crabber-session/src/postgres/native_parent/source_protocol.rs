@@ -132,18 +132,57 @@ pub(in super::super) async fn append(
     creation: bool,
     proof: &mut Proof,
 ) -> Result<()> {
+    append_output(
+        tx,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .await
+    .map(|_| ())
+}
+pub(in super::super) async fn append_captured(
+    tx: &mut Transaction<'_, Postgres>,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut Proof,
+) -> Result<crate::native_enrollment::caller::initial::SourcePublication> {
+    append_output(
+        tx,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )
+    .await
+}
+async fn append_output(
+    tx: &mut Transaction<'_, Postgres>,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::SourcePublication> {
     let session = &issuer.state.session_id;
     let run = &issuer.state.run_id;
     proof.measure(issuer).map_err(ReadError::Budget)?;
     issuer.validate().map_err(bad)?;
     if !protocol(tx, session, run, proof).await? {
-        return Ok(());
+        return crate::native_enrollment::caller::initial::SourcePublication::legacy(
+            capture, issuer, creation, proof,
+        )
+        .map_err(ReadError::Budget);
     }
     let previous = head(tx, session, run, proof).await?;
     if creation != previous.is_none() {
         return Err(bad("source birth"));
     }
     let value = JournalSource::new(previous.as_ref(), issuer).map_err(bad)?;
+    let captured = crate::native_enrollment::caller::initial::SourcePublication::capture(
+        capture, issuer, &value, creation, proof,
+    )
+    .map_err(ReadError::Budget)?;
     sqlx::query("INSERT INTO native_run_sources(session_id,run_id,sequence,issuance_digest,previous_digest,chain_digest) VALUES($1,$2,$3,$4,$5,$6)")
         .bind(&session.0).bind(&run.0).bind(i64::try_from(value.sequence).map_err(bad)?).bind(value.issuance_digest.as_str()).bind(value.previous_digest.as_ref().map(InputFingerprint::as_str)).bind(value.chain_digest.as_str())
         .execute(&mut **tx).await.map_err(bad)?;
@@ -154,7 +193,7 @@ pub(in super::super) async fn append(
         .await
         .map_err(ReadError::Budget)?;
     }
-    Ok(())
+    Ok(captured)
 }
 
 pub(super) async fn verify_previous(

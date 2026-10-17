@@ -251,6 +251,23 @@ pub(in super::super) async fn load_with_proof(
     id: Option<&AttemptId>,
     proof: &mut Proof,
 ) -> Result<Option<(AttemptRecord, SessionRevision)>, ReadError<Error>> {
+    load_mode_with_proof(tx, run, id, proof, false).await
+}
+pub(in super::super) async fn load_locked_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    id: Option<&AttemptId>,
+    proof: &mut Proof,
+) -> Result<Option<(AttemptRecord, SessionRevision)>, ReadError<Error>> {
+    load_mode_with_proof(tx, run, id, proof, true).await
+}
+pub(in super::super) async fn load_mode_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &RunId,
+    id: Option<&AttemptId>,
+    proof: &mut Proof,
+    lock: bool,
+) -> Result<Option<(AttemptRecord, SessionRevision)>, ReadError<Error>> {
     let cost =
         format!("SELECT CAST(octet_length(record) AS BIGINT) FROM ({RECORD}) bounded_attempt");
     super::super::read_proof::charge(
@@ -262,7 +279,7 @@ pub(in super::super) async fn load_with_proof(
     )
     .await
     .map_err(ReadError::Budget)?;
-    Ok(load(tx, run, id, false).await?)
+    Ok(load(tx, run, id, lock).await?)
 }
 pub(in super::super) async fn receipt_with_proof(
     tx: &mut Transaction<'_, Postgres>,

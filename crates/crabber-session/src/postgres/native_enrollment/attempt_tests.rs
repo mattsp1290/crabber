@@ -1,0 +1,340 @@
+use super::*;
+use crate::native_enrollment::caller::Probe;
+use crate::native_enrollment::caller::contract::Harness;
+impl Harness for crate::PostgresStore {
+    fn probe(&self) -> &Probe {
+        &self.native_raw_probe
+    }
+    fn fault(&self, stage: u8) {
+        self.attempt_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn phase_fault(&self, stage: u8) {
+        self.phase_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn initial_fault(&self, stage: u8) {
+        self.binding_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+        self.queue_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    async fn legacy_expired_with_proof(
+        &self,
+        id: &RunId,
+        owner: &str,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crabber_core::RunFence, crate::StoreError> {
+        Box::pin(self.claim_legacy_expired_with_proof(id, owner, proof)).await
+    }
+    async fn complete_with_proof(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.complete_preparation_captured_with_proof(joined, false, proof))
+            .await
+            .map(|value| value.completion)
+    }
+    async fn initial_retained(&self, session: &SessionId) -> crabber_core::InputFingerprint {
+        let mut values = Vec::new();
+        for table in [
+            "sessions",
+            "runs",
+            "messages",
+            "epochs",
+            "admission_receipts",
+            "admission_executions",
+            "admission_execution_sources",
+            "run_execution_bindings",
+            "native_run_issuances",
+            "native_run_sources",
+            "native_run_source_heads",
+            "native_execution_origins",
+            "native_execution_unclassified",
+            "preparation_admission_witnesses",
+            "session_ownership_origins",
+            "session_owner_contexts",
+            "session_owner_current",
+            "session_owner_audits",
+            "session_owner_publication_cohorts",
+            "session_owner_publications",
+            "session_owner_scope_origins",
+            "queue_publication_sources",
+            "queue_publication_cohorts",
+            "future_queue",
+            "future_queue_audit",
+            "operation_receipts",
+        ] {
+            let scope = if table == "sessions" {
+                "id"
+            } else {
+                "session_id"
+            };
+            let scope = if table == "run_execution_bindings" {
+                "run_id IN (SELECT id FROM runs WHERE session_id=$1)".to_owned()
+            } else {
+                format!("{scope}=$1")
+            };
+            let query = format!(
+                "SELECT to_jsonb(t)::text AS record FROM {table} t WHERE {scope} ORDER BY record"
+            );
+            let rows = sqlx::query_scalar::<_, String>(&query)
+                .bind(&session.0)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap();
+            values.push((table, rows));
+        }
+        crate::native_enrollment::caller::contract::snapshot_digest(&values)
+    }
+    async fn phase_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+        start: Option<crate::PhaseStart>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        let effect = start.as_ref().map_or(
+            crate::phase::PhaseEffect::Metadata,
+            crate::phase::PhaseEffect::Start,
+        );
+        Box::pin(self.phase_transaction_with_proof(
+            &fence.run_id,
+            request,
+            authority,
+            effect,
+            Some(&fence),
+            proof,
+        ))
+        .await
+    }
+    async fn attempt_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::AttemptMutationOutcome, crate::AttemptError> {
+        let execution = crate::postgres::PostgresExecution {
+            store: self.clone(),
+            fence,
+        };
+        execution
+            .change_attempt_with_proof(request, authority, None, proof)
+            .await
+    }
+    async fn legacy_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        call: &crabber_core::ToolCallId,
+        event: &crabber_core::EventRecord,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::StoreError> {
+        let execution = crate::postgres::PostgresExecution {
+            store: self.clone(),
+            fence,
+        };
+        execution.claim_legacy_with_proof(call, event, proof).await
+    }
+    async fn begin_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::AdmissionExecutionError> {
+        let execution = crate::postgres::PostgresExecution {
+            store: self.clone(),
+            fence,
+        };
+        crate::postgres::admission_execution::begin_with_proof(&execution, proof).await
+    }
+    async fn recover_admission_with_proof(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        super::super::admission_execution::claim_with_proof(self, request, proof).await
+    }
+    async fn retained(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        birth: bool,
+    ) -> crabber_core::InputFingerprint {
+        let mut values: Vec<String> = Vec::new();
+        for query in if birth { &BIRTH[..] } else { &NATIVE[..] } {
+            let query = query.replace("$2", "(SELECT session_id FROM runs WHERE id=$1)");
+            values.extend(
+                sqlx::query_scalar::<_, String>(&query)
+                    .bind(&run.0)
+                    .fetch_all(&self.pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+        crate::native_enrollment::caller::contract::snapshot_digest(&(session, run, values))
+    }
+}
+const BIRTH: [&str; 3] = [
+    "SELECT CAST(execution_enrollment_protocol AS TEXT)||COALESCE(execution_enrollment_origin_id,'') FROM runs WHERE id=$1",
+    "SELECT data FROM native_execution_origins WHERE run_id=$1",
+    "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
+];
+const NATIVE: [&str; 17] = [
+    "SELECT CAST(public_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
+    "SELECT data::text FROM runs WHERE id=$1",
+    "SELECT CAST(generation AS TEXT)||owner||claim_token||run_claim_token||CAST(lease_until AS TEXT)||state||cleanup_state FROM execution_attempts WHERE run_id=$1 ORDER BY id",
+    "SELECT data::text FROM events WHERE run_id=$1 ORDER BY seq",
+    "SELECT data_json FROM operation_receipts WHERE session_id=$2 ORDER BY operation_id",
+    "SELECT data_json FROM native_parent_witnesses WHERE run_id=$1 ORDER BY event_seq",
+    "SELECT data_json FROM native_run_issuances WHERE run_id=$1 ORDER BY sequence",
+    "SELECT CAST(execution_enrollment_protocol AS TEXT)||COALESCE(execution_enrollment_origin_id,'') FROM runs WHERE id=$1",
+    "SELECT CAST(sequence AS TEXT)||issuance_digest||COALESCE(previous_digest,'')||chain_digest FROM native_run_sources WHERE run_id=$1 ORDER BY sequence",
+    "SELECT CAST(sequence AS TEXT)||origin_digest||chain_digest FROM native_run_source_heads WHERE run_id=$1",
+    "SELECT data FROM native_execution_origins WHERE run_id=$1",
+    "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
+    "SELECT claim_token||outcome_json||state||quiescence_state FROM tool_phases WHERE run_id=$1 ORDER BY id",
+    "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 ORDER BY id",
+    "SELECT CAST(snapshot_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
+    "SELECT CAST(source_protocol AS TEXT)||start_state||CASE WHEN capsule_version=1 THEN data::text ELSE data_json END FROM admission_executions WHERE run_id=$1",
+    "SELECT kind||data_json FROM admission_execution_sources WHERE run_id=$1 ORDER BY kind",
+];
+#[tokio::test]
+async fn raw_attempt_fresh_replay_rollback_and_ack_loss() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::run(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_attempt_keeps_caller_proof_through_genuine_barriers() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::budgets(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_phase_fresh_replay_rollback_and_ack_loss() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::phases(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_compatibility_original_inputs_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::compatibility(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::recoveries(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
+}
+
+#[tokio::test]
+async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
+}
+
+#[tokio::test]
+async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
+        .await;
+}

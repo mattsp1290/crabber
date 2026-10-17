@@ -1,3 +1,9 @@
+use crate::native_enrollment::caller::{self, Caller};
+use crate::public_session::v2::proof::Proof;
+#[path = "phase/accounting.rs"]
+mod accounting;
+#[path = "phase/publication.rs"]
+mod publication;
 use super::tool_result::publish_result;
 use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
 use crate::{
@@ -69,7 +75,7 @@ impl MemoryStore {
     pub(super) fn host_phase(
         &self,
         run: &RunId,
-        request: PhaseMutation,
+        request: &PhaseMutation,
         effect: phase::PhaseEffect<'_>,
     ) -> Result<crate::PhaseControlOutcome, Error> {
         match self.apply_phase(run, request, PhaseCaller::HostControl, effect)? {
@@ -90,7 +96,7 @@ impl MemoryStore {
         resolution.validate()?;
         match self.apply_phase(
             &resolution.run_id,
-            resolution.resolution.clone(),
+            &resolution.resolution,
             PhaseCaller::HostControl,
             phase::PhaseEffect::Resolve(resolution),
         )? {
@@ -144,7 +150,7 @@ impl MemoryStore {
 impl MemoryExecution {
     pub(super) fn change_phase(
         &self,
-        request: PhaseMutation,
+        request: &PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
     ) -> Result<PhaseMutationOutcome, Error> {
         self.change_phase_inner(request, authority, phase::PhaseEffect::Metadata)
@@ -157,7 +163,7 @@ impl MemoryExecution {
         settlement.output()?;
         let authority = authority.map(PhaseWriteAuthority::Phase);
         self.change_phase_inner(
-            settlement.completion.clone(),
+            &settlement.completion,
             authority.as_ref(),
             phase::PhaseEffect::Settle(settlement),
         )
@@ -170,14 +176,35 @@ impl MemoryExecution {
         start.validate()?;
         let authority = authority.map(PhaseWriteAuthority::Phase);
         self.change_phase_inner(
-            start.begin.clone(),
+            &start.begin,
             authority.as_ref(),
             phase::PhaseEffect::Start(start),
         )
     }
+    #[cfg(test)]
+    pub(super) fn phase_with_proof(
+        &self,
+        request: &PhaseMutation,
+        authority: Option<&PhaseWriteAuthority>,
+        start: Option<&crate::PhaseStart>,
+        proof: &mut Proof,
+    ) -> Result<PhaseMutationOutcome, Error> {
+        let effect = start.map_or(phase::PhaseEffect::Metadata, phase::PhaseEffect::Start);
+        self.store.apply_phase_with_proof(
+            &self.fence.run_id,
+            request,
+            PhaseCaller::Worker {
+                fence: &self.fence,
+                authority,
+            },
+            effect,
+            Caller::Raw,
+            proof,
+        )
+    }
     fn change_phase_inner(
         &self,
-        request: PhaseMutation,
+        request: &PhaseMutation,
         authority: Option<&PhaseWriteAuthority>,
         effect: phase::PhaseEffect<'_>,
     ) -> Result<PhaseMutationOutcome, Error> {
@@ -196,72 +223,113 @@ impl MemoryStore {
     fn apply_phase(
         &self,
         run_id: &RunId,
-        request: PhaseMutation,
+        request: &PhaseMutation,
         caller: PhaseCaller<'_>,
         effect: phase::PhaseEffect<'_>,
     ) -> Result<PhaseMutationOutcome, Error> {
-        phase::validate_request(&request)?;
-        let result = self.transact(|state| {
-            let run = state.runs.get(run_id).cloned().ok_or(Error::NotFound)?;
-            let digest = effect.fingerprint(&request, &run.session_id, &run.id)?;
-            if let Some(replayed) = replay(state, &run, &request, &digest, effect)? {
-                return Ok(replayed);
-            }
-            let now = self.clock.now();
-            let authority = match caller {
-                PhaseCaller::Worker { fence, authority } => {
-                    crate::attempt::verify_run(&run, fence, now).map_err(|_| Error::StaleOwner)?;
-                    authority
+        self.apply_phase_with_proof(
+            run_id,
+            request,
+            caller,
+            effect,
+            Caller::Raw,
+            &mut Proof::bounded(32 << 20),
+        )
+    }
+    fn apply_phase_with_proof(
+        &self,
+        run_id: &RunId,
+        request: &PhaseMutation,
+        caller: PhaseCaller<'_>,
+        effect: phase::PhaseEffect<'_>,
+        native_caller: Caller,
+        proof: &mut Proof,
+    ) -> Result<PhaseMutationOutcome, Error> {
+        phase::validate_request(request)?;
+        let result = self.transact_selected(
+            proof,
+            |state, proof| accounting::selected(state, run_id, request, caller, effect, proof),
+            |state, proof| {
+                let run = state.runs.get(run_id).cloned().ok_or(Error::NotFound)?;
+                let digest = effect.fingerprint(request, &run.session_id, &run.id)?;
+                if let Some(replayed) = replay(state, &run, request, &digest, effect)? {
+                    return Ok(replayed);
                 }
-                PhaseCaller::HostControl => {
-                    if !effect.is_host() {
-                        return Err(Error::InvalidRequest);
+                let now = self.clock.now();
+                let authority = match caller {
+                    PhaseCaller::Worker { fence, authority } => {
+                        crate::attempt::verify_run(&run, fence, now)
+                            .map_err(|_| Error::StaleOwner)?;
+                        authority
                     }
-                    None
+                    PhaseCaller::HostControl => {
+                        if !effect.is_host() {
+                            return Err(Error::InvalidRequest);
+                        }
+                        None
+                    }
+                };
+                super::admission_journal::verify_with_proof(state, &run.id, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
+                if state
+                    .admission_executions
+                    .get(&run.id)
+                    .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
+                {
+                    return Err(Error::StaleOwner);
                 }
-            };
-            super::admission_journal::verify(state, &run.id)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
-            if state
-                .admission_executions
-                .get(&run.id)
-                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-            {
-                return Err(Error::StaleOwner);
-            }
-            let current = revision(state, &run.session_id);
-            if current != request.expected_revision {
-                return Err(Error::RevisionConflict);
-            }
-            let (mut record, authority) =
-                prepare_record(state, &run, &request, authority, now, effect.resolution())?;
-            if let Some(start) = effect.start() {
-                let call = state
-                    .calls
-                    .get(&record.snapshot.target.call_id)
-                    .ok_or(Error::NotFound)?;
-                let event = start.materialize(&run, call)?;
-                super::insert_event(state, &run, event).map_err(|_| Error::UnknownStoreOutcome)?;
-            }
-            if let Some(settlement) = effect.settlement() {
-                settle_call(state, &run, &mut record, settlement)?;
-            }
-            if let Some(resolution) = effect.resolution() {
-                let call = state
-                    .calls
-                    .get(&record.snapshot.target.call_id)
-                    .ok_or(Error::NotFound)?;
-                if let Some(records) = resolution.materialize(&run, call)? {
-                    publish_result(state, &run, &record.snapshot.target.call_id, records)?;
+                let current = revision(state, &run.session_id);
+                if current != request.expected_revision {
+                    return Err(Error::RevisionConflict);
                 }
-            }
-            let receipt = publish_phase(state, &run, request, record, digest, now)?;
-            #[cfg(test)]
-            if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 1 {
-                return Err(Error::UnknownStoreOutcome);
-            }
-            Ok(PhaseMutationOutcome::Applied { receipt, authority })
-        });
+                let (mut record, authority) = prepare_record(
+                    state,
+                    &run,
+                    request,
+                    authority,
+                    now,
+                    effect.resolution(),
+                    proof,
+                )?;
+                let running_event =
+                    publication::start(state, &run, &record, effect.start(), proof)?;
+                if let Some(settlement) = effect.settlement() {
+                    settle_call(state, &run, &mut record, settlement)?;
+                }
+                if let Some(resolution) = effect.resolution() {
+                    let call = state
+                        .calls
+                        .get(&record.snapshot.target.call_id)
+                        .ok_or(Error::NotFound)?;
+                    if let Some(records) = resolution.materialize(&run, call)? {
+                        publish_result(state, &run, &record.snapshot.target.call_id, records)?;
+                    }
+                }
+                caller::measure_phase_record(&record, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
+                let receipt = publish_phase(state, &run, request, record, digest, now, proof)?;
+                publication::record(
+                    state,
+                    &run,
+                    publication::Published {
+                        request,
+                        effect,
+                        receipt: &receipt,
+                        issued: authority.as_ref(),
+                        running_event,
+                        caller: native_caller,
+                    },
+                    proof,
+                    #[cfg(test)]
+                    &self.native_raw_probe,
+                )?;
+                #[cfg(test)]
+                if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                    return Err(Error::UnknownStoreOutcome);
+                }
+                Ok(PhaseMutationOutcome::Applied { receipt, authority })
+            },
+        );
         #[cfg(test)]
         if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 2
             && matches!(&result, Ok(PhaseMutationOutcome::Applied { .. }))
@@ -274,15 +342,16 @@ impl MemoryStore {
 fn publish_phase(
     state: &mut State,
     run: &Run,
-    request: PhaseMutation,
+    request: &PhaseMutation,
     record: phase::PhaseRecord,
     digest: crabber_core::InputFingerprint,
     now: time::OffsetDateTime,
+    proof: &mut Proof,
 ) -> Result<PhaseReceipt, Error> {
     let revision = revision(state, &run.session_id)
         .next()
         .map_err(|_| Error::RevisionExhausted)?;
-    let mut event = phase::event(run, &request, &record.snapshot, now, digest.clone())?;
+    let mut event = phase::event(run, request, &record.snapshot, now, digest.clone())?;
     let cursor = state
         .events
         .next_cursor()
@@ -292,7 +361,7 @@ fn publish_phase(
     let receipt = PhaseReceipt {
         operation: phase::operation(&request.command),
         resolver: phase::resolver(&request.command),
-        operation_id: request.id,
+        operation_id: request.id.clone(),
         semantic_digest: digest,
         revision,
         event_cursor: cursor,
@@ -312,7 +381,10 @@ fn publish_phase(
             .checked_add(1)
             .ok_or(Error::RevisionExhausted)?;
     }
-    super::native_parent::record_phase(state, run, &record, &receipt)?;
+    proof
+        .measure(&event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::native_parent::record_phase(state, run, &record, &receipt, proof)?;
     state
         .phases
         .insert(record.snapshot.target.id.clone(), record);
@@ -383,6 +455,7 @@ fn prepare_record(
     authority: Option<&PhaseWriteAuthority>,
     now: time::OffsetDateTime,
     resolution: Option<&crate::PhaseResolution>,
+    proof: &mut Proof,
 ) -> Result<(phase::PhaseRecord, Option<crate::PhaseAuthority>), Error> {
     let target = request.command.target();
     let attempt = state
@@ -396,7 +469,7 @@ fn prepare_record(
         .filter(|c| c.run_id == run.id)
         .ok_or(Error::NotFound)?;
     if matches!(request.command, PhaseCommand::Claim { .. }) {
-        if super::frontend::origin(state, run, &call.id)
+        if super::frontend::origin_with_proof(state, run, &call.id, proof)
             .map_err(|_| Error::UnknownStoreOutcome)?
             .is_some()
         {
@@ -416,6 +489,7 @@ fn prepare_record(
             .map(|r| &r.snapshot);
         let record =
             phase::PhaseRecord::claim(run, attempt, call, request, authority, now, previous)?;
+        caller::measure_phase_record(&record, proof).map_err(|_| Error::UnknownStoreOutcome)?;
         let grant = record.authority(authority.clone())?;
         Ok((record, Some(grant)))
     } else {

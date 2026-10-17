@@ -1,4 +1,6 @@
 //! Native phase writes share the session/run gate and operation-key namespace.
+use crate::native_enrollment::caller::{self, Caller};
+use crate::public_session::v2::proof::Proof;
 pub(super) use records::{latest as latest_host_phase, save as save_host_record};
 pub(super) use records::{load_with_proof, receipt_with_proof};
 mod calls;
@@ -13,12 +15,6 @@ pub(super) async fn load_owned(
 ) -> Result<Option<phase::PhaseRecord>, Error> {
     records::load(tx, run, id).await
 }
-pub(super) async fn metadata_page(
-    tx: &mut Transaction<'_, Postgres>,
-    request: &crate::PhasePageRequest,
-) -> Result<crate::PhasePage, Error> {
-    records::page(tx, request).await
-}
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
 use crate::postgres::transaction::Transaction;
 use crate::{
@@ -28,6 +24,15 @@ use crate::{
 };
 use crabber_core::{ControlId, PhaseId, Run, RunId, SessionId};
 use sqlx::Postgres;
+
+mod publication;
+#[derive(Clone, Copy)]
+struct PhaseContext<'a> {
+    authority: Option<&'a PhaseWriteAuthority>,
+    effect: phase::PhaseEffect<'a>,
+    fence: Option<&'a crabber_core::RunFence>,
+    caller: Caller,
+}
 
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
@@ -192,16 +197,62 @@ impl PostgresStore {
         effect: phase::PhaseEffect<'_>,
         fence: Option<&crabber_core::RunFence>,
     ) -> Result<Outcome, Error> {
+        self.phase_transaction_with_proof(
+            run_id,
+            request,
+            authority,
+            effect,
+            fence,
+            &mut Proof::bounded(32 << 20),
+        )
+        .await
+    }
+    pub(super) async fn phase_transaction_with_proof(
+        &self,
+        run_id: &RunId,
+        request: PhaseMutation,
+        authority: Option<PhaseWriteAuthority>,
+        effect: phase::PhaseEffect<'_>,
+        fence: Option<&crabber_core::RunFence>,
+        proof: &mut Proof,
+    ) -> Result<Outcome, Error> {
         phase::validate_request(&request)?;
-        let (mut tx, run) = self.run_transaction(run_id).await.map_err(|error| {
-            if error == crate::StoreError::NotFound {
-                Error::NotFound
-            } else {
-                sql::unknown(error)
-            }
-        })?;
+        proof
+            .measure(&(run_id, &request, fence))
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        if let Some(start) = effect.start() {
+            proof
+                .measure(&(&start.begin, &start.turn_id, start.created_at))
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
+        match authority.as_ref() {
+            Some(PhaseWriteAuthority::Attempt(a)) => caller::measure_authority(Some(a), proof),
+            Some(PhaseWriteAuthority::Phase(a)) => caller::measure_phase_authority(Some(a), proof),
+            None => Ok(()),
+        }
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+        let (mut tx, run) = super::attempt::accounting::begin(self, run_id, proof)
+            .await
+            .map_err(|e| {
+                if e == crate::AttemptError::NotFound {
+                    Error::NotFound
+                } else {
+                    Error::UnknownStoreOutcome
+                }
+            })?;
         let result = self
-            .apply_phase(&mut tx, &run, &request, authority.as_ref(), effect, fence)
+            .apply_phase(
+                &mut tx,
+                &run,
+                &request,
+                PhaseContext {
+                    authority: authority.as_ref(),
+                    effect,
+                    fence,
+                    caller: Caller::Raw,
+                },
+                proof,
+            )
             .await;
         #[cfg(test)]
         let result = if self.phase_fault.load(std::sync::atomic::Ordering::SeqCst) == 1
@@ -225,17 +276,26 @@ impl PostgresStore {
         tx: &mut Transaction<'_, Postgres>,
         run: &Run,
         request: &PhaseMutation,
-        authority: Option<&PhaseWriteAuthority>,
-        effect: phase::PhaseEffect<'_>,
-        fence: Option<&crabber_core::RunFence>,
+        context: PhaseContext<'_>,
+        proof: &mut Proof,
     ) -> Result<Outcome, Error> {
+        let PhaseContext {
+            authority,
+            effect,
+            fence,
+            caller: native_caller,
+        } = context;
         let digest = effect.fingerprint(request, &run.session_id, &run.id)?;
-        if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
+        if let Some(receipt) = records::receipt_with_proof(tx, &run.session_id, &request.id, proof)
+            .await
+            .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
+        {
             if receipt.phase.run_id != run.id || receipt.semantic_digest != digest {
                 return Err(Error::SemanticConflict);
             }
             if !matches!(effect, phase::PhaseEffect::Metadata) {
-                let call = calls::load(tx, run, &receipt.phase.target.call_id).await?;
+                let call =
+                    calls::load_with_proof(tx, run, &receipt.phase.target.call_id, proof).await?;
                 effect.verify_replay(&receipt, &call)?;
             }
             return Ok(Outcome::Replayed(receipt));
@@ -248,9 +308,9 @@ impl PostgresStore {
             }
             _ => return Err(Error::InvalidRequest),
         }
-        if admission_execution::load_record(tx, &run.id)
+        if admission_execution::load_record_with_proof(tx, &run.id, proof)
             .await
-            .map_err(sql::unknown)?
+            .map_err(|_| Error::UnknownStoreOutcome)?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
         {
             return Err(Error::StaleOwner);
@@ -261,10 +321,19 @@ impl PostgresStore {
         }
         let insert = matches!(request.command, PhaseCommand::Claim { .. });
         let (mut record, authority) =
-            prepare(tx, run, request, authority, now, effect.resolution()).await?;
-        if matches!(request.command, PhaseCommand::Begin { .. }) {
-            calls::begin(tx, run, &record.snapshot.target.call_id, effect.start()).await?;
-        }
+            prepare(tx, run, request, authority, now, effect.resolution(), proof).await?;
+        let running_event = if matches!(request.command, PhaseCommand::Begin { .. }) {
+            calls::begin(
+                tx,
+                run,
+                &record.snapshot.target.call_id,
+                effect.start(),
+                proof,
+            )
+            .await?
+        } else {
+            None
+        };
         if let Some(settlement) = effect.settlement() {
             calls::settle(tx, run, settlement).await?;
             record.snapshot.quiescence = crate::PhaseQuiescence::Complete;
@@ -276,10 +345,31 @@ impl PostgresStore {
             .await?
             .next()
             .map_err(|_| Error::RevisionExhausted)?;
+        caller::measure_phase_record(&record, proof).map_err(|_| Error::UnknownStoreOutcome)?;
         records::save(tx, &record, insert).await?;
-        let receipt =
+        let (receipt, event) =
             records::publish(tx, run, request, &record.snapshot, digest, revision, now).await?;
-        super::native_parent::record_phase(tx, run, &record, &receipt).await?;
+        proof
+            .measure(&event)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        super::native_parent::record_phase(tx, run, &record, &receipt, proof).await?;
+        publication::record(
+            tx,
+            run,
+            request,
+            (effect, native_caller),
+            publication::Published {
+                record: &record,
+                receipt: &receipt,
+                event: &event,
+                running_event: running_event.as_ref(),
+                issued: authority.as_ref(),
+            },
+            proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )
+        .await?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }
@@ -291,19 +381,28 @@ async fn prepare(
     authority: Option<&PhaseWriteAuthority>,
     now: time::OffsetDateTime,
     resolution: Option<&crate::PhaseResolution>,
+    proof: &mut Proof,
 ) -> Result<(phase::PhaseRecord, Option<PhaseAuthority>), Error> {
     let target = request.command.target();
-    let attempt = super::attempt::load_owned(tx, &run.id, &target.attempt.id)
-        .await
-        .map_err(|_| Error::UnknownStoreOutcome)?
-        .ok_or(Error::NotFound)?;
-    let call = calls::load(tx, run, &target.call_id).await?;
+    let attempt =
+        super::attempt::load_host_attempt_with_proof(tx, &run.id, Some(&target.attempt.id), proof)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?
+            .ok_or(Error::NotFound)?
+            .0;
+    let call = calls::load_with_proof(tx, run, &target.call_id, proof).await?;
     if matches!(request.command, PhaseCommand::Claim { .. }) {
         if crate::POSTGRES_SCHEMA_VERSION >= 14
-            && super::frontend::origin(tx, run, &target.call_id)
-                .await
-                .map_err(|_| Error::UnknownStoreOutcome)?
-                .is_some()
+            && super::frontend::origin_with_proof(
+                tx,
+                &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
+                    .map_err(|_| Error::UnknownStoreOutcome)?,
+                &target.call_id,
+                proof,
+            )
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?
+            .is_some()
         {
             return Err(Error::InvalidTransition);
         }
@@ -313,7 +412,7 @@ async fn prepare(
         let Some(PhaseWriteAuthority::Attempt(authority)) = authority else {
             return Err(Error::StaleOwner);
         };
-        let previous = records::latest(tx, &run.id, &target.call_id).await?;
+        let previous = records::latest_with_proof(tx, &run.id, &target.call_id, proof).await?;
         let record = phase::PhaseRecord::claim(
             run,
             &attempt,
@@ -323,11 +422,13 @@ async fn prepare(
             now,
             previous.as_ref(),
         )?;
+        caller::measure_phase_record(&record, proof).map_err(|_| Error::UnknownStoreOutcome)?;
         let grant = record.authority(authority.clone())?;
         Ok((record, Some(grant)))
     } else {
-        let mut record = records::load(tx, &run.id, &target.id)
-            .await?
+        let mut record = records::load_with_proof(tx, &run.id, &target.id, proof)
+            .await
+            .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
             .ok_or(Error::NotFound)?;
         let worker = match authority {
             Some(PhaseWriteAuthority::Phase(authority)) => Some(authority),
@@ -347,14 +448,38 @@ pub(super) async fn legacy_guard(
     run: &Run,
     id: &crabber_core::ToolCallId,
 ) -> Result<(), crate::StoreError> {
+    legacy_guard_with_proof(
+        tx,
+        run,
+        id,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+
+pub(super) async fn legacy_guard_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    id: &crabber_core::ToolCallId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::StoreError> {
     if crate::POSTGRES_SCHEMA_VERSION >= 14
-        && super::frontend::origin(tx, run, id)
-            .await
-            .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
-            .is_some()
+        && super::frontend::origin_with_proof(
+            tx,
+            &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
+                .map_err(|_| crate::StoreError::Conflict)?,
+            id,
+            proof,
+        )
+        .await
+        .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
+        .is_some()
     {
         return Err(crate::StoreError::Conflict);
     }
+    proof
+        .charge(1)
+        .map_err(|_| crate::StoreError::Validation("legacy phase guard allowance".into()))?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND call_id=$2)",
     )
@@ -380,3 +505,13 @@ mod resolution_tests;
 
 #[path = "phase/terminal_history.rs"]
 pub(super) mod terminal_history;
+
+pub(super) use calls::load_with_proof as load_call_with_proof;
+pub(super) use records::latest_metadata_with_proof as latest_host_phase_with_proof;
+pub(super) async fn metadata_page_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &crate::PhasePageRequest,
+    proof: &mut Proof,
+) -> Result<crate::PhasePage, Error> {
+    records::page_with_proof(tx, request, proof).await
+}

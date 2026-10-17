@@ -4,6 +4,44 @@ use super::{
     SessionOwnerState,
 };
 impl Ledger {
+    /// Borrowed owner carriers used by the existing preparation validators,
+    /// before their bounded audit/service Vec copies or the inherited State clone.
+    pub(crate) fn preflight_preparation(
+        &self,
+        grant: &crate::session_owner::preparation::PreparationGrant,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        let session = &grant.original_reservation().owner.binding.session_id;
+        proof
+            .measure(&self.contexts.get(session))
+            .map_err(|_| Error::Capacity)?;
+        for (key, value) in self.records.iter().filter(|((s, _), _)| s == session) {
+            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+        }
+        for (key, value) in self.audits.iter().filter(|((s, _), _)| s == session) {
+            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+        }
+        for (key, value) in self.publications.iter().filter(|((s, _), _)| s == session) {
+            proof.measure(&(key, value)).map_err(|_| Error::Capacity)?;
+        }
+        proof
+            .charge(
+                (crate::session_owner::preparation::proof::MAX_PUBLICATIONS + 1)
+                    * std::mem::size_of::<&super::Audit>(),
+            )
+            .map_err(|_| Error::Capacity)?;
+        Ok(())
+    }
+    pub(crate) fn verify_preparation_with_proof<'a>(
+        &self,
+        grant: &'a crate::session_owner::preparation::PreparationGrant,
+        revision: RevisionState,
+        now: OffsetDateTime,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::session_owner::preparation::proof::VerifiedPreparation<'a>, Error> {
+        self.preflight_preparation(grant, proof)?;
+        self.verify_preparation(grant, revision, now)
+    }
     pub fn verify_preparation_join(
         &self,
         grant: &crate::session_owner::preparation::PreparationGrant,

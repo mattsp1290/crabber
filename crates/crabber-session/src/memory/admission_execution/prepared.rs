@@ -9,10 +9,16 @@ impl MemoryStore {
         state: &mut super::super::State,
         recovery: &PreparedAdmissionRecovery,
         proof: &VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::ClaimedAdmission, PreparationCommitError> {
+        crate::native_enrollment::caller::measure_recovery_source(&recovery.source, read_proof)
+            .map_err(|_| Error::UnknownStoreFailure)?;
+        read_proof
+            .measure(&*recovery.binding)
+            .map_err(|_| Error::UnknownStoreFailure)?;
         recovery.validate()?;
         let source = &recovery.source;
-        super::validate_source(state, source, self.clock.now())?;
+        super::inspection::validate_source_with_proof(state, source, self.clock.now(), read_proof)?;
         let crate::session_owner::audit::RevisionState::Present(revision) =
             super::super::session_owner::revision(state, &source.request().session_id)
         else {
@@ -21,6 +27,11 @@ impl MemoryStore {
         let completion = crate::session_owner::preparation::recovery::completion_source(
             source, proof, revision,
         )?;
-        Ok(self.claim_admission_transaction(state, source.request().clone(), Some(completion))?)
+        Ok(self.claim_admission_transaction(
+            state,
+            source.request(),
+            Some(&completion),
+            read_proof,
+        )?)
     }
 }

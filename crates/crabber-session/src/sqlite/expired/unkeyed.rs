@@ -8,6 +8,21 @@ pub(in crate::sqlite) async fn read(
     session: &SessionId,
     run: &RunId,
 ) -> Result<Option<Box<Original>>, Error> {
+    read_with_proof(
+        tx,
+        session,
+        run,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(in crate::sqlite) async fn read_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Box<Original>>, Error> {
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(w.data_json AS BLOB))+COALESCE(length(CAST(s.data AS BLOB)),0)+length(CAST(w.root_join AS BLOB)) AS BIGINT) FROM preparation_admission_witnesses w LEFT JOIN sessions s ON s.id=w.session_id WHERE w.session_id=$1 AND w.run_id=$2").bind(&session.0).bind(&run.0), proof).await.map_err(unknown)?;
     let Some(row) = sqlx::query(SOURCE)
         .bind(&session.0)
         .bind(&run.0)
@@ -37,6 +52,7 @@ pub(in crate::sqlite) async fn read(
     if !witness.is_unkeyed() {
         return Ok(None);
     }
+    proof.charge(1).map_err(unknown)?;
     let mixed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admission_executions WHERE run_id=$1 UNION ALL SELECT 1 FROM admission_execution_sources WHERE run_id=$1)")
         .bind(&run.0).fetch_one(&mut **tx).await.map_err(unknown)?;
     if mixed {
@@ -51,19 +67,14 @@ pub(in crate::sqlite) async fn read(
     if current.id != *session {
         return Err(Error::UnknownStoreOutcome);
     }
-    let initial = super::super::admission_journal::issuance_with_proof(
-        tx,
-        session,
-        run,
-        Some(1),
-        &mut crate::public_session::v2::proof::Proof::legacy(),
-    )
-    .await
-    .map_err(unknown)?;
+    let initial =
+        super::super::admission_journal::issuance_with_proof(tx, session, run, Some(1), proof)
+            .await
+            .map_err(unknown)?;
     let mut audits = Vec::with_capacity(5);
     for id in witness.audit_ids()? {
         audits.push(
-            super::super::session_owner::source_audit(tx, session, &id)
+            super::super::session_owner::source_audit_with_proof(tx, session, &id, proof)
                 .await?
                 .ok_or(Error::UnknownStoreOutcome)?,
         );

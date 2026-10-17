@@ -29,6 +29,22 @@ pub(in crate::memory) fn validate_source(
     }
     Ok(())
 }
+pub(in crate::memory) fn validate_source_with_proof(
+    state: &super::super::State,
+    source: &AdmissionRecoveryPreparation,
+    now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    crate::native_enrollment::caller::measure_recovery_source(source, proof)
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    source.fingerprint()?;
+    let (_, sequence, binding) = context_with_proof(state, source.request(), now, proof)?;
+    source.verify_binding(&binding)?;
+    if sequence != source.expected_issuance() {
+        return Err(Error::StaleOwner);
+    }
+    Ok(())
+}
 fn context(
     state: &super::super::State,
     request: &ClaimUnstartedAdmissionRequest,
@@ -41,10 +57,31 @@ fn context(
     ),
     Error,
 > {
+    context_with_proof(
+        state,
+        request,
+        now,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+fn context_with_proof(
+    state: &super::super::State,
+    request: &ClaimUnstartedAdmissionRequest,
+    now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    (
+        crabber_core::SessionRevision,
+        u64,
+        crate::ExecutionBindingCapsule,
+    ),
+    Error,
+> {
     let run = state
         .runs
         .get(&request.expected_fence.run_id)
         .ok_or(Error::MissingEvidence)?;
+    proof.measure(run).map_err(|_| Error::UnknownStoreFailure)?;
     if run.checkpoint.is_some()
         || run.error.is_some()
         || crate::snapshot::encoded_bytes(run, 32768).is_none()
@@ -55,7 +92,8 @@ fn context(
         .admission_executions
         .get(&run.id)
         .ok_or(Error::MissingEvidence)?;
-    super::super::admission_journal::verify(state, &run.id).map_err(|_| Error::SemanticConflict)?;
+    super::super::admission_journal::verify_with_proof(state, &run.id, proof)
+        .map_err(|_| Error::SemanticConflict)?;
     let count = record
         .capsule
         .input_envelope
@@ -68,9 +106,21 @@ fn context(
             message.session_id == run.session_id && message.run_id.as_ref() == Some(&run.id)
         })
         .take(count)
-        .cloned()
-        .collect();
+        .map(|message| {
+            proof
+                .measure(message)
+                .map_err(|_| Error::UnknownStoreFailure)?;
+            Ok(message.clone())
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     record.validate_messages(run, &messages)?;
+    proof
+        .measure(
+            &state
+                .receipts
+                .get(&(request.session_id.clone(), request.key.clone())),
+        )
+        .map_err(|_| Error::UnknownStoreFailure)?;
     if state
         .receipts
         .get(&(request.session_id.clone(), request.key.clone()))
@@ -85,7 +135,7 @@ fn context(
     if run.lease_until > now {
         return Err(Error::LiveLease);
     }
-    let sequence = super::super::native_parent::latest_run(state, run)
+    let sequence = super::super::native_parent::current_issuance_with_proof(state, run, proof)
         .map_err(|_| Error::SemanticConflict)?
         .ok_or(Error::MissingEvidence)?
         .sequence;
@@ -94,8 +144,13 @@ fn context(
     else {
         return Err(Error::MissingEvidence);
     };
-    let binding = super::super::execution_binding::read(state, &request.session_id, &run.id)
-        .map_err(|_| Error::SemanticConflict)?
-        .ok_or(Error::MissingEvidence)?;
+    let binding = super::super::execution_binding::read_with_proof(
+        state,
+        &request.session_id,
+        &run.id,
+        proof,
+    )
+    .map_err(|_| Error::SemanticConflict)?
+    .ok_or(Error::MissingEvidence)?;
     Ok((revision, sequence, binding.capsule))
 }

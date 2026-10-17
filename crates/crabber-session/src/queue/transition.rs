@@ -68,8 +68,8 @@ impl<'a> AdmissionGuard<'a> {
     }
 }
 impl VerifiedAdmission {
-    pub fn bound(&self) -> BoundKeyedAdmitRequest {
-        self.bound.clone()
+    pub fn bound_ref(&self) -> &BoundKeyedAdmitRequest {
+        &self.bound
     }
 }
 pub(crate) struct Change {

@@ -1,3 +1,5 @@
+#[path = "queue/admission.rs"]
+mod admission;
 #[path = "queue/inspection.rs"]
 mod inspection;
 #[path = "queue/protocol.rs"]
@@ -206,9 +208,18 @@ impl MemoryStore {
         page(request, revision, entries)
     }
     pub(super) fn queue_mutate(&self, request: &QueueMutation) -> Result<QueueOutcome, StoreError> {
+        self.queue_mutate_with_proof(
+            request,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+    }
+    fn queue_mutate_with_proof(
+        &self,
+        request: &QueueMutation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<QueueOutcome, StoreError> {
         let digest = request.fingerprint()?;
-        let read_proof =
-            std::cell::RefCell::new(crate::public_session::v2::proof::Proof::bounded(32 << 20));
+        let read_proof = std::cell::RefCell::new(proof);
         let selected = std::cell::RefCell::new(None);
         let result = self.transact_or_replay(
             |state| {
@@ -300,7 +311,7 @@ impl MemoryStore {
         } else {
             0
         };
-        let mut change = crate::queue::apply_guarded(
+        let change = crate::queue::apply_guarded(
             &request,
             &summary,
             head.as_ref(),
@@ -309,97 +320,75 @@ impl MemoryStore {
             now,
             preparation,
         )?;
-        let admitted = self.queue_admission(state, &mut change, preparation, read_proof)?;
-        super::bump_public_revision(state, &request.session_id)?;
-        let saved = QueueReceipt {
-            session_id: request.session_id.clone(),
-            operation_id: request.id.clone(),
-            semantic_digest: digest,
-            revision: revision_of(state, &request.session_id),
-            summary: change.record.summary.clone(),
-        };
-        change.record.validate(
-            &request.session_id,
-            &saved.summary.queue_id,
-            saved.summary.sequence,
+        let outcome = self.queue_admit_and_publish(
+            state,
+            (request, digest, previous, now),
+            change,
+            preparation,
+            read_proof,
         )?;
-        encode(&change.record)?;
-        let key = (request.session_id.clone(), request.id.clone());
-        state.queue.insert(
-            (request.session_id.clone(), saved.summary.queue_id.clone()),
-            change.record,
-        );
-        let audit = Audit {
-            request,
-            receipt: saved.clone(),
-            authority: change.authority.clone(),
-            created_at: now,
-        };
-        read_proof.measure(&audit).map_err(|failure| {
-            protocol::domain(crate::public_session::v2::proof::ReadError::Budget(failure))
-        })?;
-        if let Some(previous) = previous {
-            let source = crate::queue::source::Source::new(
-                &audit,
-                previous.sequence.checked_add(1).ok_or_else(corrupt)?,
-                Some(previous.digest),
-            )?;
-            state.queue_publications.publish(&audit, source)?;
-        } else if matches!(audit.request.action, QueueAction::Enqueue { .. }) {
-            let source = crate::queue::source::Source::new(&audit, 1, None)?;
-            state.queue_publications.publish(&audit, source)?;
-        }
-        state.queue_audits.insert(key.clone(), audit);
-        state
-            .operation_receipts
-            .insert(key, OperationReceipt::Queue(saved.clone()));
         #[cfg(test)]
         crate::binding_fault::trip(&self.queue_fault, 1)?;
-        Ok(QueueOutcome::Applied {
-            receipt: saved,
-            authority: change.authority,
-            admitted,
-        })
-    }
-    fn queue_admission(
-        &self,
-        state: &mut State,
-        change: &mut Change,
-        preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
-        read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<Option<Box<crate::AdmitOutcome>>, StoreError> {
-        if let Some(proof) = &change.admission {
-            let bound = proof.bound();
-            let outcome = super::admission::admit_keyed_with_proof(
-                state,
-                &bound.keyed,
-                self.clock.now(),
-                preparation.map_or(AdmissionGuard::Queue(proof), |preparation| {
-                    AdmissionGuard::PreparedQueue {
-                        queue: proof,
-                        preparation,
-                    }
-                }),
-                read_proof,
-            )?;
-            let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {
-                return Err(StoreError::AdmissionConflict);
-            };
-            let binding = crate::RetainedExecutionBinding::new(
-                &admitted.run,
-                &bound.keyed.request.user_message,
-                bound.binding,
-            );
-            state
-                .execution_bindings
-                .insert(admitted.run.id.clone(), binding.encode()?);
-            complete(change, &admitted, receipt);
-            Ok(Some(admitted))
-        } else {
-            Ok(None)
-        }
+        Ok(outcome)
     }
 }
+fn publish_queue_change(
+    state: &mut State,
+    operation: (
+        QueueMutation,
+        crabber_core::InputFingerprint,
+        Option<crate::queue::source::Source>,
+        time::OffsetDateTime,
+    ),
+    change: Change,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(QueueReceipt, Option<QueueAuthority>), StoreError> {
+    let (request, digest, previous, now) = operation;
+    let saved = publish_queue_revision(state, &request, digest, change.record.summary.clone())?;
+    change.record.validate(
+        &request.session_id,
+        &saved.summary.queue_id,
+        saved.summary.sequence,
+    )?;
+    encode(&change.record)?;
+    let key = (request.session_id.clone(), request.id.clone());
+    state.queue.insert(
+        (request.session_id.clone(), saved.summary.queue_id.clone()),
+        change.record,
+    );
+    let audit = Audit {
+        request,
+        receipt: saved.clone(),
+        authority: change.authority.clone(),
+        created_at: now,
+    };
+    read_proof.measure(&audit).map_err(|failure| {
+        protocol::domain(crate::public_session::v2::proof::ReadError::Budget(failure))
+    })?;
+    let source = if let Some(previous) = previous {
+        Some(crate::queue::source::Source::new(
+            &audit,
+            previous.sequence.checked_add(1).ok_or_else(corrupt)?,
+            Some(previous.digest),
+        )?)
+    } else if matches!(audit.request.action, QueueAction::Enqueue { .. }) {
+        Some(crate::queue::source::Source::new(&audit, 1, None)?)
+    } else {
+        None
+    };
+    if let Some(source) = source {
+        read_proof.measure(&source).map_err(|failure| {
+            protocol::domain(crate::public_session::v2::proof::ReadError::Budget(failure))
+        })?;
+        state.queue_publications.publish(&audit, source)?;
+    }
+    state.queue_audits.insert(key.clone(), audit);
+    state
+        .operation_receipts
+        .insert(key, OperationReceipt::Queue(saved.clone()));
+    Ok((saved, change.authority))
+}
+
 fn guards(state: &State, request: &QueueMutation) -> Result<(), StoreError> {
     if let QueueAction::Enqueue { input, .. } = &request.action
         && (state.queue.values().any(|r| {
@@ -663,3 +652,23 @@ pub(super) fn preflight(
 #[cfg(test)]
 #[path = "queue/publication_tests.rs"]
 mod publication_tests;
+
+fn publish_queue_revision(
+    state: &mut State,
+    request: &QueueMutation,
+    digest: crabber_core::InputFingerprint,
+    summary: QueueSummary,
+) -> Result<QueueReceipt, StoreError> {
+    super::bump_public_revision(state, &request.session_id)?;
+    Ok(QueueReceipt {
+        session_id: request.session_id.clone(),
+        operation_id: request.id.clone(),
+        semantic_digest: digest,
+        revision: revision_of(state, &request.session_id),
+        summary,
+    })
+}
+
+#[cfg(test)]
+#[path = "queue/initial_selected_tests.rs"]
+mod initial_selected_tests;

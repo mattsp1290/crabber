@@ -181,3 +181,17 @@ impl AdmissionRecoveryPreparation {
         Ok(())
     }
 }
+
+impl AdmissionRecoveryPreparation {
+    pub(crate) fn measure_original(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::public_session::v2::proof::Failure> {
+        crate::native_enrollment::caller::recovery::measure_request(&self.request, proof)?;
+        proof.measure(&(
+            self.expected_revision,
+            self.expected_issuance,
+            &self.execution_binding_digest,
+        ))
+    }
+}

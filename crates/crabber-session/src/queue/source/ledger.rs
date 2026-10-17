@@ -13,6 +13,34 @@ pub(crate) struct Ledger {
     members: BTreeMap<(Scope, u64), ControlId>,
 }
 impl Ledger {
+    #[cfg(test)]
+    pub(crate) fn raw_initial_snapshot(
+        &self,
+        session: &SessionId,
+    ) -> crabber_core::InputFingerprint {
+        crate::native_enrollment::caller::contract::snapshot_digest(&(
+            self.protocols
+                .iter()
+                .filter(|s| s.session == *session)
+                .collect::<Vec<_>>(),
+            self.origins
+                .iter()
+                .filter(|(s, _)| s.session == *session)
+                .collect::<Vec<_>>(),
+            self.heads
+                .iter()
+                .filter(|(s, _)| s.session == *session)
+                .collect::<Vec<_>>(),
+            self.sources
+                .iter()
+                .filter(|((s, _), _)| s == session)
+                .collect::<Vec<_>>(),
+            self.members
+                .iter()
+                .filter(|((s, _), _)| s.session == *session)
+                .collect::<Vec<_>>(),
+        ))
+    }
     pub(crate) fn contains_operation(
         &self,
         session: &SessionId,

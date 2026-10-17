@@ -1,5 +1,7 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
 //! connecting only verifies a current-version Crabber database already using WAL.
+#[path = "sqlite/admission_reads.rs"]
+mod admission_reads;
 #[path = "sqlite/expired.rs"]
 mod expired;
 #[path = "sqlite/read_proof.rs"]
@@ -23,6 +25,7 @@ mod execution;
 mod execution_binding;
 mod fork;
 mod frontend;
+mod legacy_execution;
 mod management;
 mod native_enrollment;
 mod native_parent;
@@ -111,6 +114,8 @@ pub struct SqliteStore {
     management_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
     #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
@@ -239,6 +244,8 @@ async fn connect_with(
         management_fault: Arc::default(),
         #[cfg(test)]
         attempt_fault: Arc::default(),
+        #[cfg(test)]
+        native_raw_probe: Arc::default(),
         #[cfg(test)]
         phase_fault: Arc::default(),
         #[cfg(test)]

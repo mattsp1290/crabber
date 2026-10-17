@@ -33,8 +33,24 @@ pub(super) async fn context(
     request: InspectExpiredRunPreparation,
     now: time::OffsetDateTime,
 ) -> Result<ExpiredRunPreparation, Error> {
+    context_with_proof(
+        tx,
+        request,
+        now,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(super) async fn context_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: InspectExpiredRunPreparation,
+    now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<ExpiredRunPreparation, Error> {
+    crate::native_enrollment::caller::recovery::measure_expired_request(&request, proof)
+        .map_err(unknown)?;
     request.validate()?;
-    let run = load_run(tx, &request).await?;
+    let run = load_run_with_proof(tx, &request, proof).await?;
     if run.error.is_some() {
         return Err(Error::UnknownStoreOutcome);
     }
@@ -44,24 +60,26 @@ pub(super) async fn context(
     if run.lease_until > now {
         return Err(Error::LiveOwner);
     }
+    proof.charge(1).map_err(unknown)?;
     if super::has_pending_continuation(tx, &run.session_id)
         .await
         .map_err(unknown)?
     {
         return Err(Error::Busy);
     }
-    let binding = super::execution_binding::read(tx, &run.session_id, &run.id)
+    let binding = super::execution_binding::read_with_proof(tx, &run.session_id, &run.id, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
-    let issuer = super::native_parent::current_issuance(tx, &run)
+    let issuer = super::native_parent::current_issuance_with_proof(tx, &run, proof)
         .await
         .map_err(unknown)?;
     let (native, origin) = match run.status {
-        RunStatus::Paused => suspended(tx, &run).await?,
-        RunStatus::Running => initial(tx, &run, &binding, now).await?,
+        RunStatus::Paused => suspended(tx, &run, proof).await?,
+        RunStatus::Running => initial(tx, &run, &binding, now, proof).await?,
         _ => return Err(Error::InvalidTransition),
     };
+    proof.charge(8).map_err(unknown)?;
     let revision: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
         .bind(&run.session_id.0)
         .fetch_optional(&mut **tx)
@@ -79,11 +97,13 @@ pub(super) async fn context(
         owner: request.owner.clone(),
         lease: request.lease,
     };
+    proof.measure(&target).map_err(unknown)?;
     ExpiredRunPreparation::from_verified_source(request, revision, target)
 }
 async fn suspended(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<
     (
         InputFingerprint,
@@ -91,19 +111,30 @@ async fn suspended(
     ),
     Error,
 > {
+    proof.charge(1).map_err(unknown)?;
     let excessive: bool = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM tool_phases WHERE run_id=$1 LIMIT 65) AS p)>64 OR (SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=$1 LIMIT 65) AS c)>64")
         .bind(&run.id.0).fetch_one(&mut **tx).await.map_err(unknown)?;
     if excessive {
         return Err(Error::Capacity);
     }
-    let proof = super::run_control::suspension::verify(tx, run)
+    let original = super::run_control::suspension::verify_with_proof(tx, run, proof)
         .await
         .map_err(unknown)?
         .1;
     Ok((
-        crate::session_owner::preparation::expired::suspension_digest(&proof, run)?,
-        crate::session_owner::preparation::ExpiredRunOrigin::Suspended(proof.receipt.operation_id),
+        crate::session_owner::preparation::expired::suspension_digest(&original, run)?,
+        crate::session_owner::preparation::ExpiredRunOrigin::Suspended(
+            original.receipt.operation_id,
+        ),
     ))
+}
+pub(super) async fn load_run_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &InspectExpiredRunPreparation,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Run, Error> {
+    super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM runs WHERE session_id=$1 AND id=$2").bind(&request.session_id.0).bind(&request.expected_fence.run_id.0), proof).await.map_err(unknown)?;
+    load_run(tx, request).await
 }
 pub(super) async fn load_run(
     tx: &mut Transaction<'_, Sqlite>,
@@ -145,6 +176,7 @@ async fn initial(
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<
     (
         InputFingerprint,
@@ -152,13 +184,14 @@ async fn initial(
     ),
     Error,
 > {
-    let initial = initial_provenance(tx, run, binding).await?;
-    unstarted::guard(tx, run, binding, now, initial).await
+    let initial = initial_provenance(tx, run, binding, proof).await?;
+    unstarted::guard_with_proof(tx, run, binding, now, initial, proof).await
 }
 async fn initial_provenance(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<
     (
         InputFingerprint,
@@ -166,15 +199,15 @@ async fn initial_provenance(
     ),
     Error,
 > {
-    if let Some(original) = unkeyed::read(tx, &run.session_id, &run.id).await? {
+    if let Some(original) = unkeyed::read_with_proof(tx, &run.session_id, &run.id, proof).await? {
         original.verify_binding(&binding.capsule)?;
         return Ok((original.digest()?, original.origin()?));
     }
-    let record = super::admission_execution::load_record(tx, &run.id)
+    let record = super::admission_execution::load_record_with_proof(tx, &run.id, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
-    let init = super::admission_journal::read(tx, &record)
+    let init = super::admission_journal::read_with_proof(tx, &record, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::Unsupported)?;
@@ -210,34 +243,8 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
 }
 const RUN: &str = "SELECT CASE WHEN length(CAST(data AS BLOB))<=4227072 THEN data END AS body,lease_until,(json_extract(data,'$.id')=id AND json_extract(data,'$.session_id')=session_id AND json_extract(data,'$.status')=status AND json_extract(data,'$.claim_token')=claim_token) AS valid FROM runs WHERE session_id=$1 AND id=$2";
 
-impl SqliteStore {
-    pub(in crate::sqlite) async fn claim_prepared_expired(
-        &self,
-        tx: &mut Transaction<'_, Sqlite>,
-        prepared: &crate::session_owner::preparation::PreparedExpiredRunResume,
-        proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
-        read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<
-        crate::session_owner::preparation::ExpiredRunOutcome,
-        crate::session_owner::preparation::PreparationCommitError,
-    > {
-        use crate::session_owner::preparation::expired;
-        prepared.validate()?;
-        let source = &prepared.source;
-        let current = context(tx, source.request().clone(), self.clock.now()).await?;
-        source.verify_source(&current)?;
-        let completion = expired::completion_source(source, proof, current.expected_revision())?;
-        let original = load_run(tx, source.request()).await?;
-        let next = expired::replacement(&original, source, self.clock.now())?;
-        super::records::save_run_with_proof(tx, &next, Some(&completion), read_proof).await?;
-        Ok(expired::claimed(
-            source,
-            &completion,
-            current.expected_revision(),
-            &next,
-        ))
-    }
-}
+#[path = "expired/recovery.rs"]
+mod recovery;
 
 #[cfg(test)]
 #[path = "expired/tests.rs"]
@@ -263,3 +270,6 @@ pub(super) async fn verify_begin(
     }
     Ok(())
 }
+
+#[path = "expired/legacy.rs"]
+mod legacy;

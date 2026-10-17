@@ -3,8 +3,12 @@ use super::super::{State, execution_binding};
 use crate::{AttemptError as Error, attempt};
 use crabber_core::Run;
 
-pub(super) fn check(state: &State, run: &Run) -> Result<(), Error> {
-    let binding = execution_binding::read(state, &run.session_id, &run.id)
+pub(super) fn check(
+    state: &State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let binding = execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::InvalidTransition)?;
     check_with_binding(state, run, &binding)

@@ -6,9 +6,21 @@ use crabber_core::Run;
 use sqlx::Postgres;
 
 pub(super) async fn check(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), Error> {
-    let binding = execution_binding::read(tx, &run.session_id, &run.id)
+    check_with_proof(
+        tx,
+        run,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn check_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let binding = execution_binding::read_with_proof(tx, &run.session_id, &run.id, proof)
         .await
-        .map_err(attempt::sql::unknown)?
+        .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::InvalidTransition)?;
     let count = attempt::pristine::input_count(run, &binding)?;
     let observed: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM messages WHERE session_id=$1 AND run_id=$2 LIMIT $3) AS input_prefix")

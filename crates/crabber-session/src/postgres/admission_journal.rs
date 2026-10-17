@@ -1,8 +1,7 @@
 //! Bounded immutable Init/Begin sources, independent of mutable execution state.
 use super::db;
 use crate::admission_journal::{self, Begin, Init, Kind, Source};
-use crate::native_parent::{RunIssuance, RunState};
-use crate::postgres::transaction::Transaction;
+use crate::native_parent::RunIssuance;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{AdmissionExecutionRecord, StoreError};
 use crabber_core::{Run, RunId, SessionId};
@@ -128,19 +127,25 @@ pub(super) async fn read_with_proof(
         _ => None,
     })
 }
-pub(super) async fn begin(
+
+pub(super) async fn begin_captured_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     record: &AdmissionExecutionRecord,
     run: &Run,
-) -> Result<(), StoreError> {
-    if let Some(init) = read(tx, record).await? {
-        let issuance = issuer(tx, &run.session_id, &run.id, None).await?;
-        if issuance.state != RunState::from_run(run).map_err(|_| invalid())? {
-            return Err(invalid());
-        }
-        insert(tx, Source::Begin(Begin::new(&init, issuance)?)).await?;
-    }
-    Ok(())
+    proof: &mut Proof,
+) -> Result<Option<(Init, Begin)>, ReadError<StoreError>> {
+    let Some(init) = read_with_proof(tx, record, proof).await? else {
+        return Ok(None);
+    };
+    let issuance = issuance_with_proof(tx, &run.session_id, &run.id, None, proof).await?;
+    proof
+        .measure(&(&init, &issuance))
+        .map_err(ReadError::Budget)?;
+    issuance.verify(run).map_err(|_| invalid())?;
+    let begin = Begin::new(&init, issuance)?;
+    proof.measure(&begin).map_err(ReadError::Budget)?;
+    insert(tx, Source::Begin(begin.clone())).await?;
+    Ok(Some((init, begin)))
 }
 
 #[cfg(test)]

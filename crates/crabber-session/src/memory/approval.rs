@@ -327,28 +327,6 @@ mod tests;
 #[path = "approval/termination_tests.rs"]
 mod termination_tests;
 
-pub(super) fn guard_claiming(
-    state: &State,
-    run: &Run,
-    request: &crate::AttemptMutation,
-) -> Result<(), crate::AttemptError> {
-    let id = state
-        .approval_barriers
-        .get(&run.session_id)
-        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
-    let record = state
-        .approvals
-        .get(id)
-        .ok_or(crate::AttemptError::UnknownStoreOutcome)?;
-    verify_record(state, run, record).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
-    if record.state != crate::ApprovalContinuationState::Waiting
-        || !matches!(&request.command,crate::AttemptCommand::Reserve {target} if *target==record.batch.next_attempt)
-    {
-        return Err(crate::AttemptError::Busy);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "approval/original_plan_tests.rs"]
 mod original_plan_tests;
@@ -369,3 +347,9 @@ fn fault(store: &super::MemoryStore) -> u8 {
         0
     }
 }
+
+#[path = "approval/native_attempt.rs"]
+mod native_attempt;
+pub(super) use native_attempt::guard_with_proof as guard_attempt_with_proof;
+
+pub(super) use current::session_with_proof as verify_session_with_proof;

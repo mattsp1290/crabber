@@ -5,12 +5,13 @@ use crabber_core::{InputFingerprint, Run};
 #[cfg(test)]
 #[path = "unstarted/tests.rs"]
 mod tests;
-pub(super) fn guard(
+pub(super) fn guard_with_proof(
     state: &State,
     run: &Run,
     binding: &crate::RetainedExecutionBinding,
     now: time::OffsetDateTime,
     initial: (InputFingerprint, ExpiredRunOrigin),
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(InputFingerprint, ExpiredRunOrigin), Error> {
     let mut records = state
         .attempts
@@ -21,6 +22,8 @@ pub(super) fn guard(
             .map_err(|_| Error::Unsupported)?;
         return Ok(initial);
     };
+    crate::native_enrollment::caller::measure_record(record, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     if records.next().is_some()
         || state
             .native_parent_witnesses
@@ -54,6 +57,9 @@ pub(super) fn guard(
     if events.next().is_some() || crate::snapshot::encoded_bytes(event, 65536).is_none() {
         return Err(Error::Unsupported);
     }
+    proof
+        .measure(event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let id = crabber_core::ControlId(
         event
             .correlation
@@ -61,7 +67,7 @@ pub(super) fn guard(
             .ok_or(Error::UnknownStoreOutcome)?,
     );
     crate::attempt::validate_identifier(&id.0).map_err(unknown)?;
-    let original = read(state, &run.session_id, &id)?;
+    let original = read_with_proof(state, &run.session_id, &id, proof)?;
     original.verify_record(run, record, now)?;
     Ok((original.digest(&initial.0)?, original.origin(initial.1)?))
 }
@@ -69,6 +75,19 @@ pub(in crate::memory) fn read(
     state: &State,
     session: &crabber_core::SessionId,
     id: &crabber_core::ControlId,
+) -> Result<Original, Error> {
+    read_with_proof(
+        state,
+        session,
+        id,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(in crate::memory) fn read_with_proof(
+    state: &State,
+    session: &crabber_core::SessionId,
+    id: &crabber_core::ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Original, Error> {
     let Some(super::super::OperationReceipt::Attempt(receipt)) =
         state.operation_receipts.get(&(session.clone(), id.clone()))
@@ -86,6 +105,9 @@ pub(in crate::memory) fn read(
     {
         return Err(Error::UnknownStoreOutcome);
     }
+    proof
+        .measure(&(receipt, event))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let original = Original {
         receipt: receipt.clone(),
         event: event.clone(),

@@ -56,17 +56,17 @@ impl super::super::SqliteStore {
                     .await?
             }
             PreparedOperation::AdmitKeyed(bound) => {
-                let user = bound.keyed.request.user_message.clone();
-                let outcome = self
-                    .admit_keyed_guarded_with_proof(tx, bound.keyed, guard, read_proof)
-                    .await?;
-                if let KeyedAdmitOutcome::Started { admitted, .. } = &outcome {
-                    super::super::super::execution_binding::save(
-                        tx,
-                        &RetainedExecutionBinding::new(&admitted.run, &user, bound.binding),
-                    )
-                    .await?;
-                }
+                read_proof
+                    .measure(&(&bound.keyed, &bound.binding))
+                    .map_err(|_| crate::StoreError::Conflict)?;
+                let outcome=match self.admit_keyed_captured(tx,&bound.keyed,guard,crate::native_enrollment::caller::initial::Dispatch::raw(crate::native_enrollment::caller::Caller::Raw),read_proof).await?{
+                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
+                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
+                        super::super::super::execution_binding::save(tx,&RetainedExecutionBinding::new(&admitted.admitted.run,&bound.keyed.request.user_message,bound.binding.clone())).await?;
+                        let admitted=self.finish_initial(tx,crate::native_enrollment::caller::initial::Input::BoundKeyed{request:&bound.keyed,binding:&bound.binding,receipt:&receipt},*admitted,read_proof).await?;
+                        KeyedAdmitOutcome::Started{receipt,admitted:Box::new(admitted)}
+                    }
+                };
                 PreparationCompletion::Keyed(outcome)
             }
         };
@@ -85,16 +85,42 @@ impl super::super::SqliteStore {
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
+        read_proof
+            .measure(&(&bound.request, &bound.binding))
+            .map_err(|_| crate::StoreError::Conflict)?;
         bound.binding.validate(&bound.request)?;
-        let user = bound.request.user_message.clone();
-        let admitted = self
-            .admit_transaction_guarded_with_proof(tx, bound.request, false, guard, read_proof)
+        let captured = self
+            .admit_transaction_captured(
+                tx,
+                &bound.request,
+                false,
+                guard,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
+                read_proof,
+            )
             .await?;
         super::super::super::execution_binding::save(
             tx,
-            &RetainedExecutionBinding::new(&admitted.run, &user, bound.binding),
+            &RetainedExecutionBinding::new(
+                &captured.admitted.run,
+                &bound.request.user_message,
+                bound.binding.clone(),
+            ),
         )
         .await?;
+        let admitted = self
+            .finish_initial(
+                tx,
+                crate::native_enrollment::caller::initial::Input::Bound {
+                    request: &bound.request,
+                    binding: &bound.binding,
+                },
+                captured,
+                read_proof,
+            )
+            .await?;
         Ok(PreparationCompletion::Admitted(admitted))
     }
 }

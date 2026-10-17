@@ -47,11 +47,24 @@ pub(in super::super) async fn preparation_order(
     tx: &mut Transaction<'_, Postgres>,
     grant: &crate::session_owner::preparation::PreparationGrant,
 ) -> Result<(), Error> {
+    preparation_order_with_proof(
+        tx,
+        grant,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(in super::super) async fn preparation_order_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    grant: &crate::session_owner::preparation::PreparationGrant,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
     let request = grant.original_reservation();
-    let ids = super::services::service_ids(
+    let ids = super::services::service_ids_with_proof(
         tx,
         &request.owner.binding.session_id,
         &request.owner.binding.id,
+        proof,
     )
     .await?;
     let query = format!(

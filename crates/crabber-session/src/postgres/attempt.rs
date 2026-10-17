@@ -1,4 +1,7 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
+use crate::native_enrollment::caller::{self, Caller, Fresh};
+pub(super) mod accounting;
+mod prepare;
 pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
 pub(super) use records::{
     load_with_proof as load_host_attempt_with_proof, receipt_with_proof as host_receipt_with_proof,
@@ -100,28 +103,37 @@ impl PostgresExecution {
         authority: Option<AttemptAuthority>,
         conclusion: Option<crate::AttemptConclusion>,
     ) -> Result<Outcome, Error> {
+        self.change_attempt_with_proof(
+            request,
+            authority,
+            conclusion,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
+    }
+    pub(super) async fn change_attempt_with_proof(
+        &self,
+        request: AttemptMutation,
+        authority: Option<AttemptAuthority>,
+        conclusion: Option<crate::AttemptConclusion>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Outcome, Error> {
         attempt::validate_request(&request)?;
-        let (tx, run) = self
-            .store
-            .run_transaction(&self.fence.run_id)
-            .await
-            .map_err(|error| {
-                if error == crate::StoreError::NotFound {
-                    Error::NotFound
-                } else {
-                    sql::unknown(error)
-                }
-            })?;
-        let mut tx = tx;
-        let result = self
-            .apply_attempt(
-                &mut tx,
-                &run,
-                &request,
-                authority.as_ref(),
-                conclusion.as_ref(),
-            )
-            .await;
+        read_proof
+            .measure(&(&self.fence, &request, &conclusion))
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        caller::measure_authority(authority.as_ref(), read_proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let (mut tx, run) = accounting::begin(&self.store, &self.fence.run_id, read_proof).await?;
+        let result = Box::pin(self.apply_attempt_inner(
+            &mut tx,
+            &run,
+            &request,
+            (authority.as_ref(), conclusion.as_ref(), false),
+            Caller::Raw,
+            read_proof,
+        ))
+        .await;
         #[cfg(test)]
         let result = if self
             .store
@@ -155,13 +167,14 @@ impl PostgresExecution {
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<Outcome, Error> {
-        self.apply_attempt_inner(
+        Box::pin(self.apply_attempt_inner(
             tx,
             run,
             request,
             (authority, conclusion, false),
+            Caller::Raw,
             &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-        )
+        ))
         .await
     }
     pub(super) async fn apply_claim_attempt(
@@ -171,8 +184,15 @@ impl PostgresExecution {
         request: &AttemptMutation,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
-        self.apply_attempt_inner(tx, run, request, (None, None, true), read_proof)
-            .await
+        Box::pin(self.apply_attempt_inner(
+            tx,
+            run,
+            request,
+            (None, None, true),
+            Caller::Raw,
+            read_proof,
+        ))
+        .await
     }
     pub(super) async fn apply_attempt_with_proof(
         &self,
@@ -183,8 +203,15 @@ impl PostgresExecution {
         conclusion: Option<&crate::AttemptConclusion>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
-        self.apply_attempt_inner(tx, run, request, (authority, conclusion, false), read_proof)
-            .await
+        Box::pin(self.apply_attempt_inner(
+            tx,
+            run,
+            request,
+            (authority, conclusion, false),
+            Caller::Raw,
+            read_proof,
+        ))
+        .await
     }
     async fn apply_attempt_inner(
         &self,
@@ -196,34 +223,26 @@ impl PostgresExecution {
             Option<&crate::AttemptConclusion>,
             bool,
         ),
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
         let (authority, conclusion, claiming) = context;
-        let digest = if let Some(conclusion) = conclusion {
-            conclusion.fingerprint(&run.session_id, &run.id)?
-        } else {
-            request.fingerprint(&run.session_id, &run.id)?
-        };
-        if let Some(receipt) = records::receipt(tx, &run.session_id, &request.id).await? {
-            if receipt.attempt.run_id != run.id || receipt.semantic_digest != digest {
-                return Err(Error::SemanticConflict);
-            }
-            if let Some(conclusion) = conclusion {
-                conclusion.verify_replay(&receipt)?;
-            }
-            return Ok(Outcome::Replayed(receipt));
+        let (digest, replayed) =
+            accounting::request(tx, run, request, authority, conclusion, read_proof).await?;
+        if let Some(replayed) = replayed {
+            return Ok(replayed);
         }
         let now = self.store.clock.now();
         attempt::verify_run(run, &self.fence, now)?;
-        if admission_execution::load_record(tx, &run.id)
+        if admission_execution::load_record_with_proof(tx, &run.id, read_proof)
             .await
-            .map_err(sql::unknown)?
+            .map_err(|_| Error::UnknownStoreOutcome)?
             .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
         {
             return Err(Error::StaleOwner);
         }
-        guard_approval(tx, run, request, claiming).await?;
-        super::tool_continuation::guard_attempt(tx, run, request).await?;
+        super::approval::guard_attempt_with_proof(tx, run, request, claiming, read_proof).await?;
+        super::tool_continuation::guard_attempt_with_proof(tx, run, request, read_proof).await?;
         let current = records::revision(tx, &run.session_id).await?;
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -232,45 +251,27 @@ impl PostgresExecution {
             check_boundary(tx, run, conclusion).await?;
         }
         if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
-            pristine::check(tx, run).await?;
+            pristine::check_with_proof(tx, run, read_proof).await?;
         }
-        let id = &request.command.target().id;
         let insert = matches!(
             request.command,
             AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
         );
-        let (record, grant) = if insert {
-            if records::exists(tx, id).await? {
-                return Err(Error::SemanticConflict);
-            }
-            let latest = records::load(tx, &run.id, None, true).await?;
-            let record = attempt::AttemptRecord::reserve(
-                run,
-                request,
-                latest.as_ref().map(|(record, _)| &record.snapshot),
-            )?;
-            if latest.is_some() && !records::quiet(tx, &run.id).await? {
-                return Err(Error::CleanupBlocked);
-            }
-            (record, true)
-        } else {
-            let (mut record, _) = records::load(tx, &run.id, Some(id), true)
-                .await?
-                .ok_or(Error::NotFound)?;
-            let quiet = if conclusion.is_some()
-                || matches!(request.command, AttemptCommand::RecordCleanup { .. })
-            {
-                records::quiet(tx, &run.id).await?
-            } else {
-                true
-            };
-            let grant = record.change(run, request, authority, now, quiet)?;
-            if conclusion.is_some() {
-                record.cleanup(crate::AttemptCleanupResult::Complete, quiet)?;
-            }
-            (record, grant)
-        };
+        let (record, grant) = prepare::record(
+            tx,
+            run,
+            request,
+            authority,
+            now,
+            conclusion.is_some(),
+            read_proof,
+        )
+        .await?;
+        caller::measure_record(&record, read_proof).map_err(|_| Error::UnknownStoreOutcome)?;
         let authority = grant.then(|| record.authority()).transpose()?;
+        read_proof
+            .measure(&(&request.command, &record.snapshot))
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let settlement =
             apply_run_transition(tx, run, request, conclusion, now, read_proof).await?;
         let revision = records::revision(tx, &run.session_id)
@@ -286,9 +287,32 @@ impl PostgresExecution {
             settlement,
             now,
         )?;
+        read_proof
+            .measure(&event)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let source_event = event.clone();
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
+        if caller::relevant(&request.command) {
+            super::native_enrollment::record_raw_native(
+                tx,
+                caller,
+                &Fresh::Attempt(caller::Attempt {
+                    run,
+                    request,
+                    record: &record,
+                    receipt: &receipt,
+                    event: &source_event,
+                    issued: authority.as_ref(),
+                }),
+                read_proof,
+                #[cfg(test)]
+                &self.store.native_raw_probe,
+            )
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
         super::native_parent::record_attempt(tx, run, request, &record, &receipt, read_proof)
             .await?;
         super::run_control::suspension::save(tx, run, conclusion, &receipt)
@@ -302,19 +326,6 @@ pub(super) async fn renew(
     run: &Run,
 ) -> Result<(), crate::StoreError> {
     records::renew(tx, run).await
-}
-
-async fn guard_approval(
-    tx: &mut Transaction<'_, Postgres>,
-    run: &Run,
-    request: &AttemptMutation,
-    claiming: bool,
-) -> Result<(), Error> {
-    if claiming {
-        super::approval::guard_claiming(tx, run, request).await
-    } else {
-        super::approval::guard_attempt(tx, run, request).await
-    }
 }
 
 #[cfg(test)]
@@ -428,4 +439,15 @@ pub(super) async fn pristine_for_expired(
     run: &crabber_core::Run,
 ) -> Result<(), crate::AttemptError> {
     pristine::check(tx, run).await
+}
+
+pub(super) async fn pristine_for_expired_with_proof(
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
+    run: &crabber_core::Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::AttemptError> {
+    if !proof.active() {
+        return pristine_for_expired(tx, run).await;
+    }
+    pristine::check_with_proof(tx, run, proof).await
 }

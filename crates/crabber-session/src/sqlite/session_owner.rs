@@ -57,6 +57,15 @@ async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Res
         }
     }
 }
+pub(super) async fn context_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    workspace: &str,
+    directory: &str,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    reads::context_with_proof(tx, session, workspace, directory, proof).await
+}
 pub(super) async fn context(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
@@ -103,13 +112,13 @@ impl SqliteStore {
                 }
                 return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
             }
-            self.reserve_fresh(
+            Box::pin(self.reserve_fresh(
                 &mut tx,
                 &request,
                 parent.as_ref(),
                 digest,
                 preparation.as_ref(),
-            )
+            ))
             .await
         }
         .await;
@@ -445,3 +454,12 @@ pub(super) use protocol::selected as authenticate_source_audit;
 
 #[cfg(test)]
 pub(super) use drivers::classified as classify_driver_join;
+
+pub(super) async fn source_audit_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &SessionOwnerOperationId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Audit>, Error> {
+    reads::audit_with_proof(tx, session, id, proof).await
+}

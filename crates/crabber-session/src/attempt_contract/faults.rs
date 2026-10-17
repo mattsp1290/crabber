@@ -7,7 +7,7 @@ use crate::{
 use crabber_core::{Clock, ControlId, ManualClock};
 
 #[derive(Clone, Copy)]
-enum Case {
+pub(crate) enum Case {
     Reserve,
     ReserveBound,
     Reclaim,
@@ -118,7 +118,7 @@ pub async fn run_fault_contract(
     super::conclusion::faults(store, clock, &inject).await;
     super::resume::faults(store, clock, &inject).await;
 }
-async fn fixture(
+pub(crate) async fn fixture(
     store: &impl Store,
     clock: &ManualClock,
     case: Case,
