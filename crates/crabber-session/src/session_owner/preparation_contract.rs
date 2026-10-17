@@ -217,14 +217,18 @@ async fn unrelated_revision(store: &impl Store) {
             .state,
         SessionOwnerState::Active
     );
-    assert!(
-        store
-            .list_unfinished_runs()
-            .await
-            .unwrap()
-            .iter()
-            .all(|run| run.session_id != session)
-    );
+    // A header with no selected Run rejects any Run in this Session, including
+    // terminal Runs. Unrelated Sessions' private credentials are not selected.
+    let header_request = crate::public_session::v2::tests::request(store, &session, None).await;
+    let crate::PublicHeaderOutcomeV2::Header(header) = store
+        .public_control_header_v2(header_request)
+        .await
+        .unwrap()
+    else {
+        panic!("complete preparation Session header without a Run");
+    };
+    assert_eq!(header.session.session_id, session);
+    assert!(header.attempt.is_none());
 }
 async fn presence_change(store: &impl Store) {
     let session = SessionId::new();
