@@ -421,6 +421,21 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported.into())
     }
+    /// Pure original owned Queue admission inspection is implemented.
+    fn supports_queue_preparation_admission_inspection(&self) -> bool {
+        false
+    }
+    /// Authenticate the original prepared Queue winner and its initial native
+    /// admission. Returns metadata only; no completion, fence or current claim.
+    async fn inspect_queue_preparation_admission(
+        &self,
+        _original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::QueueReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported.into())
+    }
     /// Atomically capture the original CAS before granting preparation capacity.
     /// Exact retries return metadata and never replacement dispatch authority.
     async fn reserve_preparation(

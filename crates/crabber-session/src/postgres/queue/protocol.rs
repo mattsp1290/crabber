@@ -171,6 +171,43 @@ async fn cohort(
     Ok((origin, head))
 }
 /// Original selection deliberately does not consult the latest head or routing labels.
+pub(in crate::postgres) async fn admission_prefix(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    operation: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<Vec<Audit>>> {
+    let Some((_, audit)) = super::reads::audited_leaf(tx, session, operation, proof).await? else {
+        let orphan: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM future_queue_audit WHERE session_id=$1 AND operation_id=$2 UNION ALL SELECT 1 FROM queue_publication_sources WHERE session_id=$1 AND operation_id=$2)")
+            .bind(&session.0).bind(&operation.0).fetch_one(&mut **tx).await.map_err(db)?;
+        return if orphan {
+            Err(corrupt().into())
+        } else {
+            Ok(None)
+        };
+    };
+    let last = selected(tx, &audit, proof)
+        .await?
+        .ok_or(StoreError::HostUnsupported)?;
+    let mut result = Vec::new();
+    let mut previous: Option<Source> = None;
+    for sequence in 1..=last.sequence {
+        let source = indexed(tx, &last.scope, sequence, proof).await?;
+        let (_, audit) = super::reads::audited_leaf(tx, session, &source.operation, proof)
+            .await?
+            .ok_or_else(corrupt)?;
+        source.verify(&audit)?;
+        if let Some(previous) = &previous {
+            source.follows(previous)?;
+        }
+        result.push(audit);
+        previous = Some(source);
+    }
+    if previous.as_ref() != Some(&last) {
+        return Err(corrupt().into());
+    }
+    Ok(Some(result))
+}
 pub(super) async fn selected(
     tx: &mut Transaction<'_, Postgres>,
     audit: &Audit,

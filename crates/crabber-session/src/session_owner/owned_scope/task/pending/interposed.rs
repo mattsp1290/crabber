@@ -60,6 +60,30 @@ impl Interposed {
 }
 #[async_trait::async_trait]
 impl Store for Interposed {
+    fn supports_queue_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_queue_preparation_admission(
+        &self,
+        original: &JoinedPreparation,
+    ) -> Result<
+        Option<crate::QueueReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        let mut result = self
+            .inner
+            .inspect_queue_preparation_admission(original)
+            .await;
+        if self.corrupt_inspection.load(Ordering::SeqCst)
+            && let Ok(Some(receipt)) = &mut result
+        {
+            receipt.operation_id = ControlId::new();
+        }
+        if self.pause(Stage::Inspect).await {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        result
+    }
     fn supports_initial_preparation_admission_inspection(&self) -> bool {
         true
     }
@@ -97,6 +121,7 @@ impl Store for Interposed {
         &self,
         request: crate::session_owner::driver::RegisterExecutionDriver,
     ) -> Result<crate::session_owner::driver::ExecutionDriverOutcome, Error> {
+        self.register_calls.fetch_add(1, Ordering::SeqCst);
         let result = self.inner.register_execution_driver(request).await;
         if self.pause(Stage::Register).await {
             return Err(Error::UnknownStoreOutcome);
@@ -165,6 +190,16 @@ impl Store for Interposed {
             })) = &mut result
         {
             receipt.semantic_digest_version = 777;
+        }
+        if self.corrupt_receipt.load(Ordering::SeqCst)
+            && let Ok(PreparationCompletion::Queue(outcome)) = &mut result
+        {
+            match outcome {
+                crate::QueueOutcome::Applied { receipt, .. }
+                | crate::QueueOutcome::Replayed(receipt) => {
+                    receipt.summary.admission.as_mut().unwrap().user_message_id = MessageId::new();
+                }
+            }
         }
         if self.pause(Stage::Complete).await {
             return Err(Error::UnknownStoreOutcome.into());

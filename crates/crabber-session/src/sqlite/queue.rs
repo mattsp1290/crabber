@@ -1,6 +1,6 @@
 mod admission;
 mod inspection;
-mod protocol;
+pub(in crate::sqlite) mod protocol;
 pub(super) mod public;
 pub(super) mod reads;
 use super::{SqliteStore, db};

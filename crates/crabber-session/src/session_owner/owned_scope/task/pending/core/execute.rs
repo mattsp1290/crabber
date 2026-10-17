@@ -21,12 +21,13 @@ use std::{future::Future, sync::Arc};
 
 pub(in crate::session_owner::owned_scope::task::pending) enum Registration {
     Initial(RegisterExecutionDriver),
+    Queue(RegisterExecutionDriver),
     Successor(RegisterSuccessorExecutionDriver),
 }
 impl Registration {
     async fn register(&self, store: &dyn Store) -> Result<Binding, PendingSuccessorError> {
         match self {
-            Self::Initial(request) => {
+            Self::Initial(request) | Self::Queue(request) => {
                 let outcome = administrative(async {
                     store.register_execution_driver(request.clone()).await
                 })
@@ -40,10 +41,15 @@ impl Registration {
                     return Err(Error::UnknownStoreOutcome.into());
                 }
                 let activation = OwnedScopeActivation::new(grant.scope_source()?)?;
-                Ok(Binding::Initial(Box::new(BoundInitialControl {
+                let bound = Box::new(BoundInitialControl {
                     grant: *grant,
                     activation,
-                })))
+                });
+                Ok(if matches!(self, Self::Queue(_)) {
+                    Binding::Queue(bound)
+                } else {
+                    Binding::Initial(bound)
+                })
             }
             Self::Successor(request) => {
                 let outcome = administrative(async {
@@ -106,6 +112,10 @@ where
                 control,
             )
             .await?
+        }
+        Source::Queue(source) => {
+            super::super::queue::source::prepare(store.as_ref(), context, original, source, control)
+                .await?
         }
         Source::Successor(source) => {
             super::super::execute::prepare(store.as_ref(), context, original, source, control)

@@ -8,9 +8,10 @@ pub use task::{
     BoundInitialControl, BoundSuccessorControl, DriverMainContext, InitialAdmissionMetadata,
     InitialAdmissionReplay, JoinedOwnedTask, OwnedTaskRegistration, PendingDriverTasks,
     PendingInitialCompletion, PendingInitialControl, PendingInitialObservation, PendingInitialTask,
+    PendingQueueCompletion, PendingQueueControl, PendingQueueObservation, PendingQueueTask,
     PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
-    PendingSuccessorTasks,
+    PendingSuccessorTasks, QueueAdmissionMetadata,
 };
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};

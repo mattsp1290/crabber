@@ -30,6 +30,37 @@ pub(super) fn audit<'a>(
     }
     Ok(audit)
 }
+pub(in crate::memory) fn admission_prefix<'a>(
+    state: &'a State,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut Proof,
+) -> Result<Option<Vec<&'a Audit>>> {
+    if !state
+        .operation_receipts
+        .contains_key(&(session.clone(), id.clone()))
+    {
+        proof.charge(1).map_err(ReadError::Budget)?;
+        return if state
+            .queue_audits
+            .contains_key(&(session.clone(), id.clone()))
+            || state
+                .queue_publications
+                .contains_operation(session, id, proof)?
+        {
+            Err(corrupt().into())
+        } else {
+            Ok(None)
+        };
+    }
+    let selected = audit(state, session, id, proof)?;
+    state
+        .queue_publications
+        .prefix(selected, proof, |id, proof| {
+            audit(state, session, id, proof)
+        })
+        .map(Some)
+}
 pub(super) fn selected(
     state: &State,
     session: &SessionId,

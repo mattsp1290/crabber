@@ -39,6 +39,11 @@ impl Orchestrator {
                     PreparationCompletion::Admitted(admitted) => (admitted, InitialEntry::Unkeyed),
                     PreparationCompletion::Keyed(KeyedAdmitOutcome::Started {
                         admitted, ..
+                    })
+                    | PreparationCompletion::Queue(crabber_session::QueueOutcome::Applied {
+                        admitted: Some(admitted),
+                        authority: None,
+                        ..
                     }) => (*admitted, InitialEntry::Keyed),
                     _ => return Err(StoreError::AdmissionConflict.into()),
                 };

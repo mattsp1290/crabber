@@ -368,3 +368,6 @@ async fn unknown_native_commit_retry_observes_without_reminting_authority() {
         assert_eq!(h.fake.requests().len(), 0);
     }
 }
+
+#[path = "preparation_resources/queue.rs"]
+mod queue;

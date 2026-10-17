@@ -9,7 +9,7 @@ use super::{DurablePreparation, Orchestrator, RuntimeError, retained};
 use crate::orchestrator::{RunHandle, worker};
 use crabber_core::{AdmissionReceipt, SessionContext};
 use crabber_session::session_owner::{
-    owned_scope::{PendingInitialTask, PendingSuccessorReplay, PendingSuccessorTask},
+    owned_scope::PendingSuccessorReplay,
     preparation::{PreparationCompletion, PreparationGrant},
 };
 use std::{
@@ -44,13 +44,11 @@ impl PendingPreparation {
     pub(super) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.cleanup_failed.load(Ordering::Acquire)
     }
-    fn existing_run(&self) -> Result<Option<crabber_core::RunId>, RuntimeError> {
+    fn existing_run(&self) -> Option<crabber_core::RunId> {
         match &self.grant.original_reservation().purpose {
-            super::PreparationPurpose::ExistingRun { run_id, .. } => Ok(Some(run_id.clone())),
-            super::PreparationPurpose::OrdinaryAdmission => Ok(None),
-            super::PreparationPurpose::Queue { .. } => {
-                Err(RuntimeError::PreparationRecoveryRequired)
-            }
+            super::PreparationPurpose::ExistingRun { run_id, .. } => Some(run_id.clone()),
+            super::PreparationPurpose::OrdinaryAdmission
+            | super::PreparationPurpose::Queue { .. } => None,
         }
     }
     pub(super) fn committed(&self) -> bool {
@@ -177,7 +175,7 @@ impl Orchestrator {
         let (entry, pending, value, original) =
             self.observe_pending_factory(prepared, work).await?;
         let descriptor = { entry.lock().await.descriptor.clone() };
-        let run = pending.existing_run()?;
+        let run = pending.existing_run();
         let (send, receive) = oneshot::channel();
         let notice = Arc::new(std::sync::Mutex::new(Some(send)));
         let (wrapper, envelope) = oneshot::channel::<worker::WorkerBusiness>();
@@ -201,23 +199,13 @@ impl Orchestrator {
                     RuntimeError::PreparationRecoveryRequired,
                 ));
             }
-            let main = if run.is_some() {
-                main::Main::Successor(PendingSuccessorTask::register(
-                    &self.pending_drivers,
-                    self.store.clone(),
-                    context,
-                    original,
-                    body,
-                )?)
-            } else {
-                main::Main::Initial(PendingInitialTask::register(
-                    &self.pending_drivers,
-                    self.store.clone(),
-                    context,
-                    original,
-                    body,
-                )?)
-            };
+            let main = main::Main::register(
+                &self.pending_drivers,
+                self.store.clone(),
+                context,
+                original,
+                body,
+            )?;
             pending
                 .control
                 .set(main.control())

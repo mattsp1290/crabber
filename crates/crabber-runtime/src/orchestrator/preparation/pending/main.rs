@@ -3,26 +3,31 @@ use crate::orchestrator::{RuntimeError, driver};
 use crabber_session::session_owner::owned_scope::{
     BoundInitialControl, BoundSuccessorControl, InitialAdmissionReplay, JoinedOwnedTask,
     OwnedMainDisposition, OwnedScopeActivation, PendingInitialCompletion, PendingInitialControl,
-    PendingInitialTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
+    PendingInitialTask, PendingQueueCompletion, PendingQueueControl, PendingQueueTask,
+    PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorReplay, PendingSuccessorTask,
 };
 
 pub(super) enum Main {
     Initial(PendingInitialTask<()>),
+    Queue(PendingQueueTask<()>),
     Successor(PendingSuccessorTask<()>),
 }
 #[derive(Clone)]
 pub(super) enum Control {
     Initial(PendingInitialControl),
+    Queue(PendingQueueControl),
     Successor(PendingSuccessorControl),
 }
 pub(super) enum Bound {
     Initial(BoundInitialControl),
+    Queue(BoundInitialControl),
     Successor(BoundSuccessorControl),
 }
 #[derive(Clone)]
 pub(in crate::orchestrator) enum Metadata {
     Initial(InitialAdmissionReplay),
+    Queue(crabber_core::AdmissionReceipt),
     Successor(PendingSuccessorReplay),
 }
 #[derive(Clone)]
@@ -36,15 +41,48 @@ pub(super) struct Observation<'a> {
     pub replayed: Option<Metadata>,
 }
 impl Main {
+    pub(super) fn register<F, W>(
+        owner: &crabber_session::session_owner::owned_scope::PendingDriverTasks,
+        store: std::sync::Arc<dyn crabber_session::Store>,
+        context: crabber_core::SessionContext,
+        original: crabber_session::session_owner::preparation::JoinedPreparation,
+        business: F,
+    ) -> Result<Self, RuntimeError>
+    where
+        F: FnOnce(
+                crabber_session::session_owner::owned_scope::DriverMainContext,
+                crabber_session::session_owner::preparation::PreparationCompletion,
+            ) -> W
+            + Send
+            + 'static,
+        W: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use crabber_session::session_owner::preparation::PreparationPurpose;
+        Ok(
+            match &original.observed_grant().original_reservation().purpose {
+                PreparationPurpose::Queue { .. } => Self::Queue(PendingQueueTask::register(
+                    owner, store, context, original, business,
+                )?),
+                PreparationPurpose::ExistingRun { .. } => Self::Successor(
+                    PendingSuccessorTask::register(owner, store, context, original, business)?,
+                ),
+                PreparationPurpose::OrdinaryAdmission => Self::Initial(
+                    PendingInitialTask::register(owner, store, context, original, business)?,
+                ),
+            },
+        )
+    }
     pub(super) fn control(&self) -> Control {
         match self {
             Self::Initial(main) => Control::Initial(main.control()),
+            Self::Queue(main) => Control::Queue(main.control()),
             Self::Successor(main) => Control::Successor(main.control()),
         }
     }
     pub(super) fn start(&mut self) -> Result<(), RuntimeError> {
         match self {
             Self::Initial(main) => main.start()?,
+            Self::Queue(main) => main.start()?,
             Self::Successor(main) => main.start()?,
         }
         Ok(())
@@ -57,6 +95,17 @@ impl Main {
                     main: observed.bound_main(),
                     disposition: observed.disposition(),
                     replayed: observed.replayed().cloned().map(Metadata::Initial),
+                }
+            }
+            Self::Queue(main) => {
+                let observed = main.join().await?;
+                Observation {
+                    main: observed.bound_main(),
+                    disposition: observed.disposition(),
+                    replayed: observed
+                        .replayed()
+                        .map(|receipt| queue_metadata(receipt.clone()))
+                        .transpose()?,
                 }
             }
             Self::Successor(main) => {
@@ -74,6 +123,7 @@ impl Main {
     ) -> Result<Option<PendingSuccessorError>, RuntimeError> {
         Ok(match self {
             Self::Initial(main) => main.take_error().await?,
+            Self::Queue(main) => main.take_error().await?,
             Self::Successor(main) => main.take_error().await?,
         })
     }
@@ -82,6 +132,7 @@ impl Control {
     pub(super) fn request_stop(&self) {
         match self {
             Self::Initial(control) => control.request_stop(),
+            Self::Queue(control) => control.request_stop(),
             Self::Successor(control) => control.request_stop(),
         }
     }
@@ -94,6 +145,16 @@ impl Control {
                 },
                 PendingInitialCompletion::Replayed(metadata) => Completion {
                     metadata: Metadata::Initial(metadata),
+                    replayed: true,
+                },
+            },
+            Self::Queue(control) => match control.completion().await? {
+                PendingQueueCompletion::Fresh(metadata) => Completion {
+                    metadata: queue_metadata(metadata.receipt().clone())?,
+                    replayed: false,
+                },
+                PendingQueueCompletion::Replayed(metadata) => Completion {
+                    metadata: queue_metadata(metadata)?,
                     replayed: true,
                 },
             },
@@ -112,6 +173,7 @@ impl Control {
     pub(super) async fn bound(&self) -> Result<Bound, RuntimeError> {
         Ok(match self {
             Self::Initial(control) => Bound::Initial(control.bound().await?),
+            Self::Queue(control) => Bound::Queue(control.bound().await?),
             Self::Successor(control) => Bound::Successor(control.bound().await?),
         })
     }
@@ -119,20 +181,20 @@ impl Control {
 impl Bound {
     pub(super) fn authority(&self) -> &crabber_session::session_owner::SessionOwnerAuthority {
         match self {
-            Self::Initial(bound) => bound.grant().authority(),
+            Self::Initial(bound) | Self::Queue(bound) => bound.grant().authority(),
             Self::Successor(bound) => bound.grant().authority(),
         }
     }
 
     pub(super) fn activation(&self) -> &OwnedScopeActivation {
         match self {
-            Self::Initial(bound) => bound.activation(),
+            Self::Initial(bound) | Self::Queue(bound) => bound.activation(),
             Self::Successor(bound) => bound.activation(),
         }
     }
     pub(super) fn grant(&self) -> driver::registration::Grant {
         match self {
-            Self::Initial(bound) => {
+            Self::Initial(bound) | Self::Queue(bound) => {
                 driver::registration::Grant::Initial(Box::new(bound.grant().clone()))
             }
             Self::Successor(bound) => {
@@ -145,7 +207,9 @@ impl Metadata {
     pub(super) fn run_id(&self) -> &crabber_core::RunId {
         match self {
             Self::Initial(receipt) => receipt.run_id(),
-            Self::Successor(PendingSuccessorReplay::Admission(receipt)) => &receipt.run_id,
+            Self::Queue(receipt) | Self::Successor(PendingSuccessorReplay::Admission(receipt)) => {
+                &receipt.run_id
+            }
             Self::Successor(PendingSuccessorReplay::Expired(receipt)) => &receipt.run_id,
             Self::Successor(
                 PendingSuccessorReplay::ApprovalClaim(receipt)
@@ -153,4 +217,13 @@ impl Metadata {
             ) => &receipt.run_id,
         }
     }
+}
+
+fn queue_metadata(receipt: crabber_session::QueueReceipt) -> Result<Metadata, RuntimeError> {
+    Ok(Metadata::Queue(
+        receipt
+            .summary
+            .admission
+            .ok_or(RuntimeError::PreparationRecoveryRequired)?,
+    ))
 }

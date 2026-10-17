@@ -522,3 +522,6 @@ pub(crate) async fn initial_driver_observation(
         .unwrap();
     joined
 }
+
+#[path = "resources/queue.rs"]
+pub(crate) mod queue;

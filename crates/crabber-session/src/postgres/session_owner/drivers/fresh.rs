@@ -1,4 +1,6 @@
 //! Fresh first-driver eligibility is a narrow immutable source check.
+#[path = "fresh/queue.rs"]
+mod queue;
 use super::super::{Error, unknown};
 use super::{proof, source};
 use crate::{
@@ -88,13 +90,8 @@ pub(super) async fn fresh(
     }
     // The strict fresh revision fence also detects erased native dispatch evidence.
     // Metadata replay bypasses this gate; unrelated public mutations may refuse.
-    revision(
-        tx,
-        session,
-        expected.unwrap_or(original.witness.admitted_revision()),
-        budget,
-    )
-    .await?;
+    let completed_revision = Box::pin(queue::revision(tx, &original, budget)).await?;
+    revision(tx, session, expected.unwrap_or(completed_revision), budget).await?;
     preparation_child(tx, &original, budget).await?;
     initial_link(tx, request, &run, &binding, &original, budget).await
 }

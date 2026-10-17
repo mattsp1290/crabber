@@ -91,7 +91,7 @@ impl PendingInitialControl {
     pub async fn completion(&self) -> Result<PendingInitialCompletion, Error> {
         match self.0.completion().await? {
             core::Notice::Initial(value) => Ok(value),
-            core::Notice::Successor(_) => Err(Error::SemanticConflict),
+            core::Notice::Successor(_) | core::Notice::Queue(_) => Err(Error::SemanticConflict),
         }
     }
     /// Actual once-bound initial grant.
@@ -100,7 +100,7 @@ impl PendingInitialControl {
     pub async fn bound(&self) -> Result<BoundInitialControl, Error> {
         match self.0.bound().await? {
             core::Binding::Initial(value) => Ok(*value),
-            core::Binding::Successor(_) => Err(Error::SemanticConflict),
+            core::Binding::Successor(_) | core::Binding::Queue(_) => Err(Error::SemanticConflict),
         }
     }
 }

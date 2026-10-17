@@ -1,6 +1,8 @@
 //! First-worker registration and native source checks share the actual lock.
 #[path = "drivers/history.rs"]
 mod history;
+#[path = "drivers/queue.rs"]
+mod queue;
 #[path = "drivers/successor.rs"]
 pub(super) mod successor;
 pub(in crate::memory) use history::classified;
@@ -139,6 +141,18 @@ pub(super) fn fresh(
     }
     journal(state, run, &binding, proof)?;
     let init = initial_journal(state, &run.id, initial, proof)?;
+    queue::revision(
+        state,
+        &crate::session_owner::preparation::queue_admission::AdmissionSources {
+            session,
+            initial,
+            witness,
+            audits: sources,
+            init,
+        },
+        activation_revision,
+        proof,
+    )?;
     DriverLink::initial(request, session, run, initial, witness, &sources, init)
 }
 fn verify_unkeyed_eligibility(
@@ -201,7 +215,7 @@ fn original_read(
         .verify_original(session, initial, witness, &sources, init)
         .map_err(Into::into)
 }
-fn initial_journal_read<'a>(
+pub(super) fn initial_journal_read<'a>(
     state: &'a State,
     run: &crabber_core::RunId,
     initial: &RunIssuance,

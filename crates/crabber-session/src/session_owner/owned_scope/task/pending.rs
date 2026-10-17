@@ -9,6 +9,11 @@
 mod core;
 mod execute;
 mod initial;
+mod queue;
+pub use queue::{
+    PendingQueueCompletion, PendingQueueControl, PendingQueueObservation, PendingQueueTask,
+    QueueAdmissionMetadata,
+};
 mod retain;
 mod state;
 use super::{DriverMainContext, Error, JoinedOwnedTask, OwnedMainDisposition};
