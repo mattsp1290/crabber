@@ -329,6 +329,8 @@ pub(crate) fn preparation_input(
         PreparedOperation::Admit(bound) => proof.measure(&(&bound.request, &bound.binding))?,
         PreparedOperation::AdmitKeyed(bound) => proof.measure(bound)?,
         PreparedOperation::Queue { request, binding } => proof.measure(&(request, binding))?,
+        PreparedOperation::ApprovalClaim(request) => proof.measure(request)?,
+        PreparedOperation::ApprovalRecovery(request) => proof.measure(request)?,
         _ => return Ok(()),
     }
     let grant = joined.observed_grant();

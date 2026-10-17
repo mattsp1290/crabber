@@ -260,7 +260,13 @@ async fn load_run_with_proof(
     )
     .await
     .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
-    load_run(tx, id, true).await
+    let row = sqlx::query("SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data END AS data FROM runs WHERE id=$1 FOR UPDATE")
+        .bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+    decode(
+        row.try_get::<Option<sqlx::types::Json<serde_json::Value>>, _>("data")
+            .map_err(db)?
+            .ok_or_else(|| StoreError::Validation("native run proof carrier".into()))?,
+    )
 }
 async fn load_run(
     tx: &mut Transaction<'_, Postgres>,

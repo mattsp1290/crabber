@@ -44,11 +44,15 @@ impl super::PostgresStore {
             crate::session_owner::preparation::PreparationPurpose::ExistingRun {
                 run_id, ..
             } => {
-                let original =
-                    super::super::execution_binding::read(tx, &binding.session_id, run_id)
-                        .await
-                        .map_err(unknown)?
-                        .ok_or(Error::UnknownStoreOutcome)?;
+                let original = super::super::execution_binding::read_with_proof(
+                    tx,
+                    &binding.session_id,
+                    run_id,
+                    proof,
+                )
+                .await
+                .map_err(unknown)?
+                .ok_or(Error::UnknownStoreOutcome)?;
                 if crate::session_owner::preparation::resource_contract(
                     &original.capsule.runtime_semantics,
                 )? != preparation.resource_contract
@@ -61,22 +65,30 @@ impl super::PostgresStore {
                 {
                     super::super::expired::load_run(tx, source.request()).await?
                 } else {
-                    super::super::load_run(tx, run_id, true)
+                    super::super::load_run_with_proof(tx, run_id, proof)
                         .await
                         .map_err(unknown)?
                 };
                 if run.session_id != binding.session_id {
                     return Err(Error::NotFound);
                 }
-                super::super::native_parent::verify_run(tx, &run)
-                    .await
-                    .map_err(unknown)?;
+                super::super::native_parent::source_protocol::current(
+                    tx,
+                    &run.session_id,
+                    &run.id,
+                    proof,
+                )
+                .await
+                .map_err(unknown)?
+                .ok_or(Error::UnknownStoreOutcome)?
+                .verify(&run)
+                .map_err(unknown)?;
                 let source = preparation.source.as_ref().ok_or(Error::Unsupported)?;
                 crate::session_owner::preparation::source_validation::validate(
                     source,
                     preparation,
                 )?;
-                self.verify_preparation_native_source(tx, &run, source)
+                self.verify_preparation_native_source(tx, &run, source, proof)
                     .await?;
             }
         }
@@ -88,6 +100,7 @@ impl super::PostgresStore {
         tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &crabber_core::Run,
         source: &crate::session_owner::preparation::PreparationSource,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
         match source {
             crate::session_owner::preparation::PreparationSource::ExpiredRun(source) => {
@@ -102,7 +115,7 @@ impl super::PostgresStore {
                     .map_err(unknown)?;
             }
             crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
-                super::super::approval::preparation_context(tx, run, claim)
+                super::super::approval::preparation_context(tx, run, claim, proof)
                     .await
                     .map_err(Error::ApprovalSource)?;
             }
@@ -132,6 +145,7 @@ impl super::PostgresStore {
                     run,
                     recovery,
                     self.clock.now(),
+                    proof,
                 )
                 .await
                 .map_err(Error::ApprovalSource)?;

@@ -6,7 +6,10 @@ use crate::AttemptAuthority;
 use crate::public_session::v2::proof::{Failure, Proof};
 #[path = "../../../crabber-session/src/native_enrollment/caller/verify.rs"]
 mod verify;
-pub(crate) use verify::{Attempt, Caller, Fresh, Phase, measure_record, relevant};
+pub(crate) use verify::{
+    Approval, ApprovalCompletion, ApprovalInput, ApprovalResult, Attempt, Caller, Fresh, Phase,
+    measure_record, relevant,
+};
 
 pub(crate) fn measure_authority(
     authority: Option<&AttemptAuthority>,

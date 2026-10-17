@@ -155,7 +155,9 @@ pub(super) async fn load_run_with_proof(
     )
     .await
     .map_err(|_| StoreError::Validation("native run proof allowance".into()))?;
-    load_run(tx, id).await
+    let row = sqlx::query("SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS data FROM runs WHERE id=$1")
+        .bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+    super::records::decode_row(&row, "data")
 }
 pub(super) async fn load_run(
     tx: &mut Transaction<'_, Sqlite>,

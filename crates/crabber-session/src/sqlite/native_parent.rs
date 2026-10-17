@@ -149,13 +149,6 @@ fn event(row: &sqlx::sqlite::SqliteRow) -> Result<EventRecord, Error> {
     Ok(event)
 }
 
-pub(super) async fn verify_run(
-    tx: &mut Transaction<'_, Sqlite>,
-    native: &Run,
-) -> Result<(), Error> {
-    run::latest(tx, native).await?.ok_or(Error)?.verify(native)
-}
-
 /// Authenticate the exact current issuer for preparation source inspection.
 pub(super) async fn current_issuance(
     tx: &mut Transaction<'_, Sqlite>,

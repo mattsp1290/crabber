@@ -67,31 +67,7 @@ impl ApprovalRecord {
             .calls
             .iter()
             .map(|call| {
-                let decision = match &call.decision {
-                    CallApproval::Allow => GrantedDecision::Allow,
-                    CallApproval::Deny => GrantedDecision::Deny,
-                    CallApproval::NotRequired => GrantedDecision::NotRequired,
-                    CallApproval::Ask { id, .. } => {
-                        let question = self
-                            .questions
-                            .iter()
-                            .find(|q| q.view.id == *id)
-                            .ok_or(Error::UnknownStoreOutcome)?;
-                        match question.answer.as_ref().map(|a| a.reply) {
-                            Some(ApprovalReply::Grant)
-                                if question.view.state == InteractionState::Answered =>
-                            {
-                                GrantedDecision::Allow
-                            }
-                            Some(ApprovalReply::Deny)
-                                if question.view.state == InteractionState::Denied =>
-                            {
-                                GrantedDecision::Deny
-                            }
-                            _ => return Err(Error::Pending),
-                        }
-                    }
-                };
+                let decision = self.granted_decision(call)?;
                 Ok(GrantedApproval {
                     target: call.target.clone(),
                     call_binding: call.call_binding.clone(),
@@ -99,6 +75,47 @@ impl ApprovalRecord {
                 })
             })
             .collect()
+    }
+    fn granted_decision(&self, call: &super::PreparedApproval) -> Result<GrantedDecision, Error> {
+        Ok(match &call.decision {
+            CallApproval::Allow => GrantedDecision::Allow,
+            CallApproval::Deny => GrantedDecision::Deny,
+            CallApproval::NotRequired => GrantedDecision::NotRequired,
+            CallApproval::Ask { id, .. } => {
+                let question = self
+                    .questions
+                    .iter()
+                    .find(|q| q.view.id == *id)
+                    .ok_or(Error::UnknownStoreOutcome)?;
+                match question.answer.as_ref().map(|a| a.reply) {
+                    Some(ApprovalReply::Grant)
+                        if question.view.state == InteractionState::Answered =>
+                    {
+                        GrantedDecision::Allow
+                    }
+                    Some(ApprovalReply::Deny)
+                        if question.view.state == InteractionState::Denied =>
+                    {
+                        GrantedDecision::Deny
+                    }
+                    _ => return Err(Error::Pending),
+                }
+            }
+        })
+    }
+    pub(crate) fn verify_grants(&self, grants: &[GrantedApproval]) -> Result<(), Error> {
+        if grants.len() != self.batch.calls.len() || grants.len() > 64 {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        for (actual, expected) in grants.iter().zip(&self.batch.calls) {
+            if actual.target != expected.target
+                || actual.call_binding != expected.call_binding
+                || actual.decision != self.granted_decision(expected)?
+            {
+                return Err(Error::UnknownStoreOutcome);
+            }
+        }
+        Ok(())
     }
     pub fn new(
         batch: ApprovalSuspension,

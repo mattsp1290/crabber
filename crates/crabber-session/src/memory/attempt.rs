@@ -226,18 +226,22 @@ impl MemoryExecution {
             &mut Proof::bounded(32 << 20),
         )
     }
-    pub(super) fn apply_claim_attempt(
+    pub(super) fn apply_attempt_with_proof(
         &self,
         state: &mut State,
         request: AttemptMutation,
+        authority: Option<&AttemptAuthority>,
+        proof: &mut Proof,
     ) -> Result<AttemptMutationOutcome, Error> {
-        self.apply_attempt_inner(
-            state,
-            request,
-            (None, None, true),
-            Caller::Raw,
-            &mut Proof::bounded(32 << 20),
-        )
+        self.apply_attempt_inner(state, request, (authority, None, false), Caller::Raw, proof)
+    }
+    pub(super) fn apply_claim_attempt_with_proof(
+        &self,
+        state: &mut State,
+        request: AttemptMutation,
+        proof: &mut Proof,
+    ) -> Result<AttemptMutationOutcome, Error> {
+        self.apply_attempt_inner(state, request, (None, None, true), Caller::Raw, proof)
     }
     fn apply_attempt_inner(
         &self,

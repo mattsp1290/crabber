@@ -26,6 +26,7 @@ pub(crate) enum Fresh<'a> {
     ExpiredRecovery(super::recovery::ExpiredRecovery<'a>),
     Phase(Phase<'a>),
     Initial(super::initial::Initial<'a>),
+    Approval(Approval<'a>),
 }
 
 pub(crate) struct Attempt<'a> {
@@ -68,6 +69,7 @@ impl<'a> Fresh<'a> {
             Self::ExpiredRecovery(fresh) => fresh.verify(proof),
             Self::Phase(fresh) => fresh.verify(proof),
             Self::Initial(fresh) => fresh.verify(proof),
+            Self::Approval(fresh) => fresh.verify(proof),
         }
     }
 }
@@ -118,3 +120,7 @@ impl<'a> Attempt<'a> {
 #[path = "phase.rs"]
 mod phase;
 pub(crate) use phase::Phase;
+
+#[path = "approval.rs"]
+mod approval;
+pub(crate) use approval::{Approval, ApprovalCompletion, ApprovalInput, ApprovalResult};

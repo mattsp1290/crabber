@@ -263,20 +263,6 @@ pub(super) fn record_run_states_with_completion(
         &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
     )
 }
-pub(super) fn record_run_completed_captured(
-    state: &mut State,
-    previous: &Run,
-    updated: &Run,
-    source: Option<&crate::native_parent::CompletionSource>,
-) -> Result<Option<u64>, Error> {
-    record_run_completed_captured_with_proof(
-        state,
-        previous,
-        updated,
-        source,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-}
 pub(super) fn record_run_completed_captured_with_proof(
     state: &mut State,
     previous: &Run,
@@ -428,10 +414,6 @@ pub(super) fn latest_run<'a>(
 #[cfg(test)]
 #[path = "native_parent/tests.rs"]
 mod tests;
-
-pub(super) fn verify_run(state: &State, run: &Run) -> Result<(), Error> {
-    latest_run(state, run)?.ok_or(Error).map(|_| ())
-}
 
 #[cfg(test)]
 #[path = "native_parent/completion_tests.rs"]

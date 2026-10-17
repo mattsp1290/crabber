@@ -1,10 +1,11 @@
 //! One fresh owner consumes the complete accepted response set atomically.
 use super::super::{SqliteExecution, SqliteStore};
-use super::{Error, approval, finish, load, sql, write};
+use super::{Error, approval, finish, sql, write};
+use crate::native_enrollment::caller::{ApprovalCompletion, ApprovalInput, ApprovalResult, Caller};
+use crate::public_session::v2::proof::Proof;
 use crate::{
-    ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalGrant,
-    ApprovalOutcome, AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome,
-    AttemptState,
+    ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalOutcome,
+    AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
 };
 use crabber_core::{Run, RunFence, RunStatus};
 use sqlx::{Sqlite, Transaction};
@@ -14,6 +15,14 @@ impl SqliteStore {
         &self,
         claim: &ApprovalContinuationClaim,
     ) -> Result<ApprovalClaimOutcome, Error> {
+        self.claim_approval_with_proof(claim, &mut Proof::bounded(32 << 20))
+            .await
+    }
+    pub(in crate::sqlite) async fn claim_approval_with_proof(
+        &self,
+        claim: &ApprovalContinuationClaim,
+        proof: &mut Proof,
+    ) -> Result<ApprovalClaimOutcome, Error> {
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -21,16 +30,10 @@ impl SqliteStore {
         #[cfg(not(test))]
         let fault = 0;
         let (mut tx, run) = self
-            .approval_transaction(&claim.session_id, &claim.run_id)
+            .approval_transaction_with_proof(&claim.session_id, &claim.run_id, proof)
             .await?;
         let result = self
-            .claim_approval_guarded(
-                &mut tx,
-                &run,
-                claim,
-                None,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
+            .claim_approval_guarded(&mut tx, &run, claim, None, Caller::Raw, proof)
             .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
@@ -40,9 +43,11 @@ impl SqliteStore {
         run: &Run,
         claim: &ApprovalContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ApprovalClaimOutcome, bool), Error> {
-        let digest = claim.fingerprint()?;
+        let digest =
+            super::native_caller::digest(tx, ApprovalInput::Claim(claim), read_proof).await?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -50,7 +55,9 @@ impl SqliteStore {
         #[cfg(not(test))]
         let fault = 0;
 
-        if let Some(saved) = write::replay(tx, run, &claim.id, &digest).await? {
+        if let Some(saved) =
+            super::native_caller::replay(tx, run, &claim.id, &digest, read_proof).await?
+        {
             return Ok((ApprovalClaimOutcome::Replayed(saved), false));
         }
         let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
@@ -65,51 +72,40 @@ impl SqliteStore {
         if write::revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let (mut record, calls) = ready(tx, run, claim).await?;
+        let (mut record, calls) = ready_with_proof(tx, run, claim, read_proof).await?;
         let now = self.clock.now();
-        let mut activated = run.clone();
-        activated.owner.clone_from(&claim.owner);
-        activated.claim_token = uuid::Uuid::new_v4().to_string();
-        activated.lease_until = now
-            .checked_add(time::Duration::milliseconds(
-                i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
-            ))
-            .ok_or(Error::InvalidRequest)?;
-        activated.updated_at = now;
-        let fence = RunFence {
-            run_id: run.id.clone(),
-            claim_token: activated.claim_token.clone(),
-        };
-
-        super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
-            .await?;
+        let (activated, fence) = activate(
+            tx,
+            run,
+            claim,
+            now,
+            completion.as_ref(),
+            preparation,
+            read_proof,
+        )
+        .await?;
         let execution = SqliteExecution {
             store: self.clone(),
             fence: fence.clone(),
         };
-        let reserve = AttemptMutation {
-            id: approval::derived_id("claim-attempt", &claim.id),
+        let (reserve, native, authority) = reserve(
+            tx,
+            &execution,
+            &activated,
+            claim,
+            &record.batch.next_attempt,
             expected_revision,
-            command: AttemptCommand::Reserve {
-                target: record.batch.next_attempt.clone(),
-            },
-        };
-        let applied = execution
-            .apply_claim_attempt(tx, &activated, &reserve, read_proof)
-            .await
-            .map_err(approval::attempt_error)?;
-        let AttemptMutationOutcome::Applied {
-            receipt,
-            authority: Some(authority),
-        } = applied
-        else {
-            return Err(Error::SemanticConflict);
-        };
+            read_proof,
+        )
+        .await?;
         record.state = ApprovalContinuationState::Claimed;
         for question in &mut record.questions {
             question.view.consumed = true;
         }
         write::save(tx, &record).await?;
+        read_proof
+            .measure(&native.attempt)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let receipt = write::publish(
             tx,
             run,
@@ -117,35 +113,46 @@ impl SqliteStore {
             digest,
             ApprovalOutcome::Claimed {
                 continuation: claim.continuation.clone(),
-                attempt: receipt.attempt,
+                attempt: native.attempt.clone(),
             },
             now,
         )
         .await?;
-        sql::before_commit(fault)?;
-        Ok((
-            ApprovalClaimOutcome::Applied {
-                receipt,
-                grant: Box::new(ApprovalGrant {
-                    fence,
-                    authority,
-                    calls,
-                    source_turn_id: record.batch.source_turn_id.clone(),
-                    usage: record.batch.usage.clone(),
-                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                }),
+        let outcome = super::native_caller::issue(
+            tx,
+            caller,
+            ApprovalCompletion {
+                input: ApprovalInput::Claim(claim),
+                previous: run,
+                activated: &activated,
+                record: &record,
+                native_request: &reserve,
+                native_receipt: &native,
             },
-            true,
-        ))
+            ApprovalResult {
+                receipt,
+                fence,
+                authority,
+                calls,
+            },
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )
+        .await?;
+        sql::before_commit(fault)?;
+        Ok((outcome, true))
     }
 }
-pub(in crate::sqlite) async fn ready(
+pub(in crate::sqlite) async fn ready_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     claim: &ApprovalContinuationClaim,
+    proof: &mut Proof,
 ) -> Result<(approval::ApprovalRecord, Vec<crate::GrantedApproval>), Error> {
-    let (record, _) = load(tx, &run.session_id, &run.id)
-        .await?
+    let (record, _) = super::load_with_proof(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
         .ok_or(Error::InvalidTransition)?;
     write::active(tx, &record).await?;
     if record.batch.continuation != claim.continuation {
@@ -166,10 +173,15 @@ pub(in crate::sqlite) async fn ready(
     {
         return Err(Error::SemanticConflict);
     }
-    let old = super::super::attempt::load_owned(tx, &run.id, &record.batch.attempt.id)
-        .await
-        .map_err(approval::attempt_error)?
-        .ok_or(Error::NotFound)?;
+    let (old, _) = super::super::attempt::load_host_attempt_with_proof(
+        tx,
+        &run.id,
+        Some(&record.batch.attempt.id),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?
+    .ok_or(Error::NotFound)?;
     if old.snapshot.target != record.batch.attempt
         || old.snapshot.state != AttemptState::Suspended
         || old.snapshot.cleanup != AttemptCleanup::Complete
@@ -179,7 +191,80 @@ pub(in crate::sqlite) async fn ready(
     if run.usage != record.batch.usage {
         return Err(Error::SemanticConflict);
     }
+    proof
+        .measure(&record)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let calls = record.grants()?;
-    super::suspend::validate_calls(tx, run, &record.batch).await?;
+    super::suspend::validate_calls_with_proof(tx, run, &record.batch, proof).await?;
     Ok((record, calls))
+}
+
+async fn activate(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &crabber_core::Run,
+    claim: &ApprovalContinuationClaim,
+    now: time::OffsetDateTime,
+    completion: Option<&crate::native_parent::CompletionSource>,
+    preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    proof: &mut Proof,
+) -> Result<(crabber_core::Run, RunFence), Error> {
+    proof.measure(run).map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut activated = run.clone();
+    activated.owner.clone_from(&claim.owner);
+    activated.claim_token = uuid::Uuid::new_v4().to_string();
+    activated.lease_until = now
+        .checked_add(time::Duration::milliseconds(
+            i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
+        ))
+        .ok_or(Error::InvalidRequest)?;
+    activated.updated_at = now;
+    let fence = RunFence {
+        run_id: run.id.clone(),
+        claim_token: activated.claim_token.clone(),
+    };
+
+    super::activation::save(tx, &activated, completion, preparation, proof).await?;
+
+    Ok((activated, fence))
+}
+
+async fn reserve(
+    tx: &mut Transaction<'_, Sqlite>,
+    execution: &SqliteExecution,
+    activated: &Run,
+    claim: &ApprovalContinuationClaim,
+    target: &crate::AttemptTarget,
+    expected_revision: crabber_core::SessionRevision,
+    proof: &mut Proof,
+) -> Result<
+    (
+        AttemptMutation,
+        crate::AttemptReceipt,
+        crate::AttemptAuthority,
+    ),
+    Error,
+> {
+    let reserve = AttemptMutation {
+        id: approval::derived_id("claim-attempt", &claim.id),
+        expected_revision,
+        command: AttemptCommand::Reserve {
+            target: target.clone(),
+        },
+    };
+    proof
+        .measure(&reserve)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let applied = execution
+        .apply_claim_attempt(tx, activated, &reserve, proof)
+        .await
+        .map_err(approval::attempt_error)?;
+    let AttemptMutationOutcome::Applied {
+        receipt: native,
+        authority: Some(authority),
+    } = applied
+    else {
+        return Err(Error::SemanticConflict);
+    };
+
+    Ok((reserve, native, authority))
 }

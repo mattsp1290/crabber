@@ -32,6 +32,17 @@ pub(super) fn verify_record(
     origin::verify(state, run, record)?;
     current::verify(state, run, record, false)
 }
+pub(super) fn verify_record_with_proof(
+    state: &State,
+    run: &Run,
+    record: &crate::approval::ApprovalRecord,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    origin::verify_with_proof(state, run, record, proof)
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?;
+    current::verify_with_proof(state, run, record, false, proof)
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))
+}
 pub(super) use terminate::apply_termination;
 use time::OffsetDateTime;
 
@@ -77,6 +88,24 @@ pub(super) fn replay(
     digest: &InputFingerprint,
 ) -> Result<Option<ApprovalReceipt>, Error> {
     let saved = receipt(state, session, id)?;
+    if saved
+        .as_ref()
+        .is_some_and(|r| r.run_id != *run || r.semantic_digest != *digest)
+    {
+        return Err(Error::SemanticConflict);
+    }
+    Ok(saved)
+}
+pub(super) fn replay_with_proof(
+    state: &State,
+    session: &SessionId,
+    run: &crabber_core::RunId,
+    id: &ControlId,
+    digest: &InputFingerprint,
+    proof: &mut Proof,
+) -> Result<Option<ApprovalReceipt>, Error> {
+    let saved = receipt_with_proof(state, session, id, proof)
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?;
     if saved
         .as_ref()
         .is_some_and(|r| r.run_id != *run || r.semantic_digest != *digest)
@@ -330,7 +359,7 @@ mod termination_tests;
 #[cfg(test)]
 #[path = "approval/original_plan_tests.rs"]
 mod original_plan_tests;
-pub(super) use claim::ready as preparation_context;
+pub(super) use claim::ready_with_proof as preparation_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
 
@@ -350,6 +379,8 @@ fn fault(store: &super::MemoryStore) -> u8 {
 
 #[path = "approval/native_attempt.rs"]
 mod native_attempt;
+#[path = "approval/native_caller.rs"]
+pub(in crate::memory) mod native_caller;
 pub(super) use native_attempt::guard_with_proof as guard_attempt_with_proof;
 
 pub(super) use current::session_with_proof as verify_session_with_proof;

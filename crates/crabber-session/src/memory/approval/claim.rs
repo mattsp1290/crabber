@@ -1,9 +1,11 @@
 //! Consumes a complete accepted response set together with its single next owner.
-use super::{Error, publish, replay, revision};
+use super::{Error, publish, revision};
+use crate::native_enrollment::caller::{ApprovalCompletion, ApprovalInput, ApprovalResult, Caller};
+use crate::public_session::v2::proof::Proof;
 use crate::{
-    ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalGrant,
-    ApprovalOutcome, AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome,
-    AttemptState, approval,
+    ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalOutcome,
+    AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
+    approval,
 };
 use crabber_core::{RunFence, RunStatus};
 
@@ -12,8 +14,19 @@ impl super::super::MemoryStore {
         &self,
         claim: &ApprovalContinuationClaim,
     ) -> Result<ApprovalClaimOutcome, Error> {
+        self.claim_approval_with_proof(claim, &mut Proof::bounded(32 << 20))
+    }
+    pub(in crate::memory) fn claim_approval_with_proof(
+        &self,
+        claim: &ApprovalContinuationClaim,
+        proof: &mut Proof,
+    ) -> Result<ApprovalClaimOutcome, Error> {
         let fault = super::fault(self);
-        let result = self.transact(|state| self.claim_approval_guarded(state, claim, None));
+        let result = self.transact_selected(
+            proof,
+            |state, proof| super::native_caller::before(state, ApprovalInput::Claim(claim), proof),
+            |state, proof| self.claim_approval_guarded(state, claim, None, Caller::Raw, proof),
+        );
         super::after_commit(result, fault)
     }
     pub(in crate::memory) fn claim_approval_guarded(
@@ -21,19 +34,24 @@ impl super::super::MemoryStore {
         state: &mut super::super::State,
         claim: &ApprovalContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
+        read_proof: &mut Proof,
     ) -> Result<(ApprovalClaimOutcome, bool), Error> {
-        let digest = claim.fingerprint()?;
+        let digest = super::native_caller::digest(state, ApprovalInput::Claim(claim), read_proof)?;
         let fault = super::fault(self);
 
-        if let Some(saved) = replay(state, &claim.session_id, &claim.run_id, &claim.id, &digest)? {
+        if let Some(saved) = super::replay_with_proof(
+            state,
+            &claim.session_id,
+            &claim.run_id,
+            &claim.id,
+            &digest,
+            read_proof,
+        )? {
             return Ok((ApprovalClaimOutcome::Replayed(saved), false));
         }
-        let run = state
-            .runs
-            .get(&claim.run_id)
-            .filter(|run| run.session_id == claim.session_id)
-            .cloned()
-            .ok_or(Error::NotFound)?;
+        let run =
+            super::native_caller::selected_run(state, ApprovalInput::Claim(claim), read_proof)?;
         let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
             preparation,
             crate::native_parent::CompletionOperation::ApprovalClaim,
@@ -46,52 +64,42 @@ impl super::super::MemoryStore {
         if revision(state, &run.session_id) != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let (mut record, calls) = ready(state, &run, claim)?;
+        let (mut record, calls) = ready_with_proof(state, &run, claim, read_proof)?;
         let now = self.clock.now();
-        let mut activated = run.clone();
-        activated.owner.clone_from(&claim.owner);
-        activated.claim_token = uuid::Uuid::new_v4().to_string();
-        activated.lease_until = now
-            .checked_add(time::Duration::milliseconds(
-                i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
-            ))
-            .ok_or(Error::InvalidRequest)?;
-        activated.updated_at = now;
-        let fence = RunFence {
-            run_id: run.id.clone(),
-            claim_token: activated.claim_token.clone(),
-        };
-
-        super::activation::save(state, &run, &activated, completion.as_ref(), preparation)?;
-        state.runs.insert(run.id.clone(), activated);
+        let (activated, fence) = activate(
+            state,
+            &run,
+            claim,
+            now,
+            completion.as_ref(),
+            preparation,
+            read_proof,
+        )?;
         let execution = super::super::MemoryExecution {
             store: self.clone(),
             fence: fence.clone(),
         };
-        let reserve = AttemptMutation {
-            id: approval::derived_id("claim-attempt", &claim.id),
+        let (reserve, native, authority) = reserve(
+            state,
+            &execution,
+            claim,
+            &record.batch.next_attempt,
             expected_revision,
-            command: AttemptCommand::Reserve {
-                target: record.batch.next_attempt.clone(),
-            },
-        };
-        let applied = execution
-            .apply_claim_attempt(state, reserve)
-            .map_err(approval::attempt_error)?;
-        let AttemptMutationOutcome::Applied {
-            receipt,
-            authority: Some(authority),
-        } = applied
-        else {
-            return Err(Error::SemanticConflict);
-        };
+            read_proof,
+        )?;
         record.state = ApprovalContinuationState::Claimed;
         for question in &mut record.questions {
             question.view.consumed = true;
         }
+        read_proof
+            .measure(&record)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         state
             .approvals
             .insert(claim.continuation.id.clone(), record.clone());
+        read_proof
+            .measure(&native.attempt)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let receipt = publish(
             state,
             &run,
@@ -99,32 +107,41 @@ impl super::super::MemoryStore {
             digest.clone(),
             ApprovalOutcome::Claimed {
                 continuation: claim.continuation.clone(),
-                attempt: receipt.attempt,
+                attempt: native.attempt.clone(),
             },
             now,
         )?;
-        super::before_commit(fault)?;
-        Ok((
-            ApprovalClaimOutcome::Applied {
-                receipt,
-                grant: Box::new(ApprovalGrant {
-                    fence,
-                    authority,
-                    calls,
-                    source_turn_id: record.batch.source_turn_id.clone(),
-                    usage: record.batch.usage.clone(),
-                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                }),
+        let outcome = super::native_caller::issue(
+            state,
+            caller,
+            ApprovalCompletion {
+                input: ApprovalInput::Claim(claim),
+                previous: &run,
+                activated: &activated,
+                record: &record,
+                native_request: &reserve,
+                native_receipt: &native,
             },
-            true,
-        ))
+            ApprovalResult {
+                receipt,
+                fence,
+                authority,
+                calls,
+            },
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )?;
+        super::before_commit(fault)?;
+        Ok((outcome, true))
     }
 }
 
-pub(in crate::memory) fn ready(
+pub(in crate::memory) fn ready_with_proof(
     state: &super::super::State,
     run: &crabber_core::Run,
     claim: &ApprovalContinuationClaim,
+    proof: &mut Proof,
 ) -> Result<(approval::ApprovalRecord, Vec<crate::GrantedApproval>), Error> {
     let current = state
         .approval_barriers
@@ -133,9 +150,12 @@ pub(in crate::memory) fn ready(
     let record = state
         .approvals
         .get(current)
-        .cloned()
         .ok_or(Error::UnknownStoreOutcome)?;
-    super::verify_record(state, run, &record)?;
+    proof
+        .measure(record)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let record = record.clone();
+    super::verify_record_with_proof(state, run, &record, proof)?;
     if record.batch.continuation != claim.continuation || record.run_id != run.id {
         return Err(Error::GenerationConflict);
     }
@@ -166,15 +186,19 @@ pub(in crate::memory) fn ready(
     if run.usage != record.batch.usage {
         return Err(Error::SemanticConflict);
     }
-    let calls = validate_calls(state, run, &record)?;
+    let calls = validate_calls_with_proof(state, run, &record, proof)?;
     Ok((record, calls))
 }
 
-pub(super) fn validate_calls(
+pub(super) fn validate_calls_with_proof(
     state: &super::super::State,
     run: &crabber_core::Run,
     record: &approval::ApprovalRecord,
+    proof: &mut Proof,
 ) -> Result<Vec<crate::GrantedApproval>, Error> {
+    proof
+        .measure(record)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let calls = record.grants()?;
     let unfinished = state
         .calls
@@ -195,6 +219,9 @@ pub(super) fn validate_calls(
             .calls
             .get(&call.target.call_id)
             .ok_or(Error::NotFound)?;
+        proof
+            .measure(current)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         if current.run_id != run.id
             || current.status != crabber_core::ToolCallStatus::Pending
             || current.result.is_some()
@@ -205,4 +232,77 @@ pub(super) fn validate_calls(
         }
     }
     Ok(calls)
+}
+
+fn activate(
+    state: &mut super::super::State,
+    run: &crabber_core::Run,
+    claim: &ApprovalContinuationClaim,
+    now: time::OffsetDateTime,
+    completion: Option<&crate::native_parent::CompletionSource>,
+    preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    proof: &mut Proof,
+) -> Result<(crabber_core::Run, RunFence), Error> {
+    proof.measure(run).map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut activated = run.clone();
+    activated.owner.clone_from(&claim.owner);
+    activated.claim_token = uuid::Uuid::new_v4().to_string();
+    activated.lease_until = now
+        .checked_add(time::Duration::milliseconds(
+            i64::try_from(claim.lease_ms).map_err(|_| Error::InvalidRequest)?,
+        ))
+        .ok_or(Error::InvalidRequest)?;
+    activated.updated_at = now;
+    let fence = RunFence {
+        run_id: run.id.clone(),
+        claim_token: activated.claim_token.clone(),
+    };
+
+    super::activation::save(state, run, &activated, completion, preparation, proof)?;
+    proof
+        .measure(&activated)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state.runs.insert(run.id.clone(), activated.clone());
+
+    Ok((activated, fence))
+}
+
+fn reserve(
+    state: &mut super::super::State,
+    execution: &super::super::MemoryExecution,
+
+    claim: &ApprovalContinuationClaim,
+    target: &crate::AttemptTarget,
+    expected_revision: crabber_core::SessionRevision,
+    proof: &mut Proof,
+) -> Result<
+    (
+        AttemptMutation,
+        crate::AttemptReceipt,
+        crate::AttemptAuthority,
+    ),
+    Error,
+> {
+    let reserve = AttemptMutation {
+        id: approval::derived_id("claim-attempt", &claim.id),
+        expected_revision,
+        command: AttemptCommand::Reserve {
+            target: target.clone(),
+        },
+    };
+    proof
+        .measure(&reserve)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let applied = execution
+        .apply_claim_attempt_with_proof(state, reserve.clone(), proof)
+        .map_err(approval::attempt_error)?;
+    let AttemptMutationOutcome::Applied {
+        receipt: native,
+        authority: Some(authority),
+    } = applied
+    else {
+        return Err(Error::SemanticConflict);
+    };
+
+    Ok((reserve, native, authority))
 }

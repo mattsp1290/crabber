@@ -58,6 +58,22 @@ impl MemoryStore {
                     proof,
                 )?;
             }
+            crate::session_owner::preparation::PreparedOperation::ApprovalClaim(request) => {
+                crate::memory::approval::native_caller::selected(
+                    state,
+                    crate::native_enrollment::caller::ApprovalInput::Claim(request),
+                    proof,
+                )
+                .map_err(|_| StoreError::Conflict)?;
+            }
+            crate::session_owner::preparation::PreparedOperation::ApprovalRecovery(request) => {
+                crate::memory::approval::native_caller::selected(
+                    state,
+                    crate::native_enrollment::caller::ApprovalInput::Recovery(request),
+                    proof,
+                )
+                .map_err(|_| StoreError::Conflict)?;
+            }
             _ => (),
         }
         if let crate::session_owner::preparation::PreparedOperation::ExpiredRunResume(prepared) =

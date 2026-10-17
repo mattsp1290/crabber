@@ -3,6 +3,7 @@
 mod control;
 #[path = "native/initial.rs"]
 mod initial;
+use crate::native_enrollment::caller::Caller;
 use crate::session_owner::preparation::{PreparationCompletion, PreparedOperation};
 impl super::super::MemoryStore {
     pub(super) fn apply_prepared_native(
@@ -36,15 +37,22 @@ impl super::super::MemoryStore {
                 )
             }
             PreparedOperation::ApprovalClaim(claim) => PreparationCompletion::Approval(
-                self.claim_approval_guarded(state, &claim, Some(proof))?.0,
+                self.claim_approval_guarded(state, &claim, Some(proof), Caller::Raw, read_proof)?
+                    .0,
             ),
             PreparedOperation::ToolClaim(claim) => PreparationCompletion::ToolContinuation(
                 self.claim_tools_guarded(state, &claim, Some(proof), read_proof)?
                     .0,
             ),
             PreparedOperation::ApprovalRecovery(recovery) => PreparationCompletion::Approval(
-                self.recover_approval_guarded(state, &recovery, Some(proof))?
-                    .0,
+                self.recover_approval_guarded(
+                    state,
+                    &recovery,
+                    Some(proof),
+                    Caller::Raw,
+                    read_proof,
+                )?
+                .0,
             ),
             PreparedOperation::ToolRecovery(recovery) => PreparationCompletion::ToolContinuation(
                 self.recover_tools_guarded(state, &recovery, Some(proof), read_proof)?

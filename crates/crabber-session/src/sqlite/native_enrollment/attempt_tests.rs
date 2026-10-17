@@ -13,6 +13,24 @@ impl Harness for crate::SqliteStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn approval_fault(&self, stage: u8) {
+        self.approval_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    async fn approval_with_proof(
+        &self,
+        request: crate::native_enrollment::caller::ApprovalInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError> {
+        match request {
+            crate::native_enrollment::caller::ApprovalInput::Claim(r) => {
+                Box::pin(self.claim_approval_with_proof(r, proof)).await
+            }
+            crate::native_enrollment::caller::ApprovalInput::Recovery(r) => {
+                Box::pin(self.recover_approval_with_proof(r, proof)).await
+            }
+        }
+    }
     fn initial_fault(&self, stage: u8) {
         self.binding_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
@@ -194,7 +212,9 @@ const BIRTH: [&str; 3] = [
     "SELECT data FROM native_execution_origins WHERE run_id=$1",
     "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
 ];
-const NATIVE: [&str; 17] = [
+const NATIVE: [&str; 19] = [
+    "SELECT data_json FROM continuations WHERE run_id=$1 ORDER BY id",
+    "SELECT continuation_id FROM continuation_barriers WHERE run_id=$1 ORDER BY continuation_id",
     "SELECT CAST(public_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
     "SELECT data FROM runs WHERE id=$1",
     "SELECT CAST(generation AS TEXT)||owner||claim_token||run_claim_token||CAST(lease_until AS TEXT)||state||cleanup_state FROM execution_attempts WHERE run_id=$1 ORDER BY id",
@@ -307,4 +327,17 @@ async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
         .await;
+}
+
+#[tokio::test]
+async fn raw_approval_compound_original_grant_proof_and_rollback() {
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::approvals(
+        &store, &clock,
+    ))
+    .await;
 }

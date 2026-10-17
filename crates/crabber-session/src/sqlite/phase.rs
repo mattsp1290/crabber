@@ -6,6 +6,7 @@ pub(super) use records::{load_with_proof, receipt_with_proof};
 mod calls;
 pub(super) use super::tool_result::apply as apply_host_result;
 pub(super) use calls::load as load_call;
+pub(super) use calls::load_with_proof as load_call_with_proof;
 pub(super) use records::load as load_host_record;
 mod records;
 pub(super) async fn load_owned(

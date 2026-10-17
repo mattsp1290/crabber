@@ -125,6 +125,20 @@ pub(super) async fn validate_calls(
     run: &Run,
     batch: &ApprovalSuspension,
 ) -> Result<(), Error> {
+    validate_calls_with_proof(
+        tx,
+        run,
+        batch,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+pub(super) async fn validate_calls_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    batch: &ApprovalSuspension,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM tool_calls WHERE run_id=$1 AND status IN ('pending','running','waiting')",
     )
@@ -137,12 +151,13 @@ pub(super) async fn validate_calls(
         return Err(Error::InvalidTransition);
     }
     for prepared in &batch.calls {
-        let call = super::super::phase::load_call(tx, run, &prepared.target.call_id)
-            .await
-            .map_err(|error| match error {
-                crate::PhaseError::NotFound => Error::NotFound,
-                _ => Error::UnknownStoreOutcome,
-            })?;
+        let call =
+            super::super::phase::load_call_with_proof(tx, run, &prepared.target.call_id, proof)
+                .await
+                .map_err(|error| match error {
+                    crate::PhaseError::NotFound => Error::NotFound,
+                    _ => Error::UnknownStoreOutcome,
+                })?;
         if call.status != ToolCallStatus::Pending || call.result.is_some() {
             return Err(Error::InvalidTransition);
         }

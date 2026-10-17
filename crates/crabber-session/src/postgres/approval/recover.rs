@@ -1,10 +1,12 @@
 //! Exact expired-Unstarted approval recovery in the session mutation transaction.
 use super::super::{PostgresExecution, PostgresStore};
-use super::{Error, approval, finish, load, receipt, sql, write};
+use super::{Error, approval, finish, sql, write};
+use crate::native_enrollment::caller::{ApprovalCompletion, ApprovalInput, ApprovalResult, Caller};
 use crate::postgres::transaction::Transaction;
+use crate::public_session::v2::proof::Proof;
 use crate::{
-    ApprovalClaimOutcome, ApprovalContinuationRecovery, ApprovalGrant, ApprovalOutcome,
-    AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
+    ApprovalClaimOutcome, ApprovalContinuationRecovery, ApprovalOutcome, AttemptCleanup,
+    AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
 };
 use crabber_core::{Run, RunFence};
 use sqlx::Postgres;
@@ -12,6 +14,14 @@ impl PostgresStore {
     pub(in super::super) async fn recover_approval(
         &self,
         request: &ApprovalContinuationRecovery,
+    ) -> Result<ApprovalClaimOutcome, Error> {
+        self.recover_approval_with_proof(request, &mut Proof::bounded(32 << 20))
+            .await
+    }
+    pub(in crate::postgres) async fn recover_approval_with_proof(
+        &self,
+        request: &ApprovalContinuationRecovery,
+        proof: &mut Proof,
     ) -> Result<ApprovalClaimOutcome, Error> {
         #[cfg(test)]
         let fault = self
@@ -21,16 +31,10 @@ impl PostgresStore {
         let fault = 0;
         let original = &request.original;
         let (mut tx, run) = self
-            .approval_transaction(&original.session_id, &original.run_id)
+            .approval_transaction_with_proof(&original.session_id, &original.run_id, proof)
             .await?;
         let result = self
-            .recover_approval_guarded(
-                &mut tx,
-                &run,
-                request,
-                None,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
+            .recover_approval_guarded(&mut tx, &run, request, None, Caller::Raw, proof)
             .await;
         sql::after_commit(finish(tx, result).await, fault)
     }
@@ -41,9 +45,11 @@ impl PostgresStore {
         run: &Run,
         request: &ApprovalContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ApprovalClaimOutcome, bool), Error> {
-        let digest = request.fingerprint()?;
+        let digest =
+            super::native_caller::digest(tx, ApprovalInput::Recovery(request), read_proof).await?;
         #[cfg(test)]
         let fault = self
             .approval_fault
@@ -52,7 +58,9 @@ impl PostgresStore {
         let fault = 0;
 
         let original = &request.original;
-        if let Some(saved) = write::replay(tx, run, &request.id, &digest).await? {
+        if let Some(saved) =
+            super::native_caller::replay(tx, run, &request.id, &digest, read_proof).await?
+        {
             request.verify_receipt(&saved)?;
             return Ok((ApprovalClaimOutcome::Replayed(saved), false));
         }
@@ -68,18 +76,11 @@ impl PostgresStore {
         if write::revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let (record, _) = load(tx, &run.session_id, &run.id)
-            .await?
-            .ok_or(Error::InvalidTransition)?;
-        write::active(tx, &record).await?;
-        let parent = receipt(tx, &run.session_id, &original.id)
-            .await?
-            .ok_or(Error::NotFound)?;
         let now = self.clock.now();
-        let calls = record.recovery_grants(run, request, &parent, now)?;
-        validate_provenance(tx, &record).await?;
-        validate_native(tx, run, request, &record, now).await?;
-        super::suspend::validate_calls(tx, run, &record.batch).await?;
+        let (record, calls) = ready(tx, run, request, now, read_proof).await?;
+        read_proof
+            .measure(run)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let activated = approval::activate_recovery(request, run, now)?;
         let fence = RunFence {
             run_id: run.id.clone(),
@@ -92,23 +93,18 @@ impl PostgresStore {
             store: self.clone(),
             fence: fence.clone(),
         };
-        let mutation = AttemptMutation {
-            id: approval::derived_id("reclaim-attempt", &request.id),
+        let (mutation, native, authority) = reclaim(
+            tx,
+            &execution,
+            &activated,
+            request,
             expected_revision,
-            command: AttemptCommand::ReclaimUnstarted {
-                target: request.attempt.clone(),
-            },
-        };
-        let AttemptMutationOutcome::Applied {
-            receipt: native,
-            authority: Some(authority),
-        } = execution
-            .apply_attempt_with_proof(tx, &activated, &mutation, None, None, read_proof)
-            .await
-            .map_err(approval::attempt_error)?
-        else {
-            return Err(Error::UnknownStoreOutcome);
-        };
+            read_proof,
+        )
+        .await?;
+        read_proof
+            .measure(&native.attempt)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let saved = write::publish(
             tx,
             run,
@@ -117,40 +113,55 @@ impl PostgresStore {
             ApprovalOutcome::ReclaimedUnstarted {
                 continuation: original.continuation.clone(),
                 original_claim_id: original.id.clone(),
-                attempt: native.attempt,
+                attempt: native.attempt.clone(),
             },
             now,
         )
         .await?;
         request.verify_receipt(&saved)?;
-        sql::before_commit(fault)?;
-        Ok((
-            ApprovalClaimOutcome::Applied {
-                receipt: saved,
-                grant: Box::new(ApprovalGrant {
-                    fence,
-                    authority,
-                    calls,
-                    source_turn_id: record.batch.source_turn_id,
-                    usage: record.batch.usage,
-                    turns_used: record.batch.turns_used.ok_or(Error::UnknownStoreOutcome)?,
-                }),
+        let outcome = super::native_caller::issue(
+            tx,
+            caller,
+            ApprovalCompletion {
+                input: ApprovalInput::Recovery(request),
+                previous: run,
+                activated: &activated,
+                record: &record,
+                native_request: &mutation,
+                native_receipt: &native,
             },
-            true,
-        ))
+            ApprovalResult {
+                receipt: saved,
+                fence,
+                authority,
+                calls,
+            },
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )
+        .await?;
+        sql::before_commit(fault)?;
+        Ok((outcome, true))
     }
 }
-async fn validate_native(
+async fn validate_native_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     request: &ApprovalContinuationRecovery,
     record: &approval::ApprovalRecord,
     now: time::OffsetDateTime,
+    proof: &mut Proof,
 ) -> Result<(), Error> {
-    let old = super::super::attempt::load_owned(tx, &run.id, &record.batch.attempt.id)
-        .await
-        .map_err(approval::attempt_error)?
-        .ok_or(Error::NotFound)?;
+    let (old, _) = super::super::attempt::load_host_attempt_with_proof(
+        tx,
+        &run.id,
+        Some(&record.batch.attempt.id),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?
+    .ok_or(Error::NotFound)?;
     if old.snapshot.target != record.batch.attempt
         || old.snapshot.session_id != run.session_id
         || old.snapshot.state != AttemptState::Suspended
@@ -170,10 +181,15 @@ async fn validate_native(
     {
         return Err(Error::GenerationConflict);
     }
-    let current = super::super::attempt::load_owned(tx, &run.id, &request.attempt.id)
-        .await
-        .map_err(approval::attempt_error)?
-        .ok_or(Error::NotFound)?;
+    let (current, _) = super::super::attempt::load_host_attempt_with_proof(
+        tx,
+        &run.id,
+        Some(&request.attempt.id),
+        proof,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?
+    .ok_or(Error::NotFound)?;
     if current.snapshot.target != request.attempt
         || current.snapshot.session_id != run.session_id
         || current.snapshot.state != AttemptState::Unstarted
@@ -203,14 +219,23 @@ pub(super) async fn validate_provenance(
     tx: &mut Transaction<'_, Postgres>,
     record: &approval::ApprovalRecord,
 ) -> Result<(), Error> {
-    let saved = receipt(tx, &record.session_id, &record.batch.id)
-        .await?
+    validate_provenance_with_proof(tx, record, &mut Proof::legacy()).await
+}
+pub(super) async fn validate_provenance_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &approval::ApprovalRecord,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let saved = super::receipt_with_proof(tx, &record.session_id, &record.batch.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
         .ok_or(Error::UnknownStoreOutcome)?;
     record.verify_recovery_batch(&saved)?;
     for question in &record.questions {
         let answer = question.answer.as_ref().ok_or(Error::UnknownStoreOutcome)?;
-        let saved = receipt(tx, &record.session_id, &answer.id)
-            .await?
+        let saved = super::receipt_with_proof(tx, &record.session_id, &answer.id, proof)
+            .await
+            .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
             .ok_or(Error::UnknownStoreOutcome)?;
         approval::verify_recovery_answer(answer, &saved)?;
     }
@@ -222,20 +247,76 @@ pub(in crate::postgres) async fn preparation_context(
     run: &Run,
     request: &ApprovalContinuationRecovery,
     now: time::OffsetDateTime,
+    proof: &mut Proof,
 ) -> Result<(), Error> {
+    ready(tx, run, request, now, proof).await?;
+    Ok(())
+}
+
+async fn ready(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &crabber_core::Run,
+    request: &ApprovalContinuationRecovery,
+    now: time::OffsetDateTime,
+    proof: &mut Proof,
+) -> Result<(approval::ApprovalRecord, Vec<crate::GrantedApproval>), Error> {
     let original = &request.original;
-    let (record, _) = load(tx, &run.session_id, &run.id)
-        .await?
+    let (record, _) = super::load_with_proof(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
         .ok_or(Error::InvalidTransition)?;
     write::active(tx, &record).await?;
-    let parent = receipt(tx, &run.session_id, &original.id)
-        .await?
+    let parent = super::receipt_with_proof(tx, &run.session_id, &original.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
         .ok_or(Error::NotFound)?;
+    proof
+        .measure(&record)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let calls = record.recovery_grants(run, request, &parent, now)?;
+    validate_provenance_with_proof(tx, &record, proof).await?;
+    validate_native_with_proof(tx, run, request, &record, now, proof).await?;
+    super::suspend::validate_calls_with_proof(tx, run, &record.batch, proof).await?;
 
-    let _calls = record.recovery_grants(run, request, &parent, now)?;
-    validate_provenance(tx, &record).await?;
-    validate_native(tx, run, request, &record, now).await?;
-    super::suspend::validate_calls(tx, run, &record.batch).await?;
+    Ok((record, calls))
+}
 
-    Ok(())
+async fn reclaim(
+    tx: &mut Transaction<'_, Postgres>,
+    execution: &PostgresExecution,
+    activated: &Run,
+    request: &ApprovalContinuationRecovery,
+
+    expected_revision: crabber_core::SessionRevision,
+    proof: &mut Proof,
+) -> Result<
+    (
+        AttemptMutation,
+        crate::AttemptReceipt,
+        crate::AttemptAuthority,
+    ),
+    Error,
+> {
+    let mutation = AttemptMutation {
+        id: approval::derived_id("reclaim-attempt", &request.id),
+        expected_revision,
+        command: AttemptCommand::ReclaimUnstarted {
+            target: request.attempt.clone(),
+        },
+    };
+    proof
+        .measure(&mutation)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let AttemptMutationOutcome::Applied {
+        receipt: native,
+        authority: Some(authority),
+    } = execution
+        .apply_attempt_with_proof(tx, activated, &mutation, None, None, proof)
+        .await
+        .map_err(approval::attempt_error)?
+    else {
+        return Err(Error::UnknownStoreOutcome);
+    };
+
+    Ok((mutation, native, authority))
 }

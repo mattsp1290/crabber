@@ -5,6 +5,7 @@ mod answer;
 mod claim;
 pub(super) mod current;
 mod guards;
+mod native_caller;
 pub(super) mod origin;
 mod original_plan;
 pub(super) use original_plan::batch_with_proof as original_batch_with_proof;
@@ -75,6 +76,35 @@ impl PostgresStore {
     }
 }
 impl PostgresStore {
+    async fn approval_transaction_with_proof(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        proof: &mut Proof,
+    ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND id=$2)")
+                .bind(&session.0)
+                .bind(&run.0)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)
+                .map_err(sql::unknown)?;
+        if !exists {
+            return Err(Error::NotFound);
+        }
+        let mut tx = self
+            .session_transaction(session)
+            .await
+            .map_err(sql::unknown)?;
+        let saved = super::load_run_with_proof(&mut tx, run, proof)
+            .await
+            .map_err(sql::unknown)?;
+        if saved.session_id != *session || saved.id != *run {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        Ok((tx, saved))
+    }
     async fn approval_transaction(
         &self,
         session: &SessionId,
@@ -288,7 +318,7 @@ mod current_tests;
 mod original_plan_tests;
 pub(super) use write::replay_scope as replay_prepared;
 
-pub(super) use claim::ready as preparation_context;
+pub(super) use claim::ready_with_proof as preparation_context;
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
 

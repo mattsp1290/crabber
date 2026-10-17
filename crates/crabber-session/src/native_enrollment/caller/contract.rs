@@ -16,6 +16,12 @@ pub(crate) trait Harness: Store {
         crate::session_owner::preparation::PreparationCompletion,
         crate::session_owner::preparation::PreparationCommitError,
     >;
+    fn approval_fault(&self, stage: u8);
+    async fn approval_with_proof(
+        &self,
+        request: super::ApprovalInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ApprovalClaimOutcome, crate::ApprovalError>;
     async fn initial_retained(&self, session: &SessionId) -> InputFingerprint;
     async fn phase_with_proof(
         &self,
@@ -170,3 +176,6 @@ pub(crate) use prepared_recovery_contract::run as prepared_recoveries;
 #[path = "recovery/legacy_contract.rs"]
 mod legacy_expired;
 pub(crate) use legacy_expired::run as legacy_expired_claims;
+#[path = "approval_contract.rs"]
+mod approval;
+pub(crate) use approval::run as approvals;

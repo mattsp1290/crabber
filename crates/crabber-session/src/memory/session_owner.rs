@@ -470,16 +470,22 @@ fn validate_preparation_source_with_proof(
                 .get(run_id)
                 .filter(|run| run.session_id == request.owner.binding.session_id)
                 .ok_or(Error::NotFound)?;
-            let original = super::execution_binding::read(state, &run.session_id, run_id)
-                .map_err(|_| Error::UnknownStoreOutcome)?
-                .ok_or(Error::UnknownStoreOutcome)?;
+            let original =
+                super::execution_binding::read_with_proof(state, &run.session_id, run_id, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?
+                    .ok_or(Error::UnknownStoreOutcome)?;
             if crate::session_owner::preparation::resource_contract(
                 &original.capsule.runtime_semantics,
             )? != request.resource_contract
             {
                 return Err(Error::SemanticConflict);
             }
-            super::native_parent::verify_run(state, run).map_err(|_| Error::UnknownStoreOutcome)?;
+            proof.measure(run).map_err(|_| Error::UnknownStoreOutcome)?;
+            super::native_parent::source_protocol::current(state, &run.session_id, &run.id, proof)
+                .map_err(|_| Error::UnknownStoreOutcome)?
+                .ok_or(Error::UnknownStoreOutcome)?
+                .verify(run)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             let source = request.source.as_ref().ok_or(Error::Unsupported)?;
             crate::session_owner::preparation::source_validation::validate(source, request)?;
             match source {
@@ -494,7 +500,7 @@ fn validate_preparation_source_with_proof(
                         .map_err(|_| Error::UnknownStoreOutcome)?;
                 }
                 crate::session_owner::preparation::PreparationSource::ApprovalClaim(claim) => {
-                    super::approval::preparation_context(state, run, claim)
+                    super::approval::preparation_context(state, run, claim, proof)
                         .map_err(Error::ApprovalSource)?;
                 }
                 crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
@@ -516,7 +522,7 @@ fn validate_preparation_source_with_proof(
                 crate::session_owner::preparation::PreparationSource::ApprovalRecovery(
                     recovery,
                 ) => {
-                    super::approval::preparation_recovery_context(state, run, recovery, now)
+                    super::approval::preparation_recovery_context(state, run, recovery, now, proof)
                         .map_err(Error::ApprovalSource)?;
                 }
                 crate::session_owner::preparation::PreparationSource::ToolRecovery(recovery) => {

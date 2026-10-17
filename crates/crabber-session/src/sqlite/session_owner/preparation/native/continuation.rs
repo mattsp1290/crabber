@@ -36,9 +36,16 @@ impl crate::SqliteStore {
                 )
             }
             PreparedOperation::ApprovalClaim(claim) => PreparationCompletion::Approval(
-                self.claim_approval_guarded(tx, &run, &claim, Some(proof), read_proof)
-                    .await?
-                    .0,
+                self.claim_approval_guarded(
+                    tx,
+                    &run,
+                    &claim,
+                    Some(proof),
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
+                )
+                .await?
+                .0,
             ),
             PreparedOperation::ToolClaim(claim) => PreparationCompletion::ToolContinuation(
                 self.claim_tools_guarded(tx, &run, &claim, Some(proof), read_proof)
@@ -46,9 +53,16 @@ impl crate::SqliteStore {
                     .0,
             ),
             PreparedOperation::ApprovalRecovery(recovery) => PreparationCompletion::Approval(
-                self.recover_approval_guarded(tx, &run, &recovery, Some(proof), read_proof)
-                    .await?
-                    .0,
+                self.recover_approval_guarded(
+                    tx,
+                    &run,
+                    &recovery,
+                    Some(proof),
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
+                )
+                .await?
+                .0,
             ),
             PreparedOperation::ToolRecovery(recovery) => PreparationCompletion::ToolContinuation(
                 self.recover_tools_guarded(tx, &run, &recovery, Some(proof), read_proof)

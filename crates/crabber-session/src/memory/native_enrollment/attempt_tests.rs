@@ -12,6 +12,25 @@ impl Harness for crate::MemoryStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn approval_fault(&self, stage: u8) {
+        self.approval_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn approval_with_proof(
+        &self,
+        request: crate::native_enrollment::caller::ApprovalInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<Output = Result<crate::ApprovalClaimOutcome, crate::ApprovalError>>
+    {
+        std::future::ready(match request {
+            crate::native_enrollment::caller::ApprovalInput::Claim(r) => {
+                self.claim_approval_with_proof(r, proof)
+            }
+            crate::native_enrollment::caller::ApprovalInput::Recovery(r) => {
+                self.recover_approval_with_proof(r, proof)
+            }
+        })
+    }
     fn initial_fault(&self, stage: u8) {
         self.binding_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
@@ -253,7 +272,15 @@ impl Harness for crate::MemoryStore {
                         .collect::<Vec<_>>(),
                     state.admission_execution_protocols.contains(run),
                 ),
-                phases,
+                (
+                    phases,
+                    state
+                        .approvals
+                        .values()
+                        .filter(|r| r.session_id == *session)
+                        .collect::<Vec<_>>(),
+                    state.approval_barriers.get(session),
+                ),
                 calls,
                 state.snapshot_revisions.get(session),
                 original,
@@ -394,4 +421,16 @@ async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
         .await;
+}
+
+#[tokio::test]
+async fn raw_approval_compound_original_grant_proof_and_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::approvals(
+        &store, &clock,
+    ))
+    .await;
 }
