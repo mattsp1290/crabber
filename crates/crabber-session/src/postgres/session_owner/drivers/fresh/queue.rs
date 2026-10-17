@@ -1,8 +1,9 @@
 //! Queue's final completed R comes from its actual protected publication.
 use super::super::{Error, source::Original};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::{PreparationKey, PreparationPurpose, queue_admission};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn revision(
     tx: &mut Transaction<'_, Postgres>,
     original: &Original,

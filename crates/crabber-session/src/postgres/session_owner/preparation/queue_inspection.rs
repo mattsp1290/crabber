@@ -35,7 +35,7 @@ impl PostgresStore {
     }
 }
 async fn read(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     original: &JoinedPreparation,
     proof: &mut Proof,
 ) -> Result<Option<QueueReceipt>, PreparationCommitError> {

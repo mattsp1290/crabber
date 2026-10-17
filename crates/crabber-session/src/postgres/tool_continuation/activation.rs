@@ -1,9 +1,10 @@
 //! Capture only the actual rotating v3 writer, before status-only publications.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::proof::VerifiedPreparation;
 use crate::{ToolContinuationError as Error, native_parent::CompletionSource};
 use crabber_core::Run;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn save(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

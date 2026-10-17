@@ -1,7 +1,8 @@
 //! Pure selected original Tool/Frontend metadata; no fresh authority.
 use super::{Error, Proof, source, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{InspectPreparedToolDriver, PreparedToolDriverMetadata};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl crate::PostgresStore {
     pub(in crate::postgres) async fn inspect_tool_driver(
         &self,
