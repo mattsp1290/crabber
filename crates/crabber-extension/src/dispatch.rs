@@ -739,6 +739,11 @@ pub(crate) async fn with_mount<T>(id: u64, future: impl Future<Output = T>) -> T
     stack.push(id);
     ACTIVE_MOUNTS.scope(stack, future).await
 }
+pub(crate) fn with_mount_inline<T>(id: u64, call: impl FnOnce() -> T) -> T {
+    let mut stack = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
+    stack.push(id);
+    ACTIVE_MOUNTS.sync_scope(stack, call)
+}
 pub(crate) fn is_active_mount(id: u64) -> bool {
     ACTIVE_MOUNTS
         .try_with(|stack| stack.contains(&id))

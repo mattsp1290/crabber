@@ -1,4 +1,5 @@
 //! Explicit sealed mount cleanup; completion is an observed actual task join.
+pub(super) mod guards;
 mod invocations;
 pub(super) mod services;
 pub(super) mod tools;
@@ -43,6 +44,8 @@ impl State {
 /// invocation joins do not prove reference disposal or physical generation close.
 /// Prompt contributors and typed system-prompt middleware retain original joins
 /// through collector cancellation and deadlines using this same admission.
+/// Synchronous guards enter the same sealed admission and retain their original
+/// return/unwind observations. Held guard objects remain outside disposal proof.
 /// Subprocess and workspace filesystem overrides use this invocation admission
 /// and retain original future joins; held service Arcs remain outside object-
 /// disposal and physical-generation coverage.
@@ -126,6 +129,10 @@ pub(super) fn append_contract(mount: &Mount, components: &mut Vec<ComponentIdent
         components.push(ComponentIdentity {
             id: "registry.mount.cleanup".into(),
             version: "crabber.registry.mount.sealed.v1".into(),
+        });
+        components.push(ComponentIdentity {
+            id: "registry.mount.guard_invocations".into(),
+            version: "crabber.registry.mount.guard-invocations.v1".into(),
         });
         components.push(ComponentIdentity {
             id: "registry.mount.service_invocations".into(),

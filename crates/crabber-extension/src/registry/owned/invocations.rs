@@ -13,6 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 mod caller;
+mod inline;
 pub(crate) use caller::current;
 pub use caller::{
     CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
@@ -28,7 +29,18 @@ pub(super) struct State {
 #[derive(Default)]
 struct Entries {
     tasks: Vec<Arc<Task>>,
+    inline: Vec<Arc<inline::Call>>,
     sealed: bool,
+}
+impl Entries {
+    fn full(&self) -> bool {
+        self.tasks.len() + self.inline.len() >= MAX_ACTIVE
+    }
+    fn reap_observed(&mut self) {
+        self.tasks
+            .retain(|task| *task.result.lock().unwrap() != Some(true));
+        self.inline.retain(|call| call.result() != Some(true));
+    }
 }
 struct Task {
     join: AsyncMutex<Option<JoinHandle<bool>>>,
@@ -67,10 +79,16 @@ impl State {
         self.changed.notify_waiters();
     }
     pub(super) async fn join(&self) -> bool {
-        let tasks = self.tasks.lock().unwrap().tasks.clone();
+        let (tasks, inline) = {
+            let entries = self.tasks.lock().unwrap();
+            (entries.tasks.clone(), entries.inline.clone())
+        };
         let mut success = true;
         for task in tasks {
             success &= task.join().await;
+        }
+        for call in inline {
+            success &= call.returned().await;
         }
         success
     }
@@ -88,11 +106,7 @@ impl State {
         }
         // Failed observations remain sticky and consume capacity. Successful
         // actual joins can be removed, permitting sequential use indefinitely.
-        self.tasks
-            .lock()
-            .unwrap()
-            .tasks
-            .retain(|task| *task.result.lock().unwrap() != Some(true));
+        self.tasks.lock().unwrap().reap_observed();
     }
 }
 
@@ -131,7 +145,7 @@ impl Source {
                 return Err(ExtensionError::ContextOwnerClosed);
             }
             let mut tasks = state.tasks.lock().unwrap();
-            if tasks.tasks.len() >= MAX_ACTIVE {
+            if tasks.full() {
                 return Err(ExtensionError::PreparationRegistration(
                     crate::ResourceRegistrationError::Capacity,
                 ));

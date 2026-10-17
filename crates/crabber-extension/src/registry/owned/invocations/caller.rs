@@ -1,5 +1,5 @@
 //! One actual parent-resource observer of original callback joins.
-use super::{MAX_ACTIVE, State, Task};
+use super::{State, Task};
 use crate::{ExtensionError, ResourceFailure, ResourceRegistrationError, ToolResources};
 use futures::FutureExt;
 use std::{future::Future, sync::Arc};
@@ -8,7 +8,8 @@ tokio::task_local! { static CURRENT: CallbackInvocationCapability; }
 
 /// Caller-owned callback boundary attached to actual retained cleanup resources.
 /// Drop seals immediately; cloned capabilities never delay that seal. Its one
-/// registered observer awaits the original callback joins, not waiter results.
+/// registered observer awaits original async callback joins and synchronous
+/// call return/unwind, rather than waiter results.
 pub struct CallbackInvocationOwner {
     capability: CallbackInvocationCapability,
 }
@@ -62,19 +63,23 @@ pub struct CallbackInvocationCapability {
     parent: ToolResources,
 }
 impl CallbackInvocationCapability {
-    /// Check actual join observations of the currently recorded callbacks.
+    /// Check actual async joins and synchronous return/unwind observations.
     /// Success is neither a seal nor evidence of complete resource membership:
     /// this open capability may still admit later callbacks. No task is polled,
     /// aborted or joined by this diagnostic.
     /// # Errors
-    /// A recorded original callback has not joined successfully, or its observed
-    /// failure remains sticky. Pending/unobserved callbacks are refused too.
+    /// A recorded original call has not completed successfully, or its observed
+    /// failure remains sticky. Pending/unobserved calls are refused too.
     pub fn check_observed_joins(&self) -> Result<(), ResourceFailure> {
         let entries = self.state.tasks.lock().unwrap();
         if entries
             .tasks
             .iter()
             .all(|task| *task.result.lock().unwrap() == Some(true))
+            && entries
+                .inline
+                .iter()
+                .all(|call| call.result() == Some(true))
         {
             Ok(())
         } else {
@@ -101,10 +106,30 @@ impl CallbackInvocationCapability {
         {
             return Err(ResourceRegistrationError::Sealed.into());
         }
-        if entries.tasks.len() >= MAX_ACTIVE {
+        if entries.full() {
             return Err(ResourceRegistrationError::Capacity.into());
         }
         entries.tasks.push(task);
+        Ok(())
+    }
+    pub(super) fn retain_inline(
+        &self,
+        call: Arc<super::inline::Call>,
+    ) -> Result<(), ExtensionError> {
+        let mut entries = self.state.tasks.lock().unwrap();
+        entries.reap_observed();
+        if entries.sealed
+            || self
+                .parent
+                .closing()
+                .is_none_or(|closing| closing.now_or_never().is_some())
+        {
+            return Err(ResourceRegistrationError::Sealed.into());
+        }
+        if entries.full() {
+            return Err(ResourceRegistrationError::Capacity.into());
+        }
+        entries.inline.push(call);
         Ok(())
     }
 }

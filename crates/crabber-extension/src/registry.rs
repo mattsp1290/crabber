@@ -873,7 +873,18 @@ impl Registry {
                 plan_sequence,
                 prompt_invocation.as_ref(),
             );
-            guards.extend(r.guards.iter().cloned());
+            if let Some(captured) = &mount.registration {
+                guards.extend(
+                    r.guards
+                        .iter()
+                        .zip(&captured.guards)
+                        .map(|(guard, identity)| {
+                            owned::guards::project(guard, identity, InvocationSource::new(mount))
+                        }),
+                );
+            } else {
+                guards.extend(r.guards.iter().cloned());
+            }
             restrictions.extend(r.restrictions.iter().cloned());
             handlers.extend(r.handlers.iter().cloned());
             if mount.owned.is_some() {
