@@ -2,7 +2,8 @@ use super::{
     AdmittedCall, AdmittedResult, ContentBlock, Error, Failure, ForkSession, MESSAGE, Message,
     MessageId, Proof, Role, RunId, SourceCall, unknown,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 use std::collections::BTreeSet;
 pub(super) async fn original_input(
     tx: &mut Transaction<'_, Sqlite>,

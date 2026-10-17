@@ -1,11 +1,12 @@
 //! Host-supervised progress of an already accepted cancellation.
 use super::{SqliteStore, finish, reads, suspension};
+use crate::transaction::Transaction;
 use crate::{
     RunControlError as Error, RunControlKind, RunControlStatus, RunControlSummary,
     WaitingCancellation,
     run_control::{unknown, valid_scope, verify_terminal},
 };
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 async fn current(
     tx: &mut Transaction<'_, Sqlite>,
     request: &WaitingCancellation,

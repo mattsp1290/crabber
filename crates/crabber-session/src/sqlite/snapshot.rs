@@ -33,7 +33,7 @@ impl SqliteStore {
         {
             return Err(invalid());
         }
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let (revision, public_revision): (i64, i64) =
                 sqlx::query_as("SELECT snapshot_revision,public_revision FROM sessions WHERE id=$1")

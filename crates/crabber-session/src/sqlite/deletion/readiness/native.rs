@@ -1,9 +1,10 @@
 //! Native stages use narrow facts and independently anchored retained records.
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, blocked, unknown};
+use crate::transaction::Transaction;
 use crate::{AttemptCleanup, AttemptState, DeletionBlocker};
 use crabber_core::{AttemptId, RunId, RunStatus, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 mod phases;
 mod runs;
 mod scan;

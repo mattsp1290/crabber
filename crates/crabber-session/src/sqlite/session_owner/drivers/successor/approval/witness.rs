@@ -1,9 +1,10 @@
 //! Complete bounded witnesses, never nullable target-field classification.
 use super::{Error, Proof, unknown};
 use crate::native_parent::{Kind, Witness};
+use crate::transaction::Transaction;
 use crabber_core::Run;
 use futures::TryStreamExt;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite::session_owner::drivers::successor) async fn unstarted(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

@@ -5,7 +5,8 @@ use crate::native_enrollment::caller::{
     tool::{Tool, ToolCompletion, ToolInput},
 };
 use crate::public_session::v2::proof::Proof;
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn digest(
     tx: &mut Transaction<'_, Sqlite>,
     input: ToolInput<'_>,
@@ -48,7 +49,9 @@ pub(super) async fn outer_replay(
     input: ToolInput<'_>,
     proof: &mut Proof,
 ) -> Result<Option<crate::ToolContinuationReceipt>, Error> {
-    let mut tx = store.readers.begin().await.map_err(unknown)?;
+    let mut tx = crate::transaction::begin(&store.readers)
+        .await
+        .map_err(unknown)?;
     let result = async {
         let digest = digest(&mut tx, input, proof).await?;
         replay(&mut tx, input, &digest, proof).await

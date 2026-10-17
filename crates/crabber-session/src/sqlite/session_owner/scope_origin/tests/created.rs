@@ -54,7 +54,7 @@ async fn scope_birth_refuses_coherently_rewritten_creation_receipt_and_audit() {
                 "session_management_audit",
             )
         };
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         sqlx::query(
             "UPDATE operation_receipts SET data_json=$3 WHERE session_id=$1 AND operation_id=$2",
         )

@@ -7,8 +7,9 @@ use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
 use crate::native_parent::{RunIssuance, RunState};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 /// Independent source facts remain distinct from actual resource joins.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,

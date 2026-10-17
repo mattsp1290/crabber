@@ -1,9 +1,10 @@
 //! Actual Attempt row preparation retains the caller's selected proof.
 use super::records;
 use crate::public_session::v2::proof::Proof;
+use crate::transaction::Transaction;
 use crate::{AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation, attempt};
 use crabber_core::Run;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn record(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

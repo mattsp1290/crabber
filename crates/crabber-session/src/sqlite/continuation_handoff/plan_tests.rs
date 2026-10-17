@@ -20,7 +20,7 @@ async fn handoff_refuses_changed_predecessor_run_plan_before_mutation() {
         };
         let operation = crabber_core::ControlId::new();
         let digest = crabber_core::InputFingerprint::new("d".repeat(64)).unwrap();
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         assert!(
             super::prepare(&mut tx, &run, domain, &target, &operation, &digest, &parent)
                 .await

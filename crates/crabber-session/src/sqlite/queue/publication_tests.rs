@@ -101,7 +101,7 @@ async fn journal_identity_and_publications_are_append_only_and_share_proof() {
             "{query}"
         );
     }
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let scope = Scope {
         session: f.session.clone(),
         queue: f.queue.clone(),
@@ -157,7 +157,7 @@ async fn journal_identity_and_publications_are_append_only_and_share_proof() {
         count, 5,
         "enqueue,claim,prepare,admit and successful no-op cancel are distinct publications"
     );
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
     let before = proof.used();
     assert_eq!(
@@ -174,7 +174,7 @@ async fn journal_identity_and_publications_are_append_only_and_share_proof() {
 async fn predecessor_queue_controls_never_enroll_originals() {
     let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
     let (f, record, audit) = crate::queue_contract::publications::legacy_rows(&store).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("INSERT INTO future_queue(session_id,queue_id,sequence,state,prepared,summary_json,data_json,admission_key) VALUES($1,$2,1,'Queued',false,$3,$4,$5)").bind(&f.session.0).bind(&f.queue.0).bind(encode(&record.summary).unwrap()).bind(encode(&record).unwrap()).bind(record.input.admission.key.as_str()).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'future_queue',$3,NULL,$4)").bind(&f.session.0).bind(&f.enqueue.id.0).bind(audit.receipt.semantic_digest.as_str()).bind(encode(&audit.receipt).unwrap()).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO future_queue_audit(session_id,operation_id,queue_id,revision,data_json) VALUES($1,$2,$3,$4,$5)").bind(&f.session.0).bind(&f.enqueue.id.0).bind(&f.queue.0).bind(i64::try_from(audit.receipt.revision.get()).unwrap()).bind(encode(&audit).unwrap()).execute(&mut *tx).await.unwrap();
@@ -241,7 +241,7 @@ async fn journal_context_precharges_workspace_and_preserves_historical_selection
     let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
     let f = crate::queue_contract::fixture(&store).await;
     store.mutate_queue(f.enqueue.clone()).await.unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut measured = Proof::bounded(32 << 20);
     super::reads::current_with_proof(&mut tx, &f.session, &mut measured)
         .await
@@ -264,7 +264,7 @@ async fn journal_context_precharges_workspace_and_preserves_historical_selection
         .execute(&store.writer)
         .await
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(matches!(
         super::reads::current_with_proof(&mut tx, &f.session, &mut Proof::bounded(1024)).await,
         Err(ReadError::Budget(_))

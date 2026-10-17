@@ -5,8 +5,9 @@ use crate::approval::terminal;
 use crate::attempt::terminal::TerminalFacts;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

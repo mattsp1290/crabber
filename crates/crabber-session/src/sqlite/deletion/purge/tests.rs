@@ -3,11 +3,12 @@ use crate::sql_deletion::{
     VerifiedScope,
     contract::{self, Graph},
 };
+use crate::transaction::Transaction;
 use crate::{
     DeleteSession, DeletionError, DeletionReceipt, SessionDisposition, SqliteStore, Store,
 };
 use crabber_core::{ControlId, RunFence, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn clock() -> std::sync::Arc<crabber_core::ManualClock> {
     std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
@@ -413,7 +414,7 @@ async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_
         expected_revision: revision,
     };
     let scope = VerifiedScope::fixture(session.clone(), revision);
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     tombstone(&mut tx, &request).await;
     super::purge(&mut tx, &scope).await.unwrap();
     tx.rollback().await.unwrap();
@@ -424,7 +425,7 @@ async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_
             .await
             .unwrap();
     assert_eq!(sources, 1);
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     tombstone(&mut tx, &request).await;
     super::purge(&mut tx, &scope).await.unwrap();
     tx.commit().await.unwrap();

@@ -1,5 +1,7 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
 //! connecting only verifies a current-version Crabber database already using WAL.
+
+use crate::transaction::Transaction;
 #[path = "sqlite/admission_reads.rs"]
 mod admission_reads;
 #[path = "sqlite/credential_access.rs"]
@@ -50,7 +52,7 @@ use crabber_core::{ByteLimits, Clock, SystemClock};
 use execution::SqliteExecution;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
-    Connection, Sqlite, SqliteConnection, SqlitePool, Transaction,
+    Connection, Sqlite, SqliteConnection, SqlitePool,
     error::ErrorKind,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteSynchronous},
 };
@@ -196,7 +198,7 @@ impl SqliteStore {
         #[cfg(test)]
         self.write_waiters
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let result = self.writer.begin_with("BEGIN IMMEDIATE").await;
+        let result = crate::transaction::begin_with(&self.writer, "BEGIN IMMEDIATE").await;
         #[cfg(test)]
         self.write_waiters
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -270,20 +272,27 @@ async fn connect_with(
 }
 
 async fn verify_connection(writer: &SqlitePool) -> Result<(), StoreError> {
-    let mut connection = writer.acquire().await.map_err(db)?;
-    if classify_snapshot(&mut connection).await? != DatabaseState::Current {
-        return Err(foreign_database());
+    // Own the pooled connection before BEGIN, including its unacknowledged
+    // interval. A cancelled verifier must not return that connection for reuse.
+    let mut transaction = crate::transaction::begin(writer).await.map_err(db)?;
+    let result = async {
+        if classify(&mut transaction).await? != DatabaseState::Current {
+            return Err(foreign_database());
+        }
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(classification_error)?;
+        if mode != "wal" {
+            return Err(StoreError::Validation(
+                "SQLite database is not in WAL mode; run migrate".into(),
+            ));
+        }
+        Ok(())
     }
-    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(classification_error)?;
-    if mode != "wal" {
-        return Err(StoreError::Validation(
-            "SQLite database is not in WAL mode; run migrate".into(),
-        ));
-    }
-    Ok(())
+    .await;
+    transaction.rollback().await.map_err(db)?;
+    result
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -295,7 +304,9 @@ enum DatabaseState {
 // Metadata must come from one snapshot when another process initializes the
 // file concurrently. End this read transaction before attempting a WAL change.
 async fn classify_snapshot(connection: &mut SqliteConnection) -> Result<DatabaseState, StoreError> {
-    let mut transaction = connection.begin().await.map_err(classification_error)?;
+    let mut transaction = crate::transaction::begin_on::<Sqlite>(connection, None)
+        .await
+        .map_err(classification_error)?;
     let state = classify(&mut transaction).await;
     transaction.rollback().await.map_err(db)?;
     state
@@ -364,7 +375,10 @@ async fn migrate_connection(
     if state == DatabaseState::Current {
         return Ok(());
     }
-    let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+    let mut transaction =
+        crate::transaction::begin_on::<Sqlite>(connection, Some("BEGIN IMMEDIATE"))
+            .await
+            .map_err(db)?;
     let result = match classify(&mut transaction).await {
         Ok(DatabaseState::Fresh) => initialize(&mut transaction, schema).await,
         Ok(DatabaseState::Current) => return transaction.rollback().await.map_err(db),

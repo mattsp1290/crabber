@@ -1,5 +1,6 @@
 use super::{Error, Failure, ForkSession, Proof, ToolCallRecord, decode_event, unknown};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn terminal(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ForkSession,

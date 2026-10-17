@@ -75,7 +75,7 @@ async fn corrupt(
     original: &str,
     corruption: u8,
 ) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     match corruption {
         0 => {
             sqlx::query(
@@ -154,7 +154,7 @@ async fn corrupt(
     tx.commit().await.unwrap();
 }
 async fn assert_current_guard(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     request: &ReserveSessionOwner,
     moving: bool,
 ) {
@@ -334,7 +334,7 @@ async fn restored_phase(store: &SqliteStore) {
         .phase
         .as_ref()
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let original = super::super::phase::load_owned(&mut tx, &admitted.run.id, &target.id)
         .await
         .unwrap()
@@ -357,7 +357,7 @@ async fn restored_phase(store: &SqliteStore) {
         )
         .await
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     super::super::phase::save_host_record(&mut tx, &original, false)
         .await
         .unwrap();

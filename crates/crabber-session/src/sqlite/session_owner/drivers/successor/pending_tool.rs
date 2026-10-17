@@ -4,14 +4,17 @@ use crate::session_owner::preparation::{
     InspectPendingToolPreparation as Request, PendingToolPreparationMetadata as Metadata,
     pending_tool as choice,
 };
+use crate::transaction::Transaction;
 use crabber_core::{Run, Session};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 impl crate::SqliteStore {
     pub(in crate::sqlite) async fn inspect_pending_tool(
         &self,
         request: &Request,
     ) -> Result<Metadata, Error> {
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let mut proof = Proof::bounded(32 << 20);
         let result = Box::pin(read(&mut tx, request, self.clock.now(), &mut proof)).await?;
         tx.commit().await.map_err(unknown)?;

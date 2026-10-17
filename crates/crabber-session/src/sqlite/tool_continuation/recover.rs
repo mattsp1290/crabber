@@ -54,7 +54,7 @@ impl SqliteStore {
     }
     pub(in crate::sqlite) async fn recover_tools_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -73,7 +73,7 @@ impl SqliteStore {
     }
     pub(in crate::sqlite) async fn recover_frontend_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
@@ -92,7 +92,7 @@ impl SqliteStore {
     }
     async fn recover_compound_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         input: ToolInput<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -196,7 +196,7 @@ impl SqliteStore {
     }
 }
 async fn eligible_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     request: &ToolContinuationRecovery,
     frontend: Option<&crate::FrontendContinuationRecovery>,
@@ -278,7 +278,7 @@ async fn eligible_with_proof(
 }
 
 pub(in crate::sqlite) async fn preparation_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     request: &ToolContinuationRecovery,
     now: time::OffsetDateTime,
@@ -296,7 +296,7 @@ pub(in crate::sqlite) async fn preparation_context(
 }
 
 pub(in crate::sqlite) async fn preparation_frontend_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     request: &crate::FrontendContinuationRecovery,
     now: time::OffsetDateTime,

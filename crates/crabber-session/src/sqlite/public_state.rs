@@ -1,11 +1,12 @@
 use super::records::{bump_public_revision, decode_row};
 use super::{SqliteExecution, SqliteStore, admission_execution, db};
+use crate::transaction::Transaction;
 use crate::{
     PublicStateError as Error, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
     public_state,
 };
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run, SessionId, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 use time::OffsetDateTime;
 
 const UPSERT_STATE: &str = "INSERT INTO session_public_state(session_id,format_version,state_json,activities_json) VALUES($1,1,$2,$3) ON CONFLICT(session_id) DO UPDATE SET format_version=1,state_json=excluded.state_json,activities_json=excluded.activities_json";
@@ -77,9 +78,7 @@ impl SqliteStore {
         &self,
         session: &SessionId,
     ) -> Result<PublicStateSnapshot, Error> {
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(public_state::unknown)?;
@@ -92,9 +91,7 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<PublicStateReceipt>, Error> {
         public_state::validate_id(id)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(public_state::unknown)?;

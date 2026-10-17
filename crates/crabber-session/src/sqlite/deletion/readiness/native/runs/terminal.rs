@@ -4,9 +4,10 @@ mod waiting;
 use crate::attempt::terminal::{self, TerminalFacts};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{EventCursor, RunId, RunStatus, SessionId, Usage};
 use serde::Deserialize;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {

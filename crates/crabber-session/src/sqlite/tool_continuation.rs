@@ -19,6 +19,7 @@ mod suspend;
 pub(super) mod write;
 use super::{SqliteExecution, SqliteStore};
 use crate::tool_continuation::{self as domain, ToolContinuationRecord};
+use crate::transaction::Transaction;
 use crate::{
     ToolContinuationClaim, ToolContinuationClaimOutcome, ToolContinuationError as Error,
     ToolContinuationOutcome, ToolContinuationReceipt, ToolContinuationSnapshot,
@@ -27,7 +28,7 @@ use crate::{
 };
 use crabber_core::{ControlId, InputFingerprint, Run, RunId, SessionId, SessionRevision};
 pub(super) use guards::{guard_attempt, release_terminal};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 use time::OffsetDateTime;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
@@ -92,7 +93,9 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ToolContinuationSnapshot>, Error> {
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = async {
             read::origin(&mut tx, session, run, None).await?;
             let record = scan::scan(&mut tx, session, Some(run)).await?.latest;
@@ -107,7 +110,9 @@ impl SqliteStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<ToolContinuationReceipt>, Error> {
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id)
             .await
             .map(|saved| saved.map(|(receipt, _)| receipt));

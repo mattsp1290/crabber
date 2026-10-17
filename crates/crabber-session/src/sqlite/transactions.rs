@@ -18,8 +18,7 @@ pub(super) async fn finish<T, E>(
             // Keep the guard until COMMIT responds so a failed commit can be
             // rolled back explicitly. At depth zero rollback only closes the
             // guard; SQLx does not issue SQL after a successful outer commit.
-            use sqlx::{TransactionManager, sqlite::SqliteTransactionManager};
-            let committed = SqliteTransactionManager::commit(&mut tx).await;
+            let committed = tx.commit_in_place().await;
             tx.rollback().await.map_err(db).map_err(map)?;
             committed.map_err(db).map_err(map)?;
             Ok(value)

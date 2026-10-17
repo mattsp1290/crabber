@@ -2,8 +2,9 @@
 use super::{Error, Proof, unknown};
 use crate::session_owner::driver::successor::tool_fresh as validate;
 use crate::session_owner::preparation::pending_tool as choice;
+use crate::transaction::Transaction;
 use crabber_core::Run;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn check(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

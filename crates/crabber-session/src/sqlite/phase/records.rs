@@ -1,4 +1,5 @@
 use super::super::db;
+use crate::transaction::Transaction;
 use crate::{
     PhaseError as Error, PhaseMutation, PhaseReceipt, PhaseSnapshot,
     phase::{self, PhaseRecord, sql},
@@ -7,7 +8,7 @@ use crabber_core::{
     ControlId, EventCursor, InputFingerprint, PhaseId, Run, RunId, SessionId, SessionRevision,
     ToolCallId,
 };
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 use time::OffsetDateTime;
 
 const BOUNDS: &str = "length(CAST(s.id AS BLOB))<=512 AND length(CAST(p.run_id AS BLOB))<=128 AND length(CAST(p.id AS BLOB))<=128 AND length(CAST(p.call_id AS BLOB))<=512 AND length(CAST(p.attempt_id AS BLOB))<=128 AND length(CAST(p.state AS BLOB))<=32 AND length(CAST(p.quiescence_state AS BLOB))<=32 AND length(CAST(p.outcome_json AS BLOB))<=4198400";

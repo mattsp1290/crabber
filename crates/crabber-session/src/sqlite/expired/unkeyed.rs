@@ -1,8 +1,9 @@
 //! Bounded explicit Witness2 source; selected original audits never grant work.
 use super::Error;
 use crate::session_owner::preparation::{admission::Witness, expired::unkeyed::Original};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

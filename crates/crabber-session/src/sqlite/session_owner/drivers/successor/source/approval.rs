@@ -4,7 +4,8 @@ use crate::native_parent::RunIssuance;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native};
 use crate::session_owner::driver::successor::source::{approval::Evidence, input::Input};
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 
 pub(super) async fn original(
     tx: &mut Transaction<'_, Sqlite>,

@@ -4,9 +4,10 @@ use crate::native_enrollment::caller::{
     Caller, Fresh, initial::Capture, recovery::AdmissionRecovery,
 };
 use crate::public_session::v2::proof::Proof;
+use crate::transaction::Transaction;
 use crate::{ClaimUnstartedAdmissionRequest, ClaimedAdmission};
 use crabber_core::{Run, RunFence};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreFailure
 }

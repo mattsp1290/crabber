@@ -1,9 +1,10 @@
 use super::{Error, ToolContinuationRecord, unknown};
 use crate::native_enrollment::caller::{self, tool::IssuedPhases};
 use crate::public_session::v2::proof::Proof;
+use crate::transaction::Transaction;
 use crate::{AttemptAuthority, ToolPhaseResume};
 use crabber_core::{Run, ToolCallStatus};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn claim(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

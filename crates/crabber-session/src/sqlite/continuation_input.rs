@@ -1,7 +1,8 @@
 //! Independently protected original input births under the enclosing transaction.
 use crate::continuation_input::{Domain, Error, Input, Kind, Receipt, Scope, Source};
 use crate::public_session::v2::proof::{Proof, ReadError};
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 type Result<T> = std::result::Result<T, ReadError<Error>>;
 fn bad(_: impl std::fmt::Debug) -> ReadError<Error> {
     ReadError::Domain(Error)

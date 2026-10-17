@@ -1,6 +1,7 @@
 //! Setwise physical erasure; the caller commits the tombstone in this transaction.
+use crate::transaction::Transaction;
 use crate::{DeletionError as Error, sql_deletion::VerifiedScope};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(super) async fn purge(
     tx: &mut Transaction<'_, Sqlite>,

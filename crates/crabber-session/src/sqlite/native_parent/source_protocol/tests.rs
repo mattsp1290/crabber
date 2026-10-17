@@ -2,7 +2,6 @@
 use super::*;
 use crate::Store;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError};
-use sqlx::Acquire;
 use std::sync::Arc;
 fn proof() -> Proof {
     Proof::bounded(32 << 20)
@@ -21,7 +20,7 @@ async fn protected_native_history_rejects_complete_tail_erasure_and_keeps_origin
         crate::session_owner::preparation_contract::claim_history::fixture(&store, &clock).await;
     let session = &f.before_tail.session_id;
     let run = &f.before_tail.id;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut charged = proof();
     assert!(history(&mut tx, session, run, &mut charged).await.unwrap());
     assert!(
@@ -81,7 +80,7 @@ async fn protected_native_history_rejects_complete_tail_erasure_and_keeps_origin
     );
     assert!(history(&mut tx, session, run, &mut proof()).await.is_err());
     tx.rollback().await.unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     for query in [
         "DELETE FROM native_run_sources WHERE run_id=$1",
         "DELETE FROM native_run_source_heads WHERE run_id=$1",
@@ -134,7 +133,7 @@ async fn native_session_identity_and_revision_cannot_be_rewound_or_reborn() {
             "{query}"
         );
     }
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut charged = proof();
     assert!(
         original(&mut tx, &session, &admitted.run.id, 1, &mut charged)
@@ -176,7 +175,7 @@ async fn retained_context_native_era_survives_session_creation_and_rename() {
         .reserve_session_owner(reservation.clone(), None)
         .await
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     // Model an actual retained pre19 context without changing its authenticated
     // owner/audit sources. Only this fixture may disable the new era guard.
     let trigger: String =
@@ -227,7 +226,7 @@ async fn retained_context_native_era_survives_session_creation_and_rename() {
             .await
             .unwrap();
     assert_eq!(marker, 0);
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     for query in [
         "UPDATE session_owner_contexts SET native_run_protocol=1 WHERE session_id=$1",
         "UPDATE session_owner_contexts SET session_id='moved' WHERE session_id=$1",
@@ -282,7 +281,7 @@ async fn sqlite_native_source_uniqueness_and_revision_guards_cover_replace_and_i
     );
     // Verify native19's independent earlier guard as well. Roll back this
     // isolated DDL change, preserving both guards for every later operation.
-    let mut guard_test = store.writer.begin().await.unwrap();
+    let mut guard_test = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("DROP TRIGGER runs_execution_insert")
         .execute(&mut *guard_test)
         .await

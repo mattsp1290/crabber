@@ -21,7 +21,7 @@ async fn native_issuer_write_reuses_the_remaining_enclosing_proof() {
     let mut next = admitted.run;
     let run_id = next.id.clone();
     next.claim_token = uuid::Uuid::new_v4().to_string();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let before = super::head(&mut tx, &session, &run_id, &mut Proof::bounded(32 << 20))
         .await
         .unwrap()
@@ -50,7 +50,7 @@ async fn native_issuer_write_reuses_the_remaining_enclosing_proof() {
         .unwrap();
     assert_eq!(after.sequence, before.sequence + 1);
     tx.rollback().await.unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let restored = super::head(&mut tx, &session, &run_id, &mut Proof::bounded(32 << 20))
         .await
         .unwrap()

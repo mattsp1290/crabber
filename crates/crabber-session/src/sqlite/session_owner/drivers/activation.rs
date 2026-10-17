@@ -6,7 +6,8 @@ use crate::session_owner::{
     SessionOwnerAuthority,
     owned_scope::{OwnedScopeActivation, OwnedScopeParentAuthority},
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn record(
     tx: &mut Transaction<'_, Sqlite>,
     request: &OwnedScopeActivation,

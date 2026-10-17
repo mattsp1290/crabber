@@ -34,7 +34,7 @@ async fn pending_approval_preflight_is_pure_and_one_budget() {
         let mut wrong = metadata.clone();
         wrong.expected_revision = wrong.expected_revision.next().unwrap();
         assert!(request.verify_metadata(&wrong).is_err());
-        let mut tx = store.readers.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
         let metadata = choice::metadata(&request).unwrap();
         let mut proof = Proof::bounded(32 << 20);
         Box::pin(inspect(

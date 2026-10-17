@@ -29,7 +29,7 @@ async fn erased_source_tail_and_coherent_private_restore_cannot_issue_fresh_begi
         panic!("actual first recovery")
     };
     let target = source_attempt.target.clone();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("DELETE FROM native_run_issuances WHERE run_id=$1 AND sequence=(SELECT MAX(sequence) FROM native_run_issuances WHERE run_id=$1)").bind(&run.id.0).execute(&mut *tx).await.unwrap();
     sqlx::query("DELETE FROM operation_receipts WHERE session_id=$1 AND operation_id=$2")
         .bind(&run.session_id.0)

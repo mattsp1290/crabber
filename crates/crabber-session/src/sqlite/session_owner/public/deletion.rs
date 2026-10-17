@@ -2,7 +2,8 @@
 use crate::native_parent::{RunIssuance, Witness};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crate::session_owner::{coverage::detached_parent, record::Record};
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 
 pub(super) async fn classified(
     tx: &mut Transaction<'_, Sqlite>,

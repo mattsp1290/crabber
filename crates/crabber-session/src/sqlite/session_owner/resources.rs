@@ -7,7 +7,8 @@ use crate::session_owner::preparation::{
     PreparationGrant, PreparationResourceLink, PreparationResourceOutcome,
     PreparationResourceReceipt,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl SqliteStore {
     pub(in crate::sqlite) async fn retain_preparation_resources(
         &self,

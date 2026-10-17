@@ -3,7 +3,8 @@ use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::{
     PreparationCommitError, PreparedOperation, proof::VerifiedPreparation,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl crate::SqliteStore {
     pub(super) async fn apply_prepared_continuation(
         &self,

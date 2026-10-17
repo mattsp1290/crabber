@@ -1,7 +1,8 @@
 //! Bounded original parent reservation read, independent of current Run.
 use crate::session_owner::{SessionOwnerError as Error, preparation::expired::unstarted::Original};
+use crate::transaction::Transaction;
 use crabber_core::{ControlId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 #[cfg(test)]
 #[path = "unstarted/tests.rs"]
 mod tests;

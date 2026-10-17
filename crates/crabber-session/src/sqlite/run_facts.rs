@@ -1,7 +1,8 @@
 use crate::public_session::v2::proof::{Proof, ReadError};
+use crate::transaction::Transaction;
 use crate::{StoreError, run_facts::RunFacts};
 use crabber_core::{RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

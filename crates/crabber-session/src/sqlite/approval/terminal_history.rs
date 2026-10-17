@@ -1,8 +1,9 @@
 //! Fresh termination proof only; bounded source selection precedes private carrier decoding.
 use super::Error;
 use crate::phase::PhaseRecord;
+use crate::transaction::Transaction;
 use crabber_core::{ContinuationId, Run, ToolCallRecord};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }

@@ -2,13 +2,14 @@
 use super::super::{Audit, Error, unknown};
 use super::proof;
 use crate::session_owner::preparation::admission::{SourceAudits, Witness};
+use crate::transaction::Transaction;
 use crate::{
     admission_journal::{Init, Source},
     native_parent::RunIssuance,
     public_session::v2::proof::{Proof, ReadError},
 };
 use crabber_core::{RunId, Session, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite) struct Original {
     pub session: Session,
     pub initial: RunIssuance,

@@ -17,13 +17,14 @@ pub(super) async fn load_owned(
     records::load(tx, run, id).await
 }
 use super::{SqliteExecution, SqliteStore, admission_execution, db};
+use crate::transaction::Transaction;
 use crate::{
     PhaseAuthority, PhaseCommand, PhaseError as Error, PhaseMutation,
     PhaseMutationOutcome as Outcome, PhaseReceipt, PhaseWriteAuthority, VersionedPhase,
     phase::{self, sql},
 };
 use crabber_core::{ControlId, PhaseId, Run, RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 mod publication;
 #[derive(Clone, Copy)]
@@ -43,9 +44,7 @@ impl SqliteStore {
         request: &crate::PhasePageRequest,
     ) -> Result<crate::PhasePage, Error> {
         request.validate()?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
@@ -60,9 +59,7 @@ impl SqliteStore {
         id: &PhaseId,
     ) -> Result<VersionedPhase, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
@@ -78,9 +75,7 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<PhaseReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;

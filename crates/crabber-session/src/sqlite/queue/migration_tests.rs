@@ -5,7 +5,7 @@ async fn migration_preserves_predecessor_queue_bytes_and_legacy_membership() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&pool).await.unwrap();
     sqlx::raw_sql("CREATE TABLE schema_version(version INTEGER PRIMARY KEY); CREATE TABLE session_tombstones(session_id TEXT); CREATE TABLE future_queue(session_id TEXT NOT NULL,queue_id TEXT NOT NULL,sequence BIGINT NOT NULL,admission_key TEXT NOT NULL,data_json TEXT NOT NULL,PRIMARY KEY(session_id,queue_id))").execute(&mut *tx).await.unwrap();
     let original = r#"{"opaque":"unchanged predecessor queue bytes"}"#;
     sqlx::query(

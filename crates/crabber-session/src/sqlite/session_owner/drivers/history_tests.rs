@@ -10,7 +10,7 @@ async fn selected_driver_join_requires_actual_join_and_original_sources() {
     for unkeyed in [false, true] {
         for dispatch in [false, true] {
             let f = history_fixture::joined(store.clone(), unkeyed, dispatch).await;
-            let mut tx = store.writer.begin().await.unwrap();
+            let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
             let record =
                 super::super::super::reads::audit(&mut tx, f.request.context.session_id(), &f.join)
                     .await

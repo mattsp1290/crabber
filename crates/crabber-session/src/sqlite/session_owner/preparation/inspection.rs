@@ -6,7 +6,8 @@ use crate::session_owner::{
         JoinedPreparation, PreparationAdmissionReceipt, PreparationCommitError, inspection,
     },
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl super::super::SqliteStore {
     pub(in crate::sqlite) async fn inspect_initial_admission(
         &self,
@@ -30,7 +31,9 @@ impl super::super::SqliteStore {
             .binding
             .session_id;
         crate::session_owner::validation::identifier(&session.0, 512, false)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         crate::sqlite::deletion::ensure_live(&mut tx, session)
             .await

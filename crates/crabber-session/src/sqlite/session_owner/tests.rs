@@ -88,7 +88,7 @@ async fn preparation_absent_order_rejects_foreign_join_relabeled_renew() {
         crate::session_owner::preparation_contract::absent::fixture_for_relabel(&store).await;
     assert_eq!(sqlx::query("UPDATE session_owner_audits SET operation='Renew' WHERE session_id=$1 AND operation_id=$2")
         .bind(&bound.binding.request.session_id.0).bind(&join.0).execute(&store.writer).await.unwrap().rows_affected(), 1);
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert_eq!(
         super::reads::publication_count(&mut tx, &bound.binding.request.session_id)
             .await
@@ -291,7 +291,7 @@ async fn active_preparation_cannot_be_hidden_by_joined_index_route() {
         .rows_affected(),
         1
     );
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(
         super::reads::has_preparation(&mut tx, session)
             .await

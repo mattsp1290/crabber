@@ -1,9 +1,10 @@
 //! Backend-local transfer of one scalar-preflighted history record.
 use super::{Boundary, RecordKind, StoreError, db, invalid};
 use crate::sql_snapshot::append_imported;
+use crate::transaction::Transaction;
 use crate::{SnapshotPage, SnapshotRequest};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(super) async fn next(
     tx: &mut Transaction<'_, Sqlite>,

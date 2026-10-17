@@ -2,8 +2,9 @@
 use crate::native_enrollment::{Origin, SOURCE_BYTES, Status, Unclassified};
 use crate::native_parent::{RunIssuance, source_protocol::JournalSource};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(super) async fn birth(
     tx: &mut Transaction<'_, Sqlite>,

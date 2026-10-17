@@ -1,9 +1,10 @@
 //! Existing coherent domain proofs run before any mutable terminal-state filter.
 use crate::public_session::{budget::Budget, v2::proof::Proof};
 use crate::sql_deletion::readiness::{MAX_PROOF_BYTES, Result, blocked, unknown};
+use crate::transaction::Transaction;
 use crate::{DeletionBlocker, PublicSessionLimit, RunControlStatus};
 use crabber_core::SessionId;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn safe() -> Budget {
     Budget::new(MAX_PROOF_BYTES, PublicSessionLimit::HeaderBytes)
 }

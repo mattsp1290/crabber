@@ -8,7 +8,7 @@ async fn unkeyed_history_authenticates_original_capsule_before_policy() {
     let store = crate::SqliteStore::connect(&path).await.unwrap();
     let admitted =
         crate::session_owner::preparation_contract::resources::initial_unkeyed_driver(&store).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let (verified, used) = read_original(&mut tx, &admitted, MAX_PROOF_BYTES)
         .await
         .unwrap_or_else(|_| panic!("genuine original unkeyed input"));
@@ -110,7 +110,7 @@ async fn unkeyed_legacy_absence_never_authenticates_an_owned_initial_source() {
     let store = crate::SqliteStore::connect(&path).await.unwrap();
     let admitted =
         crate::public_state_contract::admit(&store, time::OffsetDateTime::now_utc()).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let (verified, _) = read_original(&mut tx, &admitted, MAX_PROOF_BYTES)
         .await
         .unwrap_or_else(|_| panic!("genuine legacy unkeyed metadata"));
@@ -126,7 +126,7 @@ async fn unkeyed_history_receipt_guard_recognizes_a_genuine_keyed_cohort() {
     let store = crate::SqliteStore::connect(&path).await.unwrap();
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut proof = Proof::bounded(MAX_PROOF_BYTES);
     let (initial, _, _) =
         super::super::super::journal(&mut tx, &receipt.session_id, &receipt.run_id, &mut proof)

@@ -2,8 +2,9 @@
 use crate::native_parent::source_protocol::{JournalHead, JournalSource};
 use crate::native_parent::{Error, RunIssuance, RunState};
 use crate::public_session::v2::proof::{Proof, ReadError};
+use crate::transaction::Transaction;
 use crabber_core::{InputFingerprint, RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 type Result<T> = std::result::Result<T, ReadError<Error>>;
 fn bad(_: impl std::fmt::Debug) -> ReadError<Error> {
     ReadError::Domain(Error)

@@ -2,9 +2,10 @@
 use crate::deletion::coverage::VerifiedDeletionCoverage;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Failure, MAX_PROOF_BYTES, Readiness, unknown};
+use crate::transaction::Transaction;
 use crate::{DeletionBlocker, DeletionError, sql_deletion::VerifiedScope};
 use crabber_core::SessionId;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 mod domains;
 mod native;
 

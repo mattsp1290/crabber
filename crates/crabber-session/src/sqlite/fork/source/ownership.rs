@@ -1,8 +1,9 @@
 //! Authenticate the immutable original imported prefix in the caller's budget.
 use super::{Failure, Proof};
 use crate::public_session::v2::proof::{Failure as ReadFailure, Proof as SharedProof, unknown};
+use crate::transaction::Transaction;
 use crabber_core::SessionId;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(in crate::sqlite) async fn verify_imported_history(
     tx: &mut Transaction<'_, Sqlite>,

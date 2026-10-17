@@ -4,7 +4,8 @@ mod write;
 use super::{Audit, Error, SessionId, unknown};
 use crate::public_session::v2::proof::{Failure, Proof};
 use crate::session_owner::publication::scope::{Origin, Source};
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite) use write::created;
 pub(super) use write::{context_protocol, record_absent};
 fn failure(error: &Failure) -> Error {

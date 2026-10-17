@@ -4,7 +4,7 @@ use crate::session_owner::preparation::ReservePreparation;
 impl super::SqliteStore {
     pub(super) async fn preparation_preflight(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         preparation: &ReservePreparation,
         actual: crabber_core::SessionRevision,
         proof: &mut crate::public_session::v2::proof::Proof,
@@ -29,7 +29,7 @@ impl super::SqliteStore {
     }
     pub(super) async fn preparation_source_context(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         preparation: &ReservePreparation,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
@@ -97,7 +97,7 @@ impl super::SqliteStore {
     }
     async fn verify_preparation_native_source(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &crabber_core::Run,
         source: &crate::session_owner::preparation::PreparationSource,
         proof: &mut crate::public_session::v2::proof::Proof,

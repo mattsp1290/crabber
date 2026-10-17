@@ -4,7 +4,8 @@ use crate::session_owner::{
     SessionOwnerError as Error,
     preparation::{PreparationCompletion, PreparationGrant},
 };
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     grant: &PreparationGrant,
@@ -114,7 +115,7 @@ impl VerifiedTool {
     }
 }
 pub(in crate::sqlite) async fn verify_tool(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     grant: &PreparationGrant,
     outcome: crate::ToolContinuationClaimOutcome,
     proof: &mut crate::public_session::v2::proof::Proof,

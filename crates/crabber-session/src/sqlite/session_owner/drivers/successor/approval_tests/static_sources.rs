@@ -81,7 +81,7 @@ pub(super) async fn original_sources(store: &crate::SqliteStore, f: &Fixture) {
     }
 }
 pub(super) async fn malformed_witness(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     f: &Fixture,
     begun: &crate::AttemptReceipt,

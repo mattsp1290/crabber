@@ -24,7 +24,7 @@ async fn owner_publication_roster_and_monotonic_head_detect_cancel_rollback() {
             .await
             .is_err()
         );
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         sqlx::raw_sql("DROP TRIGGER session_owner_publication_no_delete")
             .execute(&mut *tx)
             .await
@@ -71,7 +71,7 @@ async fn selected_owner_publication_sources_charge_shared_budget() {
     let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
     let (request, receipt, _next) =
         crate::session_owner_contract::services::cohort::source_fixture(&store).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(1);
     assert!(matches!(
         super::verify(
@@ -173,7 +173,7 @@ async fn legacy_owner_mutation_never_mints_a_publication_cohort() {
             .await
             .unwrap();
     }
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
     assert_eq!(
         super::verify(
@@ -222,7 +222,7 @@ pub(in super::super) async fn legacy_fixture(
     store: &crate::SqliteStore,
     request: &crate::session_owner::ReserveSessionOwner,
 ) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let text: String = sqlx::query_scalar(
         "SELECT data_json FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2",
     )
@@ -300,7 +300,7 @@ async fn alternate_unique_replace_cannot_erase_a_historical_publication() {
         replaced.is_err(),
         "alternate UNIQUE replacement bypassed immutability"
     );
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
     assert_eq!(
         super::verify(&mut tx, session, owner, &mut proof)

@@ -5,8 +5,9 @@ use crate::session_owner::preparation::{
     PreparationCompletion, PreparedOperation,
     expired::{history, replay::Native},
 };
+use crate::transaction::Transaction;
 use crabber_core::{RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 impl crate::sqlite::SqliteStore {
     pub(super) async fn replay_expired(
         tx: &mut Transaction<'_, Sqlite>,

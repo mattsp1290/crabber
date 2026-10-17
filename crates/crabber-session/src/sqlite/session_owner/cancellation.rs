@@ -108,7 +108,9 @@ impl SqliteStore {
         authority: &SessionOwnerAuthority,
     ) -> Result<Option<SessionOwnerCancellation>, Error> {
         validate_scope(&authority.session_id, &authority.target.id.0)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         let result = async {
             super::super::deletion::ensure_live(&mut tx, &authority.session_id)

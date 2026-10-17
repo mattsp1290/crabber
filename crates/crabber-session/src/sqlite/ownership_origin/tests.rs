@@ -5,7 +5,7 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
 
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
 
     let CoverageRead::Verified(proof) = coverage(&mut tx, &receipt.session_id).await.unwrap()
     else {
@@ -21,7 +21,7 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
             .fetch_one(&store.writer)
             .await
             .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(
         sqlx::query("UPDATE preparation_admission_witnesses SET data_json='{}' WHERE run_id=$1")
             .bind(&receipt.run_id.0)
@@ -57,7 +57,7 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
         .execute(&store.writer)
         .await
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
 
     assert!(matches!(
         coverage(&mut tx, &receipt.session_id).await,

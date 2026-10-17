@@ -4,6 +4,7 @@ pub(in crate::sqlite) mod protocol;
 pub(super) mod public;
 pub(super) mod reads;
 use super::{SqliteStore, db};
+use crate::transaction::Transaction;
 use crate::{
     StoreError,
     queue::{
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 use crabber_core::SessionRevision;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 impl SqliteStore {
     pub(super) async fn queue_mutate(
         &self,

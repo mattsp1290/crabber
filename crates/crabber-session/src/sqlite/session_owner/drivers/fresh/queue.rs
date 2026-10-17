@@ -2,7 +2,8 @@
 use super::super::{Error, source::Original};
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::{PreparationKey, PreparationPurpose, queue_admission};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn revision(
     tx: &mut Transaction<'_, Sqlite>,
     original: &Original,

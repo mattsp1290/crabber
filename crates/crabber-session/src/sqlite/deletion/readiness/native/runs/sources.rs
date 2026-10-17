@@ -5,8 +5,9 @@ mod unkeyed;
 use crate::native_parent::RunIssuance;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::Result;
+use crate::transaction::Transaction;
 use crabber_core::{RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

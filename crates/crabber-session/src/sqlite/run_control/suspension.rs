@@ -1,10 +1,11 @@
 //! Checkpoint cancellation consumes original immutable suspension proof.
+use crate::transaction::Transaction;
 use crate::{
     RunControlError as Error, RunControlRequest,
     run_control::{self, MAX_SUSPENSION_PROOF_BYTES, SuspensionProof, unknown},
 };
 use crabber_core::{Run, ToolCallId, ToolCallStatus};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(in super::super) async fn save(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

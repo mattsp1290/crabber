@@ -3,12 +3,13 @@ use super::super::{SqliteExecution, SqliteStore};
 use super::{Error, approval, finish, sql, write};
 use crate::native_enrollment::caller::{ApprovalCompletion, ApprovalInput, ApprovalResult, Caller};
 use crate::public_session::v2::proof::Proof;
+use crate::transaction::Transaction;
 use crate::{
     ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalOutcome,
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
 };
 use crabber_core::{Run, RunFence, RunStatus};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 impl SqliteStore {
     pub(in super::super) async fn claim_approval(
@@ -39,7 +40,7 @@ impl SqliteStore {
     }
     pub(in crate::sqlite) async fn claim_approval_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         claim: &ApprovalContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,

@@ -5,8 +5,9 @@ use crate::public_session::{
     v2::proof::{Failure, Proof, owner, unknown},
 };
 use crate::session_owner::SessionOwnerState;
+use crate::transaction::Transaction;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 #[path = "public/deletion.rs"]
 mod deletion;
 #[cfg(test)]

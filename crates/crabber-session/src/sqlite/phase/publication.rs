@@ -1,7 +1,8 @@
 //! Borrow the actual published phase result within the original transaction.
 use super::{Error, Proof, phase};
 use crate::native_enrollment::caller::{self, Caller, Fresh};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 #[derive(Clone, Copy)]
 pub(super) struct Published<'a> {
     pub record: &'a phase::PhaseRecord,

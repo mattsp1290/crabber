@@ -1,7 +1,8 @@
 //! The journal is independent of mutable Run rows. No lease renewal entry.
 use crate::native_parent::{Error, RunIssuance, RunState};
+use crate::transaction::Transaction;
 use crabber_core::{Run, RunStatus};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn latest(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

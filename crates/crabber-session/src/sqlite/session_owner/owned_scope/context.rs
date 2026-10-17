@@ -4,7 +4,7 @@ use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
 impl crate::sqlite::SqliteStore {
     pub(super) async fn owned_scope_context(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         record: &Record,
         authority: Option<&OwnedScopeParentAuthority>,
         proof: &mut crate::public_session::v2::proof::Proof,
@@ -79,7 +79,7 @@ impl crate::sqlite::SqliteStore {
 }
 
 pub(super) async fn preflight(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     request: &crate::session_owner::owned_scope::OwnedScopeActivation,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {

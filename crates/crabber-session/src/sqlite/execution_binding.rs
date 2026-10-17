@@ -2,12 +2,13 @@
 use super::{SqliteStore, db, text};
 use crate::public_session::v2::proof::{Proof, ReadError};
 
+use crate::transaction::Transaction;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionBindingCapsule, KeyedAdmitOutcome, KeyedAdmitRequest,
     RetainedExecutionBinding, StoreError,
 };
 use crabber_core::{AdmissionReceipt, Message, RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 async fn finish<T>(
     tx: Transaction<'_, Sqlite>,
@@ -52,7 +53,7 @@ impl SqliteStore {
     }
     pub(super) async fn admit_keyed_transaction(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
         self.admit_keyed_guarded(tx, keyed, crate::queue::AdmissionGuard::Ordinary)
@@ -373,7 +374,7 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<RetainedExecutionBinding>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
 
         let result = read(&mut tx, session, run).await;
         finish(tx, result).await

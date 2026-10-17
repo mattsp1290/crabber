@@ -466,7 +466,9 @@ async fn classification_snapshot_survives_concurrent_initialization() {
         .execute(&mut connection)
         .await
         .unwrap();
-    let mut snapshot = connection.begin().await.unwrap();
+    let mut snapshot = crate::transaction::begin_on::<Sqlite>(&mut connection, None)
+        .await
+        .unwrap();
     let application: i32 = sqlx::query_scalar("PRAGMA application_id")
         .fetch_one(&mut *snapshot)
         .await

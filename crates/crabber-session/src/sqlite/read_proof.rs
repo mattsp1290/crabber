@@ -1,7 +1,8 @@
 //! Materialization accounting shared by every nested aggregate proof reader.
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
+use crate::transaction::Transaction;
 use sqlx::Row;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn charge<'q>(
     tx: &mut Transaction<'_, Sqlite>,
     query: sqlx::query::QueryScalar<'q, Sqlite, Option<i64>, sqlx::sqlite::SqliteArguments<'q>>,

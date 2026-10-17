@@ -1,8 +1,9 @@
 //! Budgeted reuse of the original private approval integrity proofs.
 use crate::public_session::budget::{self, Budget, Failure, unknown};
+use crate::transaction::Transaction;
 use crate::{AttemptSnapshot, PublicApprovalBarrier, PublicApprovalSummary, PublicHeaderRequest};
 use crabber_core::{ControlId, RunId, RunStatus, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(in super::super) async fn read(
     tx: &mut Transaction<'_, Sqlite>,

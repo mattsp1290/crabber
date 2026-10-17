@@ -2,9 +2,10 @@ use super::{
     Error, FrontendOriginRecord, FrontendStagingReceipt, SqliteExecution, finish, read, supported,
     unknown,
 };
+use crate::transaction::Transaction;
 use crate::{AttemptAuthority, AttemptCleanup, AttemptState, FrontendCallStaging};
 use crabber_core::{EventCursor, Run};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 impl SqliteExecution {
     pub(in super::super) async fn stage_frontend(
         &self,

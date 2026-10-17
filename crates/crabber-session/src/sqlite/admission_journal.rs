@@ -3,9 +3,10 @@ use super::db;
 use crate::admission_journal::{self, Begin, Init, Kind, Source};
 use crate::native_parent::RunIssuance;
 use crate::public_session::v2::proof::{Proof, ReadError};
+use crate::transaction::Transaction;
 use crate::{AdmissionExecutionRecord, StoreError};
 use crabber_core::{Run, RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 fn invalid() -> StoreError {
     StoreError::AdmissionConflict
 }

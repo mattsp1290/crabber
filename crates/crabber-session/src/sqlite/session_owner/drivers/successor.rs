@@ -23,7 +23,8 @@ use crate::session_owner::driver::{
     SuccessorExecutionDriverReceipt,
 };
 use crate::sqlite::SqliteStore;
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl SqliteStore {
     pub(in crate::sqlite) async fn register_successor_driver(
         &self,

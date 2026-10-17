@@ -773,9 +773,7 @@ impl Store for SqliteStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         let result = async {
@@ -922,7 +920,7 @@ impl Store for SqliteStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let state = admission_execution::load_record(&mut tx, run)
                 .await?
@@ -947,7 +945,7 @@ impl Store for SqliteStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             super::deletion::ensure_live(&mut tx, session).await?;
             let rows = sqlx::query(

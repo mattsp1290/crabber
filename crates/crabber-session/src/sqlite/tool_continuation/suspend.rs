@@ -158,7 +158,7 @@ async fn frontend_replay(
 }
 
 async fn barrier(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     target: &crate::ContinuationTarget,
 ) -> Result<(), Error> {
@@ -182,7 +182,7 @@ async fn scope(execution: &SqliteExecution) -> Result<SessionId, Error> {
     Ok(SessionId(scope.ok_or(Error::UnknownStoreOutcome)?))
 }
 async fn new_record(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     batch: &ToolContinuationSuspension,
     now: time::OffsetDateTime,
@@ -201,7 +201,7 @@ async fn new_record(
 }
 
 async fn predecessor(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     batch: &ToolContinuationSuspension,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
@@ -236,7 +236,7 @@ async fn predecessor(
 }
 
 async fn parent(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     batch: &ToolContinuationSuspension,
     authority: &ToolSuspensionAuthority,

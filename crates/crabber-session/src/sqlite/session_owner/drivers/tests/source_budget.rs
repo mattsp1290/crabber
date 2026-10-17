@@ -13,7 +13,7 @@ async fn original_driver_source_preserves_shared_budget_failure() {
         } else {
             crate::driver_contract::request(&store).await
         };
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         let now = store.clock.now();
         let mut fresh_budget = Proof::bounded(32 * 1024 * 1024);
         Box::pin(super::super::fresh::fresh(

@@ -9,7 +9,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .stage_frontend_call(f.request.clone(), f.authority.clone())
         .await
         .unwrap();
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
     let mut first = Proof::bounded(32 * 1024 * 1024);
     let scope = read::scope_with_proof(
         &mut tx,
@@ -47,7 +47,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .execute(&store.writer)
         .await
         .unwrap();
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
     let mut proof = Proof::bounded(start + once);
     let scope = read::scope_with_proof(
         &mut tx,
@@ -68,7 +68,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .execute(&store.writer)
         .await
         .unwrap();
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
     let mut proof = Proof::bounded(8192);
     let scope = read::scope_with_proof(
         &mut tx,

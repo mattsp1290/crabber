@@ -3,14 +3,17 @@ use super::{Error, Proof, source, unknown};
 use crate::session_owner::preparation::{
     InspectPreparedApprovalDriver, PreparedApprovalDriverMetadata,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl crate::SqliteStore {
     pub(in crate::sqlite) async fn inspect_approval_driver(
         &self,
         request: &InspectPreparedApprovalDriver,
     ) -> Result<PreparedApprovalDriverMetadata, Error> {
         crate::session_owner::preparation::approval_driver::validate(request)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let mut proof = Proof::bounded(32 << 20);
         let result = Box::pin(inspect(&mut tx, request, &mut proof)).await?;
         tx.commit().await.map_err(unknown)?;

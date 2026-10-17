@@ -48,9 +48,7 @@ impl super::SqliteStore {
             .binding
             .session_id
             .clone();
-        let mut tx = self
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
+        let mut tx = crate::transaction::begin_with(&self.writer, "BEGIN IMMEDIATE")
             .await
             .map_err(super::super::db)?;
         let result = async {
@@ -145,7 +143,7 @@ fn storage_error(error: Error) -> StoreError {
 }
 
 async fn verify_replay(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     grant: &crate::session_owner::preparation::PreparationGrant,
 ) -> Result<(), Error> {
     let join = crate::session_owner::preparation::proof::join_request(grant)?;
@@ -182,7 +180,7 @@ fn after_commit(
 }
 
 async fn publish_join(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     session: &crabber_core::SessionId,
     record: crate::session_owner::record::Record,
     join: &crate::session_owner::MutateSessionOwner,
@@ -211,7 +209,7 @@ async fn publish_join(
 }
 
 async fn require_birth(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     joined: &JoinedPreparation,
     required: bool,
     proof: &mut crate::public_session::v2::proof::Proof,

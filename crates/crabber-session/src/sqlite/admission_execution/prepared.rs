@@ -2,8 +2,9 @@
 use crate::session_owner::preparation::{
     PreparationCommitError, PreparedAdmissionRecovery, proof::VerifiedPreparation,
 };
+use crate::transaction::Transaction;
 use crate::{AdmissionExecutionError as Error, ClaimedAdmission};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(in crate::sqlite) async fn claim_prepared(
     store: &super::SqliteStore,
     tx: &mut Transaction<'_, Sqlite>,

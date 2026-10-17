@@ -2,8 +2,9 @@
 use super::{super::proof, source};
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::session_owner::{SessionOwnerState, driver::SuccessorDriverLink};
+use crate::transaction::Transaction;
 use crabber_core::{Run, Session, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite::session_owner::drivers) async fn fresh(
     tx: &mut Transaction<'_, Sqlite>,
     request: &RegisterSuccessorExecutionDriver,

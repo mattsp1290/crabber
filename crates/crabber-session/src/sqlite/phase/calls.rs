@@ -1,7 +1,8 @@
 use super::super::{db, records};
+use crate::transaction::Transaction;
 use crate::{PhaseError as Error, phase::sql};
 use crabber_core::{Run, ToolCallId, ToolCallRecord, ToolCallStatus};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Sqlite>,

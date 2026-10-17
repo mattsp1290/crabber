@@ -338,3 +338,6 @@ async fn sqlite_typed_admission_contract() {
     let (store, _, _directory) = temp_store().await;
     crate::typed_admission_contract::run_contract(|clock| store.with_clock(clock)).await;
 }
+
+#[path = "tests/begin_cancellation.rs"]
+mod begin_cancellation;

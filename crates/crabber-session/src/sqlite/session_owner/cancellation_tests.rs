@@ -7,7 +7,7 @@ pub(super) async fn corruption(store: &SqliteStore) {
         let (owner, authority, request, observation) = contract::source_fixture(store).await;
         let session = &owner.binding.session_id;
         corrupt(store, &owner, &request, &observation, case).await;
-        let mut tx = store.readers.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
         let mut safe = crate::public_session::budget::Budget::new(
             65536,
             crate::PublicSessionLimit::HeaderBytes,

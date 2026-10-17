@@ -1,6 +1,7 @@
 use super::{AdmissionGuard, SqliteStore, complete};
 use crate::StoreError;
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl SqliteStore {
     pub(super) async fn queue_admit_and_publish(
         &self,

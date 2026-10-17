@@ -94,7 +94,7 @@ async fn bypass(store: &SqliteStore, native: &str, session: &str) {
 async fn lifecycle(store: &SqliteStore, cold: &SqliteStore, native: &str, session: &str) {
     // A rolled-back reservation is reusable and a committed record owns its key.
     let reusable = format!("rollback-{}", uuid::Uuid::new_v4());
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query(IMPORTED)
         .bind(&reusable)
         .bind(session)

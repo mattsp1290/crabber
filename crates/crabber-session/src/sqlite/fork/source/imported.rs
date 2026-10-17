@@ -1,6 +1,7 @@
 use super::{Audit, Error, Failure, ImportedHistory, MESSAGE, MessageId, Proof, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{ImportedMessageProvenance, ImportedToolCall};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 use std::collections::BTreeSet;
 pub(super) async fn imported(
     tx: &mut Transaction<'_, Sqlite>,

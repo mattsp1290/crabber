@@ -1,11 +1,12 @@
 use super::super::{SqliteStore, db};
 use super::{records, sql};
+use crate::transaction::Transaction;
 use crate::{
     AttemptControlOutcome as Outcome, AttemptError as Error,
     attempt_control::{self, Control},
 };
 use crabber_core::{PhaseId, Run, ToolCallId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 impl SqliteStore {
     pub(in super::super) async fn host_attempt(&self, control: Control) -> Result<Outcome, Error> {
         let digest = control.fingerprint()?;

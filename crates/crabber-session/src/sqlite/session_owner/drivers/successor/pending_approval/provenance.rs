@@ -1,5 +1,6 @@
 use super::{Error, Proof, source, unknown};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Sqlite>,
     run: &crabber_core::Run,

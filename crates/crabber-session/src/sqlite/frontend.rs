@@ -8,10 +8,11 @@ pub(super) use continuation::{
 mod stage;
 use super::{SqliteExecution, SqliteStore};
 use crate::frontend_continuation::FrontendOriginRecord;
+use crate::transaction::Transaction;
 use crate::{FrontendCallOrigin, FrontendStagingReceipt, ToolContinuationError as Error};
 use crabber_core::{ControlId, Run, RunId, SessionId, ToolCallId};
 pub(super) use read::{declared, origin_with_proof};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
@@ -54,7 +55,9 @@ impl SqliteStore {
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&run.0, 128)?;
         crate::tool_continuation::canonical::identity(&call.0, 512)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = async {
             let run = read::run(&mut tx, session, run).await?;
             origin(&mut tx, &run, call)
@@ -82,7 +85,9 @@ impl SqliteStore {
         supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&id.0, 128)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }

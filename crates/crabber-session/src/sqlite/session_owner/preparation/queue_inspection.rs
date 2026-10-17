@@ -22,7 +22,9 @@ impl SqliteStore {
         proof: &mut Proof,
     ) -> Result<Option<QueueReceipt>, PreparationCommitError> {
         queue_admission::original(original, proof)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         let result = Box::pin(read(&mut tx, original, proof)).await;
         tx.rollback().await.map_err(unknown)?;
@@ -30,7 +32,7 @@ impl SqliteStore {
     }
 }
 async fn read(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     original: &JoinedPreparation,
     proof: &mut Proof,
 ) -> Result<Option<QueueReceipt>, PreparationCommitError> {

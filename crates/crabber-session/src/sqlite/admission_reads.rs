@@ -1,8 +1,9 @@
 //! Bounded original admission history; scalar preflight and CASE carriers share the caller Proof.
 use super::{db, decode as decode_record};
+use crate::transaction::Transaction;
 use crate::{StoreError, public_session::v2::proof::Proof};
 use crabber_core::{ContextEpoch, EpochId, Message, PartKind, Run, Session, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn project(
     tx: &mut Transaction<'_, Sqlite>,
     id: &SessionId,

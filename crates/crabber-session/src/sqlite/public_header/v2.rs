@@ -5,13 +5,14 @@ use crate::public_session::v2::{
     projection,
     proof::{Failure, Proof, unknown},
 };
+use crate::transaction::Transaction;
 use crate::{
     ApprovalContinuationState, AttemptSnapshot, PublicApprovalBarrier, PublicApprovalSummary,
     PublicContinuationBarrierV2, PublicControlHeaderV2, PublicHeaderOutcomeV2, PublicHeaderRequest,
     PublicHeaderRequestV2, PublicHeaderUsage, PublicSessionError, PublicSessionLimit,
 };
 use crabber_core::{RunStatus, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 impl SqliteStore {
     pub(in crate::sqlite) async fn read_public_header_v2(
         &self,
@@ -19,7 +20,7 @@ impl SqliteStore {
     ) -> Result<PublicHeaderOutcomeV2, PublicSessionError> {
         request.validate()?;
         let result=async {
-            let mut tx=self.readers.begin().await.map_err(unknown)?;
+            let mut tx=crate::transaction::begin(&self.readers).await.map_err(unknown)?;
             let row=sqlx::query("SELECT s.public_revision,CAST(length(CAST(s.data AS BLOB))+COALESCE(length(CAST(m.data_json AS BLOB)),0)+COALESCE(length(CAST(m.workspace_id AS BLOB)),0) AS BIGINT) AS bytes FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&request.session_id.0).fetch_optional(&mut *tx).await.map_err(unknown)?.ok_or(Failure::Error(PublicSessionError::NotFound))?;
             let revision=SessionRevision::new(u64::try_from(row.try_get::<i64,_>("public_revision").map_err(unknown)?).map_err(unknown)?).map_err(unknown)?;
             if revision!=request.expected_revision {tx.commit().await.map_err(unknown)?;return Ok(None)}

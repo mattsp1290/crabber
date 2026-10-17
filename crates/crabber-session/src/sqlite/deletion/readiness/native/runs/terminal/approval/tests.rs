@@ -14,7 +14,7 @@ async fn approval_terminal_history_requires_frozen_origin_and_independent_cursor
     let store = store.with_clock(clock.clone());
     for expire in [false, true] {
         let f = fixture(&store, &clock, expire).await;
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         assert!(matches!(read(&mut tx, &f, MAX_PROOF_BYTES).await, Ok(true)));
         exact(&mut tx, &f).await;
         assert!(matches!(
@@ -56,7 +56,7 @@ fn rejected(value: &Result<bool>) {
     ));
 }
 async fn relink(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut audit = f.audit.clone();
     audit.payload["terminal"]["settlement"] = serde_json::to_value(&f.older).unwrap();
     save(&mut tx, &audit).await;
@@ -64,7 +64,7 @@ async fn relink(store: &crate::SqliteStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn coherent_usage(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("UPDATE runs SET data=json_set(data,'$.usage.output_tokens',13) WHERE id=$1")
         .bind(&f.current.id.0)
         .execute(&mut *tx)
@@ -81,7 +81,7 @@ async fn coherent_usage(store: &crate::SqliteStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn missing_origin(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("DELETE FROM operation_receipts WHERE session_id=$1 AND operation_id=$2")
         .bind(&f.current.session_id.0)
         .bind(&f.batch.id.0)
@@ -92,7 +92,7 @@ async fn missing_origin(store: &crate::SqliteStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn legacy(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut audit = f.audit.clone();
     audit.payload["version"] = serde_json::json!(1);
     audit.payload.as_object_mut().unwrap().remove("terminal");
@@ -101,7 +101,7 @@ async fn legacy(store: &crate::SqliteStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn oversized(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("UPDATE runs SET data=json_set(data,'$.error',$2) WHERE id=$1")
         .bind(&f.current.id.0)
         .bind("x".repeat(MAX_PROOF_BYTES + 1))
@@ -116,7 +116,7 @@ async fn oversized(store: &crate::SqliteStore, f: &Fixture) {
 }
 
 async fn coherent_turn(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut original = f.original.clone();
     original.turn_id = Some(crabber_core::TurnId::new());
     let mut audit = f.audit.clone();
@@ -127,7 +127,7 @@ async fn coherent_turn(store: &crate::SqliteStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn current_error(store: &crate::SqliteStore, f: &Fixture) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("UPDATE runs SET data=json_set(data,'$.error',$2) WHERE id=$1")
         .bind(&f.current.id.0)
         .bind("forged private error")

@@ -18,7 +18,9 @@ impl SqliteStore {
             &crabber_core::ControlId("inspect".into()),
         )?;
         crate::queue::identifier(&authority.queue_id.0)?;
-        let mut tx = self.readers.begin().await.map_err(super::super::db)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(super::super::db)?;
 
         let mut proof = Proof::bounded(32 << 20);
         let (session, metadata, revision) =

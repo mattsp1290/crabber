@@ -1,9 +1,10 @@
 //! Coherent pure recovery preflight; no owner, grant or revision publication.
 use super::{Error, SqliteStore};
+use crate::transaction::Transaction;
 use crate::{
     ClaimUnstartedAdmissionRequest, session_owner::preparation::AdmissionRecoveryPreparation,
 };
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(in crate::sqlite) async fn inspect(
     store: &SqliteStore,

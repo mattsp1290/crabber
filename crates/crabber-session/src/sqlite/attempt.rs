@@ -11,13 +11,14 @@ pub(super) use control::host_turn;
 mod pristine;
 pub(super) mod records;
 use super::{SqliteExecution, SqliteStore, admission_execution, db};
+use crate::transaction::Transaction;
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,
     AttemptMutationOutcome as Outcome, AttemptReceipt, VersionedAttempt,
     attempt::{self, sql},
 };
 use crabber_core::{AttemptId, ControlId, Run, RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Result<T, Error> {
     super::transactions::finish(tx, result, sql::unknown).await
@@ -31,9 +32,7 @@ impl SqliteStore {
         if let Some(id) = id {
             attempt::validate_identifier(&id.0)?;
         }
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
@@ -64,9 +63,7 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<AttemptReceipt>, Error> {
         attempt::validate_identifier(&id.0)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
@@ -427,14 +424,14 @@ async fn apply_run_transition(
 
 /// Pure no-parent eligibility; caller holds the same session transaction.
 pub(super) async fn pristine_for_expired(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, Sqlite>,
     run: &crabber_core::Run,
 ) -> Result<(), crate::AttemptError> {
     pristine::check(tx, run).await
 }
 
 pub(super) async fn pristine_for_expired_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &crabber_core::Run,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::AttemptError> {

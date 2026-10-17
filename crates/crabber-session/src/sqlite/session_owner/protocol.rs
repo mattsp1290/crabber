@@ -2,11 +2,12 @@
 //! only original/head source bodies materialize in the shared client allowance.
 mod write;
 use super::{Audit, Error, SessionId, SessionOwnerId, unknown};
+use crate::transaction::Transaction;
 use crate::{
     public_session::v2::proof::{Proof, ReadError},
     session_owner::publication::Coverage,
 };
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) use write::{prepare, publish};
 type Read = ReadError<Error>;
 fn domain(error: impl std::fmt::Debug) -> Read {

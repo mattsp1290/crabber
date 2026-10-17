@@ -8,7 +8,7 @@ use crate::{KeyedAdmitOutcome, RetainedExecutionBinding};
 impl super::super::SqliteStore {
     pub(super) async fn apply_prepared_native(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         operation: PreparedOperation,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
@@ -92,7 +92,7 @@ impl super::super::SqliteStore {
 impl super::super::SqliteStore {
     async fn admit_prepared_bound(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         bound: crate::BoundAdmitRequest,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,

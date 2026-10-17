@@ -5,6 +5,7 @@ mod reads;
 pub(super) mod suspension;
 mod waiting;
 use super::{SqliteStore, execution::SqliteExecution};
+use crate::transaction::Transaction;
 use crate::{
     RunControlError as Error,
     run_control::{
@@ -15,7 +16,7 @@ use crate::{
     },
 };
 use crabber_core::{ControlId, EventCursor, Run, SessionId, TurnId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Result<T, Error> {
     super::transactions::finish(tx, result, unknown).await
 }
@@ -118,7 +119,9 @@ impl SqliteStore {
         run: &crabber_core::RunId,
     ) -> Result<crate::RunControlBinding, Error> {
         valid_scope(session, &ControlId("read".into()))?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = reads::binding(&mut tx, session, run).await;
         finish(tx, result).await
     }
@@ -129,7 +132,9 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<RunControlReceipt>, Error> {
         valid_scope(session, id)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = reads::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }
@@ -138,7 +143,9 @@ impl SqliteStore {
         target: &RunControlTarget,
     ) -> Result<RunControlPage, Error> {
         crate::run_control::validate_target(target)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = async {
             reads::verify_public_target(&mut tx, target).await?;
             Ok(RunControlPage {

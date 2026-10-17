@@ -1,7 +1,8 @@
 //! Charge both selected raw-history and immutable-proof carriers before decoding.
 use super::{Error, Failure, ForkSession, Proof, ToolCallRecord, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, ToolCallId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ForkSession,

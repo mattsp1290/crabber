@@ -1,6 +1,8 @@
 use crate::SqliteStore;
 use crabber_core::SessionId;
-async fn disable(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Vec<(String, String)> {
+async fn disable(
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
+) -> Vec<(String, String)> {
     let triggers: Vec<(String,String)> = sqlx::query_as("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND name IN ('owner_scope_origin_delete','owner_scope_origin_immutable','contexts_owner_scope_immutable','session_owner_publication_no_delete','session_owner_cohort_no_delete')")
         .fetch_all(&mut **tx).await.unwrap();
     assert_eq!(triggers.len(), 5);
@@ -12,7 +14,10 @@ async fn disable(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Vec<(String, S
     }
     triggers
 }
-async fn restore(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, triggers: Vec<(String, String)>) {
+async fn restore(
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
+    triggers: Vec<(String, String)>,
+) {
     for (_, ddl) in triggers {
         sqlx::query(&ddl).execute(&mut **tx).await.unwrap();
     }

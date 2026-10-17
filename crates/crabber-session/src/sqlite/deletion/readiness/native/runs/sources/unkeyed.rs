@@ -2,7 +2,8 @@
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::admission::Witness;
 use crate::sql_deletion::readiness::{Result, unknown};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     original: &Witness,

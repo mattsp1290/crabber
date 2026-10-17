@@ -3,12 +3,13 @@
 mod queue;
 use super::super::{Error, unknown};
 use super::{proof, source};
+use crate::transaction::Transaction;
 use crate::{
     public_session::v2::proof::Proof,
     session_owner::driver::{DriverLink, RegisterExecutionDriver},
 };
 use crabber_core::{Run, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn fresh(
     tx: &mut Transaction<'_, Sqlite>,
     request: &RegisterExecutionDriver,

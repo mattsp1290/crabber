@@ -6,7 +6,8 @@ use crate::native_enrollment::caller::{
 use crate::session_owner::preparation::{
     self, PreparationCommitError, PreparedExpiredRunResume, proof::VerifiedPreparation,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl SqliteStore {
     pub(in crate::sqlite) async fn claim_prepared_expired(
         &self,

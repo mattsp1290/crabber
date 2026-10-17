@@ -5,7 +5,8 @@ use crate::session_owner::preparation::{
     PreparedOperation,
     recovery::replay::{self, NativeSources},
 };
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 impl crate::sqlite::SqliteStore {
     pub(super) async fn replay_recovery(
         tx: &mut Transaction<'_, Sqlite>,

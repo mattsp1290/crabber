@@ -90,7 +90,7 @@ async fn erased_cancel(store: &SqliteStore, activate: bool) {
     let grant = grant(store, &request, activate).await;
     let witness = witness(store, &request).await;
     let begin = witness.audit_ids().unwrap()[4].clone();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let audit = reads::audit(&mut tx, request.context.session_id(), &begin)
         .await
         .unwrap()
@@ -126,7 +126,7 @@ async fn erased_cancel(store: &SqliteStore, activate: bool) {
         .unwrap();
     // Keep actual public R after cancellation. Restore only mutable current and
     // remove its last immutable audit to test the strict independent R fence.
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
         .bind(&request.context.session_id().0)
         .bind(&cancel.0)
@@ -150,7 +150,7 @@ async fn oversized(store: &SqliteStore, activate: bool) {
     let grant = grant(store, &request, activate).await;
     let witness = witness(store, &request).await;
     let begin = witness.audit_ids().unwrap()[4].clone();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let audit = reads::audit(&mut tx, request.context.session_id(), &begin)
         .await
         .unwrap()

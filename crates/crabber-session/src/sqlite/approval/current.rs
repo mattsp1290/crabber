@@ -3,8 +3,9 @@ use super::{Error, approval, sql};
 use crate::approval::current::{CurrentProof, NativeSource, Release, Source};
 use crate::public_session::budget::{Budget, Failure, unknown};
 use crate::public_session::v2::proof::{ApprovalReadError, Proof};
+use crate::transaction::Transaction;
 use crabber_core::{EventRecord, Run, RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 #[derive(Clone, Copy)]
 pub(in super::super) enum Select {
     Answers,

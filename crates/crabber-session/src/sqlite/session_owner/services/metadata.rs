@@ -3,7 +3,8 @@ use super::super::{Error, SessionId, SessionOwnerId, reads, unknown};
 use crate::session_owner::service::{
     RegisterSessionServiceDependency, SessionServiceDependencyReceipt,
 };
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn exists(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

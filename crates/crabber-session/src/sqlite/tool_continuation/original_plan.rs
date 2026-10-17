@@ -15,7 +15,9 @@ impl SqliteStore {
     ) -> Result<InputFingerprint, Error> {
         crate::continuation_origin::validate_scope(session, run, target)
             .map_err(|()| Error::InvalidRequest)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         let result = async {
             let batch = batch_with_proof(
@@ -36,7 +38,7 @@ impl SqliteStore {
 
 /// Exact immutable-batch projection; including its authenticated original birth.
 pub(in crate::sqlite) async fn batch_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     session: &SessionId,
     run: &RunId,
     target: &crate::ContinuationTarget,

@@ -1,5 +1,6 @@
 use super::super::{db, records::micros};
 use crate::public_session::v2::proof::{Proof, ReadError};
+use crate::transaction::Transaction;
 use crate::{
     AttemptError as Error, AttemptMutation, AttemptReceipt, AttemptSnapshot, StoreError,
     attempt::{AttemptRecord, sql},
@@ -7,7 +8,7 @@ use crate::{
 use crabber_core::{
     AttemptId, ControlId, EventCursor, InputFingerprint, Run, RunId, SessionId, SessionRevision,
 };
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 const RECORD: &str = r"SELECT
     s.public_revision,

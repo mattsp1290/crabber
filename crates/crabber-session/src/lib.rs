@@ -49,6 +49,8 @@ mod native_enrollment;
 mod native_parent;
 mod phase;
 mod phase_resolution;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod transaction;
 pub use phase_resolution::{PhaseResolution, PhaseResolutionOutcome};
 mod phase_settlement;
 pub use phase_settlement::{PhaseSettlement, PhaseSettlementRecords};

@@ -2,7 +2,8 @@
 use super::super::Record;
 use super::source;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(in crate::sqlite) async fn classified(
     tx: &mut Transaction<'_, Sqlite>,
     record: &Record,

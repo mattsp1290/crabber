@@ -4,7 +4,8 @@ use crate::native_enrollment::caller::{
     Approval, ApprovalCompletion, ApprovalInput, ApprovalResult, Caller, Fresh,
 };
 use crate::public_session::v2::proof::Proof;
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) async fn digest(
     tx: &mut Transaction<'_, Sqlite>,
     input: ApprovalInput<'_>,

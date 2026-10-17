@@ -2,7 +2,8 @@ use super::{Error, Proof, unknown};
 use crate::native_parent::RunIssuance;
 pub(super) use crate::session_owner::driver::successor::source::scope::Scope;
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 pub(super) struct Pair {
     pub previous: RunIssuance,
     pub next: RunIssuance,

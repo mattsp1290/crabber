@@ -133,7 +133,7 @@ async fn legacy_execution_cohort_cannot_gain_original_no_effect_sources() {
             .get("no_effect_v1")
             .is_none()
     );
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(matches!(
         super::super::abandon_history::verify(
             &mut tx,

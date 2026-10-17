@@ -2,7 +2,8 @@
 use super::{
     Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head, history, original,
 };
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

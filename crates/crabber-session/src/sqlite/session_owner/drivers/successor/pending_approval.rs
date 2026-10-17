@@ -4,15 +4,18 @@ use crate::session_owner::preparation::{
     InspectPendingApprovalPreparation as Request, PendingApprovalPreparationMetadata as Metadata,
     PendingApprovalSource, pending_approval as choice,
 };
+use crate::transaction::Transaction;
 use crabber_core::{Run, Session};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 impl crate::SqliteStore {
     pub(in crate::sqlite) async fn inspect_pending_approval(
         &self,
         request: &Request,
     ) -> Result<Metadata, Error> {
         let metadata = choice::metadata(request)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let mut proof = Proof::bounded(32 << 20);
         let result = Box::pin(inspect(
             &mut tx,

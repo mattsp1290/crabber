@@ -4,9 +4,10 @@ use crate::fork::{
     Audit,
     history::{Decision, ImportedHistory},
 };
+use crate::transaction::Transaction;
 use crate::{ForkBoundary, ForkError as Error, ForkOutcome, ForkReceipt, ForkSession};
 use crabber_core::{ControlId, Session, SessionId, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 mod source;
 pub(super) use source::verify_imported_history;
 fn unknown(_: impl std::fmt::Debug) -> Error {
@@ -77,7 +78,9 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<ForkReceipt>, Error> {
         crate::management::validate_scope(target, id).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = receipt(&mut tx, target, id).await;
         finish(tx, result).await
     }

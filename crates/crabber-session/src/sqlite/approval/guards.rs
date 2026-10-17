@@ -1,7 +1,8 @@
 //! Active barriers constrain native attempts and terminal release in their transaction.
+use crate::transaction::Transaction;
 use crate::{ApprovalContinuationState, AttemptError as Error, AttemptMutation};
 use crabber_core::Run;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(in super::super) async fn guard_attempt(
     tx: &mut Transaction<'_, Sqlite>,

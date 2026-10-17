@@ -12,7 +12,7 @@ use crate::{KeyedAdmitOutcome, StoreError};
 impl super::super::SqliteStore {
     pub(super) async fn replay_prepared(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,
@@ -119,7 +119,7 @@ impl super::super::SqliteStore {
 impl super::super::SqliteStore {
     async fn replay_keyed(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         bound: &crate::BoundKeyedAdmitRequest,
     ) -> Result<
         Option<PreparationCompletion>,
@@ -152,7 +152,7 @@ impl super::super::SqliteStore {
 
 impl super::super::SqliteStore {
     async fn replay_frontend(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,

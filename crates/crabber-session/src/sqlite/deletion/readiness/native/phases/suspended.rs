@@ -2,9 +2,10 @@
 use super::super::{run_ids, scan};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crate::{PhaseState, ToolContinuationState};
 use crabber_core::{ContinuationId, PhaseId, RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(in super::super::super) async fn released_suspensions(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

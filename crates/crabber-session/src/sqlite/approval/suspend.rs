@@ -1,12 +1,13 @@
 //! Whole-batch suspension and native attempt conclusion share one transaction.
 use super::super::{SqliteExecution, db};
 use super::{Error, approval, finish, load, sql, write};
+use crate::transaction::Transaction;
 use crate::{
     ApprovalContinuationState, ApprovalReceipt, ApprovalSuspension, AttemptAuthority,
     AttemptMutationOutcome,
 };
 use crabber_core::{ContinuationGeneration, Run, RunStatus, SessionId, ToolCallStatus};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 impl SqliteExecution {
     pub(in super::super) async fn suspend_approval(

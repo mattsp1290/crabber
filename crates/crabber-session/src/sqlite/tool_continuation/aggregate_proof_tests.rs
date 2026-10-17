@@ -4,7 +4,7 @@ use crate::public_session::v2::proof::{Failure, Proof, ReadError};
 async fn aggregate_tool_current_actual_shared_carrier_budget() {
     let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
     let (f, batch, _) = crate::frontend_contract::fixture::paused(&store).await;
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
     let mut proof = Proof::bounded(32 * 1024 * 1024);
     let record = super::read::load_with_proof(
         &mut tx,

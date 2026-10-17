@@ -13,7 +13,7 @@ async fn fresh_absent_service_scope_carries_exact_original_into_admitted_session
     .await;
     assert_eq!(sessions.len(), 1);
     for session in sessions {
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         let marker: i64 = sqlx::query_scalar(
             "SELECT CAST(owner_scope_protocol AS BIGINT) FROM sessions WHERE id=$1",
         )
@@ -161,7 +161,7 @@ async fn missing_required_origin_cannot_delete_a_quiet_managed_session() {
         .await
         .unwrap();
     legacy::corrupt_origin(&store, &saved.session_id, None).await;
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert_eq!(
         super::verify_if_present(
             &mut tx,

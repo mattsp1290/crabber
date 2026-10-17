@@ -1,7 +1,7 @@
 //! Actual oversized raw carrier and valid source never supply resource policy.
 use super::*;
 pub(super) async fn oversized(store: &crate::SqliteStore, receipt: &AdmissionReceipt) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let mut wrong = receipt.clone();
     wrong.session_id = SessionId::new();
     assert!(matches!(
@@ -40,7 +40,7 @@ pub(super) async fn no_effect_still_requires_resource_policy(store: &crate::Sqli
         })
         .await
         .unwrap();
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(matches!(
         super::super::super::verify(
             &mut tx,

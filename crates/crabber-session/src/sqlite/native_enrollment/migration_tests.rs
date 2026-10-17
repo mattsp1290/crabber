@@ -1,6 +1,5 @@
 //! The migration preserves actual predecessor fields and never repairs births.
 use super::*;
-use sqlx::Acquire;
 
 #[tokio::test]
 async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_sources() {
@@ -9,7 +8,7 @@ async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&pool).await.unwrap();
     sqlx::raw_sql("CREATE TABLE schema_version(version INTEGER PRIMARY KEY); CREATE TABLE session_tombstones(session_id TEXT); CREATE TABLE runs(seq BIGINT PRIMARY KEY,id TEXT NOT NULL UNIQUE,session_id TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL); CREATE TABLE native_run_sources(session_id TEXT NOT NULL,run_id TEXT NOT NULL,sequence BIGINT NOT NULL,issuance_digest TEXT NOT NULL,PRIMARY KEY(session_id,run_id,sequence))")
         .execute(&mut *tx).await.unwrap();
     let bytes = r#" {"opaque" : "exact predecessor bytes"} "#;

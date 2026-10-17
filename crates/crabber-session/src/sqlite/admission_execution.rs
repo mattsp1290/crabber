@@ -12,10 +12,11 @@ mod inspection;
 use super::records::lookup_receipt;
 use super::{SqliteExecution, SqliteStore, db};
 use crate::StoreError;
+use crate::transaction::Transaction;
 use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
 use crabber_core::{Run, RunId};
 pub(super) use inspection::{inspect, validate_source};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(super) async fn load_record(
     tx: &mut Transaction<'_, Sqlite>,

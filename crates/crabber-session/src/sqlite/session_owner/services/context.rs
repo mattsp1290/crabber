@@ -11,7 +11,7 @@ use crate::session_owner::{
 impl crate::sqlite::SqliteStore {
     pub(in crate::sqlite::session_owner) async fn verify_service_preparation<'a>(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         grant: &'a PreparationGrant,
         activating: Option<&SessionOwnerTarget>,
         strict: bool,
@@ -70,7 +70,7 @@ impl crate::sqlite::SqliteStore {
 }
 
 async fn verify_owner(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     session: &crabber_core::SessionId,
     id: &crabber_core::SessionOwnerId,
     strict: bool,

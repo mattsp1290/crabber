@@ -1,14 +1,17 @@
 //! Pure selected original Tool/Frontend metadata; no fresh authority.
 use super::{Error, Proof, source, unknown};
 use crate::session_owner::preparation::{InspectPreparedToolDriver, PreparedToolDriverMetadata};
-use sqlx::{Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::Sqlite;
 impl crate::SqliteStore {
     pub(in crate::sqlite) async fn inspect_tool_driver(
         &self,
         request: &InspectPreparedToolDriver,
     ) -> Result<PreparedToolDriverMetadata, Error> {
         crate::session_owner::preparation::tool_driver::validate(request)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         let result = Box::pin(inspect(&mut tx, request, &mut Proof::bounded(32 << 20))).await?;
         tx.commit().await.map_err(unknown)?;
         Ok(result)

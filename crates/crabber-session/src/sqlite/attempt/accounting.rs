@@ -1,9 +1,10 @@
 //! Selected native Run bytes are charged before transfer or decoding.
 use super::super::{db, read_proof};
 use crate::public_session::v2::proof::Proof;
+use crate::transaction::Transaction;
 use crate::{AttemptError as Error, attempt::sql};
 use crabber_core::{Run, RunId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(in crate::sqlite) async fn load(
     tx: &mut Transaction<'_, Sqlite>,

@@ -14,7 +14,7 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
 pub(super) async fn ensure_live(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     session: &SessionId,
 ) -> Result<(), crate::StoreError> {
     let deleted: bool =

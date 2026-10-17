@@ -1,9 +1,10 @@
+use crate::transaction::Transaction;
 use crate::{
     AttemptError as Error,
     attempt_control::{TurnContext, TurnState},
 };
 use crabber_core::{EventRecord, Run};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in super::super::super) async fn read(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

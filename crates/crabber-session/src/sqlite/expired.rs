@@ -8,8 +8,9 @@ use crate::session_owner::{
     SessionOwnerError as Error,
     preparation::{ExpiredRunPreparation, InspectExpiredRunPreparation},
 };
+use crate::transaction::Transaction;
 use crabber_core::{InputFingerprint, Run, RunStatus, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) async fn inspect(
     store: &SqliteStore,
     request: InspectExpiredRunPreparation,

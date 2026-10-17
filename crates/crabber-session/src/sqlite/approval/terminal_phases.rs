@@ -1,8 +1,9 @@
 //! Walk bounded phase pages; terminal metadata alone cannot authenticate a result.
 use super::Error;
+use crate::transaction::Transaction;
 use crate::{PhasePageRequest, PhaseQuiescence, PhaseState};
 use crabber_core::{Run, SessionRevision};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(super) async fn validate(
     tx: &mut Transaction<'_, Sqlite>,

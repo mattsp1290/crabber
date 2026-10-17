@@ -16,7 +16,7 @@ async fn selected_driver_join_refuses_forgery_while_actual_main_waits() {
         let active = history_fixture::active::start(store.clone(), unkeyed).await;
         let session = active.request.context.session_id();
         let revision = store.session_revision(session).await.unwrap();
-        let mut tx = store.writer.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
         let mut record = super::super::super::super::reads::current(
             &mut tx,
             session,

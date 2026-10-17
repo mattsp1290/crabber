@@ -2,8 +2,9 @@
 use crate::abandonment::history::{self, Commit, Event, RunView};
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{EventCursor, RunId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 /// False is explicitly unproven; it never certifies cleanup or ownership.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,

@@ -8,8 +8,9 @@ use crate::run_control::{
     terminal::{self, Source},
 };
 use crate::sql_deletion::readiness::{MAX_PROOF_BYTES, Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

@@ -53,7 +53,7 @@ impl SqliteStore {
     }
     pub(in crate::sqlite) async fn claim_tools_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         claim: &ToolContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -72,7 +72,7 @@ impl SqliteStore {
     }
     pub(in crate::sqlite) async fn claim_frontend_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         request: &crate::FrontendContinuationClaim,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
@@ -91,7 +91,7 @@ impl SqliteStore {
     }
     async fn claim_compound_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
         input: ToolInput<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -197,7 +197,7 @@ impl SqliteStore {
     }
 }
 async fn ready_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     claim: &ToolContinuationClaim,
     frontend: Option<&crate::FrontendContinuationClaim>,
@@ -227,13 +227,13 @@ async fn ready_with_proof(
     Ok(record)
 }
 pub(in super::super) async fn waiting_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
     waiting_context_with_proof(tx, run, &mut Proof::legacy()).await
 }
 pub(super) async fn waiting_context_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     proof: &mut Proof,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
@@ -265,7 +265,7 @@ pub(super) async fn waiting_context_with_proof(
 }
 
 pub(in crate::sqlite) async fn preparation_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     claim: &ToolContinuationClaim,
     proof: &mut crate::public_session::v2::proof::Proof,
@@ -274,7 +274,7 @@ pub(in crate::sqlite) async fn preparation_context(
 }
 
 pub(in crate::sqlite) async fn preparation_frontend_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     request: &crate::FrontendContinuationClaim,
     proof: &mut crate::public_session::v2::proof::Proof,

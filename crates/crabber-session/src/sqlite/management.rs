@@ -1,10 +1,11 @@
 use super::{SqliteStore, db};
+use crate::transaction::Transaction;
 use crate::{
     ListSessions, ManageSession, ManagementError as Error, ManagementReceipt, SessionListPage,
     SessionSummary, management,
 };
 use crabber_core::{ControlId, Session, SessionId, SessionRevision};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 const CURRENT: &str = "SELECT s.id,s.public_revision,CASE WHEN length(CAST(s.data AS BLOB))<=16384 THEN s.data END AS session_data,m.workspace_id,m.archived,m.format_version,CASE WHEN length(CAST(m.data_json AS BLOB))<=2048 THEN m.data_json END AS metadata FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1";
 const RECEIPT: &str = "SELECT r.kind,r.semantic_digest,r.event_seq,CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS receipt,CASE WHEN length(CAST(a.data_json AS BLOB))<=32768 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN session_management_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2";
@@ -104,9 +105,7 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<ManagementReceipt>, Error> {
         management::validate_scope(session, id)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(management::unknown)?;
@@ -114,9 +113,7 @@ impl SqliteStore {
         finish(tx, result).await
     }
     pub(super) async fn read_summary(&self, session: &SessionId) -> Result<SessionSummary, Error> {
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(management::unknown)?;

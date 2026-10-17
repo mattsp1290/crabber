@@ -2,9 +2,10 @@
 use super::super::super::super::super::super as backend;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{AdmissionReceipt, RunId, SessionId};
 use serde::Deserialize;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {

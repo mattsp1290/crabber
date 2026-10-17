@@ -24,7 +24,7 @@ async fn check(
 
 impl SqliteStore {
     pub(super) async fn raw_execution_access(&self, fence: &RunFence) -> Result<(), StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let mut proof = Proof::bounded(32 << 20);
             proof.measure(fence).map_err(failure)?;
@@ -47,7 +47,7 @@ impl SqliteStore {
     }
 
     pub(super) async fn raw_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let mut proof = Proof::bounded(32 << 20);
             let run = match records::load_run_with_proof(&mut tx, id, &mut proof).await {
@@ -68,7 +68,7 @@ impl SqliteStore {
     }
 
     pub(super) async fn raw_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
+        let mut tx = crate::transaction::begin(&self.readers).await.map_err(db)?;
         let result = async {
             let mut proof = Proof::bounded(32 << 20);
             super::read_proof::charge(&mut tx, sqlx::query_scalar(

@@ -2,8 +2,9 @@
 use super::super::db;
 use super::{Error, approval, receipt, sql};
 use crate::ApprovalReceipt;
+use crate::transaction::Transaction;
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in super::super) async fn replay(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,

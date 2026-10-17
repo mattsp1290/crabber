@@ -19,7 +19,7 @@ async fn pending_approval_commit_faults_exact_budget_and_cold_metadata() {
     .await;
     for recovery in [false, true] {
         let request = inspected(&store, &clock, recovery).await;
-        let mut tx = store.readers.begin().await.unwrap();
+        let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
         let mut proof = Proof::bounded(32 << 20);
         let result = inspect(&mut tx, &request, &mut proof).await.unwrap();
         assert!(proof.used() > 1000);

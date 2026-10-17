@@ -10,7 +10,7 @@ async fn check(
     session: &SessionId,
     cap: usize,
 ) -> (Result<CheckedOwners, Failure>, usize) {
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
 
     let mut proof = Proof::bounded(cap);
     let result = deletion_registered(
@@ -75,7 +75,7 @@ async fn corrupt_issuer(store: &SqliteStore, session: &SessionId) {
 // A coherent rewrite of all owner-private copies must still fail against the
 // independently persisted original native Begin witness.
 async fn corrupt_all_owner_parent_copies(store: &SqliteStore, session: &SessionId) {
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     let current: String =
         sqlx::query_scalar("SELECT data_json FROM session_owner_current WHERE session_id=$1")
             .bind(&session.0)
@@ -113,7 +113,7 @@ async fn corrupt_all_owner_parent_copies(store: &SqliteStore, session: &SessionI
     tx.commit().await.unwrap();
     // Independent publication bytes now reject this coherent rewrite before
     // the native-parent cross-check; both sources must remain authoritative.
-    let mut tx = store.writer.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.writer).await.unwrap();
     assert!(
         registered(
             &mut tx,

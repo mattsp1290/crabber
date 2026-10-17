@@ -4,7 +4,8 @@ use crate::session_owner::preparation::{
     JoinedPreparation, PreparationCompletion, PreparedOperation,
     admission::{SourceAudits, Witness},
 };
-use sqlx::{Row, Sqlite, Transaction};
+use crate::transaction::Transaction;
+use sqlx::{Row, Sqlite};
 impl crate::sqlite::SqliteStore {
     pub(super) async fn replay_admission(
         tx: &mut Transaction<'_, Sqlite>,

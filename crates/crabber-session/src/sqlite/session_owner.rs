@@ -18,8 +18,9 @@ use crate::session_owner::{
     audit::{Audit, Publication, RevisionState, verify_current},
     record::Record,
 };
+use crate::transaction::Transaction;
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 fn unknown<T>(_: T) -> Error {
     Error::UnknownStoreOutcome
 }
@@ -281,7 +282,9 @@ impl SqliteStore {
     ) -> Result<Option<crate::session_owner::preparation::PreparationReconciliation>, Error> {
         validate_scope(session, "preparation")?;
         let ids = crate::session_owner::preparation::identity::ids(key, session)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
         super::deletion::ensure_live(&mut tx, session)
             .await
             .map_err(crate::deletion::owner_error)?;
@@ -299,7 +302,9 @@ impl SqliteStore {
         id: &SessionOwnerId,
     ) -> Result<SessionOwnerSnapshot, Error> {
         validate_scope(session, &id.0)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         super::deletion::ensure_live(&mut tx, session)
             .await
@@ -320,7 +325,9 @@ impl SqliteStore {
         id: &SessionOwnerOperationId,
     ) -> Result<Option<SessionOwnerReceipt>, Error> {
         validate_scope(session, &id.0)?;
-        let mut tx = self.readers.begin().await.map_err(unknown)?;
+        let mut tx = crate::transaction::begin(&self.readers)
+            .await
+            .map_err(unknown)?;
 
         super::deletion::ensure_live(&mut tx, session)
             .await

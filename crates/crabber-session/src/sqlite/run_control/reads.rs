@@ -1,3 +1,4 @@
+use crate::transaction::Transaction;
 use crate::{
     RunControlError as Error,
     run_control::{
@@ -7,7 +8,7 @@ use crate::{
 };
 use crabber_core::{ControlId, Run, SessionId, SessionRevision};
 use serde::de::DeserializeOwned;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 fn decode<T: DeserializeOwned>(value: Option<String>) -> Result<T, Error> {
     serde_json::from_str(&value.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)
 }

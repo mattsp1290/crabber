@@ -9,7 +9,7 @@ async fn read(
     limit: u16,
     cap: usize,
 ) -> (Result<Vec<PublicRegisteredOwner>, Failure>, usize) {
-    let mut tx = store.readers.begin().await.unwrap();
+    let mut tx = crate::transaction::begin(&store.readers).await.unwrap();
     let mut safe = Budget::new(65536, PublicSessionLimit::HeaderBytes);
     let mut proof = Proof::bounded(cap);
     let result = registered(&mut tx, session, limit, &mut safe, &mut proof).await;

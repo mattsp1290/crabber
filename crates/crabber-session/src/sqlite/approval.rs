@@ -18,6 +18,7 @@ mod terminate;
 pub(super) use terminate::cancel_waiting;
 pub(super) mod write;
 use super::{SqliteStore, db};
+use crate::transaction::Transaction;
 use crate::{
     ApprovalError as Error, ApprovalReceipt, ApprovalSnapshot, ContinuationTarget,
     approval::{self, sql},
@@ -25,7 +26,7 @@ use crate::{
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use current::session as verify_session;
 pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN length(CAST(json_extract(s.data, '$.workspace_id') AS BLOB))<=512 THEN json_extract(s.data, '$.workspace_id') END AS workspace,CASE WHEN length(CAST(c.id AS BLOB))<=128 THEN c.id END AS id,c.generation,CASE WHEN length(CAST(c.state AS BLOB))<=32 THEN c.state END AS state,c.format_version AS format_version,
     CASE WHEN length(CAST(c.data_json AS BLOB))<=4194304 THEN c.data_json END AS data_json
@@ -46,9 +47,7 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ApprovalSnapshot>, Error> {
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;
@@ -63,9 +62,7 @@ impl SqliteStore {
         id: &ControlId,
     ) -> Result<Option<ApprovalReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(approval::attempt_error)?;
-        let mut tx = self
-            .readers
-            .begin()
+        let mut tx = crate::transaction::begin(&self.readers)
             .await
             .map_err(db)
             .map_err(sql::unknown)?;

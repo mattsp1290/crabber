@@ -4,8 +4,9 @@ use crate::native_parent::{CompletionOperation, RunIssuance, completion_history}
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
 use crate::sql_deletion::readiness::{Result, unknown};
+use crate::transaction::Transaction;
 use crabber_core::{EventCursor, SessionId, SessionOwnerOperationId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 pub(super) async fn source(
     tx: &mut Transaction<'_, Sqlite>,
     previous: Option<&RunIssuance>,

@@ -6,9 +6,10 @@ use crate::public_session::{
     budget::Budget,
     v2::proof::{Failure, Proof, unknown},
 };
+use crate::transaction::Transaction;
 use crate::{PublicSessionLimitV2, QueueReceipt, QueueState, QueueSummary};
 use crabber_core::{QueueId, SessionId};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(in crate::sqlite) async fn pending(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

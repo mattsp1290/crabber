@@ -2,9 +2,10 @@ use super::records::{decode_row, insert_event, insert_message, load_run, save_ca
 use super::{SqliteStore, db, text};
 use crate::StoreError;
 use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
+use crate::transaction::Transaction;
 use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 use crabber_core::{EventCursor, EventRecord, Run, RunStatus, ToolCallRecord, ToolCallStatus};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 
 pub(super) async fn abandon(
     store: &SqliteStore,

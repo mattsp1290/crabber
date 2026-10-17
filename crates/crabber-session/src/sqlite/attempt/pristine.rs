@@ -1,8 +1,9 @@
 //! Called under the session gate and fenced run transaction before reservation.
 use super::super::{db, execution_binding};
+use crate::transaction::Transaction;
 use crate::{AttemptError as Error, attempt};
 use crabber_core::Run;
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(super) async fn check(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result<(), Error> {
     check_with_proof(

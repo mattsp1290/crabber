@@ -1,7 +1,8 @@
 //! Canonical logical tool results, independent of native phase transitions.
+use crate::transaction::Transaction;
 use crate::{PhaseError as Error, phase::sql};
 use crabber_core::{Run, ToolCallRecord};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(super) async fn apply(
     tx: &mut Transaction<'_, Sqlite>,

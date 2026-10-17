@@ -2,8 +2,9 @@
 #[path = "approval/witness.rs"]
 mod witness;
 use super::{Error, Proof, unknown};
+use crate::transaction::Transaction;
 use crabber_core::Run;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite};
 pub(super) use witness::unstarted;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Sqlite>,

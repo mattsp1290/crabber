@@ -3,8 +3,9 @@ use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::RunIssuance;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native, tool};
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
+use crate::transaction::Transaction;
 use crabber_core::{ControlId, RunId, SessionId};
-use sqlx::{Sqlite, Transaction};
+use sqlx::Sqlite;
 
 pub(super) async fn original(
     tx: &mut Transaction<'_, Sqlite>,
