@@ -230,6 +230,9 @@ impl Registration {
     pub(super) fn close(&self) {
         self.source.closing.cancel();
         drop(self.gate.lock().unwrap().take());
+        // Original returned roots may release a still-disposing create future.
+        // Drive their actual cleanup before lifecycle waits for that initializer.
+        self.graph.signal();
     }
     pub(super) fn blocked(&self) -> bool {
         matches!(

@@ -98,3 +98,68 @@ async fn already_closed_cell_retains_ready_root_before_blocked_future_disposal()
     assert!(result.is_err() && disposed.is_ok());
     assert_eq!(seen.dropped.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_close_drives_root_drop_before_original_create_future_disposal() {
+    let mut observed = Vec::new();
+    for (scope, all) in [
+        (FactoryScope::Workspace, false),
+        (FactoryScope::Session, false),
+        (FactoryScope::Session, true),
+    ] {
+        let seen = Seen::new(false, true, Failure::None);
+        let _release = Release(vec![seen.future_drop.clone()]);
+        let host = Arc::new(Host::default());
+        let provider = provider(host.clone(), seen.clone(), scope);
+        let acquire = tokio::spawn({
+            let provider = provider.clone();
+            async move { provider.acquire_plan_in(&context()).await }
+        });
+        entered(&seen.future_drop).await;
+        let close = tokio::spawn({
+            let provider = provider.clone();
+            async move {
+                if all {
+                    provider.close_all(Duration::from_secs(3)).await
+                } else if scope == FactoryScope::Workspace {
+                    provider
+                        .close_workspace(&context(), Duration::from_secs(3))
+                        .await
+                } else {
+                    provider
+                        .close_session(&context(), Duration::from_secs(3))
+                        .await
+                }
+            }
+        });
+        let started = tokio::time::timeout(
+            Duration::from_millis(100),
+            seen.root_drop.entered.notified(),
+        )
+        .await;
+        // Always release the real original future and join cleanup before asserting.
+        seen.future_drop.release();
+        let acquired = acquire.await.unwrap();
+        drop(acquired);
+        close.await.unwrap().unwrap();
+        graph(&host)
+            .product_root(0)
+            .unwrap()
+            .disposed(Duration::from_secs(3))
+            .await
+            .unwrap();
+        provider.close_all(Duration::from_secs(3)).await.unwrap();
+        observed.push((
+            scope,
+            all,
+            started.is_ok(),
+            seen.dropped.load(Ordering::SeqCst),
+        ));
+    }
+    assert!(
+        observed
+            .iter()
+            .all(|(_, _, started, drops)| *started && *drops == 1),
+        "{observed:?}"
+    );
+}
