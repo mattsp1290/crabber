@@ -31,15 +31,37 @@ struct Entries {
     tasks: Vec<Arc<Task>>,
     inline: Vec<Arc<inline::Call>>,
     sealed: bool,
+    admitted: u64,
+    retired_joined: u64,
 }
 impl Entries {
     fn full(&self) -> bool {
         self.tasks.len() + self.inline.len() >= MAX_ACTIVE
     }
+    fn admit(&mut self) -> Result<(), ExtensionError> {
+        self.admitted = self
+            .admitted
+            .checked_add(1)
+            .ok_or(crate::ResourceRegistrationError::Capacity)?;
+        Ok(())
+    }
     fn reap_observed(&mut self) {
-        self.tasks
-            .retain(|task| *task.result.lock().unwrap() != Some(true));
-        self.inline.retain(|call| call.result() != Some(true));
+        self.tasks.retain(|task| {
+            if *task.result.lock().unwrap() == Some(true) {
+                self.retired_joined = self.retired_joined.checked_add(1).unwrap();
+                false
+            } else {
+                true
+            }
+        });
+        self.inline.retain(|call| {
+            if call.result() == Some(true) {
+                self.retired_joined = self.retired_joined.checked_add(1).unwrap();
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 struct Task {
@@ -86,6 +108,26 @@ impl OriginalRoster {
         }
     }
 
+    /// Synchronous observation of this explicitly sealed original roster.
+    /// Only cached actual joins/returns qualify; never poll an unobserved handle.
+    /// Lifetime admission and retired actual-join counts survive roster reaping.
+    /// Zero admissions is the original source's `NeverDispatched` leaf, not an
+    /// inference from today's membership.
+    pub(crate) fn cached_join(&self) -> Option<bool> {
+        let entries = self.state.tasks.lock().unwrap();
+        let retained = u64::try_from(entries.tasks.len() + entries.inline.len()).ok()?;
+        if !entries.sealed || entries.retired_joined.checked_add(retained)? != entries.admitted {
+            return None;
+        }
+        let mut success = true;
+        for task in &entries.tasks {
+            success &= (*task.result.lock().unwrap())?;
+        }
+        for call in &entries.inline {
+            success &= call.result()?;
+        }
+        Some(success)
+    }
     pub(crate) async fn sealed_join(&self) -> Result<(), ExtensionError> {
         loop {
             let changed = self.state.changed.notified();
@@ -195,6 +237,7 @@ impl Source {
                     crate::ResourceRegistrationError::Capacity,
                 ));
             }
+            tasks.admit()?;
             mount
                 .leases
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -69,6 +69,12 @@ struct Seen {
     capability: AtomicBool,
     provider: Mutex<Option<ContextualPlanProvider>>,
     self_close: Mutex<Vec<Result<(), ExtensionError>>>,
+    cleanup_enabled: AtomicBool,
+    cleanup_release: Arc<tokio::sync::Semaphore>,
+    cleanup_facade: Mutex<Option<Arc<dyn ToolExecutor>>>,
+    cleanup_started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    cleanup_graph: Mutex<Option<ContextualGenerationObservation>>,
+    drop_complete: Arc<Gate>,
 }
 impl Seen {
     fn new(call: Call) -> Arc<Self> {
@@ -88,6 +94,12 @@ impl Seen {
             capability: AtomicBool::new(false),
             provider: Mutex::new(None),
             self_close: Mutex::new(vec![]),
+            cleanup_enabled: AtomicBool::new(false),
+            cleanup_release: Arc::new(tokio::sync::Semaphore::new(0)),
+            cleanup_facade: Mutex::new(None),
+            cleanup_started: Mutex::new(None),
+            cleanup_graph: Mutex::new(None),
+            drop_complete: Gate::new(false),
         })
     }
 }
@@ -106,6 +118,7 @@ impl Drop for Tool {
             !self.0.tool_panic.load(Ordering::SeqCst),
             "original Tool destructor panic"
         );
+        self.0.drop_complete.release();
     }
 }
 struct OriginalCall(Arc<Seen>);
@@ -182,15 +195,30 @@ impl ContextualToolProductFactory for Factory {
         }
     }
     fn config_hash(&self) -> String {
-        "ordinary-counter-v1".into()
+        format!(
+            "ordinary-counter-v1:cleanup={}",
+            self.seen.cleanup_enabled.load(Ordering::SeqCst)
+        )
     }
     fn scope(&self) -> FactoryScope {
         self.scope
     }
     fn create_tool(
         &self,
-        _: FactoryContext,
+        context: FactoryContext,
     ) -> BoxFuture<'_, Result<ContextualToolProduct, ExtensionError>> {
+        if self.seen.cleanup_enabled.load(Ordering::SeqCst) {
+            let ready = self.seen.cleanup_release.clone();
+            context
+                .cleanup()
+                .spawn_checked(scheduling::Cleanup {
+                    ready: Box::pin(async move {
+                        let _ = ready.acquire_owned().await.unwrap();
+                    }),
+                    seen: self.seen.clone(),
+                })
+                .unwrap();
+        }
         self.seen.creating.notify_one();
         let ready = self.seen.ready.clone();
         Box::pin(Returned {
@@ -350,3 +378,6 @@ impl ResumableTool for Tool {
         ))
     }
 }
+
+#[path = "contextual_tool_products/scheduling.rs"]
+mod scheduling;

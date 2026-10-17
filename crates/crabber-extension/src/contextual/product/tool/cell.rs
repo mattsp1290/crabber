@@ -17,6 +17,7 @@ enum Metadata {
     #[default]
     Uncaptured,
     Captured,
+    Bound,
 }
 #[derive(Default)]
 struct State {
@@ -64,8 +65,8 @@ impl Drop for Borrow {
         self.value.take();
         let mut state = self.node.state.lock().unwrap();
         assert!(state.borrows.remove(&self.id));
-        self.node.launch(&mut state);
         drop(state);
+        self.node.progress();
         self.node.changed.notify_waiters();
     }
 }
@@ -77,8 +78,8 @@ impl Drop for Reference {
     fn drop(&mut self) {
         let mut state = self.node.state.lock().unwrap();
         assert!(state.references.remove(&self.id));
-        self.node.launch(&mut state);
         drop(state);
+        self.node.progress();
         self.node.changed.notify_waiters();
     }
 }
@@ -134,16 +135,26 @@ impl Node {
         let roster = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
-            self.launch(&mut state);
-            if state.done && state.body.is_none() {
-                self.root.close();
-            }
             state.roster.clone()
         };
         if let Some(roster) = roster {
             roster.seal();
         }
+        self.progress();
         self.changed.notify_waiters();
+    }
+    fn progress(&self) {
+        let roster = self.state.lock().unwrap().roster.clone();
+        let observed = roster.and_then(|roster| roster.cached_join());
+        let mut state = self.state.lock().unwrap();
+        if let Some(joined) = observed {
+            state.failed |= !joined;
+            state.roster = None;
+        }
+        self.launch(&mut state);
+        if state.closed && state.done && state.body.is_none() {
+            self.root.close();
+        }
     }
     // Only the actual sealed original roster can authorize the source-bound case.
     fn launch(&self, state: &mut State) {
@@ -167,9 +178,10 @@ impl Node {
     }
     pub(crate) fn bind(&self, roster: OriginalRoster) -> Result<(), ExtensionError> {
         let mut state = self.state.lock().unwrap();
-        if state.closed || state.roster.is_some() {
+        if state.closed || state.metadata != Metadata::Captured {
             return Err(ExtensionError::ContextOwnerClosed);
         }
+        state.metadata = Metadata::Bound;
         state.roster = Some(roster);
         Ok(())
     }
@@ -236,7 +248,7 @@ impl Node {
         source: InvocationSource,
     ) -> Result<Arc<ToolDefinition>, ExtensionError> {
         let mut state = self.state.lock().unwrap();
-        if state.closed {
+        if state.closed || state.metadata != Metadata::Bound {
             return Err(ExtensionError::ContextOwnerClosed);
         }
         if state.references.len() >= 64 {
