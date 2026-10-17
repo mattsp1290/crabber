@@ -325,14 +325,27 @@ impl ToolContinuationRecord {
             }
         })
     }
-    pub(crate) fn into_grant(
+    pub(crate) fn capture_claim(
+        &mut self,
+        claim: &ToolContinuationClaim,
+        frontend: Option<&crate::FrontendContinuationClaim>,
+    ) {
+        self.state = ToolContinuationState::Claimed;
+        self.claim = Some(claim.clone());
+        self.frontend_claim = frontend.cloned().map(Box::new);
+        for question in &mut self.questions {
+            question.view.consumed = true;
+        }
+    }
+    pub(crate) fn into_outcome(
         self,
         fence: crabber_core::RunFence,
         authority: crate::AttemptAuthority,
         phases: Vec<crate::ToolPhaseResume>,
         frontend: Vec<crate::FrontendPhaseResume>,
-    ) -> Result<Box<crate::ToolContinuationGrant>, Error> {
-        Ok(Box::new(crate::ToolContinuationGrant {
+        issuance: crate::tool_continuation::ack::Completion<'_>,
+    ) -> Result<crate::ToolContinuationClaimOutcome, Error> {
+        let grant = Box::new(crate::ToolContinuationGrant {
             calls: self.grants()?,
             fence,
             authority,
@@ -341,7 +354,8 @@ impl ToolContinuationRecord {
             source_turn_id: self.batch.source_turn_id,
             usage: self.batch.usage,
             turns_used: self.batch.turns_used,
-        }))
+        });
+        issuance.finish(grant)
     }
     pub(crate) fn grants(&self) -> Result<Vec<crate::GrantedApproval>, Error> {
         self.batch

@@ -22,12 +22,17 @@ impl Orchestrator {
         validated: (RunSession, Option<Request>),
         binding: ExecutionBindingCapsule,
         control: ToolResumeControl,
+        expected: Box<super::super::tool_continuation::ToolReceiptExpectation>,
     ) -> Result<super::super::tool_continuation::ToolContinuation, RuntimeError> {
         let (mut request, context, origin) = self
             .checked_tool_preflight(&run, &binding, &control)
             .await?;
         let (sender, _unused) = tokio::sync::oneshot::channel();
-        let control = ApprovalControl::Tool { control, sender };
+        let control = ApprovalControl::Tool {
+            control,
+            sender,
+            expected,
+        };
         let (spec, operation) = super::resume::operation(&control)?;
         self.reject_pending_preparation(&run.session_id, &spec.key)
             .await?;
@@ -53,6 +58,10 @@ impl Orchestrator {
                 else {
                     return Err(RuntimeError::PreparationRecoveryRequired);
                 };
+                let ApprovalControl::Tool { expected, .. } = &control else {
+                    return Err(RuntimeError::PreparationRecoveryRequired);
+                };
+                expected.verify(&receipt)?;
                 let authority = super::super::tool_continuation::prepared_tool_authority(
                     &run, &receipt, *grant,
                 )?;

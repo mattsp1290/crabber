@@ -2211,3 +2211,21 @@ async fn untrusted_terminal_markers_are_never_replay_authority() {
 #[cfg(test)]
 #[path = "memory/run_control_tests.rs"]
 mod run_control_tests;
+
+#[cfg(test)]
+impl MemoryStore {
+    pub(crate) fn tool_ack_test_records(
+        &self,
+        target: &crate::PhaseTarget,
+    ) -> (crate::attempt::AttemptRecord, crate::phase::PhaseRecord) {
+        let state = self.state.lock().unwrap();
+        (
+            state.attempts.get(&target.attempt.id).unwrap().clone(),
+            state.phases.get(&target.id).unwrap().clone(),
+        )
+    }
+    pub(crate) fn tool_ack_test_forget_inputs(&self) {
+        self.state.lock().unwrap().continuation_inputs =
+            crate::continuation_input::Ledger::default();
+    }
+}

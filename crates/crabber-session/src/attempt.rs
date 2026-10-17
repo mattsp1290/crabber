@@ -214,6 +214,7 @@ pub struct AttemptAuthority {
     pub(crate) snapshot: AttemptSnapshot,
     pub(crate) token: String,
     pub(crate) run_token: String,
+    pub(crate) tool_ack_commitment: Option<InputFingerprint>,
 }
 impl std::fmt::Debug for AttemptAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -240,6 +241,7 @@ impl AttemptAuthority {
             snapshot,
             token,
             run_token,
+            tool_ack_commitment: None,
         })
     }
     /// Verify against the adapter's current private record without exposing tokens.
@@ -260,3 +262,7 @@ pub enum AttemptMutationOutcome {
     },
     Replayed(AttemptReceipt),
 }
+
+#[path = "attempt/grant_ack.rs"]
+mod grant_ack;
+pub(crate) use grant_ack::{grant_ack_identity, grant_ack_meter, validate_grant_ack_authority};

@@ -74,6 +74,9 @@ impl Source {
             else {
                 return Err(Error::SemanticConflict.into());
             };
+            grant
+                .verify_native_ack(&inspected.receipt)
+                .map_err(|_| Error::SemanticConflict)?;
             if inspected.claim != request.claim
                 || grant
                     .payload_fingerprint()

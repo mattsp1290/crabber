@@ -39,5 +39,21 @@ async fn actual_grant_payload_budget_precedes_materialization() {
             measured.bytes_total < 8192,
             "oversized ACK materialized before refusal: {measured:?}"
         );
+        let mut deep = serde_json::json!("untrusted");
+        for _ in 0..256 {
+            deep = serde_json::Value::Array(vec![deep]);
+        }
+        if frontend {
+            fixture.native.frontend[0].frozen.arguments = deep;
+        } else {
+            fixture.native.phases[0].responses[0].value = Some(deep);
+        }
+        let measured = allocation_counter::measure(|| {
+            assert!(fixture.native.payload_fingerprint().is_err());
+        });
+        assert!(
+            measured.bytes_total < 8192,
+            "deep ACK materialized before refusal: {measured:?}"
+        );
     }
 }

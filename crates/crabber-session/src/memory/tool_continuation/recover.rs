@@ -147,13 +147,18 @@ impl MemoryStore {
             now,
         )?;
         before(fault)?;
-        Ok((
-            ToolContinuationClaimOutcome::Applied {
+        let outcome = record.into_outcome(
+            fence,
+            authority,
+            phases,
+            frontend_phases,
+            crate::tool_continuation::ack::Completion::new(
                 receipt,
-                grant: record.into_grant(fence, authority, phases, frontend_phases)?,
-            },
-            true,
-        ))
+                (&parent.token, &parent.run_token),
+                read_proof,
+            ),
+        )?;
+        Ok((outcome, true))
     }
 }
 fn eligible(

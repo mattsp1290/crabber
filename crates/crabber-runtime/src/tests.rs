@@ -1790,6 +1790,8 @@ struct SettlementGate {
     // Diagnostics only: task identity is never execution authority.
     initial_task_diagnostics: std::sync::atomic::AtomicBool,
     grant_payload_protections: AtomicUsize,
+    foreign_grant_capabilities: Mutex<Option<grant_ack_faults::Capabilities>>,
+    foreign_grant_ack: Mutex<Option<crabber_session::ToolContinuationClaimOutcome>>,
     queue_inspection_disabled: std::sync::atomic::AtomicBool,
     initial_task_ids: Mutex<Vec<(InitialTaskStage, Option<tokio::task::Id>)>>,
     initial_preparation_session: Mutex<Option<SessionId>>,
@@ -2098,47 +2100,8 @@ impl Store for DelayedTerminalStore {
                 fence.claim_token = "wrong actual completion fence".into();
             }
         }
-        if matches!(fault, 8 | 10 | 11 | 12) {
-            let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(
-                crabber_session::ToolContinuationClaimOutcome::Applied { grant, .. },
-            ) = &mut completed.completion else { panic!("actual tool completion") };
-            match fault {
-                11 => grant.turns_used += 1,
-                12 => grant.source_turn_id = Some(crabber_core::TurnId::new()),
-                _ if !grant.phases.is_empty() => {
-                    let phase = &mut grant.phases[0];
-                    if fault == 10 {
-                        phase.responses[0].value = Some(json!("changed accepted answer"));
-                    } else {
-                        phase.checkpoint = crabber_core::ToolCheckpoint::new(
-                            phase.checkpoint.schema_id(),
-                            phase.checkpoint.schema_version(),
-                            json!({"effect":"rewritten valid checkpoint"}),
-                        )
-                        .unwrap();
-                    }
-                }
-                _ => {
-                    let phase = &mut grant.frontend[0];
-                    if fault == 10 {
-                        phase
-                            .frozen
-                            .descriptor
-                            .description
-                            .push_str(" changed descriptor");
-                    } else {
-                        phase.result = crabber_core::FrontendToolResult::new(
-                            phase.result.call_id().clone(),
-                            crabber_core::FrontendResultStatus::Completed,
-                            crabber_core::ToolOutput::from_json(&json!(
-                                "rewritten valid external result"
-                            ))
-                            .unwrap(),
-                        )
-                        .unwrap();
-                    }
-                }
-            }
+        if let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(outcome) = &mut completed.completion {
+            grant_ack_faults::interpose(&self.gate, outcome, fault)?;
         }
         Ok(completed)
     }
@@ -2175,7 +2138,7 @@ impl Store for DelayedTerminalStore {
             self.gate.approval_recovery_entered.notify_one();
             self.gate.approval_recovery_release.notified().await;
         }
-        let completed = self.inner.complete_preparation(joined).await?;
+        let mut completed = self.inner.complete_preparation(joined).await?;
         if self.gate.preparation_hold.load(Ordering::SeqCst) {
             self.gate.preparation_entered.notify_one();
             self.gate.preparation_release.notified().await;
@@ -2237,6 +2200,9 @@ impl Store for DelayedTerminalStore {
                 }) => gate.hold(&admitted.session.id, &admitted.run.id).await,
                 _ => (),
             }
+        }
+        if let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(outcome) = &mut completed {
+            grant_ack_faults::interpose(&self.gate, outcome, preparation_fault)?;
         }
         Ok(completed)
     }
@@ -2800,14 +2766,20 @@ impl Store for DelayedTerminalStore {
         claim: crabber_session::FrontendContinuationClaim,
     ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
     {
-        self.inner.claim_frontend_continuation(claim).await
+        let mut outcome = self.inner.claim_frontend_continuation(claim).await?;
+        let fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        grant_ack_faults::interpose(&self.gate, &mut outcome, fault)?;
+        Ok(outcome)
     }
     async fn recover_frontend_continuation(
         &self,
         request: crabber_session::FrontendContinuationRecovery,
     ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
     {
-        self.inner.recover_frontend_continuation(request).await
+        let mut outcome = self.inner.recover_frontend_continuation(request).await?;
+        let fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        grant_ack_faults::interpose(&self.gate, &mut outcome, fault)?;
+        Ok(outcome)
     }
     fn supports_tool_continuations(&self) -> bool {
         true
@@ -2835,14 +2807,20 @@ impl Store for DelayedTerminalStore {
         claim: crabber_session::ToolContinuationClaim,
     ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
     {
-        self.inner.claim_tool_continuation(claim).await
+        let mut outcome = self.inner.claim_tool_continuation(claim).await?;
+        let fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        grant_ack_faults::interpose(&self.gate, &mut outcome, fault)?;
+        Ok(outcome)
     }
     async fn recover_tool_continuation(
         &self,
         request: crabber_session::ToolContinuationRecovery,
     ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
     {
-        self.inner.recover_tool_continuation(request).await
+        let mut outcome = self.inner.recover_tool_continuation(request).await?;
+        let fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
+        grant_ack_faults::interpose(&self.gate, &mut outcome, fault)?;
+        Ok(outcome)
     }
     async fn original_tool_continuation_plan(
         &self,
@@ -4580,3 +4558,6 @@ impl DelayedTerminalStore {
 
 #[path = "tests/terminal_control.rs"]
 mod terminal_control;
+
+#[path = "tests/grant_ack_faults.rs"]
+mod grant_ack_faults;

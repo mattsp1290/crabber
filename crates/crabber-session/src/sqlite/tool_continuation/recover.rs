@@ -178,21 +178,21 @@ impl SqliteStore {
         )
         .await?;
         before(fault)?;
-        Ok((
-            ToolContinuationClaimOutcome::Applied {
-                receipt,
-                grant: record.into_grant(
-                    RunFence {
-                        run_id: run.id.clone(),
-                        claim_token: activated.claim_token,
-                    },
-                    authority,
-                    phases,
-                    frontend_phases,
-                )?,
+        let outcome = record.into_outcome(
+            RunFence {
+                run_id: run.id.clone(),
+                claim_token: activated.claim_token,
             },
-            true,
-        ))
+            authority,
+            phases,
+            frontend_phases,
+            crate::tool_continuation::ack::Completion::new(
+                receipt,
+                (&parent.token, &parent.run_token),
+                read_proof,
+            ),
+        )?;
+        Ok((outcome, true))
     }
 }
 async fn eligible(

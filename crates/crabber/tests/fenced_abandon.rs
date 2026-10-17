@@ -274,11 +274,14 @@ mod tool_continuation_records;
 #[path = "../../crabber-session/src/tool_continuation/termination.rs"]
 #[allow(dead_code)]
 mod tool_continuation_termination;
+#[path = "fenced_support/grant_ack.rs"]
+mod tool_grant_ack;
 mod tool_continuation {
     pub(crate) use crate::tool_continuation_audit::*;
     pub(crate) use crate::tool_continuation_current::*;
     pub(crate) use crate::tool_continuation_records::*;
     pub(crate) use crate::tool_continuation_termination::*;
+    pub(crate) use crate::tool_grant_ack as ack;
 
     pub(crate) use crabber::session::{
         FrozenToolPhase, ToolContinuationClaim, ToolContinuationError, ToolContinuationOutcome,

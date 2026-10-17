@@ -246,6 +246,7 @@ redacted_debug!(
 );
 mod recovery;
 pub use recovery::ToolContinuationRecovery;
+pub(crate) mod ack;
 mod audit;
 mod current;
 pub(crate) use current::{CurrentAudits, audit_key, terminal_candidate};

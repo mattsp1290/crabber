@@ -7,6 +7,9 @@ use crabber_session::{
     ToolContinuationError as Error, ToolContinuationOutcome, ToolContinuationReceipt,
 };
 use tokio::sync::oneshot;
+#[path = "tool_continuation/intent.rs"]
+mod intent;
+pub(super) use intent::Expected as ToolReceiptExpectation;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContinueTool {
@@ -157,19 +160,25 @@ impl Orchestrator {
         validated: (super::RunSession, Option<super::Request>),
         control: ToolResumeControl,
     ) -> Result<ToolContinuation, RuntimeError> {
+        let expected = ToolReceiptExpectation::new(&control)?;
         let binding = self.stored_binding(&run.session_id, &run.id).await?;
         if crabber_session::session_owner::preparation::resource_contract(
             &binding.runtime_semantics,
         )?
         .is_some()
         {
-            return Box::pin(self.spawn_pending_tool(run, validated, binding, control)).await;
+            return Box::pin(self.spawn_pending_tool(run, validated, binding, control, expected))
+                .await;
         }
         let (sender, receiver) = oneshot::channel();
         let (dummy, _) = oneshot::channel();
         let control = ApprovalResume {
             prepared: None,
-            control: ApprovalControl::Tool { control, sender },
+            control: ApprovalControl::Tool {
+                control,
+                sender,
+                expected,
+            },
             sender: dummy,
         };
         let handle = self.spawn_worker(
@@ -197,6 +206,7 @@ impl Orchestrator {
         control: ToolResumeControl,
         sender: oneshot::Sender<ToolClaimed>,
         prepared: Option<crabber_session::session_owner::preparation::PreparationCompletion>,
+        expected: Box<ToolReceiptExpectation>,
     ) -> Result<Option<ResumeAuthority>, RuntimeError> {
         let outcome = if let Some(prepared) = prepared {
             let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(outcome) = prepared else {
@@ -237,6 +247,11 @@ impl Orchestrator {
                 }
             }
         };
+        let receipt = match &outcome {
+            ToolContinuationClaimOutcome::Applied { receipt, .. }
+            | ToolContinuationClaimOutcome::Replayed(receipt) => receipt,
+        };
+        expected.verify(receipt)?;
         match outcome {
             ToolContinuationClaimOutcome::Replayed(receipt) => {
                 let _ = sender.send(ToolClaimed::Replay(receipt));
@@ -256,6 +271,7 @@ pub(super) fn prepared_tool_authority(
     receipt: &ToolContinuationReceipt,
     grant: crabber_session::ToolContinuationGrant,
 ) -> Result<ResumeAuthority, RuntimeError> {
+    grant.verify_native_ack(receipt)?;
     let (ToolContinuationOutcome::Claimed { attempt, .. }
     | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
     | ToolContinuationOutcome::FrontendClaimed { attempt, .. }

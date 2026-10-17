@@ -1997,7 +1997,7 @@ impl ExecutionStore for PostgresExecution {
         batch: crate::ApprovalSuspension,
         authority: crate::AttemptAuthority,
     ) -> Result<crate::ApprovalReceipt, crate::ApprovalError> {
-        self.suspend_approval(batch, &authority).await
+        Box::pin(self.suspend_approval(batch, &authority)).await
     }
 
     async fn conclude_attempt(

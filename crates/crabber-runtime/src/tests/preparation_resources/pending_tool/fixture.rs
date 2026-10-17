@@ -136,6 +136,27 @@ pub(super) async fn paused(
     frontend: bool,
     unkeyed: bool,
 ) -> (Harness, Choice, Arc<Effects>) {
+    paused_mode(store, clock, frontend, unkeyed, ResourceMode::Owned).await
+}
+pub(super) async fn paused_none(
+    store: Arc<dyn Store>,
+    clock: Arc<ManualClock>,
+    frontend: bool,
+) -> (Harness, Choice, Arc<Effects>) {
+    paused_mode(store, clock, frontend, false, ResourceMode::Legacy).await
+}
+#[derive(Clone, Copy)]
+enum ResourceMode {
+    Owned,
+    Legacy,
+}
+async fn paused_mode(
+    store: Arc<dyn Store>,
+    clock: Arc<ManualClock>,
+    frontend: bool,
+    unkeyed: bool,
+    mode: ResourceMode,
+) -> (Harness, Choice, Arc<Effects>) {
     let gate = Arc::new(SettlementGate::default());
     gate.release.notify_one();
     let effects = Arc::new(Effects {
@@ -143,6 +164,9 @@ pub(super) async fn paused(
         resumes: AtomicUsize::new(0),
     });
     let provider = provider(frontend, effects.clone());
+    provider
+        .legacy_none_contract
+        .store(matches!(mode, ResourceMode::Legacy), Ordering::SeqCst);
     let fake = FakeProvider::scripted(vec![
         call_script(
             ToolCallId::new(),
@@ -185,8 +209,13 @@ pub(super) async fn paused(
     let run = handle.run_id().clone();
     assert_eq!(handle.done().await.unwrap().status, RunStatus::Paused);
     let initial = h.runtime.retained_preparation_status(&session);
-    assert_eq!(initial.len(), 1);
-    h.finish_cleanup(&initial[0].preparation).await;
+    match mode {
+        ResourceMode::Owned => {
+            assert_eq!(initial.len(), 1);
+            h.finish_cleanup(&initial[0].preparation).await;
+        }
+        ResourceMode::Legacy => assert_eq!(initial, vec![]),
+    }
     let snapshot = h
         .runtime
         .tool_continuation_snapshot(&session, &run)

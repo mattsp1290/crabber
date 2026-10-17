@@ -291,3 +291,7 @@ pub enum PhaseMutationOutcome {
 }
 
 pub(crate) mod terminal_history;
+
+#[path = "phase/grant_ack.rs"]
+mod grant_ack;
+pub(crate) use grant_ack::{grant_ack_identity, grant_ack_meter, validate_grant_ack_authority};

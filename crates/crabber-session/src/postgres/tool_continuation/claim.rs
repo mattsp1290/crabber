@@ -152,12 +152,7 @@ impl PostgresStore {
             }
             None => Vec::new(),
         };
-        record.state = ToolContinuationState::Claimed;
-        record.claim = Some(claim.clone());
-        record.frontend_claim = frontend.cloned().map(Box::new);
-        for question in &mut record.questions {
-            question.view.consumed = true;
-        }
+        record.capture_claim(claim, frontend);
         write::save(tx, &record, false).await?;
         let receipt = write::publish(
             tx,
@@ -169,21 +164,21 @@ impl PostgresStore {
         )
         .await?;
         before(fault)?;
-        Ok((
-            ToolContinuationClaimOutcome::Applied {
-                receipt,
-                grant: record.into_grant(
-                    RunFence {
-                        run_id: run.id.clone(),
-                        claim_token: activated.claim_token,
-                    },
-                    authority,
-                    phases,
-                    frontend_phases,
-                )?,
+        let outcome = record.into_outcome(
+            RunFence {
+                run_id: run.id.clone(),
+                claim_token: activated.claim_token,
             },
-            true,
-        ))
+            authority,
+            phases,
+            frontend_phases,
+            crate::tool_continuation::ack::Completion::new(
+                receipt,
+                (&parent.token, &parent.run_token),
+                read_proof,
+            ),
+        )?;
+        Ok((outcome, true))
     }
 }
 async fn ready(

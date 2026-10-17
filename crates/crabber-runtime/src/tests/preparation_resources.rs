@@ -42,6 +42,7 @@ struct ScopedProvider {
     cleanup_completed: Arc<AtomicUsize>,
     cleanup_failure: Arc<AtomicUsize>,
     wait_for_close: std::sync::atomic::AtomicBool,
+    legacy_none_contract: std::sync::atomic::AtomicBool,
     entered: Notify,
 }
 impl ScopedProvider {
@@ -55,6 +56,7 @@ impl ScopedProvider {
             cleanup_completed: Arc::new(AtomicUsize::new(0)),
             cleanup_failure: Arc::new(AtomicUsize::new(0)),
             wait_for_close: std::sync::atomic::AtomicBool::new(false),
+            legacy_none_contract: std::sync::atomic::AtomicBool::new(false),
             entered: Notify::new(),
         })
     }
@@ -71,6 +73,9 @@ impl RunPlanProvider for ScopedProvider {
         &self,
         _: &SessionContext,
     ) -> Result<Option<PreparationResourceContract>, ExtensionError> {
+        if self.legacy_none_contract.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         Ok(Some(PreparationResourceContract::new(
             ComponentIdentity {
                 id: "owned-test-provider".into(),
@@ -79,8 +84,13 @@ impl RunPlanProvider for ScopedProvider {
             InputFingerprint::new(format!("{:064x}", self.policy.load(Ordering::SeqCst))).unwrap(),
         )?))
     }
-    async fn acquire_plan(&self, _: &SessionId) -> Result<RunPlan, ExtensionError> {
-        panic!("declared bridge must never use legacy acquisition")
+    async fn acquire_plan(&self, session: &SessionId) -> Result<RunPlan, ExtensionError> {
+        assert!(
+            self.legacy_none_contract.load(Ordering::SeqCst),
+            "declared bridge must never use legacy acquisition"
+        );
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.base.acquire_plan(session).await
     }
     async fn acquire_plan_in_preparation(
         &self,

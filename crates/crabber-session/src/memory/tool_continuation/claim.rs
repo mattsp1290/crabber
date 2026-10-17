@@ -140,12 +140,7 @@ impl MemoryStore {
         state
             .attempts
             .insert(parent.snapshot.target.id.clone(), parent.clone());
-        record.state = ToolContinuationState::Claimed;
-        record.claim = Some(claim.clone());
-        record.frontend_claim = frontend.cloned().map(Box::new);
-        for question in &mut record.questions {
-            question.view.consumed = true;
-        }
+        record.capture_claim(claim, frontend);
         record.validate()?;
         state
             .tool_continuations
@@ -159,13 +154,18 @@ impl MemoryStore {
             now,
         )?;
         before(fault)?;
-        Ok((
-            ToolContinuationClaimOutcome::Applied {
+        let outcome = record.into_outcome(
+            fence,
+            authority,
+            phases,
+            frontend_phases,
+            crate::tool_continuation::ack::Completion::new(
                 receipt,
-                grant: record.into_grant(fence, authority, phases, frontend_phases)?,
-            },
-            true,
-        ))
+                (&parent.token, &parent.run_token),
+                read_proof,
+            ),
+        )?;
+        Ok((outcome, true))
     }
 }
 fn ready(

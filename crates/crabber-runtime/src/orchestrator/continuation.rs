@@ -41,6 +41,7 @@ pub(super) enum ApprovalControl {
     Tool {
         control: super::tool_continuation::ToolResumeControl,
         sender: oneshot::Sender<super::tool_continuation::ToolClaimed>,
+        expected: Box<super::tool_continuation::ToolReceiptExpectation>,
     },
     Claim(ApprovalContinuationClaim),
     Recover(crabber_session::ApprovalContinuationRecovery),
@@ -213,12 +214,17 @@ impl Orchestrator {
         if let Some(control) = control {
             let control = match control {
                 ApprovalResume {
-                    control: ApprovalControl::Tool { control, sender },
+                    control:
+                        ApprovalControl::Tool {
+                            control,
+                            sender,
+                            expected,
+                        },
                     prepared,
                     ..
                 } => {
                     return self
-                        .acquire_tool_resume(run, control, sender, prepared)
+                        .acquire_tool_resume(run, control, sender, prepared, expected)
                         .await;
                 }
                 control => control,

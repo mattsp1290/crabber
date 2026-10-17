@@ -5,7 +5,7 @@ use crate::session_owner::SessionOwnerError as Error;
 use crabber_core::{InputFingerprint, InteractionState};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-const CAP: usize = (4 << 20) + (32 << 10);
+pub(crate) const CAP: usize = (4 << 20) + (32 << 10);
 #[derive(Serialize)]
 struct Payload<'a> {
     phases: Vec<Phase<'a>>,
@@ -58,7 +58,7 @@ fn charge<T>(count: usize, proof: &mut Proof) -> Result<(), Error> {
         )
         .map_err(|_| Error::UnknownStoreOutcome)
 }
-fn digest(payload: &Payload<'_>, proof: &mut Proof) -> Result<InputFingerprint, Error> {
+fn digest(payload: &impl Serialize, proof: &mut Proof) -> Result<InputFingerprint, Error> {
     let view = ("crabber.tool-continuation.grant-payload.v1", payload);
     let bytes = crate::snapshot::encoded_bytes(&view, CAP).ok_or(Error::UnknownStoreOutcome)?;
     proof
@@ -72,67 +72,59 @@ fn digest(payload: &Payload<'_>, proof: &mut Proof) -> Result<InputFingerprint, 
     ))
     .map_err(|_| Error::UnknownStoreOutcome)
 }
+#[path = "payload/actual.rs"]
+mod actual;
+pub(crate) fn view(grant: &crate::ToolContinuationGrant) -> Result<impl Serialize + '_, Error> {
+    if grant.phases.len() > 64
+        || grant.frontend.len() > 64
+        || grant.calls.len() > 64
+        || grant.phases.iter().any(|phase| phase.responses.len() > 64)
+    {
+        return Err(Error::UnknownStoreOutcome);
+    }
+    for phase in &grant.phases {
+        for response in &phase.responses {
+            if let Some(value) = &response.value {
+                crabber_core::AcceptedToolResponse::validate_value(value)
+                    .map_err(|_| Error::InvalidRequest)?;
+            }
+        }
+    }
+    for phase in &grant.frontend {
+        json_depth(&phase.frozen.arguments, 0)?;
+        json_depth(&phase.frozen.descriptor.input_parameters, 0)?;
+        if let Some(schema) = &phase.frozen.descriptor.result_contract {
+            json_depth(schema, 0)?;
+        }
+    }
+    Ok(actual::View(grant))
+}
+// Stored native JSON is already bounded by its reader nesting limit. Check
+// mutable ACK JSON before invoking a recursive serializer or canonical clone.
+fn json_depth(value: &serde_json::Value, depth: usize) -> Result<(), Error> {
+    if depth > 128 {
+        return Err(Error::InvalidRequest);
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                json_depth(value, depth + 1)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                json_depth(value, depth + 1)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(())
+}
 pub(crate) fn actual(
     grant: &crate::ToolContinuationGrant,
     proof: &mut Proof,
 ) -> Result<InputFingerprint, Error> {
-    charge::<Phase<'_>>(grant.phases.len(), proof)?;
-    charge::<Frontend<'_>>(grant.frontend.len(), proof)?;
-    charge::<Invocation<'_>>(grant.calls.len(), proof)?;
-    let phases = grant
-        .phases
-        .iter()
-        .map(|phase| {
-            charge::<Response<'_>>(phase.responses.len(), proof)?;
-            Ok(Phase {
-                target: &phase.target,
-                identity: &phase.identity,
-                checkpoint: &phase.checkpoint,
-                responses: phase
-                    .responses
-                    .iter()
-                    .map(|response| Response {
-                        name: &response.name,
-                        state: response.state,
-                        value: response.value.as_ref(),
-                    })
-                    .collect(),
-            })
-        })
-        .collect::<Result<_, Error>>()?;
-    let frontend = grant
-        .frontend
-        .iter()
-        .map(|phase| Frontend {
-            target: &phase.target,
-            result: &phase.result,
-            frozen: &phase.frozen,
-        })
-        .collect();
-    let calls = grant
-        .calls
-        .iter()
-        .map(|call| Invocation {
-            target: &call.target,
-            call_binding: &call.call_binding,
-            decision: match call.decision {
-                crate::GrantedDecision::Allow => Decision::Allow,
-                crate::GrantedDecision::Deny => Decision::Deny,
-                crate::GrantedDecision::NotRequired => Decision::NotRequired,
-            },
-        })
-        .collect();
-    digest(
-        &Payload {
-            phases,
-            frontend,
-            calls,
-            source_turn_id: &grant.source_turn_id,
-            usage: &grant.usage,
-            turns_used: grant.turns_used,
-        },
-        proof,
-    )
+    digest(&view(grant)?, proof)
 }
 pub(crate) fn expected(
     batch: &crate::ToolContinuationSuspension,
