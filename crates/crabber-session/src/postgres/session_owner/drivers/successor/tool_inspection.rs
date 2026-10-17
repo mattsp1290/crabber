@@ -8,7 +8,9 @@ impl crate::PostgresStore {
         request: &InspectPreparedToolDriver,
     ) -> Result<PreparedToolDriverMetadata, Error> {
         crate::session_owner::preparation::tool_driver::validate(request)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

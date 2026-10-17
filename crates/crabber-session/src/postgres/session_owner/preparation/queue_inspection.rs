@@ -22,7 +22,9 @@ impl PostgresStore {
         proof: &mut Proof,
     ) -> Result<Option<QueueReceipt>, PreparationCommitError> {
         queue_admission::original(original, proof)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
