@@ -8,7 +8,7 @@ use crabber_session::{
 
 pub(super) const RESOURCE_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
 pub(super) const DRIVER_COMPONENT: &str = "crabber.native-attempt-driver";
-pub(super) const DRIVER_VERSION: &str = "4:resource-join-bound-ms=1000:pre-effect-approval-v1:phase-start-v1:phase-settlement-v2:turn-budget-v1:approval-unstarted-recovery-v1:owned-callback-joins-v1:model-callback-join-bound-ms=1000:kernel-callback-observed-joins-v1:interrupted-notification-callback-joins-v1:pending-preclaim-main-v1:initial-preclaim-main-v1:model-stream-lifetime-owner-v1";
+pub(super) const DRIVER_VERSION: &str = "5:resource-join-bound-ms=1000:pre-effect-approval-v1:phase-start-v1:phase-settlement-v2:turn-budget-v1:approval-unstarted-recovery-v1:owned-callback-joins-v1:model-callback-join-bound-ms=1000:kernel-callback-observed-joins-v1:interrupted-notification-callback-joins-v1:pending-preclaim-main-v1:initial-preclaim-main-v1:model-stream-lifetime-owner-v1:pending-tool-frontend-preclaim-main-v1:prepared-tool-ack-payload-v1";
 
 pub(super) struct OwnedAttempt {
     pub target: AttemptTarget,
