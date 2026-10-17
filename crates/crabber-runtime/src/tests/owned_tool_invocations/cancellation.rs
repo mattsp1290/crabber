@@ -50,7 +50,7 @@ pub(super) async fn contract(store: Arc<dyn Store>) {
         run(store.clone(), panic).await;
     }
 }
-async fn signal(notify: &Notify) {
+pub(super) async fn signal(notify: &Notify) {
     tokio::time::timeout(Duration::from_secs(3), notify.notified())
         .await
         .unwrap();

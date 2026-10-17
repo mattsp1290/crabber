@@ -880,7 +880,12 @@ impl Registry {
                 invocations.push((mount.id, InvocationSource::new(mount)));
             }
             providers.extend(r.providers.iter().cloned());
-            services = services.with_overrides(&r.services);
+            let overrides = if mount.owned.is_some() {
+                owned::services::project(&r.services, &InvocationSource::new(mount))
+            } else {
+                r.services.clone()
+            };
+            services = services.with_overrides(&overrides);
             append_mount_components(mount, &r, plan_sequence, &mut components);
         }
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));

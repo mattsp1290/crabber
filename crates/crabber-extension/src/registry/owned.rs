@@ -1,5 +1,6 @@
 //! Explicit sealed mount cleanup; completion is an observed actual task join.
 mod invocations;
+pub(super) mod services;
 pub(super) mod tools;
 use super::{ExtensionError, Mount, MountCloseTimeout, MountHandle, dispatch};
 use crate::{ComponentIdentity, ResourceDrain, ResourceFailure, ToolResourceOwner};
@@ -42,6 +43,9 @@ impl State {
 /// invocation joins do not prove reference disposal or physical generation close.
 /// Prompt contributors and typed system-prompt middleware retain original joins
 /// through collector cancellation and deadlines using this same admission.
+/// Subprocess and workspace filesystem overrides use this invocation admission
+/// and retain original future joins; held service Arcs remain outside object-
+/// disposal and physical-generation coverage.
 /// Other escaped interfaces still require their own lifecycle ownership.
 #[derive(Clone)]
 pub struct OwnedMountHandle {
@@ -122,6 +126,10 @@ pub(super) fn append_contract(mount: &Mount, components: &mut Vec<ComponentIdent
         components.push(ComponentIdentity {
             id: "registry.mount.cleanup".into(),
             version: "crabber.registry.mount.sealed.v1".into(),
+        });
+        components.push(ComponentIdentity {
+            id: "registry.mount.service_invocations".into(),
+            version: "crabber.registry.mount.service-invocations.v1".into(),
         });
         components.push(ComponentIdentity {
             id: "registry.mount.tool_invocations".into(),
