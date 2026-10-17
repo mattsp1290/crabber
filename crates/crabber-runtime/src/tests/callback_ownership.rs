@@ -4,6 +4,8 @@ use super::*;
 mod failure;
 #[path = "callback_ownership/nested.rs"]
 pub(in crate::tests) mod nested;
+#[path = "callback_ownership/prompt.rs"]
+mod prompt;
 use crabber_extension::{Extension, Point, Registrar, Registry, Scope};
 use std::{
     future::Future,

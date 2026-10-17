@@ -493,8 +493,15 @@ also retain that same join through their callback owner. Legacy mounts and
 standalone plans keep their original behavior. A held executor `Arc` can still
 keep the original object and opaque resources alive after close: invocation
 joins do not prove reference disposal, physical generation shutdown or a whole
-Run's resource policy. Guards, prompt contributors, provider streams and raw host
+Run's resource policy. Guards, provider streams and raw host
 services require their own lifecycle bridges.
+
+Prompt contributors and typed system-prompt middleware from owned mounts also
+retain their original invocation joins. A collector deadline or cancellation can
+return before callback disposal finishes; mount close and Runtime callback drains
+still wait for that original task. Disposal failure remains a cleanup failure.
+Reader capabilities or other opaque objects retained by callbacks require their
+own lifecycle ownership.
 
 `ForkSession` copies a verified closed history prefix into a new session with
 nonexecuting `ImportedToolCall` and message provenance. It does not clone run

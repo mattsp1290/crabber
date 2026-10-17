@@ -40,6 +40,8 @@ impl State {
 /// concrete invocation admission and original joins. Extracted references may
 /// still keep the original object and its opaque resources alive after close;
 /// invocation joins do not prove reference disposal or physical generation close.
+/// Prompt contributors and typed system-prompt middleware retain original joins
+/// through collector cancellation and deadlines using this same admission.
 /// Other escaped interfaces still require their own lifecycle ownership.
 #[derive(Clone)]
 pub struct OwnedMountHandle {
@@ -124,6 +126,10 @@ pub(super) fn append_contract(mount: &Mount, components: &mut Vec<ComponentIdent
         components.push(ComponentIdentity {
             id: "registry.mount.tool_invocations".into(),
             version: "crabber.registry.mount.tool-invocations.v1".into(),
+        });
+        components.push(ComponentIdentity {
+            id: "registry.mount.prompt_invocations".into(),
+            version: "crabber.registry.mount.prompt-invocations.v1".into(),
         });
         components.push(ComponentIdentity {
             id: "registry.mount.callbacks".into(),

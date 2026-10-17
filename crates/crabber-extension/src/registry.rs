@@ -865,11 +865,13 @@ impl Registry {
                 prompts.retain(|old: &Arc<PromptSection>| old.name != prompt.name);
                 prompts.push(Arc::clone(prompt));
             }
+            let prompt_invocation = mount.owned.as_ref().map(|_| InvocationSource::new(mount));
             freeze_contributors(
                 &r.contributors,
                 &mut contributors,
                 &mut components,
                 plan_sequence,
+                prompt_invocation.as_ref(),
             );
             guards.extend(r.guards.iter().cloned());
             restrictions.extend(r.restrictions.iter().cloned());
@@ -1153,6 +1155,7 @@ fn freeze_contributors(
     contributors: &mut Vec<MountedPromptContributor>,
     components: &mut Vec<ComponentIdentity>,
     plan_sequence: u64,
+    invocation: Option<&InvocationSource>,
 ) {
     for contributor in registrations {
         let replaced_typed = contributors.iter().any(|old| {
@@ -1172,7 +1175,9 @@ fn freeze_contributors(
             }
             PromptContributorIdentity::Legacy => {}
         }
-        contributors.push(contributor.clone());
+        let mut projected = contributor.clone();
+        projected.invocation = invocation.cloned();
+        contributors.push(projected);
         match &contributor.identity {
             PromptContributorIdentity::Legacy => components.push(ComponentIdentity {
                 id: legacy_id,

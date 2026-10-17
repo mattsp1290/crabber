@@ -77,6 +77,7 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
                 &mut contributors,
                 &mut components,
                 0,
+                None,
             );
             finish_contributors(&mut contributors, &mut components);
             let handlers = registrar

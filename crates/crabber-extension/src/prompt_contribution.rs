@@ -144,6 +144,7 @@ pub struct MountedPromptContributor {
     pub(crate) mount_seq: u64,
     pub(crate) cleanup: CleanupTracker,
     pub(crate) identity: PromptContributorIdentity,
+    pub(crate) invocation: Option<crate::registry::InvocationSource>,
     callback: MountedPromptCallback,
 }
 
@@ -160,6 +161,22 @@ enum MountedPromptCallback {
     SystemPrompt(Arc<dyn SystemPromptMiddleware>),
 }
 
+async fn invoke_prompt(
+    callback: MountedPromptCallback,
+    invocation: PromptAttemptContext,
+    resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
+) -> Result<Option<String>, ()> {
+    match callback {
+        MountedPromptCallback::Legacy(callback) => callback(invocation).await.map_err(|_| ()),
+        MountedPromptCallback::SystemPrompt(callback) => {
+            let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
+                .with_cancellation(invocation.cancellation().clone())
+                .with_cleanup(invocation.cleanup().clone());
+            callback.contribute(typed).await.map_err(|_| ())
+        }
+    }
+}
+
 impl MountedPromptContributor {
     pub(crate) fn legacy(name: String, order: i32, callback: PromptContributor) -> Self {
         Self {
@@ -169,6 +186,7 @@ impl MountedPromptContributor {
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::Legacy,
+            invocation: None,
             callback: MountedPromptCallback::Legacy(callback),
         }
     }
@@ -186,6 +204,7 @@ impl MountedPromptContributor {
             mount_seq: 0,
             cleanup: CleanupTracker::detached(),
             identity: PromptContributorIdentity::SystemPrompt(descriptor),
+            invocation: None,
             callback: MountedPromptCallback::SystemPrompt(callback),
         }
     }
@@ -250,20 +269,18 @@ pub async fn collect_prompt_contributions_with_resolver(
             .with_cleanup(contributor.cleanup.clone());
         let callback = contributor.callback.clone();
         let resolver = workspace_reader_resolver.clone();
+        let source = contributor.invocation.clone();
         let deadline =
             attempt_deadline.min(tokio::time::Instant::now() + PROMPT_CONTRIBUTION_DEADLINE);
         let mut future = InFlight::new(
             AssertUnwindSafe(with_mount(contributor.mount_id, async move {
-                match callback {
-                    MountedPromptCallback::Legacy(callback) => {
-                        callback(invocation).await.map_err(|_| ())
-                    }
-                    MountedPromptCallback::SystemPrompt(callback) => {
-                        let typed = ModelAttemptContext::from_prompt_attempt(&invocation, resolver)
-                            .with_cancellation(invocation.cancellation().clone())
-                            .with_cleanup(invocation.cleanup().clone());
-                        callback.contribute(typed).await.map_err(|_| ())
-                    }
+                let construct = move || -> BoxFuture<'static, _> {
+                    Box::pin(invoke_prompt(callback, invocation, resolver))
+                };
+                if let Some(source) = source {
+                    source.invoke(construct).await.map_err(|_| ())?
+                } else {
+                    construct().await
                 }
             }))
             .catch_unwind(),
