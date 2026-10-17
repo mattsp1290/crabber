@@ -17,6 +17,12 @@ pub(crate) trait Harness: Store {
         crate::session_owner::preparation::PreparationCommitError,
     >;
     fn approval_fault(&self, stage: u8);
+    fn tool_fault(&self, stage: u8);
+    async fn tool_with_proof(
+        &self,
+        input: super::tool::ToolInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError>;
     async fn approval_with_proof(
         &self,
         request: super::ApprovalInput<'_>,
@@ -179,3 +185,7 @@ pub(crate) use legacy_expired::run as legacy_expired_claims;
 #[path = "approval_contract.rs"]
 mod approval;
 pub(crate) use approval::run as approvals;
+
+#[path = "tool_contract.rs"]
+mod tool;
+pub(crate) use tool::run as tools;

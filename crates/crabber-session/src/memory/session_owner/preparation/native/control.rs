@@ -9,9 +9,25 @@ pub(super) fn verify(
     grant: &PreparationGrant,
     completed: &PreparationCompletion,
 ) -> Result<(), Error> {
-    let Some((session, run, cursor)) = history::metadata(completed) else {
+    verify_selected(
+        state,
+        grant,
+        history::Selection::Completion(completed),
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(super) fn verify_selected(
+    state: &crate::memory::State,
+    grant: &PreparationGrant,
+    input: history::Selection<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let Some((session, run, cursor)) = input.metadata() else {
         return Ok(());
     };
+    proof
+        .measure(&grant.original_reservation().key)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let ids = crate::session_owner::preparation::identity::ids(
         &grant.original_reservation().key,
         session,
@@ -56,7 +72,17 @@ pub(super) fn verify(
     if crate::snapshot::encoded_bytes(event, 65536).is_none() {
         return Err(Error::UnknownStoreOutcome);
     }
-    let control = history::control(completed, event).map_err(|_| Error::UnknownStoreOutcome)?;
+    proof
+        .measure(&(previous, current, event))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    for id in [&ids.reserve, &ids.begin, &ids.join] {
+        proof
+            .measure(audit(id)?)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    let control = input
+        .control(event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     if !history::verify_control(
         previous,
         current,
@@ -70,4 +96,27 @@ pub(super) fn verify(
         return Err(Error::UnknownStoreOutcome);
     }
     Ok(())
+}
+
+/// Non-Clone result of the real prepared control check in this native mutation.
+pub(in crate::memory) struct VerifiedTool(crate::ToolContinuationClaimOutcome);
+impl VerifiedTool {
+    pub(in crate::memory) fn outcome(&self) -> &crate::ToolContinuationClaimOutcome {
+        &self.0
+    }
+    pub(in crate::memory) fn into_outcome(self) -> crate::ToolContinuationClaimOutcome {
+        self.0
+    }
+}
+pub(in crate::memory) fn verify_tool(
+    state: &crate::memory::State,
+    grant: &PreparationGrant,
+    outcome: crate::ToolContinuationClaimOutcome,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<VerifiedTool, Error> {
+    let crate::ToolContinuationClaimOutcome::Applied { receipt, .. } = &outcome else {
+        return Err(Error::UnknownStoreOutcome);
+    };
+    verify_selected(state, grant, history::Selection::Tool(receipt), proof)?;
+    Ok(VerifiedTool(outcome))
 }

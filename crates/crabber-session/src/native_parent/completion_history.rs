@@ -265,3 +265,24 @@ fn matches_work(work: &ExistingWorkTarget, facts: &Facts<'_>) -> bool {
         _ => false,
     }
 }
+
+/// Borrow the actual native receipt without copying a grant-bearing completion.
+#[derive(Clone, Copy)]
+pub(crate) enum Selection<'a> {
+    Completion(&'a crate::session_owner::preparation::PreparationCompletion),
+    Tool(&'a crate::ToolContinuationReceipt),
+}
+impl Selection<'_> {
+    pub(crate) fn metadata(&self) -> Option<(&SessionId, &RunId, crabber_core::EventCursor)> {
+        match self {
+            Self::Completion(c) => metadata(c),
+            Self::Tool(r) => Some((&r.session_id, &r.run_id, r.event_cursor)),
+        }
+    }
+    pub(crate) fn control<'a>(&'a self, event: &'a EventRecord) -> Result<Control<'a>, Error> {
+        match self {
+            Self::Completion(c) => control(c, event),
+            Self::Tool(r) => Ok(Control::Tool(r, event)),
+        }
+    }
+}

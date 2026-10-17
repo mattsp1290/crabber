@@ -2,6 +2,7 @@
 mod activation;
 mod answer;
 mod claim;
+pub(in crate::sqlite) mod native_caller;
 pub(super) mod original_plan;
 pub(super) use claim::waiting_context;
 mod cancel;
@@ -62,6 +63,22 @@ impl SqliteStore {
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let saved = super::records::load_run(&mut tx, run)
+            .await
+            .map_err(unknown)?;
+        if saved.session_id != *session || saved.id != *run {
+            tx.rollback().await.map_err(unknown)?;
+            return Err(Error::NotFound);
+        }
+        Ok((tx, saved))
+    }
+    async fn tool_transaction_with_proof(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
+        let mut tx = self.begin_write().await.map_err(unknown)?;
+        let saved = super::records::load_run_with_proof(&mut tx, run, proof)
             .await
             .map_err(unknown)?;
         if saved.session_id != *session || saved.id != *run {

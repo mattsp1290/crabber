@@ -23,6 +23,22 @@ pub(in crate::postgres) async fn verify_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
+    proof
+        .measure(&(
+            &record.session_id,
+            &record.run_id,
+            &record.batch.continuation,
+        ))
+        .map_err(ToolReadError::Budget)?;
+    proof
+        .charge(
+            record
+                .questions
+                .len()
+                .checked_mul(std::mem::size_of::<crate::continuation_input::Input<'_>>())
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(ToolReadError::Budget)?;
     let scope = crate::continuation_input::Scope {
         domain: crate::continuation_input::Domain::Tool,
         session: record.session_id.clone(),
@@ -99,7 +115,7 @@ async fn insert(
     event: &EventRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
-    let key = domain::audit_key(event, record)?.ok_or(Error::UnknownStoreOutcome)?;
+    let key = domain::audit_key(event, record, proof)?.ok_or(Error::UnknownStoreOutcome)?;
     let (receipt, _) = read::receipt_with_proof(tx, &record.session_id, &key, proof)
         .await?
         .ok_or(Error::UnknownStoreOutcome)?;

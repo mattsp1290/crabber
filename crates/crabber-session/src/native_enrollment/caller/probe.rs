@@ -31,6 +31,7 @@ impl Identity {
             (Self::Control(id), Fresh::Attempt(a)) => *id == a.request.id,
             (Self::Control(id), Fresh::Phase(p)) => *id == p.request.id,
             (Self::Control(id), Fresh::Approval(a)) => id == a.input.id(),
+            (Self::Control(id), Fresh::Tool(t)) => id == t.input.id(),
             (Self::AdmissionBegin(run), Fresh::AdmissionBegin(a)) => *run == a.run.id,
             (Self::AdmissionRecovery(run), Fresh::AdmissionRecovery(a)) => *run == a.previous.id,
             (Self::ExpiredRecovery(run), Fresh::ExpiredRecovery(a)) => *run == a.previous.id,
@@ -161,6 +162,7 @@ impl Probe {
 fn digest(fresh: &Fresh<'_>) -> InputFingerprint {
     match fresh {
         Fresh::Approval(a) => a.test_digest(),
+        Fresh::Tool(t) => t.test_digest(),
         Fresh::Initial(i) => crate::native_enrollment::caller::contract::snapshot_digest(&(
             "crabber.native.raw-initial.test.v1",
             i.input.test_digest(),

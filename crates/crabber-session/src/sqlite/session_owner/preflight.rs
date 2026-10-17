@@ -120,14 +120,16 @@ impl super::SqliteStore {
                     .map_err(Error::ApprovalSource)?;
             }
             crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
-                super::super::tool_continuation::preparation_context(tx, run, claim)
+                super::super::tool_continuation::preparation_context(tx, run, claim, proof)
                     .await
                     .map_err(Error::ToolSource)?;
             }
             crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
-                super::super::tool_continuation::preparation_frontend_context(tx, run, claim)
-                    .await
-                    .map_err(Error::ToolSource)?;
+                super::super::tool_continuation::preparation_frontend_context(
+                    tx, run, claim, proof,
+                )
+                .await
+                .map_err(Error::ToolSource)?;
             }
             crate::session_owner::preparation::PreparationSource::FrontendRecovery(recovery) => {
                 super::super::tool_continuation::preparation_frontend_recovery_context(
@@ -135,6 +137,7 @@ impl super::SqliteStore {
                     run,
                     recovery,
                     self.clock.now(),
+                    proof,
                 )
                 .await
                 .map_err(Error::ToolSource)?;
@@ -156,6 +159,7 @@ impl super::SqliteStore {
                     run,
                     recovery,
                     self.clock.now(),
+                    proof,
                 )
                 .await
                 .map_err(Error::ToolSource)?;

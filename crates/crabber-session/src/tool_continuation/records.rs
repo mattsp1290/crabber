@@ -337,8 +337,67 @@ impl ToolContinuationRecord {
             question.view.consumed = true;
         }
     }
-    pub(crate) fn into_outcome(
-        self,
+    /// Actual independently materialized output fields are admitted before copies.
+    pub(crate) fn measure_grant_data(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        if self.batch.calls.len() > 64 {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        proof
+            .charge(
+                std::mem::size_of::<crate::ToolContinuationGrant>()
+                    + self.batch.calls.len() * std::mem::size_of::<crate::GrantedApproval>(),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        proof
+            .measure(&(
+                &self.batch.source_turn_id,
+                &self.batch.usage,
+                self.batch.turns_used,
+            ))
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        for call in &self.batch.calls {
+            proof
+                .measure(&(&call.target, &call.call_binding, &call.decision))
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn responses_with_proof(
+        &self,
+        phase: &FrozenToolPhase,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Vec<crabber_core::AcceptedToolResponse>, Error> {
+        if phase.interactions.len() > 64 {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        proof
+            .charge(
+                phase.interactions.len()
+                    * std::mem::size_of::<crabber_core::AcceptedToolResponse>(),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        for required in &phase.interactions {
+            let question = self
+                .questions
+                .iter()
+                .find(|q| q.view.id == required.id)
+                .ok_or(Error::UnknownStoreOutcome)?;
+            let answer = question.answer.as_ref().ok_or(Error::Pending)?;
+            proof
+                .measure(&(
+                    required.description.name(),
+                    question.view.state,
+                    &answer.reply,
+                ))
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
+        self.responses(phase)
+    }
+    pub(crate) fn claim_outcome(
+        &self,
         fence: crabber_core::RunFence,
         authority: crate::AttemptAuthority,
         phases: Vec<crate::ToolPhaseResume>,
@@ -351,8 +410,8 @@ impl ToolContinuationRecord {
             authority,
             phases,
             frontend,
-            source_turn_id: self.batch.source_turn_id,
-            usage: self.batch.usage,
+            source_turn_id: self.batch.source_turn_id.clone(),
+            usage: self.batch.usage.clone(),
             turns_used: self.batch.turns_used,
         });
         issuance.finish(grant)

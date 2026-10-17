@@ -119,9 +119,50 @@ pub(in super::super) async fn publish_handoff(
     now: OffsetDateTime,
     handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff_with_proof(
+        tx,
+        run,
+        id,
+        digest,
+        outcome,
+        now,
+        (
+            handoff,
+            &mut crate::public_session::v2::proof::Proof::legacy(),
+        ),
+    )
+    .await
+}
+pub(in super::super) async fn publish_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff_with_proof(tx, run, id, digest, outcome, now, (None, proof)).await
+}
+pub(in super::super) async fn publish_handoff_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    context: (
+        Option<&crate::continuation_handoff::Handoff>,
+        &mut crate::public_session::v2::proof::Proof,
+    ),
+) -> Result<ToolContinuationReceipt, Error> {
+    let (handoff, proof) = context;
     super::super::records::bump_public_revision(tx, &run.session_id)
         .await
         .map_err(unknown)?;
+    proof
+        .measure(&(&run.session_id, &run.id))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut receipt = ToolContinuationReceipt {
         session_id: run.session_id.clone(),
         run_id: run.id.clone(),
@@ -131,11 +172,17 @@ pub(in super::super) async fn publish_handoff(
         event_cursor: EventCursor(0),
         outcome,
     };
+    proof
+        .measure(&receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut event = domain::audit(&receipt, now);
     if let Some(handoff) = handoff {
         event.payload["handoff"] =
             serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
     }
+    proof
+        .measure(&event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )
@@ -146,6 +193,9 @@ pub(in super::super) async fn publish_handoff(
     .await
     .map_err(unknown)?;
     receipt.event_cursor = EventCursor(u64::try_from(seq).map_err(unknown)?);
+    proof
+        .measure(&receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'tool_continuation',$3,$4,$5)").bind(&run.session_id.0).bind(&receipt.operation_id.0).bind(receipt.semantic_digest.as_str()).bind(seq).bind(serde_json::to_string(&receipt).map_err(unknown)?).execute(&mut **tx).await.map_err(unknown)?;
     Ok(receipt)
 }

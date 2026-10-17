@@ -183,3 +183,5 @@ fn after_commit(
     crate::binding_fault::trip(&store.binding_fault, 2)?;
     Ok(())
 }
+
+pub(in crate::memory) use native::{VerifiedTool, verify_tool};

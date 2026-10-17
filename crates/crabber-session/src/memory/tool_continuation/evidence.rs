@@ -1,13 +1,25 @@
 //! Exact native ancestry and terminal/private evidence for every run phase.
-use super::{
-    Error, PhaseQuiescence, PhaseState, Run, State, ToolContinuationSuspension, checked_record,
-};
+use super::{Error, PhaseQuiescence, PhaseState, Run, State, ToolContinuationSuspension};
+use crate::public_session::v2::proof::Proof;
 use crabber_core::ToolCallStatus;
 pub(super) fn validate(
     state: &State,
     run: &Run,
     selected: Option<&ToolContinuationSuspension>,
 ) -> Result<(), Error> {
+    validate_with_proof(state, run, selected, &mut Proof::legacy())
+}
+pub(super) fn validate_with_proof(
+    state: &State,
+    run: &Run,
+    selected: Option<&ToolContinuationSuspension>,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    if let Some(selected) = selected {
+        proof
+            .measure(&selected.phases)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
     let exceptions = selected
         .map(|batch| {
             batch
@@ -17,14 +29,18 @@ pub(super) fn validate(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    validate_excluding(state, run, &exceptions)
+    validate_excluding_with_proof(state, run, &exceptions, proof)
 }
-pub(super) fn validate_excluding(
+pub(super) fn validate_excluding_with_proof(
     state: &State,
     run: &Run,
     exceptions: &[crate::PhaseTarget],
+    proof: &mut Proof,
 ) -> Result<(), Error> {
     for call in state.calls.values().filter(|call| call.run_id == run.id) {
+        proof
+            .measure(call)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         if !matches!(
             call.status,
             ToolCallStatus::Pending | ToolCallStatus::Running | ToolCallStatus::Waiting
@@ -38,11 +54,15 @@ pub(super) fn validate_excluding(
         .values()
         .filter(|phase| phase.snapshot.run_id == run.id)
     {
+        crate::native_enrollment::caller::measure_phase_record(phase, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         phase.validate().map_err(|_| Error::UnknownStoreOutcome)?;
         let parent = state
             .attempts
             .get(&phase.snapshot.target.attempt.id)
             .ok_or(Error::UnknownStoreOutcome)?;
+        crate::native_enrollment::caller::measure_record(parent, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         parent.validate().map_err(|_| Error::UnknownStoreOutcome)?;
         if parent.snapshot.target != phase.snapshot.target.attempt
             || parent.snapshot.run_id != run.id
@@ -55,6 +75,9 @@ pub(super) fn validate_excluding(
             .get(&phase.snapshot.target.call_id)
             .filter(|call| call.run_id == run.id)
             .ok_or(Error::UnknownStoreOutcome)?;
+        proof
+            .measure(call)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         if crate::phase::call_binding(call).map_err(|_| Error::UnknownStoreOutcome)?
             != phase.snapshot.call_binding
             || phase.snapshot.session_id != run.session_id
@@ -85,7 +108,9 @@ pub(super) fn validate_excluding(
                             .any(|frozen| frozen.previous == phase.snapshot.target)
                 })
                 .ok_or(Error::UnknownStoreOutcome)?;
-            let origin = checked_record(state, &origin.batch.continuation.id)?;
+            let origin =
+                super::checked_record_with_proof(state, &origin.batch.continuation.id, proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
             if !origin.batch.phases.iter().any(|frozen| {
                 frozen.previous == phase.snapshot.target
                     && frozen.call_binding == phase.snapshot.call_binding
@@ -93,8 +118,10 @@ pub(super) fn validate_excluding(
                 return Err(Error::UnknownStoreOutcome);
             }
         } else {
-            super::super::phase::terminal_history::validate(state, run, phase, call)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
+            super::super::phase::terminal_history::validate_with_proof(
+                state, run, phase, call, proof,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         }
     }
     Ok(())

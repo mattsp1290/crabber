@@ -10,14 +10,20 @@ pub(super) async fn save(
     completion: Option<&CompletionSource>,
     preparation: Option<&VerifiedPreparation<'_>>,
     proof: &mut Proof,
-) -> Result<(), Error> {
-    let captured = super::super::records::save_run_captured_with_proof(tx, run, completion, proof)
-        .await
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+) -> Result<crate::native_enrollment::caller::initial::RecoveryPublication, Error> {
+    let captured = super::super::records::save_run_publication_with_proof(
+        tx,
+        run,
+        completion,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     if let Some(preparation) = preparation {
         preparation
-            .record_continuation_claim(captured)
+            .record_continuation_claim(captured.sequence)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
-    Ok(())
+    captured.updated.ok_or(Error::UnknownStoreOutcome)
 }

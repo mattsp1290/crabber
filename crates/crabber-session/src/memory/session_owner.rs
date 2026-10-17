@@ -504,18 +504,20 @@ fn validate_preparation_source_with_proof(
                         .map_err(Error::ApprovalSource)?;
                 }
                 crate::session_owner::preparation::PreparationSource::ToolClaim(claim) => {
-                    super::tool_continuation::preparation_context(state, run, claim)
+                    super::tool_continuation::preparation_context(state, run, claim, proof)
                         .map_err(Error::ToolSource)?;
                 }
                 crate::session_owner::preparation::PreparationSource::FrontendClaim(claim) => {
-                    super::tool_continuation::preparation_frontend_context(state, run, claim)
-                        .map_err(Error::ToolSource)?;
+                    super::tool_continuation::preparation_frontend_context(
+                        state, run, claim, proof,
+                    )
+                    .map_err(Error::ToolSource)?;
                 }
                 crate::session_owner::preparation::PreparationSource::FrontendRecovery(
                     recovery,
                 ) => {
                     super::tool_continuation::preparation_frontend_recovery_context(
-                        state, run, recovery, now,
+                        state, run, recovery, now, proof,
                     )
                     .map_err(Error::ToolSource)?;
                 }
@@ -527,7 +529,7 @@ fn validate_preparation_source_with_proof(
                 }
                 crate::session_owner::preparation::PreparationSource::ToolRecovery(recovery) => {
                     super::tool_continuation::preparation_recovery_context(
-                        state, run, recovery, now,
+                        state, run, recovery, now, proof,
                     )
                     .map_err(Error::ToolSource)?;
                 }
@@ -540,3 +542,5 @@ fn validate_preparation_source_with_proof(
         }
     }
 }
+
+pub(in crate::memory) use preparation::{VerifiedTool, verify_tool};

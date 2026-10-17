@@ -1,5 +1,5 @@
 //! Frontend calls extend the same exact compound barrier and native ownership.
-use super::{Error, FrontendOriginRecord, origin, read, supported, unknown};
+use super::{Error, FrontendOriginRecord, read, supported, unknown};
 use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crate::{
     FrozenFrontendCall, PhaseSnapshot, ToolContinuationSuspension,
@@ -25,11 +25,27 @@ pub(in super::super) async fn pending_call(
     latest: Option<&PhaseSnapshot>,
     waiting: bool,
 ) -> Result<bool, Error> {
+    pending_call_with_proof(tx, run, call, batch, latest, waiting, &mut Proof::legacy()).await
+}
+pub(in super::super) async fn pending_call_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    call: &ToolCallRecord,
+    batch: &ToolContinuationSuspension,
+    latest: Option<&PhaseSnapshot>,
+    waiting: bool,
+    proof: &mut Proof,
+) -> Result<bool, Error> {
     if crate::SQLITE_SCHEMA_VERSION < 10 {
         batch.require_frontend_support(false)?;
         return Ok(false);
     }
-    let saved = origin(tx, run, &call.id).await?;
+    let scope = read::scope_with_proof(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?;
+    let saved = read::origin_with_proof(tx, &scope, &call.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?;
     let frozen = batch.frontend.iter().find(|f| f.target.call_id == call.id);
     let Some(frozen) = frozen else {
         return if saved.is_some() {

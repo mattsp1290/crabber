@@ -1,7 +1,7 @@
 //! Prepared continuation writes share the enclosing source allowance.
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::{
-    PreparationCommitError, PreparationCompletion, PreparedOperation, proof::VerifiedPreparation,
+    PreparationCommitError, PreparedOperation, proof::VerifiedPreparation,
 };
 use sqlx::{Sqlite, Transaction};
 impl crate::SqliteStore {
@@ -11,7 +11,7 @@ impl crate::SqliteStore {
         operation: PreparedOperation,
         proof: &VerifiedPreparation<'_>,
         read_proof: &mut Proof,
-    ) -> Result<PreparationCompletion, PreparationCommitError> {
+    ) -> Result<Continuation, PreparationCommitError> {
         let run_id = match &operation {
             PreparedOperation::FrontendClaim(claim) => &claim.claim.run_id,
             PreparedOperation::FrontendRecovery(recovery) => &recovery.original.claim.run_id,
@@ -22,54 +22,98 @@ impl crate::SqliteStore {
             _ => return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into()),
         };
         let run = crate::sqlite::records::load_run_with_proof(tx, run_id, read_proof).await?;
-        Ok(match operation {
-            PreparedOperation::FrontendClaim(claim) => PreparationCompletion::ToolContinuation(
-                self.claim_frontend_guarded(tx, &run, &claim, proof, read_proof)
-                    .await?
-                    .0,
-            ),
-            PreparedOperation::FrontendRecovery(recovery) => {
-                PreparationCompletion::ToolContinuation(
-                    self.recover_frontend_guarded(tx, &run, &recovery, proof, read_proof)
-                        .await?
-                        .0,
+        match operation {
+            PreparedOperation::FrontendClaim(r) => tool_result(
+                self.claim_frontend_guarded(
+                    tx,
+                    &run,
+                    &r,
+                    proof,
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
                 )
-            }
-            PreparedOperation::ApprovalClaim(claim) => PreparationCompletion::Approval(
+                .await?
+                .0,
+            ),
+            PreparedOperation::FrontendRecovery(r) => tool_result(
+                self.recover_frontend_guarded(
+                    tx,
+                    &run,
+                    &r,
+                    proof,
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
+                )
+                .await?
+                .0,
+            ),
+            PreparedOperation::ToolClaim(r) => tool_result(
+                self.claim_tools_guarded(
+                    tx,
+                    &run,
+                    &r,
+                    Some(proof),
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
+                )
+                .await?
+                .0,
+            ),
+            PreparedOperation::ToolRecovery(r) => tool_result(
+                self.recover_tools_guarded(
+                    tx,
+                    &run,
+                    &r,
+                    Some(proof),
+                    crate::native_enrollment::caller::Caller::Raw,
+                    read_proof,
+                )
+                .await?
+                .0,
+            ),
+            PreparedOperation::ApprovalClaim(r) => Ok(Continuation::Approval(
                 self.claim_approval_guarded(
                     tx,
                     &run,
-                    &claim,
+                    &r,
                     Some(proof),
                     crate::native_enrollment::caller::Caller::Raw,
                     read_proof,
                 )
                 .await?
                 .0,
-            ),
-            PreparedOperation::ToolClaim(claim) => PreparationCompletion::ToolContinuation(
-                self.claim_tools_guarded(tx, &run, &claim, Some(proof), read_proof)
-                    .await?
-                    .0,
-            ),
-            PreparedOperation::ApprovalRecovery(recovery) => PreparationCompletion::Approval(
+            )),
+            PreparedOperation::ApprovalRecovery(r) => Ok(Continuation::Approval(
                 self.recover_approval_guarded(
                     tx,
                     &run,
-                    &recovery,
+                    &r,
                     Some(proof),
                     crate::native_enrollment::caller::Caller::Raw,
                     read_proof,
                 )
                 .await?
                 .0,
-            ),
-            PreparedOperation::ToolRecovery(recovery) => PreparationCompletion::ToolContinuation(
-                self.recover_tools_guarded(tx, &run, &recovery, Some(proof), read_proof)
-                    .await?
-                    .0,
-            ),
-            _ => return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into()),
-        })
+            )),
+            _ => Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into()),
+        }
+    }
+}
+
+pub(super) enum Continuation {
+    VerifiedTool(crate::sqlite::session_owner::preparation::VerifiedTool),
+    Approval(crate::ApprovalClaimOutcome),
+    ReplayedTool(crate::ToolContinuationReceipt),
+}
+fn tool_result(
+    result: crate::sqlite::tool_continuation::native_caller::ToolMutation,
+) -> Result<Continuation, PreparationCommitError> {
+    use crate::sqlite::tool_continuation::native_caller::ToolMutation;
+    match result {
+        ToolMutation::Prepared(v) => Ok(Continuation::VerifiedTool(v)),
+        ToolMutation::Replayed(r) => Ok(Continuation::ReplayedTool(r)),
+        ToolMutation::Applied(_) => {
+            Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into())
+        }
     }
 }

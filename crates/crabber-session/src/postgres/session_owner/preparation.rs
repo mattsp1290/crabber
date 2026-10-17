@@ -223,3 +223,5 @@ async fn require_birth(
     }
     Ok(())
 }
+
+pub(in crate::postgres) use native::{VerifiedTool, verify_tool};

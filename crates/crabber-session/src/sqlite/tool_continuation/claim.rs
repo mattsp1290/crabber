@@ -3,58 +3,53 @@ use super::{
     ToolContinuationRecord, ToolContinuationState, after, before, domain, evidence, fault, finish,
     revision, unknown, write,
 };
+use crate::native_enrollment::caller::{
+    Caller,
+    tool::{IssuedPhases, ToolCompletion, ToolGrantOutput, ToolInput},
+};
+use crate::public_session::v2::proof::Proof;
 use crate::{AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState};
-use crabber_core::{Run, RunFence, RunStatus};
+use crabber_core::{Run, RunStatus};
 impl SqliteStore {
     pub(in super::super) async fn claim_tools(
         &self,
         claim: ToolContinuationClaim,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        self.claim_compound(&claim, None).await
+        self.tool_with_proof(ToolInput::Claim(&claim), &mut Proof::bounded(32 << 20))
+            .await
     }
     pub(in super::super) async fn claim_frontend_tools(
         &self,
         request: crate::FrontendContinuationClaim,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let digest = request.fingerprint()?;
-        if let Some(saved) = self
-            .tool_receipt(&request.claim.session_id, &request.claim.id)
-            .await?
-        {
-            if saved.run_id != request.claim.run_id || saved.semantic_digest != digest {
-                return Err(Error::SemanticConflict);
-            }
-            return Ok(ToolContinuationClaimOutcome::Replayed(saved));
-        }
-        if crate::SQLITE_SCHEMA_VERSION < 10 {
-            return Err(Error::Unsupported);
-        }
-        self.claim_compound(&request.claim, Some(&request)).await
+        self.tool_with_proof(
+            ToolInput::FrontendClaim(&request),
+            &mut Proof::bounded(32 << 20),
+        )
+        .await
     }
-    async fn claim_compound(
+
+    pub(in crate::sqlite) async fn claim_compound_with_proof(
         &self,
         claim: &ToolContinuationClaim,
         frontend: Option<&crate::FrontendContinuationClaim>,
+        proof: &mut Proof,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
+        let input = frontend.map_or(ToolInput::Claim(claim), ToolInput::FrontendClaim);
+        if let Some(saved) = super::native_caller::outer_replay(self, input, proof).await? {
+            return Ok(ToolContinuationClaimOutcome::Replayed(saved));
+        }
+        if frontend.is_some() && crate::SQLITE_SCHEMA_VERSION < 10 {
+            return Err(Error::Unsupported);
+        }
         let fault = fault(self);
-        let (mut tx, run) = if frontend.is_some() {
-            self.frontend_transaction(&claim.session_id, &claim.run_id)
-                .await?
-        } else {
-            self.tool_transaction(&claim.session_id, &claim.run_id)
-                .await?
-        };
+        let (mut tx, run) = self
+            .tool_transaction_with_proof(&claim.session_id, &claim.run_id, proof)
+            .await?;
         let result = self
-            .claim_compound_guarded(
-                &mut tx,
-                &run,
-                claim,
-                frontend,
-                None,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
+            .claim_compound_guarded(&mut tx, &run, input, None, Caller::Raw, proof)
             .await;
-        after(finish(tx, result).await, fault)
+        after(finish(tx, result).await, fault).map(super::native_caller::ToolMutation::into_outcome)
     }
     pub(in crate::sqlite) async fn claim_tools_guarded(
         &self,
@@ -62,10 +57,18 @@ impl SqliteStore {
         run: &Run,
         claim: &ToolContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.claim_compound_guarded(tx, run, claim, None, preparation, read_proof)
-            .await
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        self.claim_compound_guarded(
+            tx,
+            run,
+            ToolInput::Claim(claim),
+            preparation,
+            caller,
+            read_proof,
+        )
+        .await
     }
     pub(in crate::sqlite) async fn claim_frontend_guarded(
         &self,
@@ -73,14 +76,15 @@ impl SqliteStore {
         run: &Run,
         request: &crate::FrontendContinuationClaim,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
         self.claim_compound_guarded(
             tx,
             run,
-            &request.claim,
-            Some(request),
+            ToolInput::FrontendClaim(request),
             Some(preparation),
+            caller,
             read_proof,
         )
         .await
@@ -89,42 +93,33 @@ impl SqliteStore {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         run: &Run,
-        claim: &ToolContinuationClaim,
-        frontend: Option<&crate::FrontendContinuationClaim>,
+        input: ToolInput<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        let digest = match frontend {
-            Some(request) => request.fingerprint()?,
-            None => claim.fingerprint()?,
-        };
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        let (claim, frontend) = input.claiming()?;
+        let digest = super::native_caller::digest(tx, input, read_proof).await?;
         let fault = fault(self);
-        if let Some(saved) = write::replay(tx, run, &claim.id, &digest).await? {
-            return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        if let Some(saved) = super::native_caller::replay(tx, input, &digest, read_proof).await? {
+            return Ok((super::native_caller::ToolMutation::Replayed(saved), false));
         }
-        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
-            preparation,
-            if frontend.is_some() {
-                crate::native_parent::CompletionOperation::FrontendClaim
-            } else {
-                crate::native_parent::CompletionOperation::ToolClaim
-            },
-            &crate::session_owner::preparation::PreparationKey::ToolContinuation(claim.id.clone()),
-            (&claim.session_id, &claim.run_id),
-            claim.expected_revision,
-            &digest,
-        )
-        .map_err(|_| Error::SemanticConflict)?;
+        let (expected_revision, completion) = input.completion(preparation, &digest, read_proof)?;
         if revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let mut record = ready(tx, run, claim, frontend).await?;
+        let mut record = ready_with_proof(tx, run, claim, frontend, read_proof).await?;
+        read_proof.measure(run).map_err(unknown)?;
         let now = self.clock.now();
         let activated = domain::canonical::activated_run(run, &claim.owner, claim.lease_ms, now)?;
-        let (previous, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
-            .await
-            .map_err(unknown)?
-            .ok_or(Error::NotFound)?;
+        let (previous, _) =
+            super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, read_proof)
+                .await
+                .map_err(unknown)?
+                .ok_or(Error::NotFound)?;
+        read_proof
+            .measure(&record.batch.next_attempt)
+            .map_err(unknown)?;
         let reserve = AttemptMutation {
             id: domain::derived_id("tool-continuation-claim-attempt", &claim.id),
             expected_revision,
@@ -135,59 +130,80 @@ impl SqliteStore {
         let parent =
             crate::attempt::AttemptRecord::reserve(&activated, &reserve, Some(&previous.snapshot))
                 .map_err(|_| Error::CleanupBlocked)?;
+        crate::native_enrollment::caller::measure_record(&parent, read_proof).map_err(unknown)?;
         let authority = parent.authority().map_err(unknown)?;
 
-        super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
-            .await
-            .map_err(unknown)?;
+        let publication =
+            super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
+                .await
+                .map_err(unknown)?;
         super::super::attempt::save_host_attempt(tx, &parent, true)
             .await
             .map_err(unknown)?;
-        let phases =
-            super::phases::claim(tx, run, &activated, &parent, &record, &authority).await?;
+        let phases = super::phases::claim(
+            tx, run, &activated, &parent, &record, &authority, read_proof,
+        )
+        .await?;
         let frontend_phases = match frontend {
             Some(request) => {
-                super::phases::claim_frontend(tx, &activated, &parent, &record, request, &authority)
-                    .await?
+                super::phases::claim_frontend(
+                    tx, &activated, &parent, &record, request, &authority, read_proof,
+                )
+                .await?
             }
-            None => Vec::new(),
+            None => IssuedPhases::empty(),
         };
+        input.measure(read_proof).map_err(unknown)?;
         record.capture_claim(claim, frontend);
+        read_proof.measure(&record).map_err(unknown)?;
         write::save(tx, &record, false).await?;
-        let receipt = write::publish(
+        let native_phases = crate::native_enrollment::caller::tool::records(
+            phases.records,
+            frontend_phases.records,
+            read_proof,
+        )
+        .map_err(unknown)?;
+        let outcome = super::native_caller::finish(
             tx,
-            run,
-            claim.id.clone(),
-            digest,
-            record.claimed_outcome(parent.snapshot),
-            now,
+            caller,
+            ToolCompletion {
+                input,
+                previous: run,
+                current: &activated,
+                record: &record,
+                previous_parent: &previous,
+                parent: &parent,
+                native_request: &reserve,
+                phases: &native_phases,
+                publication: &publication,
+                completion: completion.as_ref(),
+            },
+            ToolGrantOutput::new(
+                &activated,
+                authority,
+                phases.grants,
+                frontend_phases.grants,
+                digest,
+                read_proof,
+            )?,
+            preparation,
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
         )
         .await?;
         before(fault)?;
-        let outcome = record.into_outcome(
-            RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token,
-            },
-            authority,
-            phases,
-            frontend_phases,
-            crate::tool_continuation::ack::Completion::new(
-                receipt,
-                (&parent.token, &parent.run_token),
-                read_proof,
-            ),
-        )?;
         Ok((outcome, true))
     }
 }
-async fn ready(
+async fn ready_with_proof(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     claim: &ToolContinuationClaim,
     frontend: Option<&crate::FrontendContinuationClaim>,
+    proof: &mut Proof,
 ) -> Result<ToolContinuationRecord, Error> {
-    let record = super::waiting_context(tx, run)
+    let record = waiting_context_with_proof(tx, run, proof)
         .await?
         .ok_or(Error::InvalidTransition)?;
     match frontend {
@@ -214,7 +230,14 @@ pub(in super::super) async fn waiting_context(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
-    let Some(record) = write::active(tx, run).await? else {
+    waiting_context_with_proof(tx, run, &mut Proof::legacy()).await
+}
+pub(super) async fn waiting_context_with_proof(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<Option<ToolContinuationRecord>, Error> {
+    let Some(record) = super::native_caller::active(tx, run, proof).await? else {
         return Ok(None);
     };
     if record.state != ToolContinuationState::Waiting || run.status != RunStatus::Paused {
@@ -226,17 +249,18 @@ pub(in super::super) async fn waiting_context(
     {
         return Err(Error::SemanticConflict);
     }
-    let (previous, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::NotFound)?;
+    let (previous, _) =
+        super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, proof)
+            .await
+            .map_err(unknown)?
+            .ok_or(Error::NotFound)?;
     if previous.snapshot.target != record.batch.attempt
         || previous.snapshot.state != AttemptState::Suspended
         || previous.snapshot.cleanup != AttemptCleanup::Complete
     {
         return Err(Error::CleanupBlocked);
     }
-    evidence::ready(tx, run, &record).await?;
+    evidence::ready_with_proof(tx, run, &record, proof).await?;
     Ok(Some(record))
 }
 
@@ -244,14 +268,16 @@ pub(in crate::sqlite) async fn preparation_context(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     claim: &ToolContinuationClaim,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<ToolContinuationRecord, Error> {
-    ready(tx, run, claim, None).await
+    ready_with_proof(tx, run, claim, None, proof).await
 }
 
 pub(in crate::sqlite) async fn preparation_frontend_context(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run: &Run,
     request: &crate::FrontendContinuationClaim,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<ToolContinuationRecord, Error> {
-    ready(tx, run, &request.claim, Some(request)).await
+    ready_with_proof(tx, run, &request.claim, Some(request), proof).await
 }

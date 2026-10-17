@@ -10,15 +10,20 @@ pub(super) fn save(
     completion: Option<&CompletionSource>,
     preparation: Option<&VerifiedPreparation<'_>>,
     proof: &mut Proof,
-) -> Result<(), Error> {
-    let captured = crate::memory::native_parent::record_run_completed_captured_with_proof(
-        state, old, next, completion, proof,
+) -> Result<crate::native_enrollment::caller::initial::RecoveryPublication, Error> {
+    let captured = crate::memory::native_parent::record_run_completed_publication_with_proof(
+        state,
+        old,
+        next,
+        completion,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
     )
     .map_err(|_| Error::UnknownStoreOutcome)?;
     if let Some(preparation) = preparation {
         preparation
-            .record_continuation_claim(captured)
+            .record_continuation_claim(captured.sequence)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
-    Ok(())
+    captured.updated.ok_or(Error::UnknownStoreOutcome)
 }

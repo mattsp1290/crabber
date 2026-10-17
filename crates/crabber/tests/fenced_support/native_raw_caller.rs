@@ -82,3 +82,6 @@ pub(crate) fn measure_recovery_source(
     proof.measure(&(source.expected_revision(), source.expected_issuance()))?;
     proof.charge(64 + 2 + 1)
 }
+
+#[path = "../../../crabber-session/src/native_enrollment/caller/tool.rs"]
+pub(crate) mod tool;

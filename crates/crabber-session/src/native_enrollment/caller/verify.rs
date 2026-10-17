@@ -27,6 +27,7 @@ pub(crate) enum Fresh<'a> {
     Phase(Phase<'a>),
     Initial(super::initial::Initial<'a>),
     Approval(Approval<'a>),
+    Tool(super::tool::Tool<'a>),
 }
 
 pub(crate) struct Attempt<'a> {
@@ -70,6 +71,7 @@ impl<'a> Fresh<'a> {
             Self::Phase(fresh) => fresh.verify(proof),
             Self::Initial(fresh) => fresh.verify(proof),
             Self::Approval(fresh) => fresh.verify(proof),
+            Self::Tool(fresh) => fresh.verify(proof),
         }
     }
 }

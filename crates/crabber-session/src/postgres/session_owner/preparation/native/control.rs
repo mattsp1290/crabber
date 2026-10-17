@@ -12,9 +12,20 @@ pub(super) async fn verify(
     completed: &PreparationCompletion,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    let Some((session, run, cursor)) = history::metadata(completed) else {
+    verify_selected(tx, grant, history::Selection::Completion(completed), proof).await
+}
+pub(super) async fn verify_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    grant: &PreparationGrant,
+    input: history::Selection<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let Some((session, run, cursor)) = input.metadata() else {
         return Ok(());
     };
+    proof
+        .measure(&grant.original_reservation().key)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let ids = crate::session_owner::preparation::identity::ids(
         &grant.original_reservation().key,
         session,
@@ -74,7 +85,7 @@ pub(super) async fn verify(
                 .ok_or(Error::UnknownStoreOutcome)?,
         );
     }
-    let control = history::control(completed, &event).map_err(unknown)?;
+    let control = input.control(&event).map_err(unknown)?;
     if !history::verify_control(
         &previous, &current, &audits[0], &audits[1], &audits[2], &control,
     )
@@ -95,3 +106,26 @@ fn carrier(row: &sqlx::postgres::PgRow, name: &str) -> Result<String, Error> {
 const SOURCES: &str = "SELECT n.sequence,CASE WHEN octet_length(n.data_json)<=2048 THEN n.data_json END AS current,CASE WHEN octet_length(p.data_json)<=2048 THEN p.data_json END AS previous,CASE WHEN octet_length(e.data::text)<=65536 THEN e.data::text END AS event FROM native_run_issuances n LEFT JOIN native_run_issuances p ON p.session_id=n.session_id AND p.run_id=n.run_id AND p.sequence=n.sequence-1 LEFT JOIN events e ON e.session_id=n.session_id AND e.run_id=n.run_id AND e.seq=$3 WHERE n.session_id=$1 AND n.run_id=$2 ORDER BY n.sequence DESC LIMIT 2";
 
 const COST: &str = "SELECT CAST(COALESCE(SUM(octet_length(n.data_json)+COALESCE(octet_length(p.data_json),0)+COALESCE(octet_length(e.data::text),0)),0) AS BIGINT) FROM (SELECT * FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 ORDER BY sequence DESC LIMIT 2) n LEFT JOIN native_run_issuances p ON p.session_id=n.session_id AND p.run_id=n.run_id AND p.sequence=n.sequence-1 LEFT JOIN events e ON e.session_id=n.session_id AND e.run_id=n.run_id AND e.seq=$3";
+
+/// Non-Clone result of the real prepared control check in this native mutation.
+pub(in crate::postgres) struct VerifiedTool(crate::ToolContinuationClaimOutcome);
+impl VerifiedTool {
+    pub(in crate::postgres) fn outcome(&self) -> &crate::ToolContinuationClaimOutcome {
+        &self.0
+    }
+    pub(in crate::postgres) fn into_outcome(self) -> crate::ToolContinuationClaimOutcome {
+        self.0
+    }
+}
+pub(in crate::postgres) async fn verify_tool(
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
+    grant: &PreparationGrant,
+    outcome: crate::ToolContinuationClaimOutcome,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<VerifiedTool, Error> {
+    let crate::ToolContinuationClaimOutcome::Applied { receipt, .. } = &outcome else {
+        return Err(Error::UnknownStoreOutcome);
+    };
+    verify_selected(tx, grant, history::Selection::Tool(receipt), proof).await?;
+    Ok(VerifiedTool(outcome))
+}

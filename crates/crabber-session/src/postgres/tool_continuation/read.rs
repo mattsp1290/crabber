@@ -10,9 +10,9 @@ const RECORD: &str = r"SELECT CASE WHEN octet_length(s.data->>'workspace_id')<=5
  CASE WHEN octet_length(c.data_json)<=4194304 THEN c.data_json END AS data_json
  FROM runs r JOIN sessions s ON s.id=r.session_id LEFT JOIN tool_continuations c ON c.id=(SELECT id FROM tool_continuations WHERE session_id=$1 AND run_id=$2 AND (CAST($3 AS TEXT) IS NULL OR id=$3) ORDER BY generation DESC LIMIT 1) WHERE r.session_id=$1 AND r.id=$2";
 const RECEIPT: &str = r"SELECT CASE WHEN o.kind='tool_continuation' THEN 'tool_continuation' ELSE 'foreign' END AS kind,o.event_seq,
- CASE WHEN octet_length(o.semantic_digest)<=64 THEN o.semantic_digest END AS digest,
- CASE WHEN octet_length(o.data_json)<=32768 THEN o.data_json END AS data_json,
- CASE WHEN octet_length(e.run_id)<=128 THEN e.run_id END AS event_run_id,
+ CASE WHEN o.kind='tool_continuation' AND octet_length(o.semantic_digest)<=64 THEN o.semantic_digest END AS digest,
+ CASE WHEN o.kind='tool_continuation' AND octet_length(o.data_json)<=32768 THEN o.data_json END AS data_json,
+ CASE WHEN o.kind='tool_continuation' AND octet_length(e.run_id)<=128 THEN e.run_id END AS event_run_id,
  CASE WHEN o.kind='tool_continuation' AND octet_length(e.data::text)<=65536 THEN e.data::text END AS event
  FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2";
 pub(in super::super) async fn receipt(
@@ -280,7 +280,7 @@ async fn verify_with_proof(
     Ok(())
 }
 
-const RECEIPT_COST: &str = r"SELECT CAST(COALESCE(octet_length(o.data_json),0)+COALESCE(octet_length(o.semantic_digest),0)+17+COALESCE(octet_length(e.run_id),0)+CASE WHEN o.kind='tool_continuation' THEN COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2";
+const RECEIPT_COST: &str = r"SELECT CAST(17+CASE WHEN o.kind='tool_continuation' THEN COALESCE(octet_length(o.data_json),0)+COALESCE(octet_length(o.semantic_digest),0)+COALESCE(octet_length(e.run_id),0)+COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts o LEFT JOIN events e ON e.session_id=o.session_id AND e.seq=o.event_seq WHERE o.session_id=$1 AND o.operation_id=$2";
 const RECORD_COST: &str = r"SELECT CAST(COALESCE(octet_length(s.data->>'workspace_id'),0)+COALESCE(octet_length(c.id),0)+COALESCE(octet_length(c.state),0)+COALESCE(octet_length(c.data_json),0) AS BIGINT) FROM runs r JOIN sessions s ON s.id=r.session_id LEFT JOIN tool_continuations c ON c.id=(SELECT id FROM tool_continuations WHERE session_id=$1 AND run_id=$2 AND (CAST($3 AS TEXT) IS NULL OR id=$3) ORDER BY generation DESC LIMIT 1) WHERE r.session_id=$1 AND r.id=$2";
 
 pub(in super::super) async fn load_with_proof(

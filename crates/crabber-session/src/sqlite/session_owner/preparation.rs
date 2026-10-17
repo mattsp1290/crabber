@@ -227,3 +227,5 @@ async fn require_birth(
     }
     Ok(())
 }
+
+pub(in crate::sqlite) use native::{VerifiedTool, verify_tool};

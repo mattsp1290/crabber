@@ -1,173 +1,194 @@
 use super::{
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState, Error, MemoryStore,
     PhaseQuiescence, PhaseState, State, ToolContinuationClaimOutcome, ToolContinuationOutcome,
-    ToolContinuationRecord, ToolContinuationState, after, before, domain, fault, publish, receipt,
-    replay, revision,
+    ToolContinuationRecord, ToolContinuationState, after, before, domain, fault, revision,
 };
 use crate::ToolContinuationRecovery;
-use crabber_core::{Run, RunFence, RunStatus, ToolCallStatus};
+use crate::native_enrollment::caller::{
+    Caller,
+    tool::{IssuedPhases, ToolCompletion, ToolGrantOutput, ToolInput},
+};
+use crate::public_session::v2::proof::Proof;
+use crabber_core::{Run, RunStatus, ToolCallStatus};
 impl MemoryStore {
     pub(in super::super) fn recover_tools(
         &self,
         request: &ToolContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        self.recover_compound(request, None)
+        self.tool_with_proof(ToolInput::Recovery(request), &mut Proof::bounded(32 << 20))
     }
     pub(in super::super) fn recover_frontend(
         &self,
         request: &crate::FrontendContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        let common = domain::canonical::frontend_recovery(request);
-        self.recover_compound(&common, Some(request))
+        self.tool_with_proof(
+            ToolInput::FrontendRecovery(request),
+            &mut Proof::bounded(32 << 20),
+        )
     }
-    fn recover_compound(
+
+    pub(in crate::memory) fn recover_compound_with_proof(
         &self,
-        request: &ToolContinuationRecovery,
-        frontend: Option<&crate::FrontendContinuationRecovery>,
+        input: ToolInput<'_>,
+        proof: &mut Proof,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
         let fault = fault(self);
-        let result = self.transact(|state| {
-            self.recover_compound_guarded(
-                state,
-                request,
-                frontend,
-                None,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
-        });
-        after(result, fault)
+        let result = self.transact_selected(
+            proof,
+            |state, proof| super::native_caller::before(state, input, proof),
+            |state, proof| self.recover_compound_guarded(state, input, None, Caller::Raw, proof),
+        );
+        after(result, fault).map(super::native_caller::ToolMutation::into_outcome)
     }
     pub(in crate::memory) fn recover_tools_guarded(
         &self,
         state: &mut super::super::State,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.recover_compound_guarded(state, request, None, preparation, read_proof)
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        self.recover_compound_guarded(
+            state,
+            ToolInput::Recovery(request),
+            preparation,
+            caller,
+            read_proof,
+        )
     }
     pub(in crate::memory) fn recover_frontend_guarded(
         &self,
         state: &mut State,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
         self.recover_compound_guarded(
             state,
-            &domain::canonical::frontend_recovery(request),
-            Some(request),
+            ToolInput::FrontendRecovery(request),
             Some(preparation),
+            caller,
             read_proof,
         )
     }
     fn recover_compound_guarded(
         &self,
         state: &mut super::super::State,
-        request: &ToolContinuationRecovery,
-        frontend: Option<&crate::FrontendContinuationRecovery>,
+        input: ToolInput<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        let digest = match frontend {
-            Some(request) => request.fingerprint()?,
-            None => request.fingerprint()?,
-        };
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        let digest = super::native_caller::digest(state, input, read_proof)?;
         let fault = fault(self);
-        let original = &request.original;
-        if let Some(saved) = replay(
-            state,
-            &original.session_id,
-            &original.run_id,
-            &request.id,
-            &digest,
-        )? {
-            match frontend {
-                Some(request) => request.verify_receipt(&saved)?,
-                None => request.verify_receipt(&saved)?,
-            }
-            return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        if let Some(saved) = super::native_caller::replay(state, input, &digest, read_proof)? {
+            return Ok((super::native_caller::ToolMutation::Replayed(saved), false));
         }
-        let run = state
-            .runs
-            .get(&original.run_id)
-            .filter(|run| run.session_id == original.session_id)
-            .cloned()
-            .ok_or(Error::NotFound)?;
-        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
-            preparation,
-            if frontend.is_some() {
-                crate::native_parent::CompletionOperation::FrontendRecovery
-            } else {
-                crate::native_parent::CompletionOperation::ToolRecovery
-            },
-            &crate::session_owner::preparation::PreparationKey::ToolContinuation(
-                request.id.clone(),
-            ),
-            (&original.session_id, &original.run_id),
-            request.expected_revision,
-            &digest,
-        )
-        .map_err(|_| Error::SemanticConflict)?;
+        let run = super::native_caller::selected_run(state, input, read_proof)?;
+        let (common, frontend) = input.recovering(read_proof)?;
+        let request = common.as_ref();
+        let (expected_revision, completion) = input.completion(preparation, &digest, read_proof)?;
         if revision(state, &run.session_id) != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let mut record = eligible(state, &run, request, frontend)?;
+        let mut record = eligible_with_proof(state, &run, request, frontend, read_proof)?;
+        read_proof
+            .measure(&run)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         let now = self.clock.now();
         let activated =
             domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
-        let parent = reclaimed_parent(state, &activated, request, expected_revision, now)?;
-        let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
-        let phases = super::phases::reclaim(state, &parent, &record)?;
-        let frontend_phases = if frontend.is_some() {
-            super::phases::reclaim_frontend(state, &parent, &record)?
-        } else {
-            Vec::new()
+        let previous = state
+            .attempts
+            .get(&request.attempt.id)
+            .ok_or(Error::NotFound)?;
+        crate::native_enrollment::caller::measure_record(previous, read_proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let previous = previous.clone();
+        read_proof
+            .measure(&request.attempt)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let native_request = AttemptMutation {
+            id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
+            expected_revision,
+            command: AttemptCommand::ReclaimUnstarted {
+                target: request.attempt.clone(),
+            },
         };
-        let fence = save_recovered_owner(
+        let parent =
+            reclaimed_parent_with_proof(&previous, &activated, &native_request, now, read_proof)?;
+        crate::native_enrollment::caller::measure_record(&parent, read_proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
+        let phases = super::phases::reclaim(state, &record, &authority, read_proof)?;
+        let frontend_phases = if frontend.is_some() {
+            super::phases::reclaim_frontend(state, &record, &authority, read_proof)?
+        } else {
+            IssuedPhases::empty()
+        };
+        let publication = save_recovered_owner(
             state,
             &run,
-            activated,
+            &activated,
             &parent,
             completion.as_ref(),
             preparation,
             read_proof,
         )?;
+        input
+            .measure(read_proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         record.capture_recovery(request, frontend)?;
-        record.validate()?;
-        state
-            .tool_continuations
-            .insert(record.batch.continuation.id.clone(), record.clone());
-        let receipt = publish(
+        super::native_caller::save_record(state, &record, read_proof)?;
+        let native_phases = crate::native_enrollment::caller::tool::records(
+            phases.records,
+            frontend_phases.records,
+            read_proof,
+        )
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+        let outcome = super::native_caller::finish(
             state,
-            &run,
-            request.id.clone(),
-            digest,
-            record.recovered_outcome(parent.snapshot)?,
-            now,
+            caller,
+            ToolCompletion {
+                input,
+                previous: &run,
+                current: &activated,
+                record: &record,
+                previous_parent: &previous,
+                parent: &parent,
+                native_request: &native_request,
+                phases: &native_phases,
+                publication: &publication,
+                completion: completion.as_ref(),
+            },
+            ToolGrantOutput::new(
+                &activated,
+                authority,
+                phases.grants,
+                frontend_phases.grants,
+                digest,
+                read_proof,
+            )?,
+            preparation,
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
         )?;
         before(fault)?;
-        let outcome = record.into_outcome(
-            fence,
-            authority,
-            phases,
-            frontend_phases,
-            crate::tool_continuation::ack::Completion::new(
-                receipt,
-                (&parent.token, &parent.run_token),
-                read_proof,
-            ),
-        )?;
         Ok((outcome, true))
     }
 }
-fn eligible(
+fn eligible_with_proof(
     state: &State,
     run: &Run,
     request: &ToolContinuationRecovery,
     frontend: Option<&crate::FrontendContinuationRecovery>,
+    proof: &mut Proof,
 ) -> Result<ToolContinuationRecord, Error> {
-    let original = receipt(state, &run.session_id, &request.original.id)?.ok_or(Error::NotFound)?;
+    let original = super::receipt_with_proof(state, &run.session_id, &request.original.id, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?
+        .ok_or(Error::NotFound)?;
     let expected_digest = match frontend {
         Some(request) => request.original.fingerprint()?,
         None => request.original.fingerprint()?,
@@ -192,7 +213,7 @@ fn eligible(
     if original.run_id != run.id || original.semantic_digest != expected_digest || !original_kind {
         return Err(Error::SemanticConflict);
     }
-    let record = super::active(state, run)?.ok_or(Error::InvalidTransition)?;
+    let record = super::active_with_proof(state, run, proof)?.ok_or(Error::InvalidTransition)?;
     match frontend {
         Some(request) => {
             request.original.validate_for_batch(&record.batch)?;
@@ -230,6 +251,8 @@ fn eligible(
         .filter(|parent| parent.snapshot.run_id == run.id)
         .max_by_key(|parent| parent.snapshot.target.generation)
         .ok_or(Error::NotFound)?;
+    crate::native_enrollment::caller::measure_record(parent, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     parent.validate().map_err(|_| Error::UnknownStoreOutcome)?;
     if parent.snapshot.target != request.attempt
         || parent.snapshot.state != AttemptState::Unstarted
@@ -237,19 +260,23 @@ fn eligible(
     {
         return Err(Error::CleanupBlocked);
     }
-    validate_reserved(state, run, &record)?;
+    validate_reserved_with_proof(state, run, &record, proof)?;
     Ok(record)
 }
-fn validate_reserved(
+fn validate_reserved_with_proof(
     state: &State,
     run: &Run,
     record: &ToolContinuationRecord,
+    proof: &mut Proof,
 ) -> Result<(), Error> {
     for call in &record.batch.calls {
         let stored = state
             .calls
             .get(&call.target.call_id)
             .ok_or(Error::NotFound)?;
+        proof
+            .measure(stored)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         call.verify_call(stored)
             .map_err(|_| Error::SemanticConflict)?;
         if stored.run_id != run.id
@@ -278,6 +305,8 @@ fn validate_reserved(
             .phases
             .get(&frozen.next.id)
             .ok_or(Error::UnknownStoreOutcome)?;
+        crate::native_enrollment::caller::measure_phase_record(phase, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         if phase.snapshot.target != frozen.next
             || phase.snapshot.call_binding != frozen.call_binding
             || phase.snapshot.session_id != run.session_id
@@ -294,6 +323,8 @@ fn validate_reserved(
             .phases
             .get(&frozen.target.id)
             .ok_or(Error::UnknownStoreOutcome)?;
+        crate::native_enrollment::caller::measure_phase_record(phase, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         phase.validate().map_err(|_| Error::UnknownStoreOutcome)?;
         if phase.snapshot.target != frozen.target
             || phase.snapshot.call_binding != frozen.call_binding
@@ -306,7 +337,10 @@ fn validate_reserved(
             return Err(Error::CleanupBlocked);
         }
     }
-    super::evidence::validate_excluding(
+    proof
+        .measure(&(&record.batch.phases, &record.batch.frontend))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::evidence::validate_excluding_with_proof(
         state,
         run,
         &record
@@ -316,6 +350,7 @@ fn validate_reserved(
             .map(|phase| phase.next.clone())
             .chain(record.batch.frontend.iter().map(|call| call.target.clone()))
             .collect::<Vec<_>>(),
+        proof,
     )?;
     Ok(())
 }
@@ -325,8 +360,9 @@ pub(in crate::memory) fn preparation_context(
     run: &Run,
     request: &ToolContinuationRecovery,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    eligible(state, run, request, None)?;
+    eligible_with_proof(state, run, request, None, proof)?;
     if state
         .attempts
         .get(&request.attempt.id)
@@ -342,30 +378,31 @@ pub(in crate::memory) fn preparation_context(
 fn save_recovered_owner(
     state: &mut State,
     original: &Run,
-    activated: Run,
+    activated: &Run,
     parent: &crate::attempt::AttemptRecord,
     completion: Option<&crate::native_parent::CompletionSource>,
     preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
     read_proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<RunFence, Error> {
-    super::activation::save(
+) -> Result<crate::native_enrollment::caller::initial::RecoveryPublication, Error> {
+    let publication = super::activation::save(
         state,
         original,
-        &activated,
+        activated,
         completion,
         preparation,
         read_proof,
     )
     .map_err(|_| Error::UnknownStoreOutcome)?;
-    let fence = RunFence {
-        run_id: original.id.clone(),
-        claim_token: activated.claim_token.clone(),
-    };
-    state.runs.insert(original.id.clone(), activated);
+    read_proof
+        .measure(activated)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state.runs.insert(original.id.clone(), activated.clone());
+    crate::native_enrollment::caller::measure_record(parent, read_proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state
         .attempts
         .insert(parent.snapshot.target.id.clone(), parent.clone());
-    Ok(fence)
+    Ok(publication)
 }
 
 pub(in crate::memory) fn preparation_frontend_context(
@@ -373,12 +410,17 @@ pub(in crate::memory) fn preparation_frontend_context(
     run: &Run,
     request: &crate::FrontendContinuationRecovery,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    eligible(
+    proof
+        .measure(&(&request.original.claim, &request.attempt, &request.owner))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    eligible_with_proof(
         state,
         run,
         &domain::canonical::frontend_recovery(request),
         Some(request),
+        proof,
     )?;
     if state
         .attempts
@@ -392,35 +434,21 @@ pub(in crate::memory) fn preparation_frontend_context(
     Ok(())
 }
 
-fn reclaimed_parent(
-    state: &State,
+fn reclaimed_parent_with_proof(
+    previous: &crate::attempt::AttemptRecord,
     activated: &Run,
-    request: &ToolContinuationRecovery,
-    expected_revision: crabber_core::SessionRevision,
+    request: &AttemptMutation,
     now: time::OffsetDateTime,
+    proof: &mut Proof,
 ) -> Result<crate::attempt::AttemptRecord, Error> {
-    let mut parent = state
-        .attempts
-        .get(&request.attempt.id)
-        .cloned()
-        .ok_or(Error::NotFound)?;
-    if parent.lease_until > now {
+    if previous.lease_until > now {
         return Err(Error::LiveOwner);
     }
+    crate::native_enrollment::caller::measure_record(previous, proof)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut parent = previous.clone();
     parent
-        .change(
-            activated,
-            &AttemptMutation {
-                id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
-                expected_revision,
-                command: AttemptCommand::ReclaimUnstarted {
-                    target: request.attempt.clone(),
-                },
-            },
-            None,
-            now,
-            true,
-        )
+        .change(activated, request, None, now, true)
         .map_err(|_| Error::CleanupBlocked)?;
     Ok(parent)
 }

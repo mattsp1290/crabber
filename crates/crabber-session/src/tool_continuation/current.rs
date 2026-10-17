@@ -17,7 +17,8 @@ pub(crate) struct CurrentAudits {
 pub(crate) fn audit_key(
     event: &EventRecord,
     record: &ToolContinuationRecord,
-) -> Result<Option<ControlId>, Error> {
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<ControlId>, crate::public_session::v2::proof::ToolReadError> {
     if event.session_id != record.session_id
         || event.run_id != record.run_id
         || event.kind != EventKind::ContinuationChanged
@@ -34,15 +35,15 @@ pub(crate) fn audit_key(
     {
         return Ok(None);
     }
-    serde_json::from_value(
-        event
-            .payload
-            .get("operation_id")
-            .cloned()
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
-    .map(Some)
-    .map_err(|_| Error::UnknownStoreOutcome)
+    let key = event
+        .payload
+        .get("operation_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    proof
+        .measure(&key)
+        .map_err(crate::public_session::v2::proof::ToolReadError::Budget)?;
+    Ok(Some(ControlId::from(key)))
 }
 impl CurrentAudits {
     pub(crate) fn insert(

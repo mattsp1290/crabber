@@ -2,6 +2,7 @@
 mod activation;
 mod answer;
 mod claim;
+pub(in crate::postgres) mod native_caller;
 pub(super) mod original_plan;
 pub(super) use claim::waiting_context;
 mod cancel;
@@ -74,6 +75,21 @@ impl PostgresStore {
         let (tx, saved) = self.run_transaction(run).await.map_err(unknown)?;
         if saved.session_id != *session || saved.id != *run {
             return Err(Error::UnknownStoreOutcome);
+        }
+        Ok((tx, saved))
+    }
+    async fn tool_transaction_with_proof(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
+        let (tx, saved) = self
+            .run_transaction_with_proof(run, proof)
+            .await
+            .map_err(unknown)?;
+        if saved.session_id != *session || saved.id != *run {
+            return Err(Error::NotFound);
         }
         Ok((tx, saved))
     }

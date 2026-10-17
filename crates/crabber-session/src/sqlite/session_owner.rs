@@ -463,3 +463,5 @@ pub(super) async fn source_audit_with_proof(
 ) -> Result<Option<Audit>, Error> {
     reads::audit_with_proof(tx, session, id, proof).await
 }
+
+pub(in crate::sqlite) use preparation::{VerifiedTool, verify_tool};

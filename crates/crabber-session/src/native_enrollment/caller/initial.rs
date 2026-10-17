@@ -331,7 +331,10 @@ pub(crate) fn preparation_input(
         PreparedOperation::Queue { request, binding } => proof.measure(&(request, binding))?,
         PreparedOperation::ApprovalClaim(request) => proof.measure(request)?,
         PreparedOperation::ApprovalRecovery(request) => proof.measure(request)?,
-        _ => return Ok(()),
+        PreparedOperation::ToolClaim(request) => proof.measure(request)?,
+        PreparedOperation::ToolRecovery(request) => proof.measure(request)?,
+        PreparedOperation::FrontendClaim(request) => proof.measure(request)?,
+        PreparedOperation::FrontendRecovery(request) => proof.measure(request)?,
     }
     let grant = joined.observed_grant();
     proof.measure(&(grant.original_reservation(), joined.observed_registration()))?;

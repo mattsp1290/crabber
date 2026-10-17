@@ -3,59 +3,54 @@ use super::{
     ToolContinuationRecord, ToolContinuationState, after, before, domain, evidence, fault, finish,
     read, revision, unknown, write,
 };
+use crate::native_enrollment::caller::{
+    Caller,
+    tool::{IssuedPhases, ToolCompletion, ToolGrantOutput, ToolInput},
+};
+use crate::public_session::v2::proof::Proof;
 use crate::{
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptState, ToolContinuationRecovery,
 };
-use crabber_core::{Run, RunFence, RunStatus};
+use crabber_core::{Run, RunStatus};
 impl PostgresStore {
     pub(in super::super) async fn recover_tools(
         &self,
         request: ToolContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        self.recover_compound(&request, None).await
+        self.tool_with_proof(ToolInput::Recovery(&request), &mut Proof::bounded(32 << 20))
+            .await
     }
     pub(in super::super) async fn recover_frontend_tools(
         &self,
         request: crate::FrontendContinuationRecovery,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
-        if let Some(saved) = self
-            .tool_receipt(&request.original.claim.session_id, &request.id)
-            .await?
-        {
-            request.verify_receipt(&saved)?;
+        self.tool_with_proof(
+            ToolInput::FrontendRecovery(&request),
+            &mut Proof::bounded(32 << 20),
+        )
+        .await
+    }
+
+    pub(in crate::postgres) async fn recover_compound_with_proof(
+        &self,
+        input: ToolInput<'_>,
+        proof: &mut Proof,
+    ) -> Result<ToolContinuationClaimOutcome, Error> {
+        if let Some(saved) = super::native_caller::outer_replay(self, input, proof).await? {
             return Ok(ToolContinuationClaimOutcome::Replayed(saved));
         }
-        if crate::POSTGRES_SCHEMA_VERSION < 14 {
+        if input.frontend().is_some() && crate::POSTGRES_SCHEMA_VERSION < 14 {
             return Err(Error::Unsupported);
         }
-        let common = domain::canonical::frontend_recovery(&request);
-        self.recover_compound(&common, Some(&request)).await
-    }
-    async fn recover_compound(
-        &self,
-        request: &ToolContinuationRecovery,
-        frontend: Option<&crate::FrontendContinuationRecovery>,
-    ) -> Result<ToolContinuationClaimOutcome, Error> {
         let fault = fault(self);
-        let original = &request.original;
-        let (mut tx, run) = if frontend.is_some() {
-            self.frontend_transaction(&original.session_id, &original.run_id)
-                .await?
-        } else {
-            self.tool_transaction(&original.session_id, &original.run_id)
-                .await?
-        };
+        let original = input.original();
+        let (mut tx, run) = self
+            .tool_transaction_with_proof(&original.session_id, &original.run_id, proof)
+            .await?;
         let result = self
-            .recover_compound_guarded(
-                &mut tx,
-                &run,
-                request,
-                frontend,
-                None,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
+            .recover_compound_guarded(&mut tx, &run, input, None, Caller::Raw, proof)
             .await;
-        after(finish(tx, result).await, fault)
+        after(finish(tx, result).await, fault).map(super::native_caller::ToolMutation::into_outcome)
     }
     pub(in crate::postgres) async fn recover_tools_guarded(
         &self,
@@ -63,10 +58,18 @@ impl PostgresStore {
         run: &Run,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.recover_compound_guarded(tx, run, request, None, preparation, read_proof)
-            .await
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        self.recover_compound_guarded(
+            tx,
+            run,
+            ToolInput::Recovery(request),
+            preparation,
+            caller,
+            read_proof,
+        )
+        .await
     }
     pub(in crate::postgres) async fn recover_frontend_guarded(
         &self,
@@ -74,14 +77,15 @@ impl PostgresStore {
         run: &Run,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
         self.recover_compound_guarded(
             tx,
             run,
-            &domain::canonical::frontend_recovery(request),
-            Some(request),
+            ToolInput::FrontendRecovery(request),
             Some(preparation),
+            caller,
             read_proof,
         )
         .await
@@ -90,119 +94,117 @@ impl PostgresStore {
         &self,
         tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
-        request: &ToolContinuationRecovery,
-        frontend: Option<&crate::FrontendContinuationRecovery>,
+        input: ToolInput<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        let digest = match frontend {
-            Some(request) => request.fingerprint()?,
-            None => request.fingerprint()?,
-        };
+    ) -> Result<(super::native_caller::ToolMutation, bool), Error> {
+        let digest = super::native_caller::digest(tx, input, read_proof).await?;
         let fault = fault(self);
-        let original = &request.original;
-        if let Some(saved) = write::replay(tx, run, &request.id, &digest).await? {
-            match frontend {
-                Some(request) => request.verify_receipt(&saved)?,
-                None => request.verify_receipt(&saved)?,
-            }
-            return Ok((ToolContinuationClaimOutcome::Replayed(saved), false));
+        if let Some(saved) = super::native_caller::replay(tx, input, &digest, read_proof).await? {
+            return Ok((super::native_caller::ToolMutation::Replayed(saved), false));
         }
-        let (expected_revision, completion) = crate::native_parent::CompletionSource::control(
-            preparation,
-            if frontend.is_some() {
-                crate::native_parent::CompletionOperation::FrontendRecovery
-            } else {
-                crate::native_parent::CompletionOperation::ToolRecovery
-            },
-            &crate::session_owner::preparation::PreparationKey::ToolContinuation(
-                request.id.clone(),
-            ),
-            (&original.session_id, &original.run_id),
-            request.expected_revision,
-            &digest,
-        )
-        .map_err(|_| Error::SemanticConflict)?;
+        let (common, frontend) = input.recovering(read_proof)?;
+        let request = common.as_ref();
+        let (expected_revision, completion) = input.completion(preparation, &digest, read_proof)?;
         if revision(tx, &run.session_id).await? != expected_revision {
             return Err(Error::RevisionConflict);
         }
-        let mut record = eligible(tx, run, request, frontend).await?;
+        let mut record = eligible_with_proof(tx, run, request, frontend, read_proof).await?;
+        read_proof.measure(run).map_err(unknown)?;
         let now = self.clock.now();
         let activated =
             domain::canonical::activated_run(run, &request.owner, request.lease_ms, now)?;
-        let (mut parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
-            .await
-            .map_err(unknown)?
-            .ok_or(Error::NotFound)?;
+        let (mut parent, _) =
+            super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, read_proof)
+                .await
+                .map_err(unknown)?
+                .ok_or(Error::NotFound)?;
         if parent.lease_until > now {
             return Err(Error::LiveOwner);
         }
+        crate::native_enrollment::caller::measure_record(&parent, read_proof).map_err(unknown)?;
+        let previous = parent.clone();
+        read_proof.measure(&request.attempt).map_err(unknown)?;
+        let native_request = AttemptMutation {
+            id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
+            expected_revision,
+            command: AttemptCommand::ReclaimUnstarted {
+                target: request.attempt.clone(),
+            },
+        };
         parent
-            .change(
-                &activated,
-                &AttemptMutation {
-                    id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
-                    expected_revision,
-                    command: AttemptCommand::ReclaimUnstarted {
-                        target: request.attempt.clone(),
-                    },
-                },
-                None,
-                now,
-                true,
-            )
+            .change(&activated, &native_request, None, now, true)
             .map_err(|_| Error::CleanupBlocked)?;
+        crate::native_enrollment::caller::measure_record(&parent, read_proof).map_err(unknown)?;
         let authority = parent.authority().map_err(unknown)?;
 
-        super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
-            .await
-            .map_err(unknown)?;
+        let publication =
+            super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
+                .await
+                .map_err(unknown)?;
         super::super::attempt::save_host_attempt(tx, &parent, false)
             .await
             .map_err(unknown)?;
-        let phases = super::phases::recover(tx, run, &record, &authority).await?;
+        let phases = super::phases::recover(tx, run, &record, &authority, read_proof).await?;
         let frontend_phases = if frontend.is_some() {
-            super::phases::recover_frontend(tx, run, &record, &authority).await?
+            super::phases::recover_frontend(tx, run, &record, &authority, read_proof).await?
         } else {
-            Vec::new()
+            IssuedPhases::empty()
         };
+        input.measure(read_proof).map_err(unknown)?;
         record.capture_recovery(request, frontend)?;
+        read_proof.measure(&record).map_err(unknown)?;
         write::save(tx, &record, false).await?;
-        let receipt = write::publish(
+        let native_phases = crate::native_enrollment::caller::tool::records(
+            phases.records,
+            frontend_phases.records,
+            read_proof,
+        )
+        .map_err(unknown)?;
+        let outcome = super::native_caller::finish(
             tx,
-            run,
-            request.id.clone(),
-            digest,
-            record.recovered_outcome(parent.snapshot)?,
-            now,
+            caller,
+            ToolCompletion {
+                input,
+                previous: run,
+                current: &activated,
+                record: &record,
+                previous_parent: &previous,
+                parent: &parent,
+                native_request: &native_request,
+                phases: &native_phases,
+                publication: &publication,
+                completion: completion.as_ref(),
+            },
+            ToolGrantOutput::new(
+                &activated,
+                authority,
+                phases.grants,
+                frontend_phases.grants,
+                digest,
+                read_proof,
+            )?,
+            preparation,
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
         )
         .await?;
         before(fault)?;
-        let outcome = record.into_outcome(
-            RunFence {
-                run_id: run.id.clone(),
-                claim_token: activated.claim_token,
-            },
-            authority,
-            phases,
-            frontend_phases,
-            crate::tool_continuation::ack::Completion::new(
-                receipt,
-                (&parent.token, &parent.run_token),
-                read_proof,
-            ),
-        )?;
         Ok((outcome, true))
     }
 }
-async fn eligible(
+async fn eligible_with_proof(
     tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     request: &ToolContinuationRecovery,
     frontend: Option<&crate::FrontendContinuationRecovery>,
+    proof: &mut Proof,
 ) -> Result<ToolContinuationRecord, Error> {
-    let (original, _) = read::receipt(tx, &run.session_id, &request.original.id)
-        .await?
+    let (original, _) = read::receipt_with_proof(tx, &run.session_id, &request.original.id, proof)
+        .await
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?
         .ok_or(Error::NotFound)?;
     let expected_digest = match frontend {
         Some(request) => request.original.fingerprint()?,
@@ -228,7 +230,7 @@ async fn eligible(
     if original.run_id != run.id || original.semantic_digest != expected_digest || !original_kind {
         return Err(Error::SemanticConflict);
     }
-    let record = write::active(tx, run)
+    let record = super::native_caller::active(tx, run, proof)
         .await?
         .ok_or(Error::InvalidTransition)?;
     match frontend {
@@ -261,7 +263,7 @@ async fn eligible(
     {
         return Err(Error::InvalidTransition);
     }
-    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+    let (parent, _) = super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::NotFound)?;
@@ -271,7 +273,7 @@ async fn eligible(
     {
         return Err(Error::CleanupBlocked);
     }
-    evidence::recover(tx, run, &record).await?;
+    evidence::recover_with_proof(tx, run, &record, proof).await?;
     Ok(record)
 }
 
@@ -280,9 +282,10 @@ pub(in crate::postgres) async fn preparation_context(
     run: &Run,
     request: &ToolContinuationRecovery,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    eligible(tx, run, request, None).await?;
-    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+    eligible_with_proof(tx, run, request, None, proof).await?;
+    let (parent, _) = super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::NotFound)?;
@@ -297,15 +300,20 @@ pub(in crate::postgres) async fn preparation_frontend_context(
     run: &Run,
     request: &crate::FrontendContinuationRecovery,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    eligible(
+    proof
+        .measure(&(&request.original.claim, &request.attempt, &request.owner))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    eligible_with_proof(
         tx,
         run,
         &domain::canonical::frontend_recovery(request),
         Some(request),
+        proof,
     )
     .await?;
-    let (parent, _) = super::super::attempt::load_host_attempt(tx, &run.id, None, true)
+    let (parent, _) = super::super::attempt::load_host_attempt_with_proof(tx, &run.id, None, proof)
         .await
         .map_err(unknown)?
         .ok_or(Error::NotFound)?;

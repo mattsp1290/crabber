@@ -67,3 +67,6 @@ pub(crate) fn measure_recovery_source(
 ) -> Result<(), Failure> {
     source.measure_original(proof)
 }
+
+#[path = "caller/tool.rs"]
+pub(crate) mod tool;

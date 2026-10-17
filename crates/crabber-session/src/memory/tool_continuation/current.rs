@@ -9,6 +9,22 @@ pub(super) fn verify_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
+    proof
+        .measure(&(
+            &record.session_id,
+            &record.run_id,
+            &record.batch.continuation,
+        ))
+        .map_err(ToolReadError::Budget)?;
+    proof
+        .charge(
+            record
+                .questions
+                .len()
+                .checked_mul(std::mem::size_of::<crate::continuation_input::Input<'_>>())
+                .ok_or(Error::UnknownStoreOutcome)?,
+        )
+        .map_err(ToolReadError::Budget)?;
     let scope = crate::continuation_input::Scope {
         domain: crate::continuation_input::Domain::Tool,
         session: record.session_id.clone(),
@@ -56,7 +72,7 @@ pub(super) fn verify_with_proof(
         .iter()
         .filter(|event| event.session_id == record.session_id && event.run_id == record.run_id)
     {
-        if let Some(key) = domain::audit_key(event, record)? {
+        if let Some(key) = domain::audit_key(event, record, proof)? {
             proof.measure(event).map_err(ToolReadError::Budget)?;
             let saved = super::receipt_with_proof(state, &record.session_id, &key, proof)?
                 .ok_or(Error::UnknownStoreOutcome)?;
@@ -177,6 +193,7 @@ fn verify_successor_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
+    proof.measure(event).map_err(ToolReadError::Budget)?;
     let target: crate::ContinuationTarget = serde_json::from_value(
         event
             .payload

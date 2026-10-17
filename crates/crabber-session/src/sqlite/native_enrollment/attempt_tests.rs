@@ -13,9 +13,20 @@ impl Harness for crate::SqliteStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn tool_fault(&self, stage: u8) {
+        self.tool_continuation_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
     fn approval_fault(&self, stage: u8) {
         self.approval_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    async fn tool_with_proof(
+        &self,
+        input: crate::native_enrollment::caller::tool::ToolInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError> {
+        crate::SqliteStore::tool_with_proof(self, input, proof).await
     }
     async fn approval_with_proof(
         &self,
@@ -212,7 +223,9 @@ const BIRTH: [&str; 3] = [
     "SELECT data FROM native_execution_origins WHERE run_id=$1",
     "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
 ];
-const NATIVE: [&str; 19] = [
+const NATIVE: [&str; 21] = [
+    "SELECT data_json FROM tool_continuations WHERE run_id=$1 ORDER BY id",
+    "SELECT continuation_id FROM tool_continuation_barriers WHERE run_id=$1 ORDER BY continuation_id",
     "SELECT data_json FROM continuations WHERE run_id=$1 ORDER BY id",
     "SELECT continuation_id FROM continuation_barriers WHERE run_id=$1 ORDER BY continuation_id",
     "SELECT CAST(public_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
@@ -337,6 +350,19 @@ async fn raw_approval_compound_original_grant_proof_and_rollback() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::approvals(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_tool_compound_original_grant_proof_and_rollback() {
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::tools(
         &store, &clock,
     ))
     .await;

@@ -36,7 +36,21 @@ impl super::super::SqliteStore {
             | PreparedOperation::ToolClaim(_)
             | PreparedOperation::ApprovalRecovery(_)
             | PreparedOperation::ToolRecovery(_)) => {
-                Box::pin(self.apply_prepared_continuation(tx, operation, proof, read_proof)).await?
+                match Box::pin(self.apply_prepared_continuation(tx, operation, proof, read_proof))
+                    .await?
+                {
+                    continuation::Continuation::VerifiedTool(v) => {
+                        return Ok(PreparationCompletion::ToolContinuation(v.into_outcome()));
+                    }
+                    continuation::Continuation::Approval(outcome) => {
+                        PreparationCompletion::Approval(outcome)
+                    }
+                    continuation::Continuation::ReplayedTool(receipt) => {
+                        PreparationCompletion::ToolContinuation(
+                            crate::ToolContinuationClaimOutcome::Replayed(receipt),
+                        )
+                    }
+                }
             }
             PreparedOperation::Queue { request, .. } => {
                 let digest = request.fingerprint()?;
@@ -124,3 +138,5 @@ impl super::super::SqliteStore {
         Ok(PreparationCompletion::Admitted(admitted))
     }
 }
+
+pub(in crate::sqlite) use control::{VerifiedTool, verify_tool};

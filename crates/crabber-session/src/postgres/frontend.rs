@@ -2,7 +2,8 @@
 mod continuation;
 mod read;
 pub(super) use continuation::{
-    mark_waiting, pending_call, recover_call, save_links, verify_batch_with_proof,
+    mark_waiting, pending_call, pending_call_with_proof, recover_call, save_links,
+    verify_batch_with_proof,
 };
 mod stage;
 use super::{PostgresExecution, PostgresStore};

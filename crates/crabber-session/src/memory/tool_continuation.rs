@@ -29,8 +29,17 @@ fn active(state: &State, run: &Run) -> Result<Option<ToolContinuationRecord>, Er
     scan::run(state, run).map(|(_, active)| active)
 }
 pub(super) use claim::waiting_context;
+fn active_with_proof(
+    state: &State,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<Option<ToolContinuationRecord>, Error> {
+    scan::run_with_proof(state, run, proof).map(|(_, active)| active)
+}
 #[path = "tool_continuation/cancel.rs"]
 mod cancel;
+#[path = "tool_continuation/native_caller.rs"]
+pub(in crate::memory) mod native_caller;
 pub(super) use cancel::cancel_waiting;
 #[path = "tool_continuation/evidence.rs"]
 mod evidence;
@@ -133,7 +142,47 @@ fn publish_handoff(
     now: OffsetDateTime,
     handoff: Option<&crate::continuation_handoff::Handoff>,
 ) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff_with_proof(
+        state,
+        run,
+        id,
+        digest,
+        outcome,
+        now,
+        (
+            handoff,
+            &mut crate::public_session::v2::proof::Proof::legacy(),
+        ),
+    )
+}
+fn publish_with_proof(
+    state: &mut State,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<ToolContinuationReceipt, Error> {
+    publish_handoff_with_proof(state, run, id, digest, outcome, now, (None, proof))
+}
+fn publish_handoff_with_proof(
+    state: &mut State,
+    run: &Run,
+    id: ControlId,
+    digest: InputFingerprint,
+    outcome: ToolContinuationOutcome,
+    now: OffsetDateTime,
+    context: (
+        Option<&crate::continuation_handoff::Handoff>,
+        &mut crate::public_session::v2::proof::Proof,
+    ),
+) -> Result<ToolContinuationReceipt, Error> {
+    let (handoff, proof) = context;
     bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
+    proof
+        .measure(&(&run.session_id, &run.id))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut receipt = ToolContinuationReceipt {
         session_id: run.session_id.clone(),
         run_id: run.id.clone(),
@@ -143,12 +192,21 @@ fn publish_handoff(
         event_cursor: EventCursor(0),
         outcome,
     };
+    proof
+        .measure(&receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut event = domain::audit(&receipt, now);
     if let Some(handoff) = handoff {
         event.payload["handoff"] =
             serde_json::to_value(handoff).map_err(|_| Error::InvalidRequest)?;
     }
+    proof
+        .measure(&event)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     receipt.event_cursor = append_audit(state, event)?;
+    proof
+        .measure(&receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     state.operation_receipts.insert(
         (run.session_id.clone(), id),
         OperationReceipt::ToolContinuation(receipt.clone()),

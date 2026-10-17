@@ -76,6 +76,12 @@ impl MemoryStore {
             }
             _ => (),
         }
+        if let Some(input) =
+            crate::native_enrollment::caller::tool::ToolInput::prepared(joined.observed_operation())
+        {
+            crate::memory::tool_continuation::native_caller::selected(state, input, proof)
+                .map_err(|_| StoreError::Conflict)?;
+        }
         if let crate::session_owner::preparation::PreparedOperation::ExpiredRunResume(prepared) =
             joined.observed_operation()
         {

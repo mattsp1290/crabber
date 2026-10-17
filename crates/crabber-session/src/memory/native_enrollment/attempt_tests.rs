@@ -12,9 +12,22 @@ impl Harness for crate::MemoryStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn tool_fault(&self, stage: u8) {
+        self.tool_continuation_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
     fn approval_fault(&self, stage: u8) {
         self.approval_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn tool_with_proof(
+        &self,
+        input: crate::native_enrollment::caller::tool::ToolInput<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<
+        Output = Result<crate::ToolContinuationClaimOutcome, crate::ToolContinuationError>,
+    > {
+        std::future::ready(crate::MemoryStore::tool_with_proof(self, input, proof))
     }
     fn approval_with_proof(
         &self,
@@ -274,6 +287,14 @@ impl Harness for crate::MemoryStore {
                 ),
                 (
                     phases,
+                    (
+                        state
+                            .tool_continuations
+                            .values()
+                            .filter(|r| r.session_id == *session)
+                            .collect::<Vec<_>>(),
+                        state.tool_barriers.get(session),
+                    ),
                     state
                         .approvals
                         .values()
@@ -430,6 +451,18 @@ async fn raw_approval_compound_original_grant_proof_and_rollback() {
     ));
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::approvals(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_tool_compound_original_grant_proof_and_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::tools(
         &store, &clock,
     ))
     .await;
