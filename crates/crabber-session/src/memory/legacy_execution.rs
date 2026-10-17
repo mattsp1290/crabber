@@ -16,7 +16,7 @@ impl MemoryExecution {
         proof
             .measure(&(&self.fence, id, running))
             .map_err(invalid)?;
-        self.store.transact(|state| {
+        let result = self.store.transact(|state| {
             let selected = state
                 .runs
                 .get(&self.fence.run_id)
@@ -80,6 +80,16 @@ impl MemoryExecution {
             )
             .map_err(invalid)?;
             Ok(())
-        })
+        });
+        #[cfg(test)]
+        if result.is_ok()
+            && self
+                .store
+                .native_raw_probe
+                .after_legacy(&self.fence.run_id, id)
+        {
+            return Err(invalid("lost original legacy claim ACK"));
+        }
+        result
     }
 }

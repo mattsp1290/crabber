@@ -56,13 +56,23 @@ impl PostgresExecution {
                 #[cfg(test)] &self.store.native_raw_probe).await.map_err(invalid)?;
             Ok(())
         }.await;
-        match result {
+        let committed = match result {
             Ok(()) => tx.commit().await.map_err(db),
             Err(error) => {
                 tx.rollback().await.map_err(db)?;
                 Err(error)
             }
+        };
+        #[cfg(test)]
+        if committed.is_ok()
+            && self
+                .store
+                .native_raw_probe
+                .after_legacy(&self.fence.run_id, id)
+        {
+            return Err(invalid("lost original legacy claim ACK"));
         }
+        committed
     }
 }
 const CALL_COST: &str =

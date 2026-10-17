@@ -245,7 +245,12 @@ pub(super) async fn begin_with_proof(
         Ok(())
     }
     .await;
-    super::transactions::finish(tx, result, unknown).await
+    let committed = super::transactions::finish(tx, result, unknown).await;
+    #[cfg(test)]
+    if committed.is_ok() && store.native_raw_probe.after_begin(&execution.fence.run_id) {
+        return Err(Error::UnknownStoreFailure);
+    }
+    committed
 }
 
 async fn validate_binding_with_proof(

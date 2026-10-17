@@ -116,31 +116,6 @@ pub(super) fn verify_with_proof(
     verify(state, run)
 }
 
-pub(super) fn begin(state: &mut State, id: &RunId) -> Result<(), StoreError> {
-    verify(state, id)?;
-    let run = state.runs.get(id).ok_or_else(invalid)?;
-    if state.admission_execution_protocols.contains(&run.id) {
-        let Some(Source::Init(init)) = state
-            .admission_execution_sources
-            .get(&(run.id.clone(), Kind::Init))
-        else {
-            return Err(invalid());
-        };
-        let issuance = issuer(state, run, None)?;
-        issuance.verify(run).map_err(|_| invalid())?;
-        let source = Source::Begin(Begin::new(init, issuance.clone())?);
-        source.encode()?;
-        if state
-            .admission_execution_sources
-            .insert((run.id.clone(), Kind::Begin), source)
-            .is_some()
-        {
-            return Err(invalid());
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn begin_captured_with_proof(
     state: &mut State,
     id: &RunId,

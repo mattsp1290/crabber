@@ -23,6 +23,18 @@ pub(crate) trait Harness: Store {
         authority: Option<crate::AttemptAuthority>,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<AttemptMutationOutcome, AttemptError>;
+    async fn legacy_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        call: &crabber_core::ToolCallId,
+        event: &crabber_core::EventRecord,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::StoreError>;
+    async fn begin_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::AdmissionExecutionError>;
     async fn retained(&self, session: &SessionId, run: &RunId, birth: bool) -> InputFingerprint;
 }
 
@@ -119,3 +131,7 @@ pub(crate) fn snapshot_digest(value: &impl serde::Serialize) -> InputFingerprint
 #[path = "phase_contract.rs"]
 mod phase;
 pub(crate) use phase::run as phases;
+
+#[path = "compat_contract.rs"]
+mod compat_contract;
+pub(crate) use compat_contract::run as compatibility;

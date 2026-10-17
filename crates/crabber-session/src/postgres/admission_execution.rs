@@ -263,7 +263,12 @@ pub(super) async fn begin_with_proof(
     )
     .await
     .map_err(|_| Error::UnknownStoreFailure)?;
-    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)
+    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
+    #[cfg(test)]
+    if store.native_raw_probe.after_begin(&execution.fence.run_id) {
+        return Err(Error::UnknownStoreFailure);
+    }
+    Ok(())
 }
 
 async fn validate_binding_with_proof(

@@ -75,7 +75,17 @@ impl SqliteExecution {
             Ok(())
         }
         .await;
-        super::transactions::finish(tx, result, std::convert::identity).await
+        let committed = super::transactions::finish(tx, result, std::convert::identity).await;
+        #[cfg(test)]
+        if committed.is_ok()
+            && self
+                .store
+                .native_raw_probe
+                .after_legacy(&self.fence.run_id, id)
+        {
+            return Err(invalid("lost original legacy claim ACK"));
+        }
+        committed
     }
 }
 const CALL_COST: &str =

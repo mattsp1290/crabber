@@ -50,6 +50,30 @@ impl Harness for crate::PostgresStore {
             .change_attempt_with_proof(request, authority, None, proof)
             .await
     }
+    async fn legacy_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        call: &crabber_core::ToolCallId,
+        event: &crabber_core::EventRecord,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::StoreError> {
+        let execution = crate::postgres::PostgresExecution {
+            store: self.clone(),
+            fence,
+        };
+        execution.claim_legacy_with_proof(call, event, proof).await
+    }
+    async fn begin_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::AdmissionExecutionError> {
+        let execution = crate::postgres::PostgresExecution {
+            store: self.clone(),
+            fence,
+        };
+        crate::postgres::admission_execution::begin_with_proof(&execution, proof).await
+    }
     async fn retained(
         &self,
         session: &SessionId,
@@ -75,7 +99,7 @@ const BIRTH: [&str; 3] = [
     "SELECT data FROM native_execution_origins WHERE run_id=$1",
     "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
 ];
-const NATIVE: [&str; 15] = [
+const NATIVE: [&str; 17] = [
     "SELECT CAST(public_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
     "SELECT data::text FROM runs WHERE id=$1",
     "SELECT CAST(generation AS TEXT)||owner||claim_token||run_claim_token||CAST(lease_until AS TEXT)||state||cleanup_state FROM execution_attempts WHERE run_id=$1 ORDER BY id",
@@ -91,6 +115,8 @@ const NATIVE: [&str; 15] = [
     "SELECT claim_token||outcome_json||state||quiescence_state FROM tool_phases WHERE run_id=$1 ORDER BY id",
     "SELECT snapshot_record FROM tool_calls WHERE run_id=$1 ORDER BY id",
     "SELECT CAST(snapshot_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
+    "SELECT CAST(source_protocol AS TEXT)||start_state||CASE WHEN capsule_version=1 THEN data::text ELSE data_json END FROM admission_executions WHERE run_id=$1",
+    "SELECT kind||data_json FROM admission_execution_sources WHERE run_id=$1 ORDER BY kind",
 ];
 #[tokio::test]
 async fn raw_attempt_fresh_replay_rollback_and_ack_loss() {
@@ -141,6 +167,24 @@ async fn raw_phase_fresh_replay_rollback_and_ack_loss() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::phases(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_compatibility_original_inputs_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::compatibility(
         &store, &clock,
     ))
     .await;

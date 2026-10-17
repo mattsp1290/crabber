@@ -11,8 +11,10 @@ struct Selection {
     session: SessionId,
     operation: Identity,
     refuse: bool,
+    lose_ack: bool,
     hits: Vec<InputFingerprint>,
 }
+#[derive(PartialEq, Eq)]
 enum Identity {
     Control(ControlId),
     LegacyTool(RunId, ToolCallId),
@@ -35,6 +37,7 @@ impl Probe {
             session: session.clone(),
             operation: Identity::Control(operation.clone()),
             refuse,
+            lose_ack: false,
             hits: Vec::new(),
         });
     }
@@ -49,6 +52,7 @@ impl Probe {
             session: session.clone(),
             operation: Identity::LegacyTool(run.clone(), call.clone()),
             refuse,
+            lose_ack: false,
             hits: Vec::new(),
         });
     }
@@ -57,8 +61,23 @@ impl Probe {
             session: session.clone(),
             operation: Identity::AdmissionBegin(run.clone()),
             refuse,
+            lose_ack: false,
             hits: Vec::new(),
         });
+    }
+    pub(crate) fn lose_ack(&self) {
+        self.0.lock().unwrap().as_mut().unwrap().lose_ack = true;
+    }
+    pub(crate) fn after_legacy(&self, run: &RunId, call: &ToolCallId) -> bool {
+        self.after_commit(&Identity::LegacyTool(run.clone(), call.clone()))
+    }
+    pub(crate) fn after_begin(&self, run: &RunId) -> bool {
+        self.after_commit(&Identity::AdmissionBegin(run.clone()))
+    }
+    fn after_commit(&self, identity: &Identity) -> bool {
+        self.0.lock().unwrap().as_ref().is_some_and(|selected| {
+            selected.lose_ack && &selected.operation == identity && !selected.hits.is_empty()
+        })
     }
     pub(crate) fn hits(&self) -> Vec<InputFingerprint> {
         self.0
@@ -76,28 +95,21 @@ impl Probe {
             return Ok(());
         };
         let digest = match fresh {
-            Fresh::Phase(p) => &p.request.id,
-        };
-        let mut state = self.0.lock().unwrap();
-        let Some(selected) = state
-            .as_mut()
-            .filter(|s| &s.session == scope.session && &s.operation == operation)
-        else {
-            return Ok(());
-        };
-        let digest = match fresh {
-            Fresh::Attempt(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
-                "crabber.native.raw-attempt.test.v1",
-                a.run,
-                a.request,
-                &a.record.snapshot,
-                &a.record.owner,
-                &a.record.token,
-                &a.record.run_token,
-                a.record.lease_until,
-                a.receipt,
-                a.event,
-                a.issued.is_some(),
+            Fresh::Phase(p) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+                "crabber.native.raw-phase.test.v1",
+                p.run,
+                p.request,
+                &p.parent.snapshot,
+                &p.parent.token,
+                &p.parent.run_token,
+                &p.record.snapshot,
+                &p.record.token,
+                &p.record.output,
+                p.call,
+                p.receipt,
+                p.event,
+                p.running_event,
+                p.issued.is_some(),
             )),
             Fresh::AdmissionBegin(a) => {
                 crate::native_enrollment::caller::contract::snapshot_digest(&(

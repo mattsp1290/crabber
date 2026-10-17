@@ -44,3 +44,10 @@ pub(crate) fn measure_phase_authority(
     }
     Ok(())
 }
+
+#[path = "../../../crabber-session/src/native_enrollment/caller/legacy.rs"]
+mod legacy;
+pub(crate) use legacy::LegacyTool;
+#[path = "../../../crabber-session/src/native_enrollment/caller/admission_begin.rs"]
+mod admission_begin;
+pub(crate) use admission_begin::AdmissionBegin;

@@ -51,6 +51,30 @@ impl Harness for crate::MemoryStore {
             proof,
         ))
     }
+    fn legacy_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        call: &crabber_core::ToolCallId,
+        event: &crabber_core::EventRecord,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<Output = Result<(), crate::StoreError>> {
+        let execution = crate::memory::MemoryExecution {
+            store: self.clone(),
+            fence,
+        };
+        std::future::ready(execution.claim_legacy_with_proof(call, event, proof))
+    }
+    fn begin_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<Output = Result<(), crate::AdmissionExecutionError>> {
+        let execution = crate::memory::MemoryExecution {
+            store: self.clone(),
+            fence,
+        };
+        std::future::ready(execution.begin_admission_with_proof(proof))
+    }
     fn retained(
         &self,
         session: &SessionId,
@@ -102,6 +126,15 @@ impl Harness for crate::MemoryStore {
                 .collect();
             let calls: Vec<_> = state.calls.values().filter(|c| c.run_id == *run).collect();
             serde_json::to_vec(&(
+                (
+                    state.admission_executions.get(run),
+                    state
+                        .admission_execution_sources
+                        .iter()
+                        .filter(|((id, _), _)| id == run)
+                        .collect::<Vec<_>>(),
+                    state.admission_execution_protocols.contains(run),
+                ),
                 phases,
                 calls,
                 state.snapshot_revisions.get(session),
@@ -154,6 +187,18 @@ async fn raw_phase_fresh_replay_rollback_and_ack_loss() {
     ));
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::phases(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_compatibility_original_inputs_and_atomic_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::compatibility(
         &store, &clock,
     ))
     .await;

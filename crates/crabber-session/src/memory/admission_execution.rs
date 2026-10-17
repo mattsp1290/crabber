@@ -121,7 +121,7 @@ impl MemoryExecution {
         proof
             .measure(&self.fence)
             .map_err(|_| Error::UnknownStoreFailure)?;
-        self.store.transact(|state| {
+        let result = self.store.transact(|state| {
             super::admission_journal::verify_with_proof(state, &self.fence.run_id, proof)
                 .map_err(|_| Error::UnknownStoreFailure)?;
             let run = state
@@ -210,7 +210,12 @@ impl MemoryExecution {
             )
             .map_err(|_| Error::UnknownStoreFailure)?;
             Ok(())
-        })
+        });
+        #[cfg(test)]
+        if result.is_ok() && self.store.native_raw_probe.after_begin(&self.fence.run_id) {
+            return Err(Error::UnknownStoreFailure);
+        }
+        result
     }
 }
 
