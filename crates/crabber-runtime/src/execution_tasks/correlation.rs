@@ -12,13 +12,6 @@ impl ExecutionTasks {
     /// its actual `RunId`. This does not create, replace or join a task, and cannot
     /// authorize execution. Snapshot classification changes under the owners lock.
     /// Never lock the async join here: a drain may already be awaiting this task.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "initial preclaim Runtime handoff follows separately"
-        )
-    )]
     pub(crate) fn correlate_run(
         &self,
         task: &Arc<ExecutionTask>,

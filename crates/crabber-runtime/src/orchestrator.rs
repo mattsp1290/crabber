@@ -133,14 +133,6 @@ impl WorkspaceReaderResolver for AttemptWorkspaceReaderResolver {
     }
 }
 
-fn admission_error(error: StoreError) -> RuntimeError {
-    if error == StoreError::Busy {
-        RuntimeError::SessionBusy
-    } else {
-        RuntimeError::Store(error)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Request {
     /// Explicit selection or frozen host fallback for stored session defaults.
@@ -538,7 +530,7 @@ pub struct Orchestrator {
     session_services: crate::session_services::SessionServices,
     preparation_scope: Option<preparation::scope::PlanScope>,
     retained_preparations: preparation::retained::RetainedPreparations,
-    pending_successors: crabber_session::session_owner::owned_scope::PendingSuccessorTasks,
+    pending_drivers: crabber_session::session_owner::owned_scope::PendingDriverTasks,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
     observation_lifetime: Arc<ObservationLifetime>,
     tool_resumes: Arc<
@@ -842,8 +834,8 @@ impl OrchestratorBuilder {
             session_services: crate::session_services::SessionServices::default(),
             preparation_scope: None,
             retained_preparations: preparation::retained::RetainedPreparations::default(),
-            pending_successors:
-                crabber_session::session_owner::owned_scope::PendingSuccessorTasks::default(),
+            pending_drivers:
+                crabber_session::session_owner::owned_scope::PendingDriverTasks::default(),
             owned_attempt: None,
             observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
@@ -2053,23 +2045,36 @@ impl Orchestrator {
             .await?;
         let prepared_runtime = runtime.clone();
         let prepared_request = request.clone();
-        let ((plan, bound), completion) = runtime
-            .finish_durable_preparation(grant, move |scope| async move {
-                let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
-                let (plan, admission, _) = prepared_runtime
-                    .prepare_admission_in_session(&prepared_request, session_id)
-                    .await?;
-                let bound = prepared_runtime
-                    .prebind_owned_provider(&plan, &admission.binding.provider)
-                    .await?;
-                Ok((
-                    (plan, bound),
-                    crabber_session::session_owner::preparation::PreparedOperation::Admit(
-                        Box::new(admission),
+        let owned = grant.retains_resources();
+        let work = move |scope| async move {
+            let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
+            let (plan, admission, _) = prepared_runtime
+                .prepare_admission_in_session(&prepared_request, session_id)
+                .await?;
+            let bound = prepared_runtime
+                .prebind_owned_provider(&plan, &admission.binding.provider)
+                .await?;
+            Ok((
+                (plan, bound),
+                crabber_session::session_owner::preparation::PreparedOperation::Admit(Box::new(
+                    admission,
+                )),
+            ))
+        };
+        if owned {
+            let outcome =
+                Box::pin(runtime.finish_initial_preparation(grant, request, work)).await?;
+            return match outcome {
+                preparation::pending::PendingOutcome::Started { handle, .. } => Ok(handle),
+                preparation::pending::PendingOutcome::Replayed(
+                    preparation::pending::main::Metadata::Initial(
+                        crabber_session::session_owner::owned_scope::InitialAdmissionReplay::Unkeyed(receipt),
                     ),
-                ))
-            })
-            .await?;
+                ) => Err(RuntimeError::AdmissionAlreadyCommitted(receipt)),
+                preparation::pending::PendingOutcome::Replayed(_) => Err(StoreError::AdmissionConflict.into()),
+            };
+        }
+        let ((plan, bound), completion) = runtime.finish_durable_preparation(grant, work).await?;
         let admitted = match completion {
             crabber_session::session_owner::preparation::PreparationCompletion::Admitted(admitted) => admitted,
             crabber_session::session_owner::preparation::PreparationCompletion::AdmissionReplayed(receipt) => return Err(RuntimeError::AdmissionAlreadyCommitted(receipt)),
@@ -2164,41 +2169,57 @@ impl Orchestrator {
         let prepared_runtime = self.clone();
         let prepared_request = request.clone();
         let prepared_options = options.clone();
-        let ((plan, bound), completion) = self
-            .finish_durable_preparation(grant, move |scope| async move {
-                let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
-                let (plan, keyed) = prepared_runtime
-                    .prepare_keyed_admission(&prepared_request, prepared_options)
-                    .await?;
-                let bound = prepared_runtime
-                    .prebind_owned_provider(&plan, &keyed.binding.provider)
-                    .await?;
-                Ok((
-                    (plan, bound),
-                    crabber_session::session_owner::preparation::PreparedOperation::AdmitKeyed(
-                        Box::new(keyed),
-                    ),
-                ))
-            })
+        let owned = grant.retains_resources();
+        let work = move |scope| async move {
+            let prepared_runtime = prepared_runtime.with_preparation_scope(scope);
+            let (plan, keyed) = prepared_runtime
+                .prepare_keyed_admission(&prepared_request, prepared_options)
+                .await?;
+            let bound = prepared_runtime
+                .prebind_owned_provider(&plan, &keyed.binding.provider)
+                .await?;
+            Ok((
+                (plan, bound),
+                crabber_session::session_owner::preparation::PreparedOperation::AdmitKeyed(
+                    Box::new(keyed),
+                ),
+            ))
+        };
+        if owned {
+            let outcome = Box::pin(
+                self.with_context(context)
+                    .finish_initial_preparation(grant, request, work),
+            )
             .await?;
+            return match outcome {
+                preparation::pending::PendingOutcome::Started { handle, metadata } => {
+                    let preparation::pending::main::Metadata::Initial(
+                        crabber_session::session_owner::owned_scope::InitialAdmissionReplay::Keyed(
+                            receipt,
+                        ),
+                    ) = metadata
+                    else {
+                        return Err(StoreError::AdmissionConflict.into());
+                    };
+                    Ok(Admission::Started { receipt, handle })
+                }
+                preparation::pending::PendingOutcome::Replayed(
+                    preparation::pending::main::Metadata::Initial(
+                        crabber_session::session_owner::owned_scope::InitialAdmissionReplay::Keyed(
+                            receipt,
+                        ),
+                    ),
+                ) => Ok(Admission::Replayed(receipt)),
+                preparation::pending::PendingOutcome::Replayed(_) => {
+                    Err(StoreError::AdmissionConflict.into())
+                }
+            };
+        }
+        let ((plan, bound), completion) = self.finish_durable_preparation(grant, work).await?;
         let crabber_session::session_owner::preparation::PreparationCompletion::Keyed(outcome) =
             completion
         else {
             return Err(StoreError::AdmissionConflict.into());
-        };
-        let outcome: Result<_, StoreError> = Ok(outcome);
-        let outcome = match outcome {
-            Err(StoreError::AdmissionConflict)
-                if request.input_envelope.is_none() || !request.selection_policy.is_explicit() =>
-            {
-                plan.release();
-                let original = self
-                    .retained_admission(&request, &options)
-                    .await?
-                    .ok_or(StoreError::AdmissionConflict)?;
-                return Ok(Admission::Replayed(original.receipt));
-            }
-            result => result.map_err(admission_error)?,
         };
         match outcome {
             KeyedAdmitOutcome::Started { receipt, admitted } => Ok(Admission::Started {

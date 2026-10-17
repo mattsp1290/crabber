@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn explicit_cleanup_after_unknown_native_commit_reconciles_original_source() {
+async fn explicit_cleanup_after_unknown_native_commit_preserves_original_source() {
     for keyed in [false, true] {
         let h = Harness::new();
         h.gate.preparation_fault.store(2, Ordering::SeqCst);
@@ -27,7 +27,7 @@ async fn explicit_cleanup_after_unknown_native_commit_reconciles_original_source
             .cleanup_retained_preparation(&descriptor)
             .await
             .unwrap();
-        h.finish_cleanup(&descriptor).await;
+        h.finish_cleanup_state(&descriptor, true).await;
         assert_eq!(
             h.memory
                 .lookup_session_owner(&descriptor.session_id, &descriptor.join_id)
@@ -212,7 +212,7 @@ async fn malformed_cleanup_ack_retains_original_observation_for_exact_retry() {
 }
 
 #[tokio::test]
-async fn explicit_failure_cleanup_joins_actual_scope_before_new_work() {
+async fn unknown_completion_cleanup_joins_child_without_forging_root_disposition() {
     let h = Harness::new();
     h.gate.preparation_fault.store(1, Ordering::SeqCst);
     let error = h
@@ -226,21 +226,22 @@ async fn explicit_failure_cleanup_joins_actual_scope_before_new_work() {
         .cleanup_retained_preparation(&descriptor)
         .await
         .unwrap();
-    h.finish_cleanup(&descriptor).await;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while h
-            .memory
+    h.finish_cleanup_state(&descriptor, true).await;
+    assert_eq!(
+        h.memory
             .get_session_owner(&descriptor.session_id, &descriptor.owner.id)
             .await
             .unwrap()
-            .state
-            != SessionOwnerState::Joined
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+            .state,
+        SessionOwnerState::Active
+    );
+    assert!(
+        h.memory
+            .lookup_session_owner(&descriptor.session_id, &descriptor.join_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         h.memory
             .lookup_admission(&descriptor.session_id, &options().key)
@@ -248,17 +249,16 @@ async fn explicit_failure_cleanup_joins_actual_scope_before_new_work() {
             .unwrap()
             .is_none()
     );
-    let mut next = options();
-    next.key = AdmissionKey::new("after-observed-cleanup").unwrap();
-    let crate::Admission::Started { handle, .. } =
-        h.runtime.start_keyed(h.input.clone(), next).await.unwrap()
-    else {
-        panic!("new work")
-    };
-    handle.done().await.unwrap();
-    h.provider.cleanup_release.notify_one();
-    assert_eq!(h.provider.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(h.fake.requests().len(), 1);
+    let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
+    assert!(
+        h.runtime
+            .retry_preparation_completion(&descriptor)
+            .await
+            .is_err()
+    );
+    assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
+    assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(h.fake.requests().len(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -315,26 +315,38 @@ async fn running_factory_cancel_is_observed_after_signal_and_waits_for_cleanup()
 }
 
 #[tokio::test]
-async fn unkeyed_unknown_commit_retries_metadata_and_retains_resources_until_join() {
+async fn unkeyed_unknown_commit_retry_keeps_uncertainty_without_repeating_io() {
     let h = Harness::new();
     h.gate.preparation_fault.store(2, Ordering::SeqCst);
     let mut fresh = h.input.clone();
     fresh.session_id = None;
     let error = h.runtime.start(fresh).await.err().unwrap();
     let descriptor = error.preparation_reconciliation().unwrap().clone();
+    let original = h
+        .memory
+        .lookup_session_owner(&descriptor.session_id, &descriptor.join_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.child_state(&descriptor).await, SessionOwnerState::Active);
-    let progress = h
-        .runtime
-        .retry_preparation_completion(&descriptor)
-        .await
-        .unwrap();
-    assert!(progress.replayed);
-    let receipt = progress.unkeyed_admission.unwrap();
-    assert_eq!(receipt.session_id, descriptor.session_id);
-    let original = h.memory.get_run(&receipt.run_id).await.unwrap().unwrap();
-    assert_eq!(original.status, RunStatus::Running);
-    h.finish_cleanup(&descriptor).await;
+    let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
+    assert!(
+        h.runtime
+            .retry_preparation_completion(&descriptor)
+            .await
+            .is_err()
+    );
+    assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
+    h.finish_cleanup_state(&descriptor, true).await;
+    assert_eq!(
+        h.memory
+            .lookup_session_owner(&descriptor.session_id, &descriptor.join_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        original
+    );
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.fake.requests().len(), 0);
 }

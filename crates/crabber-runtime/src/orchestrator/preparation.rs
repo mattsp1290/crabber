@@ -52,6 +52,20 @@ impl Orchestrator {
         purpose: PreparationPurpose,
     ) -> Result<DurablePreparation, RuntimeError> {
         self.require_driver_support(request, session)?;
+        if matches!(purpose, PreparationPurpose::OrdinaryAdmission)
+            && self
+                .declared_resource_contract(&crabber_core::SessionContext::new(
+                    session.clone(),
+                    request.workspace_id.clone(),
+                    request.directory.clone(),
+                ))?
+                .is_some()
+            && !self
+                .store
+                .supports_initial_preparation_admission_inspection()
+        {
+            return Err(StoreError::HostUnsupported.into());
+        }
         self.begin_preparation_at(
             request,
             session,
@@ -358,3 +372,15 @@ pub use progress::{
 
 #[path = "preparation/admission_recovery.rs"]
 mod admission_recovery;
+
+#[path = "preparation/initial.rs"]
+mod initial;
+
+impl DurablePreparation {
+    pub(in crate::orchestrator) fn retains_resources(&self) -> bool {
+        self.grant
+            .original_reservation()
+            .resource_contract
+            .is_some()
+    }
+}

@@ -75,15 +75,24 @@ async fn panic_once(store: Arc<dyn Store>, mode: usize) {
         gate: gate.clone(),
     });
     let h = Harness::on_store(wrapped, store, gate);
-    let crate::Admission::Started { handle, .. } = h
-        .runtime
-        .start_keyed(h.input.clone(), options())
-        .await
-        .unwrap()
-    else {
-        panic!("genuine owned native preparation")
+    // Keep genuine preparation alive until the injected original renewal has
+    // actually entered. A fast same-task worker may otherwise finish before
+    // the spawned heartbeat ever needs to renew.
+    h.gate.preparation_hold.store(true, Ordering::SeqCst);
+    let runtime = h.runtime.clone();
+    let input = h.input.clone();
+    let start = tokio::spawn(async move { runtime.start_keyed(input, options()).await });
+    let completed = tokio::time::timeout(
+        Duration::from_secs(2),
+        h.gate.preparation_entered.notified(),
+    )
+    .await;
+    let renewed = tokio::time::timeout(Duration::from_secs(2), heartbeat.entered.notified()).await;
+    h.gate.preparation_hold.store(false, Ordering::SeqCst);
+    h.gate.preparation_release.notify_one();
+    let crate::Admission::Started { handle, .. } = start.await.unwrap().unwrap() else {
+        panic!("genuine owned native preparation");
     };
-    heartbeat.entered.notified().await;
     let descriptor = h.descriptor().await;
     handle.done().await.unwrap();
     h.provider.cleanup_started.notified().await;
@@ -108,12 +117,18 @@ async fn panic_once(store: Arc<dyn Store>, mode: usize) {
     assert_eq!(h.gate.owned_join_calls.load(Ordering::SeqCst), 0);
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(h.provider.cleanup_completed.load(Ordering::SeqCst), 1);
+    assert!(completed.is_ok(), "genuine Complete must reach held ACK");
+    assert!(
+        renewed.is_ok(),
+        "injected original heartbeat renewal must really occur"
+    );
     assert_eq!(heartbeat.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         heartbeat.payload_drops.load(Ordering::SeqCst),
         usize::from(mode == 4)
     );
 }
+
 #[tokio::test]
 async fn memory_preparation_heartbeat_failure_survives_cleanup_retry() {
     panic_contract(Arc::new(MemoryStore::new())).await;
@@ -270,22 +285,19 @@ async fn stopping_preparation_after_pending_lookup_does_not_start_cancel_observa
         preparation_heartbeat: Some(heartbeat.clone()),
         ..Default::default()
     });
-    gate.preparation_fault.store(1, Ordering::SeqCst);
     let wrapped = Arc::new(DelayedTerminalStore {
         inner: store.clone(),
         gate: gate.clone(),
     });
     let h = Harness::on_store(wrapped, store, gate);
-    let error = tokio::time::timeout(
-        Duration::from_secs(3),
-        h.runtime.start_keyed(h.input.clone(), options()),
-    )
-    .await
-    .expect("original preparation returned")
-    .err()
-    .unwrap();
-    let descriptor = error.preparation_reconciliation().unwrap().clone();
+    h.provider.wait_for_close.store(true, Ordering::SeqCst);
+    let runtime = h.runtime.clone();
+    let input = h.input.clone();
+    let start = tokio::spawn(async move { runtime.start_keyed(input, options()).await });
+    h.provider.entered.notified().await;
+    let descriptor = h.descriptor().await;
     heartbeat.pending_hold.store(true, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(5)).await;
     tokio::time::timeout(
         Duration::from_secs(10),
         heartbeat.pending_entered.notified(),
@@ -326,6 +338,8 @@ async fn stopping_preparation_after_pending_lookup_does_not_start_cancel_observa
         .unwrap();
     assert_eq!(h.gate.owned_join_calls.load(Ordering::SeqCst), 0);
     heartbeat.pending_release.notify_one();
+    let error = start.await.unwrap().err().unwrap();
+    assert_eq!(error.preparation_reconciliation(), Some(&descriptor));
     tokio::time::timeout(Duration::from_secs(3), async {
         while !h
             .runtime

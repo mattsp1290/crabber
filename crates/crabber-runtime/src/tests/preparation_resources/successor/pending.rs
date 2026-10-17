@@ -118,7 +118,11 @@ async fn replay(store: Arc<dyn Store>, clock: Arc<ManualClock>, expired: bool) {
     assert_eq!(
         h.runtime
             .retained_preparation_status(&descriptor.session_id),
-        vec![]
+        vec![crate::RetainedPreparationProgress {
+            preparation: h.descriptor().await,
+            status: crate::RetainedPreparationStatus::CleanupUncertain,
+        }],
+        "successor replay must release its own entry while retaining the original unknown initial completion",
     );
 }
 async fn dropped_waiter(store: Arc<dyn Store>, clock: Arc<ManualClock>, expired: bool) {

@@ -149,17 +149,14 @@ async fn lost_native_commit_ack_retains_captured_provider_and_never_reacquires_o
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         assert_eq!(h.fake.requests().len(), 0);
         assert_eq!(h.child_state(&descriptor).await, SessionOwnerState::Active);
+        let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
         assert!(
-            tokio::time::timeout(Duration::from_millis(10), resolver.started.notified())
+            h.runtime
+                .retry_preparation_completion(&descriptor)
                 .await
                 .is_err()
         );
-        let progress = h
-            .runtime
-            .retry_preparation_completion(&descriptor)
-            .await
-            .unwrap();
-        assert_eq!(progress.replayed, point == 2);
+        assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         assert_eq!(h.fake.requests().len(), 0);
         tokio::time::timeout(Duration::from_secs(2), resolver.started.notified())

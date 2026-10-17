@@ -20,11 +20,15 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
             .err()
             .unwrap();
         let initial = initial.preparation_reconciliation().unwrap().clone();
-        h.runtime
-            .retry_preparation_completion(&initial)
-            .await
-            .unwrap();
-        h.finish_cleanup(&initial).await;
+        let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
+        assert!(
+            h.runtime
+                .retry_preparation_completion(&initial)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
+        h.finish_cleanup_state(&initial, true).await;
         let receipt = h
             .memory
             .lookup_admission(&initial.session_id, &options().key)

@@ -246,10 +246,11 @@ impl Harness {
             return;
         }
         tokio::time::timeout(Duration::from_secs(2), async {
-            while !self
+            while self
                 .runtime
                 .retained_preparation_status(&descriptor.session_id)
-                .is_empty()
+                .iter()
+                .any(|status| status.preparation == *descriptor)
             {
                 tokio::task::yield_now().await;
             }
@@ -306,7 +307,7 @@ async fn scoped_plan_lifetime_keeps_child_active_until_actual_cleanup_joins() {
 }
 
 #[tokio::test]
-async fn failed_native_commit_retains_value_and_exact_retry_never_reruns_factory() {
+async fn unknown_native_commit_retry_observes_without_reminting_authority() {
     for point in [1, 2] {
         let h = Harness::new();
         h.gate.preparation_fault.store(point, Ordering::SeqCst);
@@ -323,19 +324,21 @@ async fn failed_native_commit_retains_value_and_exact_retry_never_reruns_factory
         assert_eq!(status.len(), 1);
         assert_eq!(
             status[0].status,
-            crate::RetainedPreparationStatus::NativeCommitPending
+            crate::RetainedPreparationStatus::CleanupUncertain
         );
         assert_eq!(h.runtime.retained_preparation_status(&SessionId::new()), []);
         assert_eq!(h.child_state(&descriptor).await, SessionOwnerState::Active);
-        assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
+        let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
         assert!(
-            tokio::time::timeout(
-                Duration::from_millis(20),
-                h.provider.cleanup_started.notified()
-            )
-            .await
-            .is_err()
+            h.runtime
+                .retry_preparation_completion(&descriptor)
+                .await
+                .is_err()
         );
+        assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
+        assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(h.fake.requests().len(), 0);
+        h.finish_cleanup_state(&descriptor, true).await;
         if point == 2 {
             assert!(matches!(
                 h.runtime
@@ -344,24 +347,22 @@ async fn failed_native_commit_retains_value_and_exact_retry_never_reruns_factory
                     .unwrap(),
                 crate::Admission::Replayed(_)
             ));
-            assert_eq!(h.provider.cleanup_completed.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(
+                h.memory
+                    .lookup_admission(&descriptor.session_id, &options().key)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                h.runtime
+                    .start_keyed(h.input.clone(), options())
+                    .await
+                    .is_err()
+            );
         }
-        let progress = h
-            .runtime
-            .retry_preparation_completion(&descriptor)
-            .await
-            .unwrap();
-        assert_eq!(progress.replayed, point == 2);
         assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
         assert_eq!(h.fake.requests().len(), 0);
-        h.finish_cleanup(&descriptor).await;
-        assert!(matches!(
-            h.runtime
-                .start_keyed(h.input.clone(), options())
-                .await
-                .unwrap(),
-            crate::Admission::Replayed(_)
-        ));
-        assert_eq!(h.provider.calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -35,7 +35,7 @@ pub(super) struct Entry {
     pub value: Option<RetainedValue>,
     pub owned: Option<OwnedEntry>,
     pub committed: bool,
-    pub pending: Option<Arc<super::pending::PendingExisting>>,
+    pub pending: Option<Arc<super::pending::PendingPreparation>>,
     pub disposing: bool,
     pub heartbeat_stop: CancellationToken,
     pub heartbeat: heartbeat::RetainedTask,
@@ -143,7 +143,12 @@ impl RetainedPreparations {
                             Status::CleanupUncertain
                         } else if current.disposing {
                             Status::CleanupRequested
-                        } else if current.committed {
+                        } else if current.committed
+                            || current
+                                .pending
+                                .as_ref()
+                                .is_some_and(|pending| pending.committed())
+                        {
                             Status::ResourcesRetained
                         } else if current.joined.is_some() {
                             Status::NativeCommitPending

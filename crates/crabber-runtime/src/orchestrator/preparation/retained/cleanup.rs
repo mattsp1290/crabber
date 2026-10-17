@@ -8,7 +8,7 @@ use crabber_session::{
 };
 use std::sync::Arc;
 #[path = "cleanup/failure.rs"]
-mod failure;
+pub(in crate::orchestrator::preparation) mod failure;
 #[path = "cleanup/observation.rs"]
 pub(in crate::orchestrator::preparation) mod observation;
 

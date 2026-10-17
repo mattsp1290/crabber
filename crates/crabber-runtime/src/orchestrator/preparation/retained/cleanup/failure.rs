@@ -15,6 +15,15 @@ pub(super) async fn publish(
     failure: OwnedCleanupFailure,
 ) -> Result<(), ()> {
     let owned = current.owned.as_ref().ok_or(())?;
+    publish_owned(&current.grant, owned, store, failure).await
+}
+
+pub(in crate::orchestrator::preparation) async fn publish_owned(
+    grant: &crabber_session::session_owner::preparation::PreparationGrant,
+    owned: &super::super::OwnedEntry,
+    store: &dyn Store,
+    failure: OwnedCleanupFailure,
+) -> Result<(), ()> {
     if owned.cleanup_failure != Some(failure) {
         return Err(());
     }
@@ -33,11 +42,9 @@ pub(super) async fn publish(
     let request = request(&source.activation, failure)?;
     let digest = request.fingerprint().map_err(|_| ())?;
     let binding =
-        crabber_session::session_owner::preparation::PreparationResourceLink::reservation(
-            &current.grant,
-        )
-        .map_err(|_| ())?
-        .binding;
+        crabber_session::session_owner::preparation::PreparationResourceLink::reservation(grant)
+            .map_err(|_| ())?
+            .binding;
     if let Some(receipt) = store
         .lookup_session_owner(&request.session_id, &request.id)
         .await
@@ -60,11 +67,7 @@ pub(super) async fn publish(
     {
         return Err(());
     }
-    let authority = current
-        .grant
-        .retained_resources_authority()
-        .cloned()
-        .ok_or(())?;
+    let authority = grant.retained_resources_authority().cloned().ok_or(())?;
     let outcome = store
         .mutate_session_owner(request.clone(), Some(authority))
         .await

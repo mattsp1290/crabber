@@ -2130,6 +2130,21 @@ impl Store for DelayedTerminalStore {
     fn supports_execution_drivers(&self) -> bool {
         self.inner.supports_execution_drivers()
     }
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        self.inner
+            .supports_initial_preparation_admission_inspection()
+    }
+    async fn inspect_initial_preparation_admission(
+        &self,
+        original: &crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crabber_session::session_owner::preparation::PreparationAdmissionReceipt>,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        self.inner
+            .inspect_initial_preparation_admission(original)
+            .await
+    }
     async fn register_execution_driver(
         &self,
         request: crabber_session::session_owner::driver::RegisterExecutionDriver,

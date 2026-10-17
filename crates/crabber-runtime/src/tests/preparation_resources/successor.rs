@@ -30,11 +30,15 @@ async fn initial(
         .err()
         .unwrap();
     let descriptor = error.preparation_reconciliation().unwrap().clone();
-    h.runtime
-        .retry_preparation_completion(&descriptor)
-        .await
-        .unwrap();
-    h.finish_cleanup(&descriptor).await;
+    let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
+    assert!(
+        h.runtime
+            .retry_preparation_completion(&descriptor)
+            .await
+            .is_err()
+    );
+    assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
+    h.finish_cleanup_state(&descriptor, true).await;
     let receipt = h
         .memory
         .lookup_admission(&descriptor.session_id, &options().key)

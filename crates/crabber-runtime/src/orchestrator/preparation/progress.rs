@@ -40,8 +40,9 @@ impl Orchestrator {
     }
     /// Retry only the actual joined task's exact original native commit. No
     /// factory, resolver, plan restoration or business work is invoked here.
-    /// First-two pending mains only expose their same-task completion notice;
-    /// this method never retries their native completion call.
+    /// Initial and first-two successor pending mains only expose their original
+    /// same-task completion notice; this method never repeats their native call.
+    /// An unknown acknowledgement with no notice retains its uncertainty.
     /// On success, retained output disposal requests cleanup; actual scope joins
     /// and their durable acknowledgement remain independently supervised.
     /// # Errors
@@ -135,6 +136,7 @@ impl Orchestrator {
         }
         if let Some(pending) = held.pending.clone() {
             held.disposing = true;
+            drop(held.value.take());
             drop(held);
             super::pending::cleanup_request(self.clone(), &pending, entry);
             return Ok(());
