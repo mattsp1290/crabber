@@ -1,5 +1,5 @@
 //! Borrow only the exact original approval batch and its immutable native sources.
-use super::{Error, Proof, RegisterSuccessorExecutionDriver, State, bounded, issuer};
+use super::{Error, Proof, RegisterSuccessorExecutionDriver, State, bounded};
 use crate::native_parent::RunIssuance;
 use crate::session_owner::driver::successor::source::approval::Evidence;
 use crate::session_owner::driver::successor::source::input::Input;
@@ -25,6 +25,25 @@ pub(super) fn original(
     let PreparationKey::Approval(id) = &origin.key else {
         return Err(Error::SemanticConflict);
     };
+    with_native(
+        state,
+        super::scope::Scope { session, run },
+        id,
+        next,
+        proof,
+        |native| source::selected(request, previous, next, audits, native, binding),
+    )
+}
+fn with_native<T>(
+    state: &State,
+    scope: super::scope::Scope<'_>,
+    id: &crabber_core::ControlId,
+    next: &RunIssuance,
+    proof: &mut Proof,
+    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let session = scope.session;
+    let run = scope.run;
     let (receipt, event) = control(state, session, id, proof)?;
     let work = source::approval::work(receipt)?;
     let (crate::session_owner::preparation::ExistingWorkTarget::ApprovalClaim(target)
@@ -72,9 +91,9 @@ pub(super) fn original(
         None
     };
     let status = if claim {
-        Some(issuer(
+        Some(super::scope::issuer(
             state,
-            request,
+            scope,
             next.sequence
                 .checked_add(1)
                 .ok_or(Error::UnknownStoreOutcome)?,
@@ -97,16 +116,10 @@ pub(super) fn original(
         original,
         status,
     };
-    let input = initial_input(state, request, proof)?;
-    source::selected(
-        request,
-        previous,
-        next,
-        audits,
-        Native::Approval { evidence, input },
-        binding,
-    )
+    let input = input_for(state, session, run, proof)?;
+    use_native(Native::Approval { evidence, input })
 }
+
 fn control<'a>(
     state: &'a State,
     session: &crabber_core::SessionId,
@@ -131,18 +144,6 @@ fn control<'a>(
     Ok((receipt, event))
 }
 
-pub(super) fn initial_input<'a>(
-    state: &'a State,
-    request: &RegisterSuccessorExecutionDriver,
-    proof: &mut Proof,
-) -> Result<Input<'a>, Error> {
-    input_for(
-        state,
-        request.context.session_id(),
-        &request.fence.run_id,
-        proof,
-    )
-}
 fn initial_issuer<'a>(
     state: &'a State,
     session: &crabber_core::SessionId,
@@ -229,4 +230,30 @@ fn original_birth(
         )
         .map_err(|_| Error::UnknownStoreOutcome)?;
     Ok(())
+}
+
+pub(in crate::memory::session_owner::drivers::successor) fn verify_scope(
+    state: &State,
+    scope: super::scope::Scope<'_>,
+    id: &crabber_core::ControlId,
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<source::ContinuationFacts, Error> {
+    let pair = super::scope::pair(state, scope, &PreparationKey::Approval(id.clone()), proof)?;
+    with_native(state, scope, id, pair.next, proof, |native| {
+        if let Native::Approval { input, .. } = &native {
+            input.verify(scope.session, scope.run, Some(binding))?;
+        }
+        let verified =
+            source::AuthenticatedClaim::verify(pair.previous, pair.next, &pair.audits, native)?;
+        verified.verify_binding(binding)?;
+        let (continuation, attempt) = verified.approval.ok_or(Error::SemanticConflict)?;
+        Ok(source::ContinuationFacts {
+            revision: verified.revision,
+            head: verified.head,
+            head_digest: verified.head_digest,
+            continuation,
+            attempt,
+        })
+    })
 }

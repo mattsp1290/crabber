@@ -188,3 +188,6 @@ mod tool_guards_tests;
 #[cfg(test)]
 #[path = "successor/tool_fault_tests.rs"]
 mod tool_fault_tests;
+
+#[path = "successor/pending_tool.rs"]
+mod pending_tool;

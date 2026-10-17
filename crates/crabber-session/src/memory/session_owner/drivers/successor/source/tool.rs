@@ -1,5 +1,5 @@
 //! Borrow selected original requests, independently of later mutable selectors.
-use super::{Error, Proof, RegisterSuccessorExecutionDriver, State, audit, bounded, issuer};
+use super::{Error, Proof, RegisterSuccessorExecutionDriver, State, bounded};
 use crate::native_parent::RunIssuance;
 use crate::session_owner::audit::Audit;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native, tool};
@@ -25,6 +25,23 @@ pub(super) fn original(
     let PreparationKey::ToolContinuation(id) = &origin.key else {
         return Err(Error::SemanticConflict);
     };
+    with_native(
+        state,
+        super::scope::Scope { session, run },
+        id,
+        proof,
+        |native| source::selected(request, previous, next, audits, native, binding),
+    )
+}
+fn with_native<T>(
+    state: &State,
+    selected_scope: super::scope::Scope<'_>,
+    id: &ControlId,
+    proof: &mut Proof,
+    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let session = selected_scope.session;
+    let run = selected_scope.run;
     let (receipt, event) = control(state, session, id, proof)?;
     let (target, _, original_id) = tool::targets(receipt)?;
     let record = state
@@ -84,7 +101,7 @@ pub(super) fn original(
     crate::memory::continuation_input::answers(state, &scope, &answers, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     let original = original_id
-        .map(|id| original_claim(state, request, id, proof))
+        .map(|id| original_claim(state, selected_scope, id, proof))
         .transpose()?;
     let evidence = tool::Evidence {
         receipt,
@@ -104,15 +121,8 @@ pub(super) fn original(
                 event,
             }),
     };
-    let input = super::approval::initial_input(state, request, proof)?;
-    source::selected(
-        request,
-        previous,
-        next,
-        audits,
-        Native::Tool { evidence, input },
-        binding,
-    )
+    let input = super::approval::input_for(state, session, run, proof)?;
+    use_native(Native::Tool { evidence, input })
 }
 
 type Original<'a> = (
@@ -124,49 +134,18 @@ type Original<'a> = (
 );
 fn original_claim<'a>(
     state: &'a State,
-    request: &RegisterSuccessorExecutionDriver,
+    scope: super::scope::Scope<'_>,
     id: &ControlId,
     proof: &mut Proof,
 ) -> Result<Original<'a>, Error> {
-    let session = request.context.session_id();
-    let join = crate::session_owner::preparation::identity::ids(
-        &PreparationKey::ToolContinuation(id.clone()),
-        session,
-    )?
-    .join;
-    let mut sequence = None;
-    for ((owner, run, slot), value) in &state.native_run_issuances {
-        if owner == session
-            && *run == request.fence.run_id
-            && value
-                .completion_source
-                .as_ref()
-                .is_some_and(|source| source.root_join_id == join)
-        {
-            bounded(value, 2048, proof)?;
-            if sequence.replace(*slot).is_some() {
-                return Err(Error::UnknownStoreOutcome);
-            }
-        }
-    }
-    let sequence = sequence.ok_or(Error::UnknownStoreOutcome)?;
-    let next = issuer(state, request, sequence, proof)?;
-    let previous = issuer(
+    let pair = super::scope::pair(
         state,
-        request,
-        sequence
-            .checked_sub(1)
-            .filter(|n| *n > 0)
-            .ok_or(Error::UnknownStoreOutcome)?,
+        scope,
+        &PreparationKey::ToolContinuation(id.clone()),
         proof,
     )?;
-    let joined = audit(state, session, &join, proof)?;
-    let mut audits = Vec::with_capacity(5);
-    for id in source::claim::audit_ids(joined)? {
-        audits.push(audit(state, session, &id, proof)?.clone());
-    }
-    let (receipt, event) = control(state, session, id, proof)?;
-    Ok((previous, next, audits, receipt, event))
+    let (receipt, event) = control(state, scope.session, id, proof)?;
+    Ok((pair.previous, pair.next, pair.audits, receipt, event))
 }
 
 fn control<'a>(
@@ -198,4 +177,35 @@ fn control<'a>(
         return Err(Error::SemanticConflict);
     }
     Ok((receipt, event))
+}
+
+pub(in crate::memory::session_owner::drivers::successor) fn verify_scope(
+    state: &State,
+    scope: super::scope::Scope<'_>,
+    id: &ControlId,
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<source::ContinuationFacts, Error> {
+    let pair = super::scope::pair(
+        state,
+        scope,
+        &PreparationKey::ToolContinuation(id.clone()),
+        proof,
+    )?;
+    with_native(state, scope, id, proof, |native| {
+        if let Native::Tool { input, .. } = &native {
+            input.verify(scope.session, scope.run, Some(binding))?;
+        }
+        let verified =
+            source::AuthenticatedClaim::verify(pair.previous, pair.next, &pair.audits, native)?;
+        verified.verify_binding(binding)?;
+        let (continuation, attempt) = verified.tool.ok_or(Error::SemanticConflict)?;
+        Ok(source::ContinuationFacts {
+            revision: verified.revision,
+            head: verified.head,
+            head_digest: verified.head_digest,
+            continuation,
+            attempt,
+        })
+    })
 }

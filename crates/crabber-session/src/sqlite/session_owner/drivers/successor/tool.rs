@@ -155,9 +155,9 @@ async fn calls(
     Ok(())
 }
 const BLOCKED: &str = "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=?1)";
-const PHASE_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_phases WHERE run_id=?1 AND attempt_id=?2 LIMIT 65) AS bounded";
+pub(super) const PHASE_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_phases WHERE run_id=?1 AND attempt_id=?2 LIMIT 65) AS bounded";
 // Only a bounded readable status carrier agreeing with the terminal route is ignored.
 // No historical outputs are transferred; this does not bound database scan work.
-const CALL_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=?1 AND NOT(CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN COALESCE(status IN ('completed','failed','interrupted') AND json_extract(data,'$.status')=status,FALSE) ELSE FALSE END) LIMIT 65) AS bounded";
-const LATER_PHASE: &str =
+pub(super) const CALL_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM tool_calls WHERE run_id=?1 AND NOT(CASE WHEN length(CAST(data AS BLOB))<=4194304 THEN COALESCE(status IN ('completed','failed','interrupted') AND json_extract(data,'$.status')=status,FALSE) ELSE FALSE END) LIMIT 65) AS bounded";
+pub(super) const LATER_PHASE: &str =
     "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=?1 AND call_id=?2 AND generation>?3)";

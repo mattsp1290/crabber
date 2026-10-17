@@ -178,6 +178,10 @@ pub(crate) async fn unprepared(
     .await;
     store.complete_preparation(joined).await.unwrap();
     clock.set(clock.now() + time::Duration::milliseconds(2));
+    let digest = claim.fingerprint().unwrap();
+    claim.owner = "fresh-original-owner".into();
+    claim.lease_ms = 30000;
+    assert_eq!(claim.fingerprint().unwrap(), digest);
     let recovery = crate::ApprovalContinuationRecovery {
         id: crabber_core::ControlId::new(),
         expected_revision: store.session_revision(&f.run.session_id).await.unwrap(),
@@ -189,5 +193,30 @@ pub(crate) async fn unprepared(
     InspectPendingApprovalPreparation {
         context,
         source: PendingApprovalSource::Recovery(Box::new(recovery)),
+    }
+}
+
+pub(crate) async fn after_recovery(
+    store: &impl Store,
+    clock: &ManualClock,
+    unkeyed: bool,
+) -> crate::session_owner::preparation::InspectPendingApprovalPreparation {
+    let f = Box::pin(super::fixture_input(store, clock, true, unkeyed)).await;
+    clock.set(clock.now() + time::Duration::seconds(31));
+    let mut original = f.original;
+    original.owner = "new-original-owner".into();
+    original.lease_ms = 1;
+    crate::session_owner::preparation::InspectPendingApprovalPreparation {
+        context: f.request.context,
+        source: crate::session_owner::preparation::PendingApprovalSource::Recovery(Box::new(
+            crate::ApprovalContinuationRecovery {
+                id: crabber_core::ControlId::new(),
+                expected_revision: store.session_revision(&original.session_id).await.unwrap(),
+                original,
+                attempt: f.batch.next_attempt,
+                owner: "latest-recovery-preflight".into(),
+                lease_ms: 30000,
+            },
+        )),
     }
 }

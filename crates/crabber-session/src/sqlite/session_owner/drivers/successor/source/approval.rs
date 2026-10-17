@@ -1,5 +1,5 @@
 //! Exact original approval sources; neither later continuation nor head is read.
-use super::{Error, Proof, RegisterSuccessorExecutionDriver, issuer, read, unknown};
+use super::{Error, Proof, RegisterSuccessorExecutionDriver, read, unknown};
 use crate::native_parent::RunIssuance;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native};
 use crate::session_owner::driver::successor::source::{approval::Evidence, input::Input};
@@ -25,6 +25,26 @@ pub(super) async fn original(
     let PreparationKey::Approval(id) = &origin.key else {
         return Err(Error::SemanticConflict);
     };
+    Box::pin(with_native(
+        tx,
+        super::scope::Scope { session, run },
+        id,
+        next,
+        proof,
+        |native| source::selected(request, previous, next, audits, native, binding),
+    ))
+    .await
+}
+async fn with_native<T>(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: super::scope::Scope<'_>,
+    id: &crabber_core::ControlId,
+    next: &RunIssuance,
+    proof: &mut Proof,
+    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let session = scope.session;
+    let run = scope.run;
     let (receipt, event) = control(tx, session, id, proof).await?;
     let work = source::approval::work(&receipt)?;
     let (crate::session_owner::preparation::ExistingWorkTarget::ApprovalClaim(target)
@@ -57,9 +77,9 @@ pub(super) async fn original(
     };
     let status = if claim {
         Some(
-            issuer(
+            super::scope::issuer(
                 tx,
-                request,
+                scope,
                 next.sequence
                     .checked_add(1)
                     .ok_or(Error::UnknownStoreOutcome)?,
@@ -85,16 +105,12 @@ pub(super) async fn original(
         status: status.as_ref(),
     };
     let owned = owned_input(tx, session, run, proof).await?;
-    let input = owned.as_input()?;
-    source::selected(
-        request,
-        previous,
-        next,
-        audits,
-        Native::Approval { evidence, input },
-        binding,
-    )
+    use_native(Native::Approval {
+        evidence,
+        input: owned.as_input()?,
+    })
 }
+
 async fn original_admission_for(
     tx: &mut Transaction<'_, Sqlite>,
     session: &crabber_core::SessionId,
@@ -192,3 +208,30 @@ async fn control(
 }
 const INPUT_COST: &str = r"WITH native AS (SELECT data AS d FROM admission_executions WHERE run_id=?2 AND CAST(?1 AS TEXT) IS NOT NULL), original AS (SELECT json_object('capsule',json_extract(d,'$.capsule'),'receipt',json_extract(d,'$.receipt'),'key',json_extract(d,'$.key')) AS data FROM native) SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM original";
 const INPUT: &str = r"WITH native AS (SELECT data AS d FROM admission_executions WHERE run_id=?2 AND CAST(?1 AS TEXT) IS NOT NULL), original AS (SELECT json_object('capsule',json_extract(d,'$.capsule'),'receipt',json_extract(d,'$.receipt'),'key',json_extract(d,'$.key')) AS data FROM native) SELECT CASE WHEN length(CAST(data AS BLOB))<=16777216 THEN data END FROM original";
+
+pub(in crate::sqlite::session_owner::drivers::successor) async fn verify_scope(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: super::scope::Scope<'_>,
+    id: &crabber_core::ControlId,
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<source::ContinuationFacts, Error> {
+    let pair = super::scope::pair(tx, scope, PreparationKey::Approval(id.clone()), proof).await?;
+    Box::pin(with_native(tx, scope, id, &pair.next, proof, |native| {
+        if let Native::Approval { input, .. } = &native {
+            input.verify(scope.session, scope.run, Some(binding))?;
+        }
+        let verified =
+            source::AuthenticatedClaim::verify(&pair.previous, &pair.next, &pair.audits, native)?;
+        verified.verify_binding(binding)?;
+        let (continuation, attempt) = verified.approval.ok_or(Error::SemanticConflict)?;
+        Ok(source::ContinuationFacts {
+            revision: verified.revision,
+            head: verified.head,
+            head_digest: verified.head_digest,
+            continuation,
+            attempt,
+        })
+    }))
+    .await
+}

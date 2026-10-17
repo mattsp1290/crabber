@@ -27,7 +27,7 @@ fn bounded(proof: &mut Proof, value: &impl serde::Serialize, cap: usize) -> Resu
     crate::snapshot::encoded_bytes(value, cap).ok_or(Error::UnknownStoreOutcome)?;
     Ok(())
 }
-fn inspect(
+pub(super) fn inspect(
     state: &State,
     request: &Request,
     metadata: Metadata,
@@ -59,16 +59,17 @@ fn inspect(
     if run.session_id != claim.session_id || run.id != claim.run_id {
         return Err(Error::IdentityMismatch);
     }
-    crate::memory::native_parent::source_protocol::current(
+    let protected = crate::memory::native_parent::source_protocol::current(
         state,
         &claim.session_id,
         &claim.run_id,
         proof,
     )
     .map_err(|_| Error::UnknownStoreOutcome)?
-    .ok_or(Error::Unsupported)?
-    .verify(run)
-    .map_err(|_| Error::UnknownStoreOutcome)?;
+    .ok_or(Error::Unsupported)?;
+    protected
+        .verify(run)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     approval::protected(state, run, &claim.continuation, proof)?;
     let binding = crate::memory::execution_binding::read_with_proof(
         state,
@@ -119,6 +120,17 @@ fn inspect(
     choice::parent(record, run, &request.source, current, now)?;
     if matches!(request.source, PendingApprovalSource::Recovery(_)) {
         approval::unstarted(state, run, &current.snapshot.target, proof)?;
+    }
+    if matches!(request.source, PendingApprovalSource::Recovery(_)) {
+        provenance::check(
+            state,
+            run,
+            record,
+            &binding.capsule,
+            &claim.id,
+            protected,
+            proof,
+        )?;
     }
     calls(state, record, proof)?;
     Ok(metadata)
@@ -214,3 +226,6 @@ fn calls(
 #[cfg(test)]
 #[path = "pending_approval/tests.rs"]
 mod tests;
+
+#[path = "pending_approval/provenance.rs"]
+mod provenance;

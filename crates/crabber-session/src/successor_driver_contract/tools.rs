@@ -3,6 +3,8 @@
 pub(crate) mod fresh;
 #[path = "tools/mixed.rs"]
 mod mixed;
+#[path = "tools/pending.rs"]
+pub(crate) mod pending;
 use super::*;
 use crate::{ToolContinuationClaimOutcome, ToolContinuationReceipt, ToolContinuationSuspension};
 use crabber_core::{Clock, ControlId, SessionContext, SessionId, SessionRevision};

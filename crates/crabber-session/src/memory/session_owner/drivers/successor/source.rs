@@ -2,7 +2,7 @@
 #[path = "source/approval.rs"]
 pub(super) mod approval;
 #[path = "source/tool.rs"]
-mod tool;
+pub(super) mod tool;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, State};
 use crate::native_parent::{CompletionOperation, RunIssuance};
 use crate::session_owner::{
@@ -252,3 +252,6 @@ fn bounded(value: &impl serde::Serialize, cap: usize, proof: &mut Proof) -> Resu
         .map(|_| ())
         .ok_or(Error::UnknownStoreOutcome)
 }
+
+#[path = "source/scope.rs"]
+pub(super) mod scope;

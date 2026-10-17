@@ -177,6 +177,15 @@ impl Store for SqliteStore {
     > {
         self.inspect_pending_approval(&request).await
     }
+    async fn inspect_pending_tool_preparation(
+        &self,
+        request: crate::session_owner::preparation::InspectPendingToolPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PendingToolPreparationMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_pending_tool(&request).await
+    }
     fn supports_pending_execution_driver_origin(
         &self,
         origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,

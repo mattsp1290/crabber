@@ -216,3 +216,6 @@ impl SuccessorDriverLink {
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
+
+#[path = "source/scope.rs"]
+pub(crate) mod scope;

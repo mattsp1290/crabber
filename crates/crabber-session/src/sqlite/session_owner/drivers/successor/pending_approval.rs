@@ -26,7 +26,7 @@ impl crate::SqliteStore {
         Ok(result)
     }
 }
-async fn inspect(
+pub(super) async fn inspect(
     tx: &mut Transaction<'_, Sqlite>,
     request: &Request,
     metadata: Metadata,
@@ -43,7 +43,7 @@ async fn inspect(
             _ => Error::UnknownStoreOutcome,
         })?;
     let run = run(tx, request, proof).await?;
-    crate::sqlite::native_parent::source_protocol::current(
+    let protected = crate::sqlite::native_parent::source_protocol::current(
         tx,
         &claim.session_id,
         &claim.run_id,
@@ -51,10 +51,9 @@ async fn inspect(
     )
     .await
     .map_err(unknown)?
-    .ok_or(Error::Unsupported)?
-    .verify(&run)
-    .map_err(unknown)?;
-    original_input(tx, request, proof).await?;
+    .ok_or(Error::Unsupported)?;
+    protected.verify(&run).map_err(unknown)?;
+    let binding = original_input(tx, request, proof).await?;
     let (record, revision) =
         crate::sqlite::approval::load_with_proof(tx, &claim.session_id, &claim.run_id, proof)
             .await
@@ -108,6 +107,18 @@ async fn inspect(
     if matches!(request.source, PendingApprovalSource::Recovery(_)) {
         approval::unstarted(tx, &run, &current.snapshot.target, proof).await?;
     }
+    if matches!(request.source, PendingApprovalSource::Recovery(_)) {
+        Box::pin(provenance::check(
+            tx,
+            &run,
+            &record,
+            &binding.capsule,
+            &claim.id,
+            &protected,
+            proof,
+        ))
+        .await?;
+    }
     calls(tx, &record, proof).await?;
     Ok(metadata)
 }
@@ -115,7 +126,7 @@ async fn original_input(
     tx: &mut Transaction<'_, Sqlite>,
     request: &Request,
     proof: &mut Proof,
-) -> Result<(), Error> {
+) -> Result<crate::RetainedExecutionBinding, Error> {
     let claim = choice::claim(request);
     let scope = crate::continuation_input::Scope {
         domain: crate::continuation_input::Domain::Approval,
@@ -146,7 +157,7 @@ async fn original_input(
         proof,
     )
     .await?;
-    Ok(())
+    Ok(binding)
 }
 async fn run(
     tx: &mut Transaction<'_, Sqlite>,
@@ -305,3 +316,6 @@ const SESSION: &str = "SELECT CASE WHEN length(CAST(data AS BLOB))<=16384 THEN d
 #[cfg(test)]
 #[path = "pending_approval/tests.rs"]
 mod tests;
+
+#[path = "pending_approval/provenance.rs"]
+mod provenance;

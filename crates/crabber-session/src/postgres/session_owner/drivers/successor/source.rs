@@ -2,7 +2,7 @@
 #[path = "source/approval.rs"]
 pub(super) mod approval;
 #[path = "source/tool.rs"]
-mod tool;
+pub(super) mod tool;
 use super::super::proof;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::{CompletionOperation, RunIssuance};
@@ -265,3 +265,6 @@ const RECEIPT_COST: &str = "SELECT CAST(octet_length(data::text) AS BIGINT) FROM
 const RECEIPT: &str = "SELECT CASE WHEN octet_length(data::text)<=8192 THEN data::text END FROM admission_receipts WHERE session_id=$1 AND admission_key=$2";
 const EVENT_COST: &str = "SELECT CAST(octet_length(data::text) AS BIGINT) FROM events WHERE session_id=$1 AND seq=CAST($2 AS BIGINT)";
 const EVENT: &str = "SELECT CASE WHEN octet_length(data::text)<=65536 THEN data::text END FROM events WHERE session_id=$1 AND seq=CAST($2 AS BIGINT)";
+
+#[path = "source/scope.rs"]
+pub(super) mod scope;

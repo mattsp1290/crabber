@@ -1,5 +1,5 @@
 //! Exact original compound requests; later recovery selectors are not inputs.
-use super::{Error, Proof, RegisterSuccessorExecutionDriver, issuer, unknown};
+use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::RunIssuance;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native, tool};
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
@@ -25,6 +25,24 @@ pub(super) async fn original(
     let PreparationKey::ToolContinuation(id) = &origin.key else {
         return Err(Error::SemanticConflict);
     };
+    Box::pin(with_native(
+        tx,
+        super::scope::Scope { session, run },
+        id,
+        proof,
+        |native| source::selected(request, previous, next, audits, native, binding),
+    ))
+    .await
+}
+async fn with_native<T>(
+    tx: &mut Transaction<'_, Postgres>,
+    selected_scope: super::scope::Scope<'_>,
+    id: &ControlId,
+    proof: &mut Proof,
+    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let session = selected_scope.session;
+    let run = selected_scope.run;
     let (receipt, event) = control(tx, session, id, proof).await?;
     let (target, _, original_id) = tool::targets(&receipt)?;
     let scope = crate::continuation_input::Scope {
@@ -55,7 +73,7 @@ pub(super) async fn original(
         .map_err(unknown)?;
     let (suspension, suspension_event) = control(tx, session, &batch.id, proof).await?;
     let original = if let Some(id) = original_id {
-        Some(original_claim(tx, request, id, proof).await?)
+        Some(original_claim(tx, selected_scope, id, proof).await?)
     } else {
         None
     };
@@ -76,17 +94,10 @@ pub(super) async fn original(
         }),
     };
     let owned = super::approval::owned_input(tx, session, run, proof).await?;
-    source::selected(
-        request,
-        previous,
-        next,
-        audits,
-        Native::Tool {
-            evidence,
-            input: owned.as_input()?,
-        },
-        binding,
-    )
+    use_native(Native::Tool {
+        evidence,
+        input: owned.as_input()?,
+    })
 }
 
 struct Original {
@@ -98,57 +109,22 @@ struct Original {
 }
 async fn original_claim(
     tx: &mut Transaction<'_, Postgres>,
-    request: &RegisterSuccessorExecutionDriver,
+    scope: super::scope::Scope<'_>,
     id: &ControlId,
     proof: &mut Proof,
 ) -> Result<Original, Error> {
-    let session = request.context.session_id();
-    let join = crate::session_owner::preparation::identity::ids(
-        &PreparationKey::ToolContinuation(id.clone()),
-        session,
-    )?
-    .join;
-    // Only the two bounded scalar candidates transfer. No current-head guess or
-    // per-Run history ceiling; database scanning cost can grow with history.
-    proof.charge(16).map_err(unknown)?;
-    let candidates: Vec<i64> = sqlx::query_scalar(ORIGINAL_SLOT)
-        .bind(&session.0)
-        .bind(&request.fence.run_id.0)
-        .bind(&join.0)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(unknown)?;
-    let [sequence] = candidates.as_slice() else {
-        return Err(Error::UnknownStoreOutcome);
-    };
-    let sequence = u64::try_from(*sequence).map_err(unknown)?;
-    let next = issuer(tx, request, sequence, proof).await?;
-    let previous = issuer(
+    let pair = super::scope::pair(
         tx,
-        request,
-        sequence
-            .checked_sub(1)
-            .filter(|n| *n > 0)
-            .ok_or(Error::UnknownStoreOutcome)?,
+        scope,
+        PreparationKey::ToolContinuation(id.clone()),
         proof,
     )
     .await?;
-    let joined = super::super::super::proof::audit(tx, session, &join, proof)
-        .await?
-        .ok_or(Error::UnknownStoreOutcome)?;
-    let mut audits = Vec::with_capacity(5);
-    for id in source::claim::audit_ids(&joined)? {
-        audits.push(
-            super::super::super::proof::audit(tx, session, &id, proof)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?,
-        );
-    }
-    let (receipt, event) = control(tx, session, id, proof).await?;
+    let (receipt, event) = control(tx, scope.session, id, proof).await?;
     Ok(Original {
-        previous,
-        next,
-        audits,
+        previous: pair.previous,
+        next: pair.next,
+        audits: pair.audits,
         receipt,
         event,
     })
@@ -219,5 +195,37 @@ async fn control(
     }
     Ok((receipt, event))
 }
-const ORIGINAL_SLOT: &str = "SELECT sequence FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 AND data_json::json->'completion_source'->>'root_join_id'=$3 ORDER BY sequence LIMIT 2";
 const PROJECTION: &str = "SELECT json_build_object('version',format_version,'session',data_json::json->'session_id','run',data_json::json->'run_id','claim',data_json::json->'claim','frontend',data_json::json->'frontend_claim','answers',(SELECT COALESCE(json_agg(q->'answer'),'[]'::json) FROM json_array_elements(data_json::json->'questions') q WHERE json_typeof(q->'answer')<>'null'))::text AS data FROM tool_continuations WHERE session_id=$1 AND run_id=$2 AND id=$3 AND generation=$4";
+
+pub(in crate::postgres::session_owner::drivers::successor) async fn verify_scope(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: super::scope::Scope<'_>,
+    id: &ControlId,
+    binding: &crate::ExecutionBindingCapsule,
+    proof: &mut Proof,
+) -> Result<source::ContinuationFacts, Error> {
+    let pair = super::scope::pair(
+        tx,
+        scope,
+        PreparationKey::ToolContinuation(id.clone()),
+        proof,
+    )
+    .await?;
+    Box::pin(with_native(tx, scope, id, proof, |native| {
+        if let Native::Tool { input, .. } = &native {
+            input.verify(scope.session, scope.run, Some(binding))?;
+        }
+        let verified =
+            source::AuthenticatedClaim::verify(&pair.previous, &pair.next, &pair.audits, native)?;
+        verified.verify_binding(binding)?;
+        let (continuation, attempt) = verified.tool.ok_or(Error::SemanticConflict)?;
+        Ok(source::ContinuationFacts {
+            revision: verified.revision,
+            head: verified.head,
+            head_digest: verified.head_digest,
+            continuation,
+            attempt,
+        })
+    }))
+    .await
+}

@@ -602,6 +602,17 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)
     }
+    /// Pure fresh Tool/Frontend eligibility and protected original input inspection.
+    /// No factory, preparation grant, native locator or execution permission.
+    async fn inspect_pending_tool_preparation(
+        &self,
+        _request: crate::session_owner::preparation::InspectPendingToolPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PendingToolPreparationMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Durable signal request/observation support, independent of local registries.
     fn supports_session_owner_cancellation(&self) -> bool {
         false
