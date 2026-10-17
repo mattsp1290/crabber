@@ -48,7 +48,13 @@ impl MemoryStore {
                     self.clock.now(),
                 )? {
                     queue::Before::Other => (),
-                    queue::Before::Replayed(outcome) => return Ok(Some(*outcome)),
+                    queue::Before::Replayed(outcome) => {
+                        return Ok(Some(
+                            crate::session_owner::preparation::driver_completion::replayed(
+                                *outcome,
+                            ),
+                        ));
+                    }
                     queue::Before::Selected(selected) => {
                         *queue_selection.borrow_mut() = Some(*selected);
                     }
