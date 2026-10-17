@@ -19,6 +19,13 @@ fn typed(metadata: &PendingSuccessorReplay, frontend: bool, recovery: bool) -> b
     )
 }
 
+#[derive(Clone, Copy)]
+enum BatchKind {
+    Tool,
+    Frontend,
+    Mixed,
+}
+
 async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
     for frontend in [false, true] {
         for recovery in [false, true] {
@@ -26,11 +33,25 @@ async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
                 Box::pin(same_task(
                     store.clone(),
                     &clock,
-                    frontend,
+                    if frontend {
+                        BatchKind::Frontend
+                    } else {
+                        BatchKind::Tool
+                    },
                     recovery,
                     unkeyed,
                 ))
                 .await;
+                if frontend {
+                    Box::pin(same_task(
+                        store.clone(),
+                        &clock,
+                        BatchKind::Mixed,
+                        recovery,
+                        unkeyed,
+                    ))
+                    .await;
+                }
             }
             Box::pin(faults::contract(store.clone(), &clock, frontend, recovery)).await;
             Box::pin(cleanup::blocked(store.clone(), &clock, frontend, recovery)).await;
@@ -40,13 +61,29 @@ async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
 async fn same_task<S: Store + 'static>(
     store: Arc<S>,
     clock: &ManualClock,
-    frontend: bool,
+    kind: BatchKind,
     recovery: bool,
     unkeyed: bool,
 ) {
+    let frontend = !matches!(kind, BatchKind::Tool);
+    let mixed = matches!(kind, BatchKind::Mixed);
     let owner = PendingDriverTasks::default();
-    let (context, original, _) =
-        Box::pin(prepared(store.as_ref(), clock, frontend, recovery, unkeyed)).await;
+    let (context, original, batch) = if mixed {
+        Box::pin(crate::successor_driver_contract::tools::prepared_mixed(
+            store.as_ref(),
+            clock,
+            recovery,
+            unkeyed,
+        ))
+        .await
+    } else {
+        Box::pin(prepared(store.as_ref(), clock, frontend, recovery, unkeyed)).await
+    };
+    if mixed {
+        assert!(!batch.phases.is_empty());
+        assert!(!batch.frontend.is_empty());
+        assert!(batch.calls.len() > batch.phases.len() + batch.frontend.len());
+    }
     let retry = original.clone();
     let adapter = Interposed::new(store.clone(), Stage::Complete, false);
     adapter.release.notify_one();

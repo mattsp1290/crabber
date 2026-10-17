@@ -124,9 +124,14 @@ Frontend claim/recovery completions through
 `complete_preparation_with_driver_source`. Exact retries return metadata without
 a fresh locator or grant. `inspect_prepared_tool_driver` authenticates the full
 original Tool/Frontend source and accepted inputs; its receipt and locator are
-safe metadata, and do not provide dispatch permission. These source APIs do not
-advertise pending Tool-driver support or prove complete resource ownership.
-External Store implementations default to unsupported.
+safe metadata, and do not provide dispatch permission. `PendingSuccessorTask`
+uses those actual completions and inspectors before registering and activating
+Tool/Frontend claim and recovery drivers in the same original task. These tags
+share the existing 64-task supervisor with initial, Queue and other successor
+work. Exact replay never dispatches business work again; unknown acknowledgments
+retain their original task. Source and task observations leave native execution
+enrollment and complete resource ownership as separate requirements. External
+Store implementations default to unsupported.
 
 
 A PostgreSQL transport/commit failure is currently sanitized as

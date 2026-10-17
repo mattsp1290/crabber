@@ -1,4 +1,4 @@
-//! One supervisor budget spans the original eight typed initial/successor tags.
+//! All eight successor tags share the same existing supervisor budget.
 use super::*;
 #[tokio::test]
 async fn pending_tool_families_share_existing_capacity_and_require_capability() {

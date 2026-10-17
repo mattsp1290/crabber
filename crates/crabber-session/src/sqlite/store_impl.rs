@@ -188,6 +188,10 @@ impl Store for SqliteStore {
                 | Origin::ExpiredRun
                 | Origin::ApprovalClaim
                 | Origin::ApprovalRecovery
+                | Origin::ToolClaim
+                | Origin::ToolRecovery
+                | Origin::FrontendClaim
+                | Origin::FrontendRecovery
         )
     }
     async fn inspect_prepared_approval_driver(
