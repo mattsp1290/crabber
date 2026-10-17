@@ -108,6 +108,7 @@ pub(crate) fn verify<'a>(
     };
     Ok(VerifiedPreparation {
         grant,
+        claim_capture: crate::session_owner::preparation::capture::ClaimCapture::default(),
         effective_revision,
         unkeyed_input: None,
         resource_handoff: Some(super::proof::VerifiedResourceHandoff::from_verified_child(

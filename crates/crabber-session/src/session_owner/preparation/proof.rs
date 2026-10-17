@@ -39,6 +39,7 @@ impl ServiceRequirement<'_> {
 #[derive(Clone)]
 pub(crate) struct VerifiedPreparation<'a> {
     pub grant: &'a PreparationGrant,
+    pub(super) claim_capture: super::capture::ClaimCapture,
     pub effective_revision: SessionRevision,
     pub(super) resource_handoff: Option<VerifiedResourceHandoff>,
     pub(crate) unkeyed_input: Option<crabber_core::InputFingerprint>,
@@ -273,6 +274,7 @@ pub(crate) fn verify_with_services<'a>(
     };
     Ok(VerifiedPreparation {
         grant,
+        claim_capture: super::capture::ClaimCapture::default(),
         effective_revision,
         resource_handoff: None,
         unkeyed_input: None,

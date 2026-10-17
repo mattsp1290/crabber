@@ -17,6 +17,7 @@ pub(crate) struct SelectedClaim {
     pub head: u64,
     pub head_digest: InputFingerprint,
     pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
+    pub approval_receipt: Option<crate::ApprovalReceipt>,
 }
 pub(crate) fn selected(
     request: &RegisterSuccessorExecutionDriver,
@@ -29,6 +30,10 @@ pub(crate) fn selected(
     if let claim::Native::Approval { input, .. } = &native {
         input.verify(&next.state.session_id, &next.state.run_id, binding)?;
     }
+    let approval_receipt = match &native {
+        claim::Native::Approval { evidence, .. } => Some(evidence.receipt.clone()),
+        _ => None,
+    };
     let verified = AuthenticatedClaim::verify(previous, next, audits, native)?;
     if let Some(binding) = binding {
         verified.verify_binding(binding)?;
@@ -40,6 +45,7 @@ pub(crate) fn selected(
         head: verified.head,
         head_digest: verified.head_digest,
         approval: verified.approval,
+        approval_receipt,
     })
 }
 

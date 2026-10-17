@@ -4,12 +4,24 @@ mod native;
 mod replay;
 use super::{Audit, Error, SessionOwnerOperation, publish_revision, reads};
 use crate::StoreError;
-use crate::session_owner::preparation::{JoinedPreparation, PreparationCompletion};
+use crate::session_owner::preparation::{
+    JoinedPreparation, PreparationCompletion, PreparedDriverCompletion,
+};
 impl super::PostgresStore {
     pub(in crate::postgres) async fn complete_preparation(
         &self,
         joined: JoinedPreparation,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        Box::pin(self.complete_preparation_captured(joined, false))
+            .await
+            .map(|v| v.completion)
+    }
+    pub(in crate::postgres) async fn complete_preparation_captured(
+        &self,
+        joined: JoinedPreparation,
+        require_approval_birth: bool,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         joined.verify_original_intent()?;
         let session = joined
@@ -22,7 +34,7 @@ impl super::PostgresStore {
         let mut tx = self.session_transaction(&session).await?;
         let result = async {
             if let Some(outcome) = self.replay_prepared(&mut tx, &joined).await? {
-                return Ok(outcome);
+                return Ok(crate::session_owner::preparation::driver_completion::replayed(outcome));
             }
             reads::scope(&mut tx, &session)
                 .await
@@ -40,6 +52,7 @@ impl super::PostgresStore {
             .await
             .map_err(storage_error)?;
             let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+            require_birth(&mut tx, &joined, require_approval_birth, &mut read_proof).await?;
             let mut proof = Box::pin(self.verify_service_preparation(
                 &mut tx,
                 joined.observed_grant(),
@@ -72,11 +85,13 @@ impl super::PostgresStore {
                 &mut read_proof,
             ))
             .await?;
+            let result =
+                crate::session_owner::preparation::driver_completion::native(result, &proof)?;
             super::before(self).map_err(storage_error)?;
             #[cfg(test)]
             crate::binding_fault::trip(&self.binding_fault, 1)?;
             #[cfg(test)]
-            if matches!(result, PreparationCompletion::ExpiredRun(_)) {
+            if matches!(result.completion, PreparationCompletion::ExpiredRun(_)) {
                 crate::run_control_contract::process::pause("expired-before");
             }
             Ok(result)
@@ -86,9 +101,9 @@ impl super::PostgresStore {
             Ok(value) => {
                 tx.commit().await.map_err(super::super::db)?;
                 #[cfg(test)]
-                after_commit(self, &value)?;
+                after_commit(self, &value.completion)?;
                 #[cfg(test)]
-                if matches!(value, PreparationCompletion::ExpiredRun(_)) {
+                if matches!(value.completion, PreparationCompletion::ExpiredRun(_)) {
                     crate::run_control_contract::process::pause("expired-after");
                 }
                 Ok(value)
@@ -170,5 +185,23 @@ async fn publish_join(
     )
     .await?;
 
+    Ok(())
+}
+
+async fn require_birth(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    joined: &JoinedPreparation,
+    required: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+    if required {
+        let scope = crate::session_owner::preparation::driver_completion::protected_scope(joined)?;
+        if !crate::postgres::continuation_input::protocol(tx, &scope, proof)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?
+        {
+            return Err(Error::Unsupported.into());
+        }
+    }
     Ok(())
 }

@@ -147,6 +147,10 @@ impl Metadata {
             Self::Initial(receipt) => receipt.run_id(),
             Self::Successor(PendingSuccessorReplay::Admission(receipt)) => &receipt.run_id,
             Self::Successor(PendingSuccessorReplay::Expired(receipt)) => &receipt.run_id,
+            Self::Successor(
+                PendingSuccessorReplay::ApprovalClaim(receipt)
+                | PendingSuccessorReplay::ApprovalRecovery(receipt),
+            ) => &receipt.run_id,
         }
     }
     pub(super) fn admission(&self) -> Option<&crabber_core::AdmissionReceipt> {

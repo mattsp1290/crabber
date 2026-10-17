@@ -62,13 +62,7 @@ impl super::super::MemoryStore {
             claim_token: activated.claim_token.clone(),
         };
 
-        super::super::native_parent::record_run_completed(
-            state,
-            &run,
-            &activated,
-            completion.as_ref(),
-        )
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+        super::activation::save(state, &run, &activated, completion.as_ref(), preparation)?;
         state.runs.insert(run.id.clone(), activated);
         let execution = super::super::MemoryExecution {
             store: self.clone(),

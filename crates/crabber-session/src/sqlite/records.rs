@@ -74,7 +74,18 @@ pub(super) async fn save_run_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    super::native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
+    save_run_captured_with_proof(tx, run, source, proof)
+        .await
+        .map(|_| ())
+}
+pub(super) async fn save_run_captured_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, StoreError> {
+    let captured =
+        super::native_parent::record_run_captured_with_proof(tx, run, false, source, proof).await?;
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",
@@ -87,7 +98,7 @@ pub(super) async fn save_run_with_proof(
     .execute(&mut **tx)
     .await
     .map_err(db)?;
-    Ok(())
+    Ok(captured)
 }
 pub(super) async fn save_call(
     tx: &mut Transaction<'_, Sqlite>,

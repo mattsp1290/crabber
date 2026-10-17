@@ -81,9 +81,8 @@ impl PostgresStore {
             claim_token: activated.claim_token.clone(),
         };
 
-        super::super::save_run_with_proof(tx, &activated, completion.as_ref(), read_proof)
-            .await
-            .map_err(sql::unknown)?;
+        super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
+            .await?;
         let execution = PostgresExecution {
             store: self.clone(),
             fence: fence.clone(),

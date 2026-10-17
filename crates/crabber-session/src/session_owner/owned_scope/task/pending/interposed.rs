@@ -1,16 +1,19 @@
 use super::*;
+use crate::session_owner::preparation::{
+    InspectPreparedApprovalDriver, PreparedApprovalDriverMetadata, PreparedDriverCompletion,
+};
 use crate::*;
 use crabber_core::*;
 use std::collections::BTreeMap;
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Stage {
+pub(crate) enum Stage {
     Complete,
     Inspect,
     Register,
     Activate,
 }
-pub(super) struct Interposed {
-    pub inner: Arc<MemoryStore>,
+pub(crate) struct Interposed {
+    pub inner: Arc<dyn Store>,
     pub stage: Stage,
     pub arrived: Notify,
     pub release: Notify,
@@ -20,10 +23,14 @@ pub(super) struct Interposed {
     pub corrupt_replay_run: std::sync::atomic::AtomicBool,
     pub corrupt_version: std::sync::atomic::AtomicBool,
     pub replacement: std::sync::Mutex<Option<PreparationCompletion>>,
+    pub approval_complete_calls: AtomicUsize,
+    pub approval_inspect_calls: AtomicUsize,
+    pub register_calls: AtomicUsize,
+    pub corrupt_inspection: std::sync::atomic::AtomicBool,
     pub wrong_permit: std::sync::Mutex<Option<OwnedDispatchPermit>>,
 }
 impl Interposed {
-    pub(super) fn new(inner: Arc<MemoryStore>, stage: Stage, fault: bool) -> Arc<Self> {
+    pub(crate) fn new(inner: Arc<dyn Store>, stage: Stage, fault: bool) -> Arc<Self> {
         Arc::new(Self {
             inner,
             stage,
@@ -36,6 +43,10 @@ impl Interposed {
             corrupt_version: std::sync::atomic::AtomicBool::new(false),
             replacement: std::sync::Mutex::default(),
             wrong_permit: std::sync::Mutex::default(),
+            approval_complete_calls: AtomicUsize::new(0),
+            approval_inspect_calls: AtomicUsize::new(0),
+            register_calls: AtomicUsize::new(0),
+            corrupt_inspection: std::sync::atomic::AtomicBool::new(false),
         })
     }
     async fn pause(&self, stage: Stage) -> bool {
@@ -164,6 +175,7 @@ impl Store for Interposed {
         &self,
         request: crate::session_owner::driver::RegisterSuccessorExecutionDriver,
     ) -> Result<crate::session_owner::driver::SuccessorExecutionDriverOutcome, Error> {
+        self.register_calls.fetch_add(1, Ordering::SeqCst);
         let result = self
             .inner
             .register_successor_execution_driver(request)
@@ -200,6 +212,70 @@ impl Store for Interposed {
             );
         }
         result
+    }
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        self.inner.supports_pending_execution_driver_origin(origin)
+    }
+    async fn complete_preparation_with_driver_source(
+        &self,
+        original: JoinedPreparation,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        self.approval_complete_calls.fetch_add(1, Ordering::SeqCst);
+        let mut result = self
+            .inner
+            .complete_preparation_with_driver_source(original)
+            .await;
+        if let Ok(value) = &mut result {
+            if self.corrupt_version.load(Ordering::SeqCst)
+                && let Some(claim) = &mut value.claim
+            {
+                claim.issuance += 1;
+            }
+            if self.corrupt_operation.load(Ordering::SeqCst)
+                && let Some(claim) = &mut value.claim
+            {
+                claim.root_join_id = crabber_core::SessionOwnerOperationId::new();
+            }
+            if self.corrupt_receipt.load(Ordering::SeqCst)
+                && let PreparationCompletion::Approval(ApprovalClaimOutcome::Applied {
+                    receipt,
+                    ..
+                }) = &mut value.completion
+            {
+                receipt.revision = receipt.revision.next().unwrap();
+            }
+        }
+        if self.pause(Stage::Complete).await {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        result
+    }
+    async fn inspect_prepared_approval_driver(
+        &self,
+        request: InspectPreparedApprovalDriver,
+    ) -> Result<PreparedApprovalDriverMetadata, Error> {
+        self.approval_inspect_calls.fetch_add(1, Ordering::SeqCst);
+        let mut result = self.inner.inspect_prepared_approval_driver(request).await;
+        if self.corrupt_inspection.load(Ordering::SeqCst)
+            && let Ok(metadata) = &mut result
+        {
+            metadata.receipt.revision = metadata.receipt.revision.next().unwrap();
+        }
+        if self.pause(Stage::Inspect).await {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        result
+    }
+    async fn lookup_approval(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<ApprovalReceipt>, ApprovalError> {
+        self.inner.lookup_approval(session, id).await
     }
     async fn admit_run(&self, r: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
         self.inner.admit_run(r).await

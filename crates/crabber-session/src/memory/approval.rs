@@ -1,4 +1,6 @@
 //! Atomic approval controls, sharing `MemoryStore`'s session mutation lock.
+#[path = "approval/activation.rs"]
+mod activation;
 #[path = "approval/answer.rs"]
 mod answer;
 #[path = "approval/claim.rs"]

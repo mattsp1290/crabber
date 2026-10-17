@@ -1,6 +1,8 @@
 //! Two genuine compound approval origins, never a holder or Main classification.
 #[path = "approval/integrity.rs"]
 pub(crate) mod integrity;
+#[path = "approval/pending.rs"]
+pub(crate) mod pending;
 use super::*;
 use crate::session_owner::{SessionOwnerState, SessionOwnerTermination};
 use crabber_core::{Clock, SessionContext};

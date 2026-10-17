@@ -194,7 +194,18 @@ async fn save_run_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
+    save_run_captured_with_proof(tx, run, source, proof)
+        .await
+        .map(|_| ())
+}
+async fn save_run_captured_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, StoreError> {
+    let captured =
+        native_parent::record_run_captured_with_proof(tx, run, false, source, proof).await?;
     sqlx::query("UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE id=$1")
         .bind(&run.id.0)
         .bind(status(run.status))
@@ -204,7 +215,7 @@ async fn save_run_with_proof(
         .execute(&mut **tx)
         .await
         .map_err(db)?;
-    Ok(())
+    Ok(captured)
 }
 async fn load_run_with_proof(
     tx: &mut Transaction<'_, Postgres>,
@@ -1054,6 +1065,32 @@ impl Store for PostgresStore {
     > {
         Box::pin(self.complete_preparation(joined)).await
     }
+    async fn complete_preparation_with_driver_source(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedDriverCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        crate::session_owner::preparation::driver_completion::validate_original(&joined)?;
+        Box::pin(self.complete_preparation_captured(joined, true)).await
+    }
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        self.supports_successor_execution_driver_origin(origin)
+    }
+    async fn inspect_prepared_approval_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedApprovalDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Box::pin(self.inspect_approval_driver(&request)).await
+    }
+
     fn supports_successor_execution_drivers(&self) -> bool {
         true
     }
@@ -1550,7 +1587,7 @@ impl Store for PostgresStore {
         &self,
         request: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_with_binding(request, None).await
+        Box::pin(self.admit_keyed_with_binding(request, None)).await
     }
     async fn admit_bound_run(
         &self,
@@ -1563,8 +1600,7 @@ impl Store for PostgresStore {
         &self,
         request: crate::BoundKeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_with_binding(request.keyed, Some(request.binding))
-            .await
+        Box::pin(self.admit_keyed_with_binding(request.keyed, Some(request.binding))).await
     }
     async fn execution_binding(
         &self,

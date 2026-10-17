@@ -70,7 +70,12 @@ pub use expired::{
 pub(crate) mod recovery;
 pub use recovery::{AdmissionRecoveryPreparation, PreparedAdmissionRecovery};
 
+pub(crate) mod approval_driver;
+mod capture;
 mod completion;
+pub(crate) mod driver_completion;
+pub use approval_driver::{InspectPreparedApprovalDriver, PreparedApprovalDriverMetadata};
+pub use driver_completion::PreparedDriverCompletion;
 mod owned;
 mod resource_contract;
 pub use completion::{

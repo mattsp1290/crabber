@@ -70,7 +70,12 @@ impl super::super::MemoryStore {
         validate_native(state, &run, request, &record, now)?;
         super::claim::validate_calls(state, &run, &record)?;
 
-        let fence = activate(state, &run, request, now, completion.as_ref())?;
+        let (fence, captured) = activate(state, &run, request, now, completion.as_ref())?;
+        if let Some(preparation) = preparation {
+            preparation
+                .record_approval_claim(captured)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
         let execution = super::super::MemoryExecution {
             store: self.clone(),
             fence: fence.clone(),
@@ -127,16 +132,18 @@ fn activate(
     request: &ApprovalContinuationRecovery,
     now: time::OffsetDateTime,
     completion: Option<&crate::native_parent::CompletionSource>,
-) -> Result<RunFence, Error> {
+) -> Result<(RunFence, Option<u64>), Error> {
     let activated = approval::activate_recovery(request, run, now)?;
     let fence = RunFence {
         run_id: run.id.clone(),
         claim_token: activated.claim_token.clone(),
     };
-    super::super::native_parent::record_run_completed(state, run, &activated, completion)
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let captured = super::super::native_parent::record_run_completed_captured(
+        state, run, &activated, completion,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), activated);
-    Ok(fence)
+    Ok((fence, captured))
 }
 
 fn validate_native(

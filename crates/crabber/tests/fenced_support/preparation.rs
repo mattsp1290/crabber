@@ -41,3 +41,10 @@ pub(crate) mod intent {
 
 #[path = "../../../crabber-session/src/session_owner/preparation/inspection.rs"]
 pub(crate) mod inspection;
+
+#[path = "preparation_approval_driver.rs"]
+pub(crate) mod approval_driver;
+#[path = "../../../crabber-session/src/session_owner/preparation/capture.rs"]
+mod capture;
+#[path = "preparation_driver_completion.rs"]
+pub(crate) mod driver_completion;

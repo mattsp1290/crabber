@@ -199,6 +199,27 @@ pub(super) fn record_run_states_with_completion(
     next: RunState,
     completion: Option<crate::native_parent::CompletionSource>,
 ) -> Result<(), Error> {
+    record_run_states_captured(state, previous, next, completion).map(|_| ())
+}
+pub(super) fn record_run_completed_captured(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+) -> Result<Option<u64>, Error> {
+    record_run_states_captured(
+        state,
+        Some(&RunState::from_run(previous)?),
+        RunState::from_run(updated)?,
+        source.cloned(),
+    )
+}
+fn record_run_states_captured(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+) -> Result<Option<u64>, Error> {
     crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
         .native_run_issuances
@@ -231,11 +252,13 @@ pub(super) fn record_run_states_with_completion(
             return Err(Error);
         }
         source_protocol::append(state, &issuance, previous.is_none())?;
+        let sequence = issuance.sequence;
         state.native_run_issuances.insert(key, issuance);
+        return Ok(Some(sequence));
     } else if completion.is_some() {
         return Err(Error);
     }
-    Ok(())
+    Ok(None)
 }
 pub(super) fn latest_run<'a>(
     state: &'a State,

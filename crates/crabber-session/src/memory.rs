@@ -803,6 +803,32 @@ impl Store for MemoryStore {
     > {
         self.complete_preparation(&joined)
     }
+    async fn complete_preparation_with_driver_source(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedDriverCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        crate::session_owner::preparation::driver_completion::validate_original(&joined)?;
+        self.complete_preparation_captured(&joined, true)
+    }
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        self.supports_successor_execution_driver_origin(origin)
+    }
+    async fn inspect_prepared_approval_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedApprovalDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_approval_driver(&request)
+    }
+
     fn supports_session_owner_cancellation(&self) -> bool {
         true
     }

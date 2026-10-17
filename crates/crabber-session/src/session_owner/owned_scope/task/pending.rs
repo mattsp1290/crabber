@@ -1,4 +1,11 @@
 //! One retained task spans preparation completion and its gated successor main.
+//!
+//! Admission recovery, expired-run recovery, Approval claim and Approval recovery
+//! share the explicit 64-task registry. Approval locators come only from the
+//! acknowledged transaction publisher, then undergo exact original inspection.
+//! Cancellation/unknown acknowledgments never replay business work or remint
+//! authority. Native source and local task observations do not prove complete
+//! native enrollment, resource policy or whole-Run main ownership.
 mod core;
 mod execute;
 mod initial;
@@ -28,6 +35,8 @@ use std::{future::Future, sync::Arc};
 pub enum PendingSuccessorReplay {
     Admission(crabber_core::AdmissionReceipt),
     Expired(crate::session_owner::preparation::ExpiredRunReceipt),
+    ApprovalClaim(Box<crate::ApprovalReceipt>),
+    ApprovalRecovery(Box<crate::ApprovalReceipt>),
 }
 /// Safe metadata from the original acknowledged completion, before registration.
 /// It contains no fence, grant or business dispatch permission.
@@ -101,6 +110,14 @@ impl<T: Send + 'static> PendingSuccessorTask<T> {
         W: Future<Output = T> + Send + 'static,
     {
         let source = execute::Source::new(&context, &original)?;
+        if matches!(
+            source.origin(),
+            crate::session_owner::driver::SuccessorExecutionDriverOrigin::ApprovalClaim
+                | crate::session_owner::driver::SuccessorExecutionDriverOrigin::ApprovalRecovery
+        ) && !store.supports_pending_execution_driver_origin(source.origin())
+        {
+            return Err(Error::Unsupported);
+        }
         let inner = core::Task::register(
             owner,
             store,
@@ -153,3 +170,6 @@ impl<T: Send + 'static> PendingSuccessorTask<T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod approval_tests;

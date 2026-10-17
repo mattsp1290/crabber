@@ -1,3 +1,5 @@
+#[path = "execute/approval.rs"]
+mod approval;
 use super::core::execute::{Fresh, Prepared, Registration, administrative};
 use super::core::{Control, Notice, Replay};
 use super::{Error, PendingSuccessorCompletion, PendingSuccessorError, PendingSuccessorReplay};
@@ -13,8 +15,9 @@ use crate::{
 };
 use crabber_core::{RunId, SessionContext};
 pub(super) struct Source {
+    approval: Option<approval::Source>,
     run: RunId,
-    claim: NativeClaimLocator,
+    claim: Option<NativeClaimLocator>,
     admission: bool,
     key: Option<crabber_core::AdmissionKey>,
 }
@@ -36,6 +39,15 @@ impl Source {
             || context.directory() != binding.directory
         {
             return Err(Error::IdentityMismatch);
+        }
+        if let Some(approval) = approval::Source::new(original)? {
+            return Ok(Self {
+                run: approval.run.clone(),
+                approval: Some(approval),
+                claim: None,
+                admission: false,
+                key: None,
+            });
         }
         let (run, issuance, admission) = match original.observed_operation() {
             PreparedOperation::AdmissionRecovery(value) => (
@@ -61,7 +73,8 @@ impl Source {
         claim.validate()?;
         Ok(Self {
             run: run.clone(),
-            claim,
+            claim: Some(claim),
+            approval: None,
             admission,
             key: match original.observed_operation() {
                 PreparedOperation::AdmissionRecovery(value) => {
@@ -70,6 +83,21 @@ impl Source {
                 _ => None,
             },
         })
+    }
+    fn original_claim(&self) -> Result<&NativeClaimLocator, Error> {
+        self.claim.as_ref().ok_or(Error::Unsupported)
+    }
+    pub(super) fn origin(&self) -> crate::session_owner::driver::SuccessorExecutionDriverOrigin {
+        self.approval.as_ref().map_or_else(
+            || {
+                if self.admission {
+                    crate::session_owner::driver::SuccessorExecutionDriverOrigin::AdmissionRecovery
+                } else {
+                    crate::session_owner::driver::SuccessorExecutionDriverOrigin::ExpiredRun
+                }
+            },
+            |s| s.origin,
+        )
     }
     fn request(
         &self,
@@ -84,8 +112,8 @@ impl Source {
             }
             PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { receipt, fence })
                 if !self.admission
-                    && receipt.issuance == self.claim.issuance
-                    && receipt.operation_id == self.claim.root_join_id
+                    && receipt.issuance == self.original_claim()?.issuance
+                    && receipt.operation_id == self.original_claim()?.root_join_id
                     && receipt.run_id == self.run
                     && &receipt.session_id == context.session_id() =>
             {
@@ -100,7 +128,7 @@ impl Source {
         Ok(RegisterSuccessorExecutionDriver {
             context,
             fence: fence.clone(),
-            claim: self.claim.clone(),
+            claim: self.original_claim()?.clone(),
         })
     }
     async fn expected_receipt(
@@ -152,8 +180,8 @@ impl Source {
                 if !self.admission
                     && receipt.run_id == self.run
                     && &receipt.session_id == context.session_id()
-                    && receipt.issuance == self.claim.issuance
-                    && receipt.operation_id == self.claim.root_join_id =>
+                    && receipt.issuance == self.original_claim()?.issuance
+                    && receipt.operation_id == self.original_claim()?.root_join_id =>
             {
                 PendingSuccessorReplay::Expired(receipt.clone())
             }
@@ -166,11 +194,14 @@ pub(super) async fn prepare(
     store: &dyn Store,
     context: SessionContext,
     original: JoinedPreparation,
-    source: Source,
+    mut source: Source,
     control: &Control,
 ) -> Result<Prepared, PendingSuccessorError> {
     if control.stopped() {
         return Ok(Prepared::Stopped);
+    }
+    if let Some(approval) = source.approval.take() {
+        return approval::prepare(store, context, original, approval, control).await;
     }
     let expected_receipt = source.expected_receipt(store, &context, control).await?;
     // These futures stay inside the same actual main; ordinary stop never selects

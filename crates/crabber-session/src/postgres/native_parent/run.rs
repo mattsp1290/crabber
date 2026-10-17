@@ -48,7 +48,7 @@ async fn change_inner(
     creation: bool,
     completion: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<Option<u64>, Error> {
     let previous = if creation {
         None
     } else {
@@ -90,10 +90,11 @@ async fn change_inner(
             .bind(&run.session_id.0).bind(&run.id.0).bind(i64::try_from(value.sequence).map_err(|_|Error)?)
             .bind(serde_json::to_string(&value).map_err(|_|Error)?)
             .execute(&mut **tx).await.map_err(|_|Error)?;
+        return Ok(Some(value.sequence));
     } else if completion.is_some() {
         return Err(Error);
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(in super::super) async fn change_with_proof(
@@ -103,6 +104,19 @@ pub(in super::super) async fn change_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::StoreError> {
+    change_captured_with_proof(tx, run, creation, source, proof)
+        .await
+        .map(|_| ())
+        .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))
+}
+
+pub(in super::super) async fn change_captured_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    creation: bool,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, crate::StoreError> {
     change_inner(tx, run, creation, source, proof)
         .await
         .map_err(|_| crate::StoreError::Validation("native run source evidence unavailable".into()))

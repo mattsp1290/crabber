@@ -1,6 +1,8 @@
 //! One exact noninitial native claim owns a distinct actual worker.
 #[path = "successor/approval.rs"]
 mod approval;
+#[path = "successor/inspection.rs"]
+mod inspection;
 #[path = "successor/source.rs"]
 mod source;
 use super::super::{Error, MemoryStore, before, bump_public_revision, fault, revision};

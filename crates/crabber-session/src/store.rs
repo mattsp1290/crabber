@@ -517,6 +517,38 @@ pub trait Store: Send + Sync {
     > {
         Err(StoreError::HostUnsupported.into())
     }
+    /// Complete an owned Approval preparation, returning the actual committed
+    /// v3 issuer locator. Metadata/replay never reconstructs fresh authority.
+    async fn complete_preparation_with_driver_source(
+        &self,
+        _joined: crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedDriverCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(StoreError::HostUnsupported.into())
+    }
+    /// Pure workflow capability, checked before owned factories. Source support
+    /// alone does not imply the atomic completion/selected-inspection SPI.
+    fn supports_pending_execution_driver_origin(
+        &self,
+        origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
+    ) -> bool {
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(origin, Origin::AdmissionRecovery | Origin::ExpiredRun)
+            && self.supports_successor_execution_driver_origin(origin)
+    }
+    /// Authenticate exact original selected Approval completion metadata under
+    /// one bounded coherent read. This read cannot mint or recover authority.
+    async fn inspect_prepared_approval_driver(
+        &self,
+        _request: crate::session_owner::preparation::InspectPreparedApprovalDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
     /// Durable signal request/observation support, independent of local registries.
     fn supports_session_owner_cancellation(&self) -> bool {
         false

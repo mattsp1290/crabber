@@ -1,5 +1,6 @@
 //! Durable approval records, controls and read-only receipt reconciliation.
 use crate::public_session::v2::proof::{ApprovalReadError, Proof};
+mod activation;
 mod answer;
 mod claim;
 pub(super) mod current;

@@ -7,13 +7,24 @@ mod native;
 mod replay;
 use super::{MemoryStore, revision};
 use crate::StoreError;
-use crate::session_owner::preparation::{JoinedPreparation, PreparationCompletion};
+use crate::session_owner::preparation::{
+    JoinedPreparation, PreparationCompletion, PreparedDriverCompletion,
+};
 
 impl MemoryStore {
     pub(in crate::memory) fn complete_preparation(
         &self,
         joined: &JoinedPreparation,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        self.complete_preparation_captured(joined, false)
+            .map(|v| v.completion)
+    }
+    pub(in crate::memory) fn complete_preparation_captured(
+        &self,
+        joined: &JoinedPreparation,
+        require_approval_birth: bool,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         joined.verify_original_intent()?;
         let session = joined
@@ -31,7 +42,9 @@ impl MemoryStore {
                 {
                     super::super::deletion::ensure_live(state, &session)?;
                     if let Some(outcome) = Self::replay_expired(state, joined)? {
-                        return Ok(Some(outcome));
+                        return Ok(Some(
+                            crate::session_owner::preparation::driver_completion::replayed(outcome),
+                        ));
                     }
                     let current = super::super::expired::context(
                         state,
@@ -47,7 +60,25 @@ impl MemoryStore {
                 let now = self.clock.now();
                 // Original native reconciliation precedes current owner/CAS checks.
                 if let Some(outcome) = self.replay_prepared(state, joined)? {
-                    return Ok(outcome);
+                    return Ok(
+                        crate::session_owner::preparation::driver_completion::replayed(outcome),
+                    );
+                }
+                if require_approval_birth {
+                    let scope =
+                        crate::session_owner::preparation::driver_completion::protected_scope(
+                            joined,
+                        )?;
+                    if !state
+                        .continuation_inputs
+                        .protocol(
+                            &scope,
+                            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+                        )
+                        .map_err(|_| crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?
+                    {
+                        return Err(crate::session_owner::SessionOwnerError::Unsupported.into());
+                    }
                 }
                 let before = revision(state, &session);
                 let mut proof = state
@@ -64,6 +95,8 @@ impl MemoryStore {
                 }
                 let outcome =
                     self.apply_prepared_native(state, joined.observed_operation().clone(), &proof)?;
+                let outcome =
+                    crate::session_owner::preparation::driver_completion::native(outcome, &proof)?;
                 super::before(super::fault(self))?;
                 #[cfg(test)]
                 crate::binding_fault::trip(&self.binding_fault, 1)?;
@@ -71,7 +104,7 @@ impl MemoryStore {
             },
         )?;
         #[cfg(test)]
-        after_commit(self, &outcome)?;
+        after_commit(self, &outcome.completion)?;
         Ok(outcome)
     }
 }

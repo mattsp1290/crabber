@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 #[path = "fixture.rs"]
 mod fixture;
 #[path = "interposed.rs"]
-mod interposed;
+pub(super) mod interposed;
 use interposed::{Interposed, Stage};
 
 fn store() -> (Arc<MemoryStore>, Arc<ManualClock>) {

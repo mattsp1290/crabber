@@ -5,6 +5,7 @@ mod run;
 pub(super) mod source_protocol;
 use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
+pub(super) use run::change_captured_with_proof as record_run_captured_with_proof;
 pub(super) use run::change_with_proof as record_run_with_proof;
 use sqlx::{Row, Sqlite, Transaction};
 
