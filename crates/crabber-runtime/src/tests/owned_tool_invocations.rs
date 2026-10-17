@@ -178,3 +178,6 @@ async fn postgres_owned_tool_invocations() {
     ))
     .await;
 }
+
+#[path = "owned_tool_invocations/products.rs"]
+mod products;

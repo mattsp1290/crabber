@@ -69,6 +69,38 @@ impl Task {
         self.result.lock().unwrap().unwrap_or(false)
     }
 }
+/// Exact original private roster, retained independently of mount lifetime.
+#[derive(Clone)]
+pub(crate) struct OriginalRoster {
+    state: Arc<State>,
+    mount: Weak<Mount>,
+}
+impl OriginalRoster {
+    pub(crate) fn seal(&self) {
+        if let Some(mount) = self.mount.upgrade() {
+            let mut active = mount.active.lock().unwrap();
+            *active = false;
+            self.state.close();
+        } else {
+            self.state.close();
+        }
+    }
+
+    pub(crate) async fn sealed_join(&self) -> Result<(), ExtensionError> {
+        loop {
+            let changed = self.state.changed.notified();
+            if self.state.tasks.lock().unwrap().sealed {
+                break;
+            }
+            changed.await;
+        }
+        if self.state.join().await {
+            Ok(())
+        } else {
+            Err(ExtensionError::ContextCleanupIncomplete)
+        }
+    }
+}
 impl State {
     pub(super) fn close(&self) {
         let mut entries = self.tasks.lock().unwrap();
@@ -115,6 +147,19 @@ pub(crate) struct Source(Weak<Mount>);
 impl Source {
     pub(in crate::registry) fn new(mount: &Arc<Mount>) -> Self {
         Self(Arc::downgrade(mount))
+    }
+
+    pub(in crate::registry) fn original_roster(&self) -> Result<OriginalRoster, ExtensionError> {
+        let mount = self.0.upgrade().ok_or(ExtensionError::ContextOwnerClosed)?;
+        Ok(OriginalRoster {
+            state: mount
+                .owned
+                .as_ref()
+                .ok_or(ExtensionError::ContextOwnerClosed)?
+                .invocations
+                .clone(),
+            mount: self.0.clone(),
+        })
     }
 
     pub(crate) async fn invoke<T: Send + 'static>(

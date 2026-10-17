@@ -101,3 +101,36 @@ certify disposal of factory objects, hidden shared references, globals, arbitrar
 background work or a complete physical generation. Existing cleanup-policy labels
 keep their registered-cleanup meaning. No native permission, Runtime ownership,
 `PhysicalClosed`, default preparation declaration or whole-Run policy is added.
+
+## One ordinary Box Tool node
+
+`new_with_tool_products` is a separate opt-in family. Its factory returns a
+move-only `ContextualToolProduct::new(info, Box<dyn ToolExecutor>)`. This first
+tier accepts ordinary tools only: a resumable declaration or capability is
+refused, and the original live identities are checked again inside actual
+invocations. Existing resumable/Arc factory behavior is unchanged.
+
+The original returned Box is installed before original create-future disposal.
+Registry records contain private templates; each projected executor facade gets
+one controlled reference lease. All `Arc` clones of that facade share the lease,
+which releases on final actual facade Drop. Holding an extracted executor after
+plan Drop keeps Box disposal pending. After close it cannot start a new call.
+Up to 64 distinct projected facades may be live per node; a further projection
+returns capacity and rolls back that acquisition. Released allocations do not
+consume a lifetime limit.
+
+The same concrete owned-mount invocation task constructs, polls and disposes the
+original borrowed Tool future. Node close seals admission and waits that exact
+original invocation roster and final facade releases before transferring the Box
+into its actual retained blocking destructor. It can drive Box Drop concurrently
+with still-pending original create-future disposal and factory cleanup. No open
+node occupies a parked blocking thread. Failure stays incomplete while actual
+cleanup still runs; neither task completion nor an empty roster replaces its
+original joins.
+
+`observation.tool_product(member).disposed(bound)` waits for the exact original
+node and original graph without initiating close. Its opaque result covers this
+Box, projected references and invocations only. Factory objects, opaque shared
+references, globals, other interfaces and complete physical/resource policy
+remain outside this evidence. No native permission, default owned declaration,
+`PhysicalClosed` or whole-Run policy is added.

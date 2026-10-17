@@ -2,9 +2,10 @@
 mod cell;
 mod construction;
 mod registration;
+pub(crate) mod tool;
 use super::{FactoryContext, FactoryScope};
 use crate::{ComponentIdentity, ExtensionError};
-pub(super) use construction::create;
+pub(super) use construction::create_member;
 use futures::future::BoxFuture;
 use std::sync::Arc;
 

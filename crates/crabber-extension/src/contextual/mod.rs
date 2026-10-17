@@ -8,7 +8,7 @@ mod instances;
 mod lifecycle;
 mod native_dependency;
 mod producer;
-mod product;
+pub(crate) mod product;
 pub use product::{
     ContextualProductFactory, ContextualProductRoot, ContextualProductRootObservation,
     DisposedContextualProductRoot,
@@ -109,6 +109,7 @@ pub trait ExtensionFactory: Send + Sync {
 enum FactoryBody {
     Extension(Arc<dyn ExtensionFactory>),
     ProductRoot(Arc<dyn ContextualProductFactory>),
+    ToolProduct(Arc<dyn product::tool::ContextualToolProductFactory>),
 }
 struct FactoryRegistration {
     root_component: Option<ComponentIdentity>,

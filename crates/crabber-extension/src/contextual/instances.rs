@@ -277,16 +277,19 @@ impl ContextualPlanProvider {
             };
             let factory = match &registration.factory {
                 super::FactoryBody::ProductRoot(factory) => {
-                    let root = super::product::Cell::new(slot.owner.clone());
-                    {
-                        let state = slot.state.lock().unwrap();
-                        state
-                            .producer
-                            .as_ref()
-                            .expect("root family requires actual host")
-                            .record_root(index, root.clone());
-                    }
-                    super::product::create(factory, factory_context, &root).await?;
+                    super::product::create_member(slot, index, factory, factory_context).await?;
+                    continue;
+                }
+                super::FactoryBody::ToolProduct(_) => {
+                    super::product::tool::install(
+                        self,
+                        slot,
+                        scope,
+                        index,
+                        registration,
+                        factory_context,
+                    )
+                    .await?;
                     continue;
                 }
                 super::FactoryBody::Extension(factory) => factory,
