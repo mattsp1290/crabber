@@ -3210,7 +3210,9 @@ impl Orchestrator {
                 attempt,
                 compacted,
                 cancellation,
-                self.workspace_reader_resolver.clone(),
+                plan.workspace_reader_resolver()
+                    .cloned()
+                    .or_else(|| self.workspace_reader_resolver.clone()),
             )
             .await?;
             if !plan.prompt_contributors.is_empty() {

@@ -187,3 +187,6 @@ mod workspace_fs_products;
 
 #[path = "owned_tool_invocations/subprocess_products.rs"]
 mod subprocess_products;
+
+#[path = "owned_tool_invocations/workspace_reader_products.rs"]
+mod workspace_reader_products;
