@@ -507,21 +507,25 @@ async fn invoke_result_handler(
         HandlerFn::Ordinary(callback) => json_result_transform(Arc::clone(callback)),
         HandlerFn::Around(_) => return None,
     };
+    // The driver owns cancellation and the final-redaction deadline. Keep the
+    // literal callback future named until its poll and Drop have both finished.
+    let invoke = async move {
+        match original::original(
+            || callback(context, value),
+            |result| result,
+            &CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("result callback observation failed"),
+        }
+    };
     AssertUnwindSafe(async move {
         match source {
-            Some(source) => {
-                source
-                    .invoke(move || Box::pin(async move { callback(context, value).await }))
-                    .await?
-            }
+            Some(source) => source.invoke(move || Box::pin(invoke)).await?,
             // Legacy result handlers constructed inside their mount frame.
-            None => {
-                with_mount(
-                    handler.mount_id,
-                    async move { callback(context, value).await },
-                )
-                .await
-            }
+            None => with_mount(handler.mount_id, invoke).await,
         }
     })
     .catch_unwind()

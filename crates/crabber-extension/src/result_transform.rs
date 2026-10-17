@@ -473,12 +473,28 @@ pub fn parse_result_envelope(
 
 /// The envelope adapter both JSON registrations use. Any envelope violation is
 /// an `Err`; its text is discarded by the driver.
+///
+/// # Panics
+/// The returned future panics after disposing a callback future whose poll or
+/// destructor panicked, so its invocation owner retains the observation failure.
 #[must_use]
 pub fn json_result_transform(cb: Callback) -> ResultTransformCallback {
     Arc::new(move |context, result| {
         let reply = cb(result_envelope(&context, result));
         Box::pin(async move {
-            let reply = reply.await?;
+            // Preserve construction timing while disposing this exact original
+            // future separately from a panic in its poll. The driver retains
+            // cancellation ownership through the adapter's outer future.
+            let reply = match crate::dispatch::original::original(
+                || reply,
+                |result| result,
+                &CancellationToken::new(),
+            )
+            .await
+            {
+                Ok(Some(result)) => result?,
+                _ => panic!("result envelope callback observation failed"),
+            };
             parse_result_envelope(&context, reply).map_err(|error| {
                 ExtensionError::Tool(format!("invalid result envelope: {error:?}"))
             })

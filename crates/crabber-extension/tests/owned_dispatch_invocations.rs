@@ -12,6 +12,8 @@ use std::time::Duration;
 
 #[path = "owned_dispatch_invocations/legacy.rs"]
 mod legacy;
+#[path = "owned_dispatch_invocations/literal.rs"]
+mod literal;
 #[path = "owned_dispatch_invocations/modes.rs"]
 mod modes;
 #[path = "owned_dispatch_invocations/retention.rs"]
