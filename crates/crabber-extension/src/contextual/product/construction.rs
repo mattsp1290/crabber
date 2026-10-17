@@ -1,7 +1,7 @@
 //! Protect a Ready root before disposing its actual original create future.
 use super::{Cell, ContextualProductFactory};
 use crate::{ExtensionError, FactoryContext};
-use std::{panic::AssertUnwindSafe, sync::Arc};
+use std::sync::Arc;
 struct Construction {
     cell: Arc<Cell>,
     finished: bool,
@@ -22,23 +22,18 @@ pub(in crate::contextual) async fn create(
         cell: cell.clone(),
         finished: false,
     };
-    let mut original = factory.create_root(context);
-    let result = original.as_mut().await;
-    let result = match result {
-        Ok(root) => {
-            cell.install(root);
-            Ok(())
-        }
-        Err(error) => Err(error),
-    };
-    let disposed = std::panic::catch_unwind(AssertUnwindSafe(|| drop(original)));
+    let observed = super::provider::original::original(
+        || factory.create_root(context),
+        |result| result.map(|root| cell.install(root)),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
     construction.finished = true;
-    cell.constructor_done(disposed.is_err());
-    if let Err(payload) = disposed {
-        crate::dispatch::discard_panic_payload(payload);
-        return Err(ExtensionError::ContextCleanupIncomplete);
+    cell.constructor_done(!matches!(observed, Ok(Some(_))));
+    match observed {
+        Ok(Some(result)) => result,
+        Ok(None) | Err(()) => Err(ExtensionError::ContextCleanupIncomplete),
     }
-    result
 }
 
 pub(in crate::contextual) async fn create_member(

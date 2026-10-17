@@ -21,22 +21,17 @@ pub(in crate::contextual) async fn create(
         node: node.clone(),
         done: false,
     };
-    let mut future = factory.create_workspace_fs(context);
-    let result = future.as_mut().await;
-    let result = match result {
-        Ok(product) => {
-            node.install(product);
-            Ok(())
-        }
-        Err(error) => Err(error),
-    };
-    let disposed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(future)));
-    node.done(disposed.is_err());
+    let observed = super::super::provider::original::original(
+        || factory.create_workspace_fs(context),
+        |result| result.map(|product| node.install(product)),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    node.done(!matches!(observed, Ok(Some(_))));
     guard.done = true;
-    if let Err(payload) = disposed {
-        crate::dispatch::discard_panic_payload(payload);
+    let Ok(Some(result)) = observed else {
         return Err(ExtensionError::ContextCleanupIncomplete);
-    }
+    };
     result?;
     node.freeze()
 }
