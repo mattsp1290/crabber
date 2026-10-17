@@ -5,7 +5,7 @@ use crate::{AttemptError as Error, attempt::sql};
 use crabber_core::{Run, RunId};
 use sqlx::{Row, Sqlite, Transaction};
 
-pub(super) async fn load(
+pub(in crate::sqlite) async fn load(
     tx: &mut Transaction<'_, Sqlite>,
     id: &RunId,
     proof: &mut Proof,

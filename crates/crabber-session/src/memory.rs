@@ -268,6 +268,27 @@ impl MemoryStore {
         Ok(output)
     }
 
+    // Selected borrowed carriers are charged under the same lock before the
+    // inherited whole-State clone. This does not bound that entire clone.
+    fn transact_selected<T, E>(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+        selected: impl FnOnce(
+            &State,
+            &mut crate::public_session::v2::proof::Proof,
+        ) -> Result<Option<T>, E>,
+        operation: impl FnOnce(&mut State, &mut crate::public_session::v2::proof::Proof) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(replayed) = selected(&guard, proof)? {
+            return Ok(replayed);
+        }
+        let mut next = guard.clone();
+        let output = operation(&mut next, proof)?;
+        *guard = next;
+        Ok(output)
+    }
+
     fn transact_or_replay<T, E>(
         &self,
         before: impl FnOnce(&State) -> Result<Option<T>, E>,
@@ -1150,7 +1171,7 @@ impl Store for MemoryStore {
         request.fingerprint()?;
         self.host_phase(
             &request.run_id,
-            request.mutation(),
+            &request.mutation(),
             crate::phase::PhaseEffect::Uncertainty(&request),
         )
     }
@@ -1161,7 +1182,7 @@ impl Store for MemoryStore {
         request.fingerprint()?;
         self.host_phase(
             &request.run_id,
-            request.mutation(),
+            &request.mutation(),
             crate::phase::PhaseEffect::Cleanup(&request),
         )
     }
@@ -1597,7 +1618,7 @@ impl ExecutionStore for MemoryExecution {
         request: crate::PhaseMutation,
         authority: Option<crate::PhaseWriteAuthority>,
     ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
-        self.change_phase(request, authority.as_ref())
+        self.change_phase(&request, authority.as_ref())
     }
     async fn mutate_attempt(
         &self,

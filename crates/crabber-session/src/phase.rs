@@ -291,3 +291,12 @@ pub enum PhaseMutationOutcome {
 }
 
 pub(crate) mod terminal_history;
+
+// Kept inside the defining module: opaque grant contents never cross a public API.
+pub(crate) fn measure_native_authority(
+    authority: &PhaseAuthority,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::Failure> {
+    proof.measure(&(&authority.snapshot, &authority.token))?;
+    crate::native_enrollment::caller::measure_authority(Some(&authority.attempt), proof)
+}

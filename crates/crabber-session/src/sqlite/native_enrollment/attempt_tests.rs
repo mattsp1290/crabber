@@ -9,6 +9,32 @@ impl Harness for crate::SqliteStore {
         self.attempt_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn phase_fault(&self, stage: u8) {
+        self.phase_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    async fn phase_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+        start: Option<crate::PhaseStart>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError> {
+        let effect = start.as_ref().map_or(
+            crate::phase::PhaseEffect::Metadata,
+            crate::phase::PhaseEffect::Start,
+        );
+        Box::pin(self.phase_transaction_with_proof(
+            &fence.run_id,
+            request,
+            authority,
+            effect,
+            Some(&fence),
+            proof,
+        ))
+        .await
+    }
     async fn attempt_with_proof(
         &self,
         fence: crabber_core::RunFence,
@@ -49,7 +75,7 @@ const BIRTH: [&str; 3] = [
     "SELECT data FROM native_execution_origins WHERE run_id=$1",
     "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
 ];
-const NATIVE: [&str; 12] = [
+const NATIVE: [&str; 15] = [
     "SELECT CAST(public_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
     "SELECT data FROM runs WHERE id=$1",
     "SELECT CAST(generation AS TEXT)||owner||claim_token||run_claim_token||CAST(lease_until AS TEXT)||state||cleanup_state FROM execution_attempts WHERE run_id=$1 ORDER BY id",
@@ -62,6 +88,9 @@ const NATIVE: [&str; 12] = [
     "SELECT CAST(sequence AS TEXT)||origin_digest||chain_digest FROM native_run_source_heads WHERE run_id=$1",
     "SELECT data FROM native_execution_origins WHERE run_id=$1",
     "SELECT data FROM native_execution_unclassified WHERE run_id=$1",
+    "SELECT claim_token||outcome_json||state||quiescence_state FROM tool_phases WHERE run_id=$1 ORDER BY id",
+    "SELECT data FROM tool_calls WHERE run_id=$1 ORDER BY id",
+    "SELECT CAST(snapshot_revision AS TEXT) FROM sessions WHERE id=(SELECT session_id FROM runs WHERE id=$1)",
 ];
 #[tokio::test]
 async fn raw_attempt_fresh_replay_rollback_and_ack_loss() {
@@ -84,6 +113,19 @@ async fn raw_attempt_keeps_caller_proof_through_genuine_barriers() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::budgets(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_phase_fresh_replay_rollback_and_ack_loss() {
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::phases(
         &store, &clock,
     ))
     .await;

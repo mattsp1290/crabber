@@ -22,6 +22,7 @@ impl Identity {
     fn matches(&self, fresh: &Fresh<'_>) -> bool {
         match (self, fresh) {
             (Self::Control(id), Fresh::Attempt(a)) => *id == a.request.id,
+            (Self::Control(id), Fresh::Phase(p)) => *id == p.request.id,
             (Self::AdmissionBegin(run), Fresh::AdmissionBegin(a)) => *run == a.run.id,
             (Self::LegacyTool(run, id), Fresh::LegacyTool(a)) => *run == a.run.id && id == a.id,
             _ => false,
@@ -75,6 +76,29 @@ impl Probe {
             return Ok(());
         };
         let digest = match fresh {
+            Fresh::Phase(p) => &p.request.id,
+        };
+        let mut state = self.0.lock().unwrap();
+        let Some(selected) = state
+            .as_mut()
+            .filter(|s| &s.session == scope.session && &s.operation == operation)
+        else {
+            return Ok(());
+        };
+        let digest = match fresh {
+            Fresh::Attempt(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+                "crabber.native.raw-attempt.test.v1",
+                a.run,
+                a.request,
+                &a.record.snapshot,
+                &a.record.owner,
+                &a.record.token,
+                &a.record.run_token,
+                a.record.lease_until,
+                a.receipt,
+                a.event,
+                a.issued.is_some(),
+            )),
             Fresh::AdmissionBegin(a) => {
                 crate::native_enrollment::caller::contract::snapshot_digest(&(
                     "crabber.native.raw-admission-begin.test.v1",

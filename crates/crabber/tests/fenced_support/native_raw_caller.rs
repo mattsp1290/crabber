@@ -5,7 +5,7 @@ use crate::AttemptAuthority;
 use crate::public_session::v2::proof::{Failure, Proof};
 #[path = "../../../crabber-session/src/native_enrollment/caller/verify.rs"]
 mod verify;
-pub(crate) use verify::{Attempt, Caller, Fresh, measure_record, relevant};
+pub(crate) use verify::{Attempt, Caller, Fresh, Phase, measure_record, relevant};
 
 pub(crate) fn measure_authority(
     authority: Option<&AttemptAuthority>,
@@ -26,3 +26,21 @@ pub(crate) use probe::Probe;
 #[cfg(test)]
 #[path = "../../../crabber-session/src/native_enrollment/caller/contract.rs"]
 pub(crate) mod contract;
+
+pub(crate) fn measure_phase_record(
+    record: &crate::phase::PhaseRecord,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    proof.measure(&(&record.snapshot, &record.token, &record.output))
+}
+pub(crate) fn measure_phase_authority(
+    authority: Option<&crate::PhaseAuthority>,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    if authority.is_some() {
+        // Three opaque tokens: phase plus the embedded parent attempt/run pair.
+        // Actual native wrappers measure full private snapshots and tokens.
+        proof.charge(3 * (2 * 512 + 2) + 4)?;
+    }
+    Ok(())
+}

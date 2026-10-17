@@ -33,17 +33,23 @@ pub(super) fn record_phase(
     run: &Run,
     phase: &crate::phase::PhaseRecord,
     receipt: &crate::PhaseReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::PhaseError> {
     if receipt.operation == crate::PhaseOperation::Begin {
         let attempt = state
             .attempts
             .get(&phase.snapshot.target.attempt.id)
             .ok_or(crate::PhaseError::UnknownStoreOutcome)?;
-        let Some(issuance) =
-            latest_run(state, run).map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        crate::native_enrollment::caller::measure_record(attempt, proof)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
+        let Some(issuance) = source_protocol::current(state, &run.session_id, &run.id, proof)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
         else {
             return Ok(());
         };
+        issuance
+            .verify(run)
+            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
         let witness = Witness::phase(run, attempt, phase, receipt, issuance)
             .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;
         insert(state, witness).map_err(|_| crate::PhaseError::UnknownStoreOutcome)?;

@@ -97,6 +97,15 @@ pub(in super::super) async fn latest(
         .map(|(data, _)| sql::decode_metadata(data))
         .transpose()
 }
+pub(super) async fn latest_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &RunId,
+    call: &ToolCallId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<PhaseSnapshot>, Error> {
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(SUM(length(CAST(outcome_json AS BLOB))+4096) AS BIGINT) FROM tool_phases WHERE run_id=$1 AND call_id=$2").bind(&run.0).bind(&call.0), proof).await.map_err(|_| Error::UnknownStoreOutcome)?;
+    latest(tx, run, call).await
+}
 pub(super) async fn receipt(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
@@ -191,8 +200,8 @@ pub(super) async fn publish(
     digest: InputFingerprint,
     revision: SessionRevision,
     now: OffsetDateTime,
-) -> Result<PhaseReceipt, Error> {
-    let event = phase::event(run, request, snapshot, now, digest.clone())?;
+) -> Result<(PhaseReceipt, crabber_core::EventRecord), Error> {
+    let mut event = phase::event(run, request, snapshot, now, digest.clone())?;
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3) RETURNING seq",
     )
@@ -218,7 +227,8 @@ pub(super) async fn publish(
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'phase',$3,$4,$5)")
         .bind(&run.session_id.0).bind(&request.id.0).bind(receipt.semantic_digest.as_str()).bind(seq).bind(serde_json::to_string(&receipt).map_err(|_| Error::UnknownStoreOutcome)?)
         .execute(&mut **tx).await.map_err(db).map_err(sql::unknown)?;
-    Ok(receipt)
+    event.cursor = Some(receipt.event_cursor);
+    Ok((receipt, event))
 }
 
 pub(super) async fn page(

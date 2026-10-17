@@ -1,6 +1,6 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
 use crate::native_enrollment::caller::{self, Caller, Fresh};
-mod accounting;
+pub(super) mod accounting;
 mod prepare;
 pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
 pub(super) use records::{

@@ -5,7 +5,7 @@ use crate::{AttemptError as Error, attempt::sql};
 use crabber_core::{Run, RunId};
 use sqlx::{Postgres, Row, Transaction};
 
-pub(super) async fn load(
+pub(in crate::postgres) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     id: &RunId,
     proof: &mut Proof,
@@ -31,7 +31,7 @@ pub(super) async fn load(
     Ok(run)
 }
 
-pub(super) async fn begin<'a>(
+pub(in crate::postgres) async fn begin<'a>(
     store: &'a super::super::PostgresStore,
     id: &RunId,
     proof: &mut Proof,

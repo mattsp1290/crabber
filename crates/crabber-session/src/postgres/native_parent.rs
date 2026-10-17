@@ -39,13 +39,20 @@ pub(super) async fn record_phase(
     run: &Run,
     phase: &crate::phase::PhaseRecord,
     receipt: &crate::PhaseReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::PhaseError> {
     if crate::POSTGRES_SCHEMA_VERSION >= 13 && receipt.operation == crate::PhaseOperation::Begin {
-        let attempt = super::attempt::load_owned(tx, &run.id, &phase.snapshot.target.attempt.id)
-            .await
-            .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
-            .ok_or(crate::PhaseError::UnknownStoreOutcome)?;
-        let Some(issuance) = run::latest(tx, run)
+        let attempt = super::attempt::load_host_attempt_with_proof(
+            tx,
+            &run.id,
+            Some(&phase.snapshot.target.attempt.id),
+            proof,
+        )
+        .await
+        .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
+        .ok_or(crate::PhaseError::UnknownStoreOutcome)?
+        .0;
+        let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
             .await
             .map_err(|_| crate::PhaseError::UnknownStoreOutcome)?
         else {

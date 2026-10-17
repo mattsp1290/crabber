@@ -6,6 +6,16 @@ use crabber_core::{InputFingerprint, ManualClock, RunId, SessionId};
 pub(crate) trait Harness: Store {
     fn probe(&self) -> &Probe;
     fn fault(&self, stage: u8);
+    fn phase_fault(&self, stage: u8);
+    async fn phase_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        request: crate::PhaseMutation,
+        authority: Option<crate::PhaseWriteAuthority>,
+        start: Option<crate::PhaseStart>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::PhaseMutationOutcome, crate::PhaseError>;
+
     async fn attempt_with_proof(
         &self,
         fence: crabber_core::RunFence,
@@ -105,3 +115,7 @@ pub(crate) fn snapshot_digest(value: &impl serde::Serialize) -> InputFingerprint
     ))
     .unwrap()
 }
+
+#[path = "phase_contract.rs"]
+mod phase;
+pub(crate) use phase::run as phases;

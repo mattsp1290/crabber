@@ -21,6 +21,7 @@ pub(crate) enum Fresh<'a> {
     Attempt(Attempt<'a>),
     LegacyTool(super::LegacyTool<'a>),
     AdmissionBegin(super::AdmissionBegin<'a>),
+    Phase(Phase<'a>),
 }
 
 pub(crate) struct Attempt<'a> {
@@ -58,6 +59,7 @@ impl<'a> Fresh<'a> {
             Self::Attempt(fresh) => fresh.verify(proof),
             Self::LegacyTool(fresh) => fresh.verify(proof),
             Self::AdmissionBegin(fresh) => fresh.verify(proof),
+            Self::Phase(fresh) => fresh.verify(proof),
         }
     }
 }
@@ -104,3 +106,7 @@ impl<'a> Attempt<'a> {
         })
     }
 }
+
+#[path = "phase.rs"]
+mod phase;
+pub(crate) use phase::Phase;
