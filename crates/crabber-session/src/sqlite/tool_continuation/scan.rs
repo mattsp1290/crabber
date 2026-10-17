@@ -76,6 +76,7 @@ pub(in super::super) async fn scan_with_proof(
                 if records.active.is_some() {
                     return Err(Error::UnknownStoreOutcome.into());
                 }
+                proof.measure(&record).map_err(ToolReadError::Budget)?;
                 records.active = Some(record.clone());
             }
             if records.latest.as_ref().is_none_or(|old| {

@@ -1,0 +1,68 @@
+//! Per-Store test tripwire. Observations cannot become native evidence.
+use super::Fresh;
+use super::verify::Scope;
+use crate::public_session::v2::proof::{Failure, unknown};
+use crabber_core::{ControlId, InputFingerprint, SessionId};
+use std::sync::Mutex;
+
+#[derive(Default)]
+pub(crate) struct Probe(Mutex<Option<Selection>>);
+struct Selection {
+    session: SessionId,
+    operation: ControlId,
+    refuse: bool,
+    hits: Vec<InputFingerprint>,
+}
+impl Probe {
+    pub(crate) fn arm(&self, session: &SessionId, operation: &ControlId, refuse: bool) {
+        *self.0.lock().unwrap() = Some(Selection {
+            session: session.clone(),
+            operation: operation.clone(),
+            refuse,
+            hits: Vec::new(),
+        });
+    }
+    pub(crate) fn hits(&self) -> Vec<InputFingerprint> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.hits.clone())
+    }
+    pub(crate) fn observe(&self, scope: &Scope<'_>, fresh: &Fresh<'_>) -> Result<(), Failure> {
+        let Fresh::Attempt(a) = fresh;
+        let mut state = self.0.lock().unwrap();
+        let Some(selected) = state
+            .as_mut()
+            .filter(|s| &s.session == scope.session && s.operation == a.request.id)
+        else {
+            return Ok(());
+        };
+        // Verification already matched the real opaque grant to these exact
+        // record tokens and identity. The tripwire records that presence without
+        // claiming access to the grant's private snapshot representation.
+        let issued = a.issued.is_some();
+        let digest = crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-attempt.test.v1",
+            a.run,
+            a.request,
+            &a.record.snapshot,
+            &a.record.owner,
+            &a.record.token,
+            &a.record.run_token,
+            a.record.lease_until,
+            a.receipt,
+            a.event,
+            issued,
+        ));
+        // A matched fixture can observe only a small fixed number of calls.
+        if selected.hits.len() == 8 {
+            return Err(unknown("test probe capacity"));
+        }
+        selected.hits.push(digest);
+        if selected.refuse {
+            return Err(unknown("scoped raw-call test fault"));
+        }
+        Ok(())
+    }
+}

@@ -368,6 +368,27 @@ pub(super) use recover::preparation_frontend_context as preparation_frontend_rec
 
 pub(super) use recover::preparation_context as preparation_recovery_context;
 
+pub(super) fn guard_attempt_with_proof(
+    state: &State,
+    run: &Run,
+    request: &AttemptMutation,
+    proof: &mut Proof,
+) -> Result<(), AttemptError> {
+    let Some(record) = scan::run_with_proof(state, run, proof)
+        .map_err(|_| AttemptError::UnknownStoreOutcome)?
+        .1
+    else {
+        return Ok(());
+    };
+    if record.run_id != run.id
+        || record.state != ToolContinuationState::Claimed
+        || record.batch.next_attempt != *request.command.target()
+    {
+        return Err(AttemptError::Busy);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]

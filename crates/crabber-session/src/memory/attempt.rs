@@ -1,9 +1,15 @@
+#[path = "attempt/accounting.rs"]
+mod accounting;
+#[path = "attempt/publication.rs"]
+mod publication;
+use crate::native_enrollment::caller::Caller;
+use crate::public_session::v2::proof::Proof;
 #[path = "attempt/control.rs"]
 mod control;
 pub(super) use control::read_turn as host_turn;
 #[path = "attempt/pristine.rs"]
 mod pristine;
-use super::{MemoryExecution, MemoryStore, OperationReceipt, State, bump_public_revision};
+use super::{MemoryExecution, MemoryStore, OperationReceipt, State};
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,
     AttemptMutationOutcome, AttemptReceipt, VersionedAttempt, attempt,
@@ -148,9 +154,12 @@ impl MemoryExecution {
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<AttemptMutationOutcome, Error> {
         attempt::validate_request(request)?;
-        let result = self
-            .store
-            .transact(|state| self.apply_attempt(state, request.clone(), authority, conclusion));
+        let result = self.change_attempt_with_proof(
+            request,
+            authority,
+            conclusion,
+            &mut Proof::bounded(32 << 20),
+        );
         #[cfg(test)]
         if self
             .store
@@ -163,6 +172,45 @@ impl MemoryExecution {
         }
         result
     }
+    pub(super) fn change_attempt_with_proof(
+        &self,
+        request: &AttemptMutation,
+        authority: Option<&AttemptAuthority>,
+        conclusion: Option<&crate::AttemptConclusion>,
+        proof: &mut Proof,
+    ) -> Result<AttemptMutationOutcome, Error> {
+        let mut guard = self.store.state.lock().unwrap();
+        accounting::selected(
+            &guard,
+            &self.fence,
+            request,
+            authority,
+            conclusion,
+            false,
+            proof,
+        )?;
+        let run = guard.runs.get(&self.fence.run_id).ok_or(Error::NotFound)?;
+        let digest = if let Some(c) = conclusion {
+            c.fingerprint(&run.session_id, &run.id)?
+        } else {
+            request.fingerprint(&run.session_id, &run.id)?
+        };
+        if let Some(replayed) = replay(&guard, run, request, &digest, conclusion)? {
+            return Ok(replayed);
+        }
+        // Selected carriers were admitted against the original locked State.
+        // This inherited whole-State transaction clone remains unbounded.
+        let mut next = guard.clone();
+        let result = self.apply_attempt_inner(
+            &mut next,
+            request.clone(),
+            (authority, conclusion, false),
+            Caller::Raw,
+            proof,
+        )?;
+        *guard = next;
+        Ok(result)
+    }
     pub(super) fn apply_attempt(
         &self,
         state: &mut State,
@@ -170,14 +218,26 @@ impl MemoryExecution {
         authority: Option<&AttemptAuthority>,
         conclusion: Option<&crate::AttemptConclusion>,
     ) -> Result<AttemptMutationOutcome, Error> {
-        self.apply_attempt_inner(state, request, (authority, conclusion, false))
+        self.apply_attempt_inner(
+            state,
+            request,
+            (authority, conclusion, false),
+            Caller::Raw,
+            &mut Proof::bounded(32 << 20),
+        )
     }
     pub(super) fn apply_claim_attempt(
         &self,
         state: &mut State,
         request: AttemptMutation,
     ) -> Result<AttemptMutationOutcome, Error> {
-        self.apply_attempt_inner(state, request, (None, None, true))
+        self.apply_attempt_inner(
+            state,
+            request,
+            (None, None, true),
+            Caller::Raw,
+            &mut Proof::bounded(32 << 20),
+        )
     }
     fn apply_attempt_inner(
         &self,
@@ -188,8 +248,19 @@ impl MemoryExecution {
             Option<&crate::AttemptConclusion>,
             bool,
         ),
+        caller: Caller,
+        read_proof: &mut Proof,
     ) -> Result<AttemptMutationOutcome, Error> {
         let (authority, conclusion, claiming) = context;
+        accounting::selected(
+            state,
+            &self.fence,
+            &request,
+            authority,
+            conclusion,
+            claiming,
+            read_proof,
+        )?;
         attempt::validate_request(&request)?;
 
         let run = state
@@ -205,7 +276,6 @@ impl MemoryExecution {
         } else {
             request.fingerprint(&run.session_id, &run.id)?
         };
-        let key = (run.session_id.clone(), request.id.clone());
         if let Some(replayed) = replay(state, &run, &request, &digest, conclusion)? {
             return Ok(replayed);
         }
@@ -219,8 +289,8 @@ impl MemoryExecution {
         {
             return Err(Error::StaleOwner);
         }
-        guard_approval(state, &run, &request, claiming)?;
-        super::tool_continuation::guard_attempt(state, &run, &request)?;
+        super::approval::guard_attempt_with_proof(state, &run, &request, claiming, read_proof)?;
+        super::tool_continuation::guard_attempt_with_proof(state, &run, &request, read_proof)?;
         let current = revision(state, &run.session_id);
         if current != request.expected_revision {
             return Err(Error::RevisionConflict);
@@ -229,63 +299,33 @@ impl MemoryExecution {
             check_boundary(state, &run, conclusion)?;
         }
         if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
-            pristine::check(state, &run)?;
+            pristine::check(state, &run, read_proof)?;
         }
-        let id = &request.command.target().id;
         let (record, grant) =
             prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
-        let settlement = apply_run_transition(state, &run, &request, conclusion, now)?;
+        let settlement = apply_run_transition(state, &run, &request, conclusion, now, read_proof)?;
         if conclusion.is_some_and(|c| matches!(c.boundary, crate::RunBoundary::Terminal { .. })) {
             super::approval::release_terminal(state, &run, &request)?;
             super::tool_continuation::release_terminal(state, &run)?;
         }
 
-        let revision = revision(state, &run.session_id)
-            .next()
-            .map_err(|_| Error::RevisionExhausted)?;
-        let authority = grant.then(|| record.authority()).transpose()?;
-        let mut event = crate::attempt_conclusion::publication(
-            &run,
-            &request,
-            conclusion,
-            &record.snapshot,
-            digest.clone(),
-            settlement,
-            now,
-        )?;
-        let cursor = state
-            .events
-            .next_cursor()
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-        event.cursor = Some(cursor);
-        let receipt = AttemptReceipt {
-            operation_id: request.id,
-            semantic_digest: digest,
-            revision,
-            event_cursor: cursor,
-            attempt: record.snapshot.clone(),
-        };
-        super::native_parent::record_attempt(state, &run, &request.command, &record, &receipt)?;
-        state.attempts.insert(id.clone(), record);
-        bump_public_revision(state, &run.session_id).map_err(|_| Error::UnknownStoreOutcome)?;
-        state
-            .events
-            .append(event)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-        state
-            .operation_receipts
-            .insert(key, OperationReceipt::Attempt(receipt.clone()));
-        super::run_control::suspension::save(state, &run, conclusion, &receipt);
-        #[cfg(test)]
-        if self
-            .store
-            .attempt_fault
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            return Err(Error::UnknownStoreOutcome);
-        }
-        Ok(AttemptMutationOutcome::Applied { receipt, authority })
+        publication::publish(
+            state,
+            publication::Prepared {
+                run: &run,
+                request,
+                record,
+                grant,
+                conclusion,
+                settlement,
+                digest,
+                now,
+            },
+            caller,
+            read_proof,
+            #[cfg(test)]
+            &self.store,
+        )
     }
 }
 
@@ -322,6 +362,7 @@ fn apply_run_transition(
     request: &AttemptMutation,
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
+    proof: &mut Proof,
 ) -> Result<Option<crabber_core::EventRecord>, Error> {
     if let Some(conclusion) = conclusion {
         return apply_boundary(state, run, conclusion, now);
@@ -333,7 +374,7 @@ fn apply_run_transition(
         let mut activated = run.clone();
         activated.status = crabber_core::RunStatus::Running;
         activated.updated_at = now;
-        super::native_parent::record_run(state, Some(run), &activated)
+        super::native_parent::record_run_with_proof(state, Some(run), &activated, proof)
             .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);
     }
@@ -451,19 +492,6 @@ fn is_quiet(state: &State, run: &crabber_core::Run) -> bool {
         .calls
         .values()
         .any(|c| c.run_id == run.id && c.status == ToolCallStatus::Running)
-}
-
-fn guard_approval(
-    state: &State,
-    run: &crabber_core::Run,
-    request: &AttemptMutation,
-    claiming: bool,
-) -> Result<(), Error> {
-    if claiming {
-        super::approval::guard_claiming(state, run, request)
-    } else {
-        super::approval::guard_attempt(state, run, request)
-    }
 }
 
 #[cfg(test)]

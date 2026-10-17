@@ -25,12 +25,29 @@ pub(super) fn run(
     ),
     Error,
 > {
+    run_with_proof(
+        state,
+        run,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+}
+pub(in crate::memory) fn run_with_proof(
+    state: &State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    (
+        Option<ToolContinuationRecord>,
+        Option<ToolContinuationRecord>,
+    ),
+    Error,
+> {
     super::super::continuation_input::consistent(
         state,
         crate::continuation_input::Domain::Tool,
         &run.session_id,
         Some(&run.id),
-        &mut crate::public_session::v2::proof::Proof::legacy(),
+        proof,
     )
     .map_err(|_| Error::UnknownStoreOutcome)?;
     let mut latest: Option<ToolContinuationRecord> = None;
@@ -41,12 +58,16 @@ pub(super) fn run(
         .values()
         .filter(|record| record.session_id == run.session_id && record.run_id == run.id)
     {
-        let record = checked_record(state, &record.batch.continuation.id)?;
+        let record = super::checked_record_with_proof(state, &record.batch.continuation.id, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         count += 1;
         if record.state != ToolContinuationState::Released {
             if active.is_some() {
                 return Err(Error::UnknownStoreOutcome);
             }
+            proof
+                .measure(&record)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             active = Some(record.clone());
         }
         if latest.as_ref().is_none_or(|old| {

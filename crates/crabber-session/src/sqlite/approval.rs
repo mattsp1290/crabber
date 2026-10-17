@@ -23,7 +23,7 @@ use crate::{
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use current::session as verify_session;
-pub(super) use guards::{guard_attempt, guard_claiming, release_terminal, retirement_context};
+pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
 use sqlx::{Row, Sqlite, Transaction};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN length(CAST(json_extract(s.data, '$.workspace_id') AS BLOB))<=512 THEN json_extract(s.data, '$.workspace_id') END AS workspace,CASE WHEN length(CAST(c.id AS BLOB))<=128 THEN c.id END AS id,c.generation,CASE WHEN length(CAST(c.state AS BLOB))<=32 THEN c.state END AS state,c.format_version AS format_version,
@@ -327,3 +327,5 @@ async fn verify_questions_with_proof(
 }
 const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(r.semantic_digest AS BLOB)),0)+8+COALESCE(length(CAST(e.run_id AS BLOB)),0)+CASE WHEN r.kind='approval' THEN COALESCE(length(CAST(e.data AS BLOB)),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
 const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT length(CAST(id AS BLOB))+length(CAST(call_id AS BLOB)) AS bytes FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded_questions";
+
+pub(super) use guards::guard_attempt_with_proof;

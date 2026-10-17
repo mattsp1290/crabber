@@ -37,3 +37,24 @@ pub(in super::super) async fn release_terminal(
     }
     Ok(())
 }
+
+pub(in crate::sqlite) async fn guard_attempt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    request: &crate::AttemptMutation,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::AttemptError> {
+    let Some(record) = super::scan::scan_with_proof(tx, &run.session_id, Some(&run.id), proof)
+        .await
+        .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
+        .active
+    else {
+        return Ok(());
+    };
+    if record.state != ToolContinuationState::Claimed
+        || record.batch.next_attempt != *request.command.target()
+    {
+        return Err(crate::AttemptError::Busy);
+    }
+    Ok(())
+}

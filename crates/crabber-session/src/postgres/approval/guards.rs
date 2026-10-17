@@ -118,17 +118,49 @@ pub(in super::super) async fn retirement_context(
     })
 }
 
-pub(in super::super) async fn guard_claiming(
+// Additive shared-Proof entrypoint for native Attempt; old host controls remain compatible.
+pub(in crate::postgres) async fn guard_attempt_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     request: &AttemptMutation,
+    claiming: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    let (record, _) = super::load(tx, &run.session_id, &run.id)
+    if !claiming {
+        super::current::session_with_proof(tx, &run.session_id, proof)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM continuation_barriers WHERE session_id=$1)",
+    )
+    .bind(&run.session_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    if !exists {
+        return if claiming {
+            Err(Error::UnknownStoreOutcome)
+        } else {
+            Ok(())
+        };
+    }
+    let (record, _) = super::load_with_proof(tx, &run.session_id, &run.id, proof)
         .await
         .map_err(|_| Error::UnknownStoreOutcome)?
         .ok_or(Error::UnknownStoreOutcome)?;
-    if record.state != crate::ApprovalContinuationState::Waiting
-        || !matches!(&request.command,crate::AttemptCommand::Reserve {target} if *target==record.batch.next_attempt)
+    super::super::read_proof::charge(tx, sqlx::query_scalar("SELECT CAST(octet_length(continuation_id)+octet_length(run_id) AS BIGINT) FROM continuation_barriers WHERE session_id=$1").bind(&run.session_id.0), proof).await.map_err(|_| Error::UnknownStoreOutcome)?;
+    super::write::active(tx, &record)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    if record.batch.next_attempt != *request.command.target()
+        || record.state
+            != if claiming {
+                ApprovalContinuationState::Waiting
+            } else {
+                ApprovalContinuationState::Claimed
+            }
+        || claiming && !matches!(request.command, crate::AttemptCommand::Reserve { .. })
     {
         return Err(Error::Busy);
     }

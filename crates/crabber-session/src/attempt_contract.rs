@@ -7,6 +7,8 @@ mod cleanup;
 pub(crate) mod conclusion;
 #[path = "attempt_contract/faults.rs"]
 mod faults;
+#[cfg(test)]
+pub(crate) use faults::{Case as RawAttemptCase, fixture as raw_attempt_fixture};
 pub use faults::{FaultPoint, run_fault_contract};
 #[path = "attempt_contract/owned_call.rs"]
 mod owned_call;

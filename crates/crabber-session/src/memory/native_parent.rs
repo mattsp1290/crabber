@@ -11,13 +11,17 @@ pub(super) fn record_attempt(
     command: &crate::AttemptCommand,
     attempt: &crate::attempt::AttemptRecord,
     receipt: &crate::AttemptReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::AttemptError> {
     if matches!(command, crate::AttemptCommand::Begin { .. }) {
-        let Some(issuance) =
-            latest_run(state, run).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
+        let Some(issuance) = source_protocol::current(state, &run.session_id, &run.id, proof)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
         else {
             return Ok(());
         };
+        issuance
+            .verify(run)
+            .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
         let witness = Witness::attempt(run, attempt, receipt, issuance)
             .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;
         insert(state, witness).map_err(|_| crate::AttemptError::UnknownStoreOutcome)?;

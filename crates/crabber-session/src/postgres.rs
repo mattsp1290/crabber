@@ -75,6 +75,8 @@ pub struct PostgresStore {
     #[cfg(test)]
     attempt_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
+    native_raw_probe: Arc<crate::native_enrollment::caller::Probe>,
+    #[cfg(test)]
     phase_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     approval_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -531,6 +533,8 @@ impl PostgresStore {
             management_fault: Arc::default(),
             #[cfg(test)]
             attempt_fault: Arc::default(),
+            #[cfg(test)]
+            native_raw_probe: Arc::default(),
             #[cfg(test)]
             phase_fault: Arc::default(),
             #[cfg(test)]

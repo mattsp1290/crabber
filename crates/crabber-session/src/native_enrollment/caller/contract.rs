@@ -1,0 +1,107 @@
+//! Real native mutation/rollback/ACK-loss tests, never producer evidence.
+use super::Probe;
+use crate::{AttemptError, AttemptMutationOutcome, Store};
+use crabber_core::{InputFingerprint, ManualClock, RunId, SessionId};
+
+pub(crate) trait Harness: Store {
+    fn probe(&self) -> &Probe;
+    fn fault(&self, stage: u8);
+    async fn attempt_with_proof(
+        &self,
+        fence: crabber_core::RunFence,
+        request: crate::AttemptMutation,
+        authority: Option<crate::AttemptAuthority>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<AttemptMutationOutcome, AttemptError>;
+    async fn retained(&self, session: &SessionId, run: &RunId, birth: bool) -> InputFingerprint;
+}
+
+pub(crate) async fn run(store: &impl Harness, clock: &ManualClock) {
+    use crate::attempt_contract::RawAttemptCase as Case;
+    for case in [
+        Case::Reserve,
+        Case::ReserveBound,
+        Case::Reclaim,
+        Case::Begin,
+    ] {
+        for ack_loss in [false, true] {
+            let (admitted, execution, request, authority) =
+                crate::attempt_contract::raw_attempt_fixture(store, clock, case).await;
+            let session = &admitted.session.id;
+            let run = &admitted.run.id;
+            let before = store.retained(session, run, false).await;
+            let original = store.retained(session, run, true).await;
+            store.probe().arm(session, &request.id, true);
+            assert_eq!(
+                execution
+                    .mutate_attempt(request.clone(), authority.clone())
+                    .await
+                    .unwrap_err(),
+                AttemptError::UnknownStoreOutcome
+            );
+            assert_eq!(store.probe().hits().len(), 1);
+            assert_eq!(store.retained(session, run, false).await, before);
+            assert_eq!(store.retained(session, run, true).await, original);
+            store.probe().arm(session, &request.id, false);
+            store.fault(if ack_loss { 2 } else { 0 });
+            let result = execution
+                .mutate_attempt(request.clone(), authority.clone())
+                .await;
+            store.fault(0);
+            let saved = store
+                .lookup_attempt_mutation(session, &request.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if ack_loss {
+                assert_eq!(result.unwrap_err(), AttemptError::UnknownStoreOutcome);
+            } else {
+                assert!(
+                    matches!(result.unwrap(), AttemptMutationOutcome::Applied { receipt, .. } if receipt == saved)
+                );
+            }
+            assert_eq!(store.probe().hits().len(), 1);
+            assert_ne!(store.retained(session, run, false).await, before);
+            assert_eq!(store.retained(session, run, true).await, original);
+            let committed = store.retained(session, run, false).await;
+            store.probe().arm(session, &request.id, true);
+            assert!(
+                matches!(execution.mutate_attempt(request.clone(), None).await.unwrap(), AttemptMutationOutcome::Replayed(receipt) if receipt == saved)
+            );
+            assert_eq!(
+                store.probe().hits(),
+                Vec::<crabber_core::InputFingerprint>::new()
+            );
+            assert_eq!(store.retained(session, run, false).await, committed);
+            // A real failed revision check never reaches the fresh hook.
+            let mut stale = request;
+            stale.id = crabber_core::ControlId::new();
+            store.probe().arm(session, &stale.id, true);
+            assert_eq!(
+                execution
+                    .mutate_attempt(stale, authority)
+                    .await
+                    .unwrap_err(),
+                AttemptError::RevisionConflict
+            );
+            assert_eq!(
+                store.probe().hits(),
+                Vec::<crabber_core::InputFingerprint>::new()
+            );
+            assert_eq!(store.retained(session, run, false).await, committed);
+        }
+    }
+}
+
+#[path = "budget_contract.rs"]
+mod budget_contract;
+pub(crate) use budget_contract::run as budgets;
+
+pub(crate) fn snapshot_digest(value: &impl serde::Serialize) -> InputFingerprint {
+    use sha2::{Digest, Sha256};
+    InputFingerprint::new(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).unwrap())
+    ))
+    .unwrap()
+}

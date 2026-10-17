@@ -23,7 +23,7 @@ use crate::{
 };
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use current::session as verify_session;
-pub(super) use guards::{guard_attempt, guard_claiming, release_terminal, retirement_context};
+pub(super) use guards::{guard_attempt, release_terminal, retirement_context};
 use sqlx::{Postgres, Row, Transaction};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN octet_length(s.data->>'workspace_id')<=512 THEN s.data->>'workspace_id' END AS workspace,CASE WHEN octet_length(c.id)<=128 THEN c.id END AS id,c.generation,CASE WHEN octet_length(c.state)<=32 THEN c.state END AS state,c.format_version::bigint AS format_version,
@@ -324,3 +324,5 @@ async fn verify_questions_with_proof(
 }
 const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(r.semantic_digest),0)+8+COALESCE(octet_length(e.run_id),0)+CASE WHEN r.kind='approval' THEN COALESCE(octet_length(e.data::text),0) ELSE 0 END AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.session_id=r.session_id AND e.seq=r.event_seq WHERE r.session_id=$1 AND r.operation_id=$2";
 const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT octet_length(id)+octet_length(call_id) AS bytes FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded_questions";
+
+pub(super) use guards::guard_attempt_with_proof;

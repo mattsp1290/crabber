@@ -189,3 +189,27 @@ mod tests;
 
 #[cfg(test)]
 mod migration_tests;
+
+pub(in crate::postgres) async fn record_raw_native(
+    tx: &mut Transaction<'_, Postgres>,
+    caller: crate::native_enrollment::caller::Caller,
+    fresh: &crate::native_enrollment::caller::Fresh<'_>,
+    proof: &mut Proof,
+    #[cfg(test)] probe: &crate::native_enrollment::caller::Probe,
+) -> Result<(), Failure> {
+    let scope = fresh.measure_and_verify(proof)?;
+    match caller {
+        crate::native_enrollment::caller::Caller::Raw => {
+            match original(tx, scope.session, scope.run, proof).await? {
+                Status::Legacy | Status::Unclassified => (),
+            }
+        }
+    }
+    #[cfg(test)]
+    probe.observe(&scope, fresh)?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "native_enrollment/attempt_tests.rs"]
+mod attempt_tests;
