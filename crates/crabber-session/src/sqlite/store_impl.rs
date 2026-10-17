@@ -1,7 +1,5 @@
 //! Store contract, with read-only calls routed through the reader pool.
-use super::records::{
-    decode_row, inbox_kind, lookup_receipt, messages, project,
-};
+use super::records::{decode_row, inbox_kind, lookup_receipt, messages, project};
 use super::transactions::finish;
 use super::{SqliteExecution, SqliteStore, StoreError, abandon, admission_execution, db, text};
 use crate::{

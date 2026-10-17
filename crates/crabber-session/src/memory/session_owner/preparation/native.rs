@@ -1,9 +1,9 @@
 //! Apply the exact task-returned native intent under the preparation gate.
 #[path = "native/control.rs"]
 mod control;
-use crate::native_enrollment::caller::{Caller, initial::Dispatch};
+#[path = "native/initial.rs"]
+mod initial;
 use crate::session_owner::preparation::{PreparationCompletion, PreparedOperation};
-use crate::{KeyedAdmitOutcome, RetainedExecutionBinding};
 impl super::super::MemoryStore {
     pub(super) fn apply_prepared_native(
         &self,
@@ -14,7 +14,6 @@ impl super::super::MemoryStore {
         queue_selection: Option<super::super::super::queue::selection::Selected>,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        let guard = crate::queue::AdmissionGuard::Preparation(proof);
         let completed = match operation {
             PreparedOperation::ExpiredRunResume(prepared) => PreparationCompletion::ExpiredRun(
                 self.claim_prepared_expired(state, &prepared, proof, read_proof)?,
@@ -63,57 +62,10 @@ impl super::super::MemoryStore {
                 )?)
             }
             PreparedOperation::Admit(bound) => {
-                read_proof
-                    .measure(&(&bound.request, &bound.binding))
-                    .map_err(|_| crate::StoreError::Conflict)?;
-                bound.binding.validate(&bound.request)?;
-                let captured = super::super::super::admission::admit_transaction_captured(
-                    state,
-                    &bound.request,
-                    self.clock.now(),
-                    false,
-                    guard,
-                    Dispatch::raw(Caller::Raw),
-                    read_proof,
-                )?;
-                let retained = RetainedExecutionBinding::new(
-                    &captured.admitted.run,
-                    &bound.request.user_message,
-                    bound.binding.clone(),
-                );
-                state
-                    .execution_bindings
-                    .insert(captured.admitted.run.id.clone(), retained.encode()?);
-                let admitted = super::super::super::admission::finish_initial(
-                    state,
-                    crate::native_enrollment::caller::initial::Input::Bound {
-                        request: &bound.request,
-                        binding: &bound.binding,
-                    },
-                    captured,
-                    read_proof,
-                    #[cfg(test)]
-                    &self.native_raw_probe,
-                )?;
-                PreparationCompletion::Admitted(admitted)
+                self.admit_prepared_bound(state, &bound, proof, read_proof)?
             }
             PreparedOperation::AdmitKeyed(bound) => {
-                read_proof
-                    .measure(&(&bound.keyed, &bound.binding))
-                    .map_err(|_| crate::StoreError::Conflict)?;
-                let outcome=match super::super::super::admission::admit_keyed_captured(state,&bound.keyed,self.clock.now(),guard,
-                    Dispatch::raw(Caller::Raw),read_proof)?{
-                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
-                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
-                        let retained=RetainedExecutionBinding::new(&admitted.admitted.run,&bound.keyed.request.user_message,bound.binding.clone());
-                        state.execution_bindings.insert(admitted.admitted.run.id.clone(),retained.encode()?);
-                        let admitted=super::super::super::admission::finish_initial(state,
-                            crate::native_enrollment::caller::initial::Input::BoundKeyed{request:&bound.keyed,binding:&bound.binding,receipt:&receipt},*admitted,read_proof,
-                            #[cfg(test)] &self.native_raw_probe)?;
-                        KeyedAdmitOutcome::Started{receipt,admitted:Box::new(admitted)}
-                    }
-                };
-                PreparationCompletion::Keyed(outcome)
+                self.admit_prepared_keyed(state, &bound, proof, read_proof)?
             }
         };
         control::verify(state, proof.grant, &completed)?;

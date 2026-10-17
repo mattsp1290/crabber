@@ -144,102 +144,7 @@ impl Probe {
         else {
             return Ok(());
         };
-        let digest = match fresh {
-            Fresh::Initial(i) => crate::native_enrollment::caller::contract::snapshot_digest(&(
-                "crabber.native.raw-initial.test.v1",
-                i.input.test_digest(),
-                &i.first.issuer,
-                &i.first.source,
-                &i.result.session,
-                &i.result.run,
-                &i.result.fence,
-                &i.result.assistant_placeholder,
-                &i.result.epoch,
-                &i.result.prior_history,
-            )),
-
-            Fresh::LegacyExpired(a) => {
-                crate::native_enrollment::caller::contract::snapshot_digest(&(
-                    "crabber.native.raw-legacy-expired.test.v1",
-                    a.id,
-                    a.owner,
-                    a.previous,
-                    a.updated,
-                    a.fence,
-                    &a.publication.issuer,
-                    &a.publication.source,
-                ))
-            }
-            Fresh::ExpiredRecovery(a) => {
-                crate::native_enrollment::caller::contract::snapshot_digest(&(
-                    "crabber.native.raw-expired-recovery.test.v1",
-                    a.previous,
-                    a.updated,
-                    a.completion,
-                    &a.publication.issuer,
-                    &a.publication.source,
-                ))
-            }
-            Fresh::AdmissionRecovery(a) => {
-                crate::native_enrollment::caller::contract::snapshot_digest(&(
-                    "crabber.native.raw-admission-recovery.test.v1",
-                    a.previous,
-                    &a.result.record,
-                    &a.result.run,
-                    &a.result.fence,
-                    a.completion,
-                    &a.publication.issuer,
-                    &a.publication.source,
-                ))
-            }
-            Fresh::Phase(p) => crate::native_enrollment::caller::contract::snapshot_digest(&(
-                "crabber.native.raw-phase.test.v1",
-                p.run,
-                p.request,
-                &p.parent.snapshot,
-                &p.parent.token,
-                &p.parent.run_token,
-                &p.record.snapshot,
-                &p.record.token,
-                &p.record.output,
-                p.call,
-                p.receipt,
-                p.event,
-                p.running_event,
-                p.issued.is_some(),
-            )),
-            Fresh::AdmissionBegin(a) => {
-                crate::native_enrollment::caller::contract::snapshot_digest(&(
-                    "crabber.native.raw-admission-begin.test.v1",
-                    a.fence,
-                    a.run,
-                    a.record,
-                    a.sources,
-                ))
-            }
-            Fresh::Attempt(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
-                "crabber.native.raw-attempt.test.v1",
-                a.run,
-                a.request,
-                &a.record.snapshot,
-                &a.record.owner,
-                &a.record.token,
-                &a.record.run_token,
-                a.record.lease_until,
-                a.receipt,
-                a.event,
-                a.issued.is_some(),
-            )),
-            Fresh::LegacyTool(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
-                "crabber.native.raw-legacy-tool.test.v1",
-                a.run,
-                a.fence,
-                a.id,
-                a.requested,
-                a.call,
-                a.cursor,
-            )),
-        };
+        let digest = digest(fresh);
         // A matched fixture can observe only a small fixed number of calls.
         if selected.hits.len() == 8 {
             return Err(unknown("test probe capacity"));
@@ -249,5 +154,100 @@ impl Probe {
             return Err(unknown("scoped raw-call test fault"));
         }
         Ok(())
+    }
+}
+
+fn digest(fresh: &Fresh<'_>) -> InputFingerprint {
+    match fresh {
+        Fresh::Initial(i) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-initial.test.v1",
+            i.input.test_digest(),
+            &i.first.issuer,
+            &i.first.source,
+            &i.result.session,
+            &i.result.run,
+            &i.result.fence,
+            &i.result.assistant_placeholder,
+            &i.result.epoch,
+            &i.result.prior_history,
+        )),
+
+        Fresh::LegacyExpired(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-legacy-expired.test.v1",
+            a.id,
+            a.owner,
+            a.previous,
+            a.updated,
+            a.fence,
+            &a.publication.issuer,
+            &a.publication.source,
+        )),
+        Fresh::ExpiredRecovery(a) => {
+            crate::native_enrollment::caller::contract::snapshot_digest(&(
+                "crabber.native.raw-expired-recovery.test.v1",
+                a.previous,
+                a.updated,
+                a.completion,
+                &a.publication.issuer,
+                &a.publication.source,
+            ))
+        }
+        Fresh::AdmissionRecovery(a) => {
+            crate::native_enrollment::caller::contract::snapshot_digest(&(
+                "crabber.native.raw-admission-recovery.test.v1",
+                a.previous,
+                &a.result.record,
+                &a.result.run,
+                &a.result.fence,
+                a.completion,
+                &a.publication.issuer,
+                &a.publication.source,
+            ))
+        }
+        Fresh::Phase(p) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-phase.test.v1",
+            p.run,
+            p.request,
+            &p.parent.snapshot,
+            &p.parent.token,
+            &p.parent.run_token,
+            &p.record.snapshot,
+            &p.record.token,
+            &p.record.output,
+            p.call,
+            p.receipt,
+            p.event,
+            p.running_event,
+            p.issued.is_some(),
+        )),
+        Fresh::AdmissionBegin(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-admission-begin.test.v1",
+            a.fence,
+            a.run,
+            a.record,
+            a.sources,
+        )),
+        Fresh::Attempt(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-attempt.test.v1",
+            a.run,
+            a.request,
+            &a.record.snapshot,
+            &a.record.owner,
+            &a.record.token,
+            &a.record.run_token,
+            a.record.lease_until,
+            a.receipt,
+            a.event,
+            a.issued.is_some(),
+        )),
+        Fresh::LegacyTool(a) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+            "crabber.native.raw-legacy-tool.test.v1",
+            a.run,
+            a.fence,
+            a.id,
+            a.requested,
+            a.call,
+            a.cursor,
+        )),
     }
 }

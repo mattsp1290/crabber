@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::ClaimUnstartedAdmissionRequest;
+use crate::postgres::transaction::Transaction;
 #[path = "admission_execution/recovery.rs"]
 mod recovery;
 pub(super) use recovery::claim;

@@ -209,19 +209,6 @@ pub(super) fn record_initial_run_with_proof(
     .first
     .ok_or(Error)
 }
-pub(super) fn record_run_completed(
-    state: &mut State,
-    previous: &Run,
-    updated: &Run,
-    source: Option<&crate::native_parent::CompletionSource>,
-) -> Result<(), Error> {
-    record_run_states_with_completion(
-        state,
-        Some(&RunState::from_run(previous)?),
-        RunState::from_run(updated)?,
-        source.cloned(),
-    )
-}
 pub(super) fn record_owned_admission_with_proof(
     state: &mut State,
     run: &Run,

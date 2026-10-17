@@ -2,6 +2,7 @@
 use super::db;
 use crate::admission_journal::{self, Begin, Init, Kind, Source};
 use crate::native_parent::RunIssuance;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{AdmissionExecutionRecord, StoreError};
 use crabber_core::{Run, RunId, SessionId};
