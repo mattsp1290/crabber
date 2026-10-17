@@ -181,14 +181,22 @@ impl Drop for Disposal {
         assert_eq!(self.drops.load(Ordering::SeqCst), 1);
     }
 }
-struct HeldLease(Arc<Disposal>);
+struct HeldLease(Arc<Disposal>, bool);
 impl Drop for HeldLease {
     fn drop(&mut self) {
         drop(Original(self.0.clone()));
+        assert!(!self.1, "original extra lease Drop panic");
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_actor_join_cannot_ack_or_reap_before_actual_extra_lease_disposal() {
+    retained_lease(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn original_actor_join_does_not_turn_failed_extra_lease_disposal_into_ack() {
+    retained_lease(true).await;
+}
+async fn retained_lease(panic: bool) {
     use crabber_core::{ProviderBindingDescriptor, ProviderBindingLimits};
     use crabber_providers::{BoundProvider, Selection};
     let registry = Registry::new();
@@ -235,7 +243,7 @@ async fn original_actor_join_cannot_ack_or_reap_before_actual_extra_lease_dispos
         }),
     )
     .unwrap()
-    .retain_service_lease(Arc::new(HeldLease(disposal.clone())));
+    .retain_service_lease(Arc::new(HeldLease(disposal.clone(), panic)));
     let request = crabber_providers::ModelRequest {
         context: vec![],
         identity: crabber_providers::RequestIdentity {
@@ -266,14 +274,16 @@ async fn original_actor_join_cannot_ack_or_reap_before_actual_extra_lease_dispos
     let before = resources.drain(Duration::from_millis(10)).await;
     let mount_before = mount.close(Duration::from_millis(10)).await;
     disposal.release();
-    actor.join().await.unwrap();
+    let actor_result = actor.join().await;
     let after = resources.drain(Duration::from_secs(1)).await;
-    mount.close(Duration::from_secs(1)).await.unwrap();
+    let mounted = mount.close(Duration::from_millis(10)).await;
+    assert_eq!(actor_result.is_err(), panic);
+    assert_eq!(mounted.is_err(), panic);
     assert_eq!(original_joined, 1);
     assert_eq!(released_before, 0);
     assert_eq!(before.pending, 1);
     assert!(mount_before.is_err());
     assert_eq!(after.pending, 0);
-    assert_eq!(after.failures, [] as [crate::ResourceFailure; 0]);
+    assert_eq!(!after.failures.is_empty(), panic);
     assert_eq!(closer.released.load(Ordering::SeqCst), 1);
 }

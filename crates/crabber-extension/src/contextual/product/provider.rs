@@ -61,3 +61,6 @@ pub trait ContextualProviderProductFactory: Send + Sync {
         context: FactoryContext,
     ) -> BoxFuture<'_, Result<ContextualProviderProduct, ExtensionError>>;
 }
+
+#[cfg(test)]
+mod tests;

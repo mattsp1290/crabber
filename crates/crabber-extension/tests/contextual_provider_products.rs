@@ -266,3 +266,61 @@ async fn missing_owner_and_closed_original_mount_refuse_before_binding_effect() 
 }
 #[path = "contextual_provider_products/handoff.rs"]
 mod handoff;
+#[path = "contextual_provider_products/pending.rs"]
+mod pending;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sequential_actual_joins_reap_capacity_and_original_owner_cannot_be_replaced() {
+    let seen = Arc::new(Seen::default());
+    let (provider, host) = setup(seen.clone());
+    let context = context();
+    let plan = provider.acquire_plan_in(&context).await.unwrap();
+    let adapter = plan.providers[0].clone();
+    let resources = ToolResourceOwner::new();
+    let owner = CallbackInvocationOwner::attach(resources.resources()).unwrap();
+    let other_resources = ToolResourceOwner::new();
+    let other = CallbackInvocationOwner::attach(other_resources.resources()).unwrap();
+    with_callback_invocations(owner.capability(), async {
+        for index in 0..70 {
+            let bound = adapter.bind(&selection()).await.unwrap();
+            let (bound, released) = bound.observe_release();
+            let mut stream = bound.streamer().stream(request(&context)).await.unwrap();
+            if index == 0 {
+                let changed = with_callback_invocations(other.capability(), stream.next()).await;
+                assert!(matches!(changed, Some(StreamDelta::Error(_))));
+                assert_eq!(seen.polls.load(Ordering::SeqCst), 0);
+            }
+            assert!(matches!(
+                stream.next().await,
+                Some(StreamDelta::TextDelta(_))
+            ));
+            assert_eq!(stream.next().await, None);
+            drop(stream);
+            drop(bound);
+            tokio::time::timeout(Duration::from_secs(2), released.released())
+                .await
+                .unwrap();
+        }
+    })
+    .await;
+    drop(other);
+    drop(owner);
+    let other = other_resources.drain(Duration::from_secs(2)).await;
+    let drained = resources.drain(Duration::from_secs(2)).await;
+    drop(adapter);
+    drop(plan);
+    finish(&provider, &host, &context).await;
+    assert_eq!(other.pending, 0);
+    assert_eq!(
+        other.failures,
+        [] as [crabber_extension::ResourceFailure; 0]
+    );
+    assert_eq!(drained.pending, 0);
+    assert_eq!(
+        drained.failures,
+        [] as [crabber_extension::ResourceFailure; 0]
+    );
+    assert_eq!(seen.binds.load(Ordering::SeqCst), 70);
+    assert_eq!(seen.streams.load(Ordering::SeqCst), 70);
+    assert_eq!(seen.streamers.load(Ordering::SeqCst), 70);
+}
