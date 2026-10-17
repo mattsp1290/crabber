@@ -22,6 +22,8 @@ mod admission_execution;
 mod admission_journal;
 mod approval;
 mod attempt;
+#[cfg(test)]
+mod begin_cancellation_tests;
 mod deletion;
 mod execution_binding;
 #[cfg(test)]

@@ -29,7 +29,7 @@ sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:hmac"]
 tempfile = "3"
 allocation-counter = "0.8.1"
 crabber = { path = "../crabber" }
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "net", "io-util"] }
 
 [lints]
 workspace = true
