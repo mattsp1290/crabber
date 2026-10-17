@@ -193,3 +193,6 @@ mod workspace_reader_products;
 
 #[path = "owned_tool_invocations/guard_products.rs"]
 mod guard_products;
+
+#[path = "owned_tool_invocations/mixed_products.rs"]
+mod mixed_products;
