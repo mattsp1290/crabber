@@ -71,9 +71,6 @@ impl VerifiedAdmission {
     pub fn bound_ref(&self) -> &BoundKeyedAdmitRequest {
         &self.bound
     }
-    pub fn bound(&self) -> BoundKeyedAdmitRequest {
-        self.bound.clone()
-    }
 }
 pub(crate) struct Change {
     pub record: Record,

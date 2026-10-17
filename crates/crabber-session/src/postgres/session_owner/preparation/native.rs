@@ -59,7 +59,7 @@ impl super::super::PostgresStore {
                 read_proof
                     .measure(&(&bound.keyed, &bound.binding))
                     .map_err(|_| crate::StoreError::Conflict)?;
-                let outcome=match self.admit_keyed_captured(tx,&bound.keyed,guard,crate::native_enrollment::caller::Caller::Raw,read_proof).await?{
+                let outcome=match self.admit_keyed_captured(tx,&bound.keyed,guard,crate::native_enrollment::caller::initial::Dispatch::raw(crate::native_enrollment::caller::Caller::Raw),read_proof).await?{
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
                         super::super::super::execution_binding::save(tx,&RetainedExecutionBinding::new(&admitted.admitted.run,&bound.keyed.request.user_message,bound.binding.clone())).await?;
@@ -95,7 +95,9 @@ impl super::super::PostgresStore {
                 &bound.request,
                 false,
                 guard,
-                crate::native_enrollment::caller::Caller::Raw,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
                 read_proof,
             )
             .await?;

@@ -93,6 +93,7 @@ pub(crate) enum Input<'a> {
         prepared: &'a crate::BoundKeyedAdmitRequest,
         receipt: &'a crabber_core::AdmissionReceipt,
         queue_receipt: &'a crate::QueueReceipt,
+        selected: &'a SelectedInput<'a>,
     },
 }
 pub(crate) struct Initial<'a> {
@@ -131,13 +132,15 @@ impl Input<'_> {
                 prepared,
                 receipt,
                 queue_receipt,
+                selected,
             } => {
-                proof.measure(&(request, &prepared.binding, queue_receipt))?;
+                selected.verify(prepared, proof)?;
+                proof.measure(&(request, receipt, queue_receipt))?;
                 prepared
                     .binding
                     .validate_keyed(&prepared.keyed)
                     .map_err(unknown)?;
-                verify_keyed(&prepared.keyed, receipt, proof)?;
+                verify_keyed_selected(&prepared.keyed, receipt, Some(selected), proof)?;
                 if !matches!(request.action, crate::QueueAction::Admit { .. })
                     || queue_receipt.session_id != request.session_id
                     || queue_receipt.operation_id != request.id
@@ -157,7 +160,16 @@ fn verify_keyed(
     receipt: &crabber_core::AdmissionReceipt,
     proof: &mut Proof,
 ) -> Result<(), Failure> {
-    proof.measure(&(request, receipt))?;
+    verify_keyed_selected(request, receipt, None, proof)
+}
+fn verify_keyed_selected(
+    request: &crate::KeyedAdmitRequest,
+    receipt: &crabber_core::AdmissionReceipt,
+    selected: Option<&SelectedInput<'_>>,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    input_keyed(request, selected, proof)?;
+    proof.measure(receipt)?;
     if receipt.semantic_digest != request.validated_digest().map_err(unknown)?
         || receipt.fingerprint != request.options.fingerprint
         || Some(&receipt.session_id) != request.request.session_id.as_ref()
@@ -216,7 +228,6 @@ impl<'a> Initial<'a> {
 #[must_use]
 pub(crate) struct CapturedQueueAdmission {
     pub admitted: CapturedAdmission,
-    pub prepared: crate::BoundKeyedAdmitRequest,
     pub receipt: crabber_core::AdmissionReceipt,
 }
 
@@ -347,7 +358,14 @@ impl Input<'_> {
                 prepared,
                 receipt,
                 queue_receipt,
+                selected: _,
             } => snapshot_digest(&("queue", request, prepared, receipt, queue_receipt)),
         }
     }
 }
+
+#[path = "initial/selected.rs"]
+mod selected;
+#[cfg(any(feature = "postgres", feature = "sqlite", test))]
+pub(crate) use selected::with_queue_input_async;
+pub(crate) use selected::{Dispatch, SelectedInput, input_keyed, input_request, with_queue_input};

@@ -99,7 +99,7 @@ impl PostgresStore {
         } else {
             0
         };
-        let mut change = crate::queue::apply_guarded(
+        let change = crate::queue::apply_guarded(
             &request,
             &summary,
             head.as_ref(),
@@ -108,37 +108,14 @@ impl PostgresStore {
             now,
             preparation,
         )?;
-        let pending_initial = self
-            .queue_admission(tx, &mut change, preparation, read_proof)
-            .await?;
-        super::bump_public_revision(tx, &request.session_id).await?;
-        let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
-            .bind(&request.session_id.0)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db)?;
-        let saved = QueueReceipt {
-            session_id: request.session_id.clone(),
-            operation_id: request.id.clone(),
-            semantic_digest: digest,
-            revision: SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
-            summary: change.record.summary.clone(),
-        };
-        let admitted = self
-            .finish_queue_initial(tx, &request, &saved, pending_initial, read_proof)
-            .await?;
-        let audit = Audit {
-            request,
-            receipt: saved.clone(),
-            authority: change.authority.clone(),
-            created_at: now,
-        };
-        save(tx, &audit, &change.record, previous, read_proof).await?;
-        Ok(QueueOutcome::Applied {
-            receipt: saved,
-            authority: change.authority,
-            admitted,
-        })
+        Box::pin(self.queue_admit_and_publish(
+            tx,
+            (request, digest, previous, now),
+            change,
+            preparation,
+            read_proof,
+        ))
+        .await
     }
     async fn queue_guards(
         &self,
@@ -187,6 +164,28 @@ impl PostgresStore {
         Ok(())
     }
 }
+async fn publish_queue_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &QueueMutation,
+    digest: crabber_core::InputFingerprint,
+    summary: crate::QueueSummary,
+) -> Result<QueueReceipt, StoreError> {
+    super::bump_public_revision(tx, &request.session_id).await?;
+    let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
+        .bind(&request.session_id.0)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
+    let saved = QueueReceipt {
+        session_id: request.session_id.clone(),
+        operation_id: request.id.clone(),
+        semantic_digest: digest,
+        revision: SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
+        summary,
+    };
+    Ok(saved)
+}
+
 async fn save(
     tx: &mut Transaction<'_, Postgres>,
     audit: &Audit,

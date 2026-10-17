@@ -16,7 +16,6 @@ pub(super) fn selected(
     keyed: Option<&KeyedAdmitRequest>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    proof.measure(request).map_err(initial_invalid)?;
     let session = request
         .session_id
         .as_ref()
@@ -24,15 +23,13 @@ pub(super) fn selected(
     proof
         .measure(&state.sessions.get(session))
         .map_err(initial_invalid)?;
-    if let Some(keyed) = keyed {
-        proof.measure(keyed).map_err(initial_invalid)?;
-        if let Some(receipt) = state
+    if let Some(keyed) = keyed
+        && let Some(receipt) = state
             .receipts
             .get(&(session.clone(), keyed.options.key.clone()))
-        {
-            proof.measure(receipt).map_err(initial_invalid)?;
-            return Ok(());
-        }
+    {
+        proof.measure(receipt).map_err(initial_invalid)?;
+        return Ok(());
     }
     state
         .session_owners
@@ -100,13 +97,14 @@ pub(super) fn admit_transaction_captured(
     now: OffsetDateTime,
     allow_create: bool,
     guard: crate::queue::AdmissionGuard<'_>,
-    caller: Caller,
+    caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<CapturedAdmission, StoreError> {
-    match caller {
+    match caller.caller {
         Caller::Raw => (),
     }
-    proof.measure(request).map_err(initial_invalid)?;
+    crate::native_enrollment::caller::initial::input_request(request, caller.selected(), proof)
+        .map_err(initial_invalid)?;
     selected(state, request, None, proof)?;
     guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
@@ -297,7 +295,14 @@ pub(super) fn admit_keyed_with_proof(
     guard: crate::queue::AdmissionGuard<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<KeyedAdmitOutcome, StoreError> {
-    let captured = admit_keyed_captured(state, keyed, now, guard, Caller::Raw, proof)?;
+    let captured = admit_keyed_captured(
+        state,
+        keyed,
+        now,
+        guard,
+        crate::native_enrollment::caller::initial::Dispatch::raw(Caller::Raw),
+        proof,
+    )?;
     match captured {
         CapturedKeyedAdmission::Replayed(receipt) => Ok(KeyedAdmitOutcome::Replayed(receipt)),
         CapturedKeyedAdmission::Started { receipt, admitted } => {
@@ -324,7 +329,7 @@ pub(super) fn admit_keyed_captured(
     keyed: &KeyedAdmitRequest,
     now: OffsetDateTime,
     guard: crate::queue::AdmissionGuard<'_>,
-    caller: Caller,
+    caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<CapturedKeyedAdmission, StoreError> {
     let request = &keyed.request;
@@ -346,7 +351,8 @@ pub(super) fn admit_keyed_captured(
         }
         return Ok(CapturedKeyedAdmission::Replayed(receipt.clone()));
     }
-    proof.measure(keyed).map_err(initial_invalid)?;
+    crate::native_enrollment::caller::initial::input_keyed(keyed, caller.selected(), proof)
+        .map_err(initial_invalid)?;
     let digest = keyed.validated_digest()?;
     if guard.is_ordinary()
         && state.queue.values().any(|record| {
@@ -490,7 +496,7 @@ impl super::MemoryStore {
                     self.clock.now(),
                     false,
                     crate::queue::AdmissionGuard::Ordinary,
-                    Caller::Raw,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(Caller::Raw),
                     proof,
                 )?;
                 finish_initial(
@@ -523,7 +529,7 @@ impl super::MemoryStore {
                 request,
                 self.clock.now(),
                 crate::queue::AdmissionGuard::Ordinary,
-                Caller::Raw,
+                crate::native_enrollment::caller::initial::Dispatch::raw(Caller::Raw),
                 proof,
             )? {
                 CapturedKeyedAdmission::Replayed(receipt) => {

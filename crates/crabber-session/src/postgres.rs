@@ -762,7 +762,9 @@ impl PostgresStore {
                 request,
                 allow_create,
                 guard,
-                crate::native_enrollment::caller::Caller::Raw,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
                 read_proof,
             )
             .await?;
@@ -781,15 +783,18 @@ impl PostgresStore {
         request: &AdmitRequest,
         allow_create: bool,
         guard: crate::queue::AdmissionGuard<'_>,
-        caller: crate::native_enrollment::caller::Caller,
+        caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::native_enrollment::caller::initial::CapturedAdmission, StoreError> {
-        match caller {
+        match caller.caller {
             crate::native_enrollment::caller::Caller::Raw => (),
         }
-        read_proof
-            .measure(request)
-            .map_err(|_| StoreError::Conflict)?;
+        crate::native_enrollment::caller::initial::input_request(
+            request,
+            caller.selected(),
+            read_proof,
+        )
+        .map_err(|_| StoreError::Conflict)?;
         guard.verify(request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;

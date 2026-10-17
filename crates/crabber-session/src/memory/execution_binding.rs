@@ -103,7 +103,9 @@ impl MemoryStore {
                     self.clock.now(),
                     false,
                     crate::queue::AdmissionGuard::Ordinary,
-                    crate::native_enrollment::caller::Caller::Raw,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(
+                        crate::native_enrollment::caller::Caller::Raw,
+                    ),
                     proof,
                 )?;
                 let retained = RetainedExecutionBinding::new(
@@ -158,7 +160,9 @@ impl MemoryStore {
                 &request.keyed,
                 self.clock.now(),
                 crate::queue::AdmissionGuard::Ordinary,
-                crate::native_enrollment::caller::Caller::Raw,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
                 proof,
             )? {
                 crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(

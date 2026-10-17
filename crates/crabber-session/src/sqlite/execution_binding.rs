@@ -84,7 +84,9 @@ impl SqliteStore {
                 tx,
                 &keyed,
                 guard,
-                crate::native_enrollment::caller::Caller::Raw,
+                crate::native_enrollment::caller::initial::Dispatch::raw(
+                    crate::native_enrollment::caller::Caller::Raw,
+                ),
                 read_proof,
             )
             .await?;
@@ -119,7 +121,7 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         keyed: &KeyedAdmitRequest,
         guard: crate::queue::AdmissionGuard<'_>,
-        caller: crate::native_enrollment::caller::Caller,
+        caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
         read_proof: &mut Proof,
     ) -> Result<crate::native_enrollment::caller::initial::CapturedKeyedAdmission, StoreError> {
         let request = &keyed.request;
@@ -147,9 +149,12 @@ impl SqliteStore {
                 ),
             );
         }
-        read_proof
-            .measure(keyed)
-            .map_err(|_| StoreError::Conflict)?;
+        crate::native_enrollment::caller::initial::input_keyed(
+            keyed,
+            caller.selected(),
+            read_proof,
+        )
+        .map_err(|_| StoreError::Conflict)?;
         let digest = keyed.validated_digest()?;
         if let Some((existing, _)) =
             super::admission_reads::session(tx, session, read_proof).await?
@@ -235,7 +240,9 @@ impl SqliteStore {
                     &request,
                     false,
                     crate::queue::AdmissionGuard::Ordinary,
-                    crate::native_enrollment::caller::Caller::Raw,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(
+                        crate::native_enrollment::caller::Caller::Raw,
+                    ),
                     &mut proof,
                 )
                 .await?;
@@ -291,7 +298,9 @@ impl SqliteStore {
                     &mut tx,
                     &request,
                     crate::queue::AdmissionGuard::Ordinary,
-                    crate::native_enrollment::caller::Caller::Raw,
+                    crate::native_enrollment::caller::initial::Dispatch::raw(
+                        crate::native_enrollment::caller::Caller::Raw,
+                    ),
                     &mut proof,
                 )
                 .await?

@@ -112,13 +112,13 @@ impl SqliteStore {
                 }
                 return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
             }
-            self.reserve_fresh(
+            Box::pin(self.reserve_fresh(
                 &mut tx,
                 &request,
                 parent.as_ref(),
                 digest,
                 preparation.as_ref(),
-            )
+            ))
             .await
         }
         .await;

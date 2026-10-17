@@ -1,6 +1,7 @@
 //! Apply the exact task-returned native intent under the preparation gate.
 #[path = "native/control.rs"]
 mod control;
+use crate::native_enrollment::caller::{Caller, initial::Dispatch};
 use crate::session_owner::preparation::{PreparationCompletion, PreparedOperation};
 use crate::{KeyedAdmitOutcome, RetainedExecutionBinding};
 impl super::super::MemoryStore {
@@ -68,7 +69,7 @@ impl super::super::MemoryStore {
                     self.clock.now(),
                     false,
                     guard,
-                    crate::native_enrollment::caller::Caller::Raw,
+                    Dispatch::raw(Caller::Raw),
                     read_proof,
                 )?;
                 let retained = RetainedExecutionBinding::new(
@@ -97,7 +98,7 @@ impl super::super::MemoryStore {
                     .measure(&(&bound.keyed, &bound.binding))
                     .map_err(|_| crate::StoreError::Conflict)?;
                 let outcome=match super::super::super::admission::admit_keyed_captured(state,&bound.keyed,self.clock.now(),guard,
-                    crate::native_enrollment::caller::Caller::Raw,read_proof)?{
+                    Dispatch::raw(Caller::Raw),read_proof)?{
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
                     crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
                         let retained=RetainedExecutionBinding::new(&admitted.admitted.run,&bound.keyed.request.user_message,bound.binding.clone());
