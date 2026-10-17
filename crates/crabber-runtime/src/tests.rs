@@ -1775,8 +1775,18 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitialTaskStage {
+    CompletePreparation,
+    RegisterDriver,
+    BeginAttempt,
+}
+
 #[derive(Default)]
 struct SettlementGate {
+    // Diagnostics only: task identity is never execution authority.
+    initial_task_diagnostics: std::sync::atomic::AtomicBool,
+    initial_task_ids: Mutex<Vec<(InitialTaskStage, Option<tokio::task::Id>)>>,
     preparation_heartbeat: Option<Arc<preparation_resources::heartbeat::Gate>>,
     service_register_fault: AtomicUsize,
     service_register_calls: AtomicUsize,
@@ -1914,6 +1924,17 @@ impl SettlementGate {
     }
 }
 
+impl SettlementGate {
+    fn record_initial_task(&self, stage: InitialTaskStage) {
+        if self.initial_task_diagnostics.load(Ordering::SeqCst) {
+            self.initial_task_ids
+                .lock()
+                .unwrap()
+                .push((stage, tokio::task::try_id()));
+        }
+    }
+}
+
 struct DelayedTerminalStore {
     inner: Arc<dyn Store>,
     gate: Arc<SettlementGate>,
@@ -1971,6 +1992,8 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::preparation::PreparationCompletion,
         crabber_session::session_owner::preparation::PreparationCommitError,
     > {
+        self.gate
+            .record_initial_task(InitialTaskStage::CompletePreparation);
         self.gate.preparation_calls.fetch_add(1, Ordering::SeqCst);
         let preparation_fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
         if preparation_fault == 1 {
@@ -2102,6 +2125,8 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::driver::ExecutionDriverOutcome,
         crabber_session::session_owner::SessionOwnerError,
     > {
+        self.gate
+            .record_initial_task(InitialTaskStage::RegisterDriver);
         let point = self.gate.driver_register_fault.swap(0, Ordering::SeqCst);
         if point == 1 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
@@ -2972,6 +2997,10 @@ impl ExecutionStore for DelayedTerminalExecution {
             crabber_session::AttemptCommand::Reserve { .. }
                 | crabber_session::AttemptCommand::ReserveBound { .. }
         );
+        if begin {
+            self.gate
+                .record_initial_task(InitialTaskStage::BeginAttempt);
+        }
         let result = self.inner.mutate_attempt(request, authority).await;
         if reserve
             && matches!(

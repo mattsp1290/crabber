@@ -3,6 +3,8 @@
 mod ack;
 #[path = "driver/faults.rs"]
 mod faults;
+#[path = "driver/task_identity.rs"]
+mod task_identity;
 use super::*;
 use crabber_session::session_owner::driver::RegisterExecutionDriver;
 async fn driver_state(h: &Harness, run: &RunId) -> Option<SessionOwnerState> {
