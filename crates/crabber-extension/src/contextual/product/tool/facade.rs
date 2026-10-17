@@ -50,14 +50,22 @@ impl Executor {
                             "ordinary Box Tool identity changed".into(),
                         ));
                     }
-                    match context {
-                        Some(context) => {
-                            original
-                                .tool()
-                                .execute_with_context(context, arguments)
-                                .await
-                        }
-                        None => original.tool().execute(arguments).await,
+                    let result = super::super::provider::original::original(
+                        || match context {
+                            Some(context) => {
+                                original.tool().execute_with_context(context, arguments)
+                            }
+                            None => original.tool().execute(arguments),
+                        },
+                        std::convert::identity,
+                        &tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await;
+                    match result {
+                        Ok(Some(result)) => result,
+                        // Fail the retained Source, rather than report successful
+                        // observation of an original poll/Drop failure.
+                        _ => panic!("original Tool observation failed"),
                     }
                 })
             })

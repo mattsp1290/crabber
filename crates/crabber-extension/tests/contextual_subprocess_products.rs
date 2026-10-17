@@ -1,4 +1,6 @@
 //! Actual Box subprocess reference, borrowed-call and destructor ownership. OS child processes remain unknown.
+#[path = "contextual_subprocess_products/literal.rs"]
+mod literal;
 use async_trait::async_trait;
 use crabber_core::{SessionContext, SessionId};
 use crabber_extension::*;
@@ -50,6 +52,9 @@ impl Drop for Release {
     }
 }
 struct Seen {
+    literal: AtomicBool,
+    literal_poll_panic: AtomicBool,
+    semantic_error: AtomicBool,
     effects: AtomicUsize,
     drops: AtomicUsize,
     called: Notify,
@@ -66,6 +71,9 @@ struct Seen {
 impl Seen {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            literal: AtomicBool::new(false),
+            literal_poll_panic: AtomicBool::new(false),
+            semantic_error: AtomicBool::new(false),
             effects: AtomicUsize::new(0),
             drops: AtomicUsize::new(0),
             called: Notify::new(),
@@ -103,6 +111,13 @@ struct Run {
 impl Future for Run {
     type Output = Result<Value, String>;
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        assert!(
+            !self.seen.literal_poll_panic.load(Ordering::SeqCst),
+            "literal subprocess poll panic"
+        );
+        if self.seen.semantic_error.load(Ordering::SeqCst) {
+            return Poll::Ready(Err("literal semantic error".into()));
+        }
         if self.seen.pending.load(Ordering::SeqCst) {
             Poll::Pending
         } else {
@@ -178,9 +193,13 @@ impl ContextualSubprocessProductFactory for Factory {
     ) -> BoxFuture<'_, Result<ContextualSubprocessProduct, ExtensionError>> {
         let ready = self.seen.create_ready.clone();
         Box::pin(Created {
-            product: Some(ContextualSubprocessProduct::new(Box::new(Process(
-                self.seen.clone(),
-            )))),
+            product: Some(ContextualSubprocessProduct::new(
+                if self.seen.literal.load(Ordering::SeqCst) {
+                    Box::new(literal::Process(Process(self.seen.clone())))
+                } else {
+                    Box::new(Process(self.seen.clone()))
+                },
+            )),
             ready: Box::pin(async move {
                 ready.acquire_owned().await.unwrap().forget();
             }),

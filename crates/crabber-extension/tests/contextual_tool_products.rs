@@ -54,6 +54,9 @@ enum Call {
     Pending,
 }
 struct Seen {
+    literal: AtomicBool,
+    literal_poll_panic: AtomicBool,
+    semantic_error: AtomicBool,
     effects: AtomicUsize,
     drops: AtomicUsize,
     called: Notify,
@@ -79,6 +82,9 @@ struct Seen {
 impl Seen {
     fn new(call: Call) -> Arc<Self> {
         Arc::new(Self {
+            literal: AtomicBool::new(false),
+            literal_poll_panic: AtomicBool::new(false),
+            semantic_error: AtomicBool::new(false),
             effects: AtomicUsize::new(0),
             drops: AtomicUsize::new(0),
             called: Notify::new(),
@@ -125,6 +131,13 @@ struct OriginalCall(Arc<Seen>);
 impl Future for OriginalCall {
     type Output = Result<ToolOutput, ExtensionError>;
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        assert!(
+            !self.0.literal_poll_panic.load(Ordering::SeqCst),
+            "literal Tool poll panic"
+        );
+        if self.0.semantic_error.load(Ordering::SeqCst) {
+            return Poll::Ready(Err(ExtensionError::Tool("literal semantic error".into())));
+        }
         match self.0.call {
             Call::Ready => Poll::Ready(Ok(ToolOutput::from_json(&Value::Null).unwrap())),
             Call::Pending => Poll::Pending,
@@ -233,7 +246,11 @@ impl ContextualToolProductFactory for Factory {
                     retry_safe: false,
                     required_permissions: vec![],
                 },
-                Box::new(Tool(self.seen.clone())),
+                if self.seen.literal.load(Ordering::SeqCst) {
+                    Box::new(literal::Tool(Tool(self.seen.clone())))
+                } else {
+                    Box::new(Tool(self.seen.clone()))
+                },
             )),
             seen: self.seen.clone(),
         })
@@ -337,6 +354,9 @@ async fn exposure_capacity_releases_only_on_final_clone_and_rolls_back_plans() {
 }
 #[path = "contextual_tool_products/retention.rs"]
 mod retention;
+
+#[path = "contextual_tool_products/literal.rs"]
+mod literal;
 
 fn identity() -> crabber_core::ResumableToolIdentity {
     crabber_core::ResumableToolIdentity {

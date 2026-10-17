@@ -29,7 +29,18 @@ impl WorkspaceFs for Filesystem {
             .invoke(move || {
                 Box::pin(async move {
                     let original = node.borrow().map_err(|error| error.to_string())?;
-                    original.value().0.read(&path).await
+                    match super::super::provider::original::original(
+                        || original.value().0.read(&path),
+                        std::convert::identity,
+                        &tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                    {
+                        Ok(Some(result)) => result,
+                        // Fail the retained Source, rather than report successful
+                        // observation of an original poll/Drop failure.
+                        _ => panic!("original workspace filesystem observation failed"),
+                    }
                 })
             })
             .await
