@@ -237,6 +237,16 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_workspace_reader_resolver(
+        &self,
+        index: usize,
+        node: Arc<super::product::workspace_reader::Node>,
+    ) {
+        self.graph.workspace_reader_resolver(index, node);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_subprocess(
         &self,
         index: usize,

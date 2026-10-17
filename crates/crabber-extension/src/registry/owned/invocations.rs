@@ -16,6 +16,7 @@ mod actor;
 pub(crate) use actor::{Actor, ActorClose};
 mod caller;
 mod inline;
+mod work;
 pub(crate) use caller::current;
 pub use caller::{
     CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
@@ -101,11 +102,27 @@ impl Task {
 #[derive(Clone)]
 pub(crate) struct OriginalRoster {
     state: Arc<State>,
-    mount: Weak<Mount>,
+    scope: RosterScope,
+}
+#[derive(Clone)]
+enum RosterScope {
+    Mount(Weak<Mount>),
+    Local,
 }
 impl OriginalRoster {
+    /// Independent subset of the same original Task engine. Sealing this roster
+    /// cancels only its members, never the concrete mount or sibling subsets.
+    pub(crate) fn local() -> Self {
+        Self {
+            state: Arc::new(State::default()),
+            scope: RosterScope::Local,
+        }
+    }
+
     pub(crate) fn seal(&self) {
-        if let Some(mount) = self.mount.upgrade() {
+        if let RosterScope::Mount(mount) = &self.scope
+            && let Some(mount) = mount.upgrade()
+        {
             let mut active = mount.active.lock().unwrap();
             *active = false;
             self.state.close();
@@ -215,12 +232,31 @@ impl Source {
                 .ok_or(ExtensionError::ContextOwnerClosed)?
                 .invocations
                 .clone(),
-            mount: self.0.clone(),
+            scope: RosterScope::Mount(self.0.clone()),
         })
     }
 
     pub(crate) async fn invoke<T: Send + 'static>(
         &self,
+        construct: impl FnOnce() -> BoxFuture<'static, T> + Send + 'static,
+    ) -> Result<T, ExtensionError> {
+        self.invoke_scoped(None, construct).await
+    }
+
+    pub(crate) async fn invoke_in<T: Send + 'static>(
+        &self,
+        subset: &OriginalRoster,
+        construct: impl FnOnce() -> BoxFuture<'static, T> + Send + 'static,
+    ) -> Result<T, ExtensionError> {
+        if !matches!(subset.scope, RosterScope::Local) {
+            return Err(ExtensionError::ContextOwnerClosed);
+        }
+        self.invoke_scoped(Some(subset.clone()), construct).await
+    }
+
+    async fn invoke_scoped<T: Send + 'static>(
+        &self,
+        subset: Option<OriginalRoster>,
         construct: impl FnOnce() -> BoxFuture<'static, T> + Send + 'static,
     ) -> Result<T, ExtensionError> {
         let mount = self.0.upgrade().ok_or(ExtensionError::ContextOwnerClosed)?;
@@ -230,6 +266,12 @@ impl Source {
             .ok_or(ExtensionError::ContextOwnerClosed)?
             .invocations;
         state.reap().await;
+        if let Some(subset) = &subset {
+            if Arc::ptr_eq(state, &subset.state) {
+                return Err(ExtensionError::ContextOwnerClosed);
+            }
+            subset.state.reap().await;
+        }
         let owner = current();
         if let Some(owner) = &owner {
             owner.reap().await;
@@ -248,40 +290,51 @@ impl Source {
             }
             let mut tasks = state.tasks.lock().unwrap();
             if tasks.full() {
-                return Err(ExtensionError::PreparationRegistration(
-                    crate::ResourceRegistrationError::Capacity,
-                ));
+                return Err(crate::ResourceRegistrationError::Capacity.into());
             }
-            tasks.admit()?;
+            // Mount -> local subset -> caller admission. All original memberships
+            // are installed before the work gate can open. No user body runs here.
+            let mut subset_entries = subset
+                .as_ref()
+                .map(|scope| scope.state.tasks.lock().unwrap());
+            let admitted = tasks
+                .admitted
+                .checked_add(1)
+                .ok_or(crate::ResourceRegistrationError::Capacity)?;
+            let subset_admitted = if let Some(entries) = &subset_entries {
+                if entries.sealed {
+                    return Err(ExtensionError::ContextOwnerClosed);
+                }
+                if entries.full() {
+                    return Err(crate::ResourceRegistrationError::Capacity.into());
+                }
+                Some(
+                    entries
+                        .admitted
+                        .checked_add(1)
+                        .ok_or(crate::ResourceRegistrationError::Capacity)?,
+                )
+            } else {
+                None
+            };
+            tasks.admitted = admitted;
+            if let (Some(entries), Some(admitted)) = (&mut subset_entries, subset_admitted) {
+                entries.admitted = admitted;
+            }
             mount
                 .leases
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (release, ready) = oneshot::channel();
-            let actual = mount.clone();
             let task_cancel = cancel.clone();
-            let body_owner = owner.clone();
-            let handle = tokio::spawn(context.scope(async move {
-                if ready.await.is_err() {
-                    return true;
-                }
-                // Actual-body admission: seal before this check forbids FnOnce.
-                // No await intervenes between admission and construction.
-                if !*actual.active.lock().unwrap() || cancel.is_cancelled() {
-                    return true;
-                }
-                if body_owner
-                    .as_ref()
-                    .is_some_and(CallbackInvocationCapability::is_closed)
-                {
-                    return true;
-                }
-                let output = observe(construct, cancel).await;
-                let success = output.is_ok();
-                if let Ok(Some(output)) = output {
-                    let _ = send.send(output);
-                }
-                success
-            }));
+            let work = work::Work {
+                mount: mount.clone(),
+                caller: owner.clone(),
+                subset: subset.clone(),
+                construct,
+                cancel,
+                send,
+            };
+            let handle = tokio::spawn(context.scope(work.run(ready)));
             task = Arc::new(Task {
                 join: AsyncMutex::new(Some(handle)),
                 result: Mutex::new(None),
@@ -290,6 +343,9 @@ impl Source {
                 cancel: task_cancel,
             });
             tasks.tasks.push(task.clone());
+            if let Some(entries) = &mut subset_entries {
+                entries.tasks.push(task.clone());
+            }
             if let Some(owner) = &owner {
                 owner.retain(task.clone())?;
             }

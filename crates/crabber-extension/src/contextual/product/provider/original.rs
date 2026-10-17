@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 // The borrowed future remains a named original throughout poll-unwind handling;
 // no added async factory wrapper gets to dispose it during another unwind.
-pub(super) async fn original<'a, T, R>(
+pub(in crate::contextual::product) async fn original<'a, T, R>(
     construct: impl FnOnce() -> BoxFuture<'a, T>,
     install: impl FnOnce(T) -> R,
     cancel: &CancellationToken,

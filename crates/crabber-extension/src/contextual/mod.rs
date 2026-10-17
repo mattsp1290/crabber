@@ -112,6 +112,9 @@ enum FactoryBody {
     ToolProduct(Arc<dyn product::tool::ContextualToolProductFactory>),
     WorkspaceFsProduct(Arc<dyn product::workspace_fs::ContextualWorkspaceFsProductFactory>),
     SubprocessProduct(Arc<dyn product::subprocess::ContextualSubprocessProductFactory>),
+    WorkspaceReaderResolverProduct(
+        Arc<dyn product::workspace_reader::ContextualWorkspaceReaderResolverProductFactory>,
+    ),
     ProviderProduct(Arc<dyn product::provider::ContextualProviderProductFactory>),
 }
 struct FactoryRegistration {

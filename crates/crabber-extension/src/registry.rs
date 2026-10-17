@@ -125,6 +125,8 @@ pub struct Registrar {
     tools: Vec<Arc<ToolDefinition>>,
     product_workspace_fs: Option<Arc<crate::contextual::product::workspace_fs::Node>>,
     product_subprocess: Option<Arc<crate::contextual::product::subprocess::Node>>,
+    product_workspace_reader_resolver:
+        Option<Arc<crate::contextual::product::workspace_reader::Node>>,
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
     product_providers:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
@@ -144,6 +146,7 @@ impl Registrar {
             product_tools: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
             product_subprocess: None,
+            product_workspace_reader_resolver: None,
             product_providers: std::collections::BTreeMap::new(),
             prompts: vec![],
             guards: vec![],
@@ -174,6 +177,14 @@ impl Registrar {
     ) -> Result<(), ExtensionError> {
         self.services.workspace_fs = Some(node.template()?);
         self.product_workspace_fs = Some(node);
+        Ok(())
+    }
+    pub(crate) fn product_workspace_reader_resolver(
+        &mut self,
+        node: Arc<crate::contextual::product::workspace_reader::Node>,
+    ) -> Result<(), ExtensionError> {
+        node.check_captured()?;
+        self.product_workspace_reader_resolver = Some(node);
         Ok(())
     }
     pub(crate) fn product_subprocess(
@@ -772,6 +783,14 @@ impl Registry {
         if let Some(node) = &mount.registrar.lock().unwrap().product_subprocess {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
+        if let Some(node) = &mount
+            .registrar
+            .lock()
+            .unwrap()
+            .product_workspace_reader_resolver
+        {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
     }
@@ -902,6 +921,7 @@ impl Registry {
         let mut providers = vec![];
         let mut components = vec![];
         let mut services = HostServices::default();
+        let mut workspace_reader_resolver = None;
         for (index, mount) in lease.0.iter().enumerate() {
             // Only mounts actually in this plan affect order identity. A new
             // instance in another workspace/session cannot change recovery hashes.
@@ -953,6 +973,7 @@ impl Registry {
                     None => provider.clone(),
                 });
             }
+            workspace_reader_resolver = projected_reader(mount, &r)?.or(workspace_reader_resolver);
             let overrides = projected_services(mount, &r)?;
             services = services.with_overrides(&overrides);
             append_mount_components(mount, &r, plan_sequence, &mut components);
@@ -972,6 +993,7 @@ impl Registry {
             providers,
             components,
             services,
+            workspace_reader_resolver,
             move || {
                 release.lock().unwrap().take();
             },
@@ -3353,4 +3375,15 @@ fn projected_services(
         services.subprocess = Some(node.project(source)?);
     }
     Ok(services)
+}
+
+fn projected_reader(
+    mount: &Arc<Mount>,
+    registrar: &Registrar,
+) -> Result<Option<Arc<dyn crate::WorkspaceReaderResolver>>, ExtensionError> {
+    registrar
+        .product_workspace_reader_resolver
+        .as_ref()
+        .map(|node| node.project(InvocationSource::new(mount)))
+        .transpose()
 }

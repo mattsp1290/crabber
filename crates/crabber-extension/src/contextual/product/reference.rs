@@ -125,6 +125,11 @@ impl<T: Send + Sync + 'static> Node<T> {
         let _ = release.send(());
         node
     }
+    /// Optional original callback frames for returned product nodes only.
+    /// Factory roots retain their existing default destructor path.
+    pub(crate) fn with_callback_drop_context(&self) -> bool {
+        self.root.with_callback_drop_context(true)
+    }
     pub(crate) fn install(self: &Arc<Self>, body: T) {
         let mut state = self.state.lock().unwrap();
         assert!(

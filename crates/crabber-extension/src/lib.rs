@@ -111,3 +111,11 @@ pub use contextual::product::subprocess::{
     ContextualSubprocessProduct, ContextualSubprocessProductFactory,
     ContextualSubprocessProductObservation, DisposedContextualSubprocessProduct,
 };
+
+// Unique resolver/returned-reader nodes; no physical or native policy claim.
+pub use contextual::product::workspace_reader::{
+    ContextualWorkspaceReaderProduct, ContextualWorkspaceReaderResolverBody,
+    ContextualWorkspaceReaderResolverProduct, ContextualWorkspaceReaderResolverProductFactory,
+    ContextualWorkspaceReaderResolverProductObservation,
+    DisposedContextualWorkspaceReaderResolverProduct,
+};

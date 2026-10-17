@@ -2,7 +2,7 @@
 mod facade;
 mod install;
 mod node;
-mod original;
+pub(super) mod original;
 mod registration;
 mod stream;
 mod value;

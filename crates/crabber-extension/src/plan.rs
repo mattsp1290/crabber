@@ -226,6 +226,7 @@ pub struct RunPlan {
     pub components: Vec<ComponentIdentity>,
     pub providers: Vec<Arc<dyn ProviderAdapter>>,
     pub host_services: HostServices,
+    workspace_reader_resolver: Option<Arc<dyn crate::WorkspaceReaderResolver>>,
     lease: Option<Arc<PlanLease>>,
     preparation_lease: Option<crate::PreparationResourceLease>,
 }
@@ -271,6 +272,7 @@ impl RunPlan {
         providers: Vec<Arc<dyn ProviderAdapter>>,
         components: Vec<ComponentIdentity>,
         host_services: HostServices,
+        workspace_reader_resolver: Option<Arc<dyn crate::WorkspaceReaderResolver>>,
         release: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -284,9 +286,16 @@ impl RunPlan {
             providers,
             components,
             host_services,
+            workspace_reader_resolver,
             lease: Some(Arc::new(PlanLease(Some(Box::new(release))))),
             preparation_lease: None,
         }
+    }
+    /// Original selected resolver facade, when supplied by a unique product.
+    /// Existing plans default to no resolver; this carries no ownership policy.
+    #[must_use]
+    pub fn workspace_reader_resolver(&self) -> Option<&Arc<dyn crate::WorkspaceReaderResolver>> {
+        self.workspace_reader_resolver.as_ref()
     }
     #[must_use]
     pub fn fingerprint(&self) -> &PlanFingerprint {
@@ -447,6 +456,7 @@ impl StaticPlanProvider {
                 components: identities,
                 providers: Vec::new(),
                 host_services: HostServices::default(),
+                workspace_reader_resolver: None,
                 lease: None,
                 preparation_lease: None,
             },

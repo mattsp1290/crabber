@@ -21,6 +21,7 @@ enum Product {
     Root(Arc<crate::contextual::product::Cell>),
     Tool(Arc<crate::contextual::product::tool::Node>),
     WorkspaceFs(Arc<crate::contextual::product::workspace_fs::Node>),
+    WorkspaceReaderResolver(Arc<crate::contextual::product::workspace_reader::Node>),
     Subprocess(Arc<crate::contextual::product::subprocess::Node>),
     Provider(Arc<crate::contextual::product::provider::Node>),
 }
@@ -30,6 +31,7 @@ impl Product {
             Self::Root(root) => root.close(),
             Self::Tool(node) => node.close(),
             Self::WorkspaceFs(node) => node.close(),
+            Self::WorkspaceReaderResolver(node) => node.close(),
             Self::Subprocess(node) => node.close(),
             Self::Provider(node) => node.close(),
         }
@@ -39,6 +41,7 @@ impl Product {
             Self::Root(root) => root.join().await,
             Self::Tool(node) => node.join().await,
             Self::WorkspaceFs(node) => node.join().await,
+            Self::WorkspaceReaderResolver(node) => node.join().await,
             Self::Subprocess(node) => node.join().await,
             Self::Provider(node) => node.join().await,
         }
@@ -48,6 +51,9 @@ impl Product {
             (Self::Root(left), Self::Root(right)) => Arc::ptr_eq(left, right),
             (Self::Tool(left), Self::Tool(right)) => Arc::ptr_eq(left, right),
             (Self::WorkspaceFs(left), Self::WorkspaceFs(right)) => Arc::ptr_eq(left, right),
+            (Self::WorkspaceReaderResolver(left), Self::WorkspaceReaderResolver(right)) => {
+                Arc::ptr_eq(left, right)
+            }
             (Self::Subprocess(left), Self::Subprocess(right)) => Arc::ptr_eq(left, right),
             (Self::Provider(left), Self::Provider(right)) => Arc::ptr_eq(left, right),
             _ => false,
@@ -190,6 +196,34 @@ impl ContextualGenerationObservation {
             })
             .ok_or(ExtensionError::ContextInitializationIncomplete)?;
         Ok(crate::ContextualWorkspaceFsProductObservation {
+            graph: self.clone(),
+            node,
+            member,
+        })
+    }
+    /// Inspect the exact original entered Box reader resolver node.
+    /// # Errors
+    /// Refuses a different or not-yet-entered member.
+    /// # Panics
+    /// Panics if an internal ownership lock is poisoned.
+    pub fn workspace_reader_resolver_product(
+        &self,
+        member: usize,
+    ) -> Result<crate::ContextualWorkspaceReaderResolverProductObservation, ExtensionError> {
+        let node = self
+            .registration
+            .graph
+            .members
+            .lock()
+            .unwrap()
+            .get(member)
+            .and_then(Option::as_ref)
+            .and_then(|member| match &member.root {
+                Some(Product::WorkspaceReaderResolver(node)) => Some(node.clone()),
+                _ => None,
+            })
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+        Ok(crate::ContextualWorkspaceReaderResolverProductObservation {
             graph: self.clone(),
             node,
             member,
@@ -382,6 +416,19 @@ impl Graph {
         let member = members[index].as_mut().expect("entered filesystem member");
         assert!(member.root.is_none());
         member.root = Some(Product::WorkspaceFs(node));
+        member.joined = None;
+    }
+    pub(super) fn workspace_reader_resolver(
+        &self,
+        index: usize,
+        node: Arc<crate::contextual::product::workspace_reader::Node>,
+    ) {
+        let mut members = self.members.lock().unwrap();
+        let member = members[index]
+            .as_mut()
+            .expect("entered reader resolver member");
+        assert!(member.root.is_none());
+        member.root = Some(Product::WorkspaceReaderResolver(node));
         member.joined = None;
     }
     pub(super) fn subprocess(

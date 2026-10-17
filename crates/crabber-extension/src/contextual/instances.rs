@@ -299,6 +299,18 @@ impl ContextualPlanProvider {
                 .await?;
                 Ok(None)
             }
+            super::FactoryBody::WorkspaceReaderResolverProduct(_) => {
+                super::product::workspace_reader::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
             super::FactoryBody::SubprocessProduct(_) => {
                 super::product::subprocess::install(
                     self,

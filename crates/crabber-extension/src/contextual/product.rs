@@ -7,6 +7,7 @@ mod registration;
 pub(crate) mod subprocess;
 pub(crate) mod tool;
 pub(crate) mod workspace_fs;
+pub(crate) mod workspace_reader;
 use super::{FactoryContext, FactoryScope};
 use crate::{ComponentIdentity, ExtensionError};
 pub(super) use construction::create_member;

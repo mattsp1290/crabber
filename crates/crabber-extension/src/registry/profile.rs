@@ -46,21 +46,7 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
         for mount in mounts {
             let registrar = {
                 let r = mount.registrar.lock().unwrap();
-                Registrar {
-                    services: r.services.clone(),
-                    tools: r.tools.clone(),
-                    product_tools: std::collections::BTreeMap::new(),
-                    product_workspace_fs: None,
-                    product_subprocess: None,
-                    product_providers: r.product_providers.clone(),
-                    prompts: r.prompts.clone(),
-                    guards: r.guards.clone(),
-                    restrictions: r.restrictions.clone(),
-                    handlers: r.handlers.clone(),
-                    contributors: r.contributors.clone(),
-                    providers: r.providers.clone(),
-                    cleanups: vec![],
-                }
+                r.profile_fields()
             };
             let mut components = Vec::new();
             let mut contributors = Vec::new();
@@ -135,3 +121,25 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod tests;
+
+impl Registrar {
+    // Pure field projection only; caller holds the original registrar lock.
+    fn profile_fields(&self) -> Self {
+        Self {
+            services: self.services.clone(),
+            tools: self.tools.clone(),
+            product_tools: std::collections::BTreeMap::new(),
+            product_workspace_fs: None,
+            product_subprocess: None,
+            product_workspace_reader_resolver: None,
+            product_providers: self.product_providers.clone(),
+            prompts: self.prompts.clone(),
+            guards: self.guards.clone(),
+            restrictions: self.restrictions.clone(),
+            handlers: self.handlers.clone(),
+            contributors: self.contributors.clone(),
+            providers: self.providers.clone(),
+            cleanups: vec![],
+        }
+    }
+}
