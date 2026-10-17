@@ -16,13 +16,17 @@ fn assert_task_identity(h: &Harness) {
     assert_eq!(complete, task(InitialTaskStage::RegisterDriver));
     assert_eq!(complete, task(InitialTaskStage::BeginAttempt));
 }
-async fn replay_without_factory(h: &Harness, choice: &Choice) {
+async fn replay_without_factory(
+    h: &Harness,
+    choice: &Choice,
+) -> crabber_session::ToolContinuationReceipt {
     let count = h.provider.calls.load(Ordering::SeqCst);
-    assert!(matches!(
-        choice.invoke(&h.runtime).await.unwrap(),
-        crate::ToolContinuation::Replayed(_)
-    ));
+    let crate::ToolContinuation::Replayed(receipt) = choice.invoke(&h.runtime).await.unwrap()
+    else {
+        panic!("metadata only")
+    };
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), count);
+    receipt
 }
 async fn restart(h: &mut Harness, choice: &Choice, clock: Arc<ManualClock>) -> Orchestrator {
     let cold = fixture::runtime(h, clock);
@@ -52,8 +56,8 @@ async fn journey(
     h.gate.preparation_fault.store(fault, Ordering::SeqCst);
     let result = choice.invoke(&h.runtime).await;
     let desc = choice.descriptor(&h).await;
-    if fault == 0 {
-        let crate::ToolContinuation::Started { handle, .. } = result.unwrap() else {
+    let fresh = if fault == 0 {
+        let crate::ToolContinuation::Started { handle, receipt } = result.unwrap() else {
             panic!("fresh pending main")
         };
         assert_eq!(handle.done().await.unwrap().status, RunStatus::Completed);
@@ -63,13 +67,18 @@ async fn journey(
         );
         assert_eq!(h.fake.requests().len(), 2);
         assert_task_identity(&h);
+        Some(receipt)
     } else {
         assert!(result.is_err());
         assert_eq!(effects.resumes.load(Ordering::SeqCst), 0);
         assert_eq!(h.fake.requests().len(), 1);
         assert!(h.gate.successor_request.lock().unwrap().is_none());
+        None
+    };
+    let original_receipt = replay_without_factory(&h, &choice).await;
+    if let Some(fresh) = fresh {
+        assert_eq!(fresh, original_receipt);
     }
-    replay_without_factory(&h, &choice).await;
     if fault == 0 {
         h.finish_cleanup(&desc).await;
     } else {
@@ -79,7 +88,7 @@ async fn journey(
         let _warm = restart(&mut h, &choice, clock).await;
         let recovery = choice.recovery(&h).await;
         h.gate.initial_task_ids.lock().unwrap().clear();
-        let crate::ToolContinuation::Started { handle, .. } =
+        let crate::ToolContinuation::Started { handle, receipt } =
             recovery.invoke(&h.runtime).await.unwrap()
         else {
             panic!("fresh pending recovery")
@@ -91,7 +100,8 @@ async fn journey(
         );
         assert_eq!(h.fake.requests().len(), 2);
         assert_task_identity(&h);
-        replay_without_factory(&h, &recovery).await;
+        assert_eq!(replay_without_factory(&h, &recovery).await, receipt);
+        assert_eq!(replay_without_factory(&h, &choice).await, original_receipt);
         h.finish_cleanup(&recovery.descriptor(&h).await).await;
     }
     assert_eq!(
