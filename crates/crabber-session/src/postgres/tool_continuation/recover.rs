@@ -154,7 +154,7 @@ impl PostgresStore {
             .map_err(|_| Error::CleanupBlocked)?;
         let authority = parent.authority().map_err(unknown)?;
 
-        super::super::save_run_with_proof(tx, &activated, completion.as_ref(), read_proof)
+        super::activation::save(tx, &activated, completion.as_ref(), preparation, read_proof)
             .await
             .map_err(unknown)?;
         super::super::attempt::save_host_attempt(tx, &parent, false)

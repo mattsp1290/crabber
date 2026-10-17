@@ -29,10 +29,10 @@ impl ClaimCapture {
 }
 
 impl super::proof::VerifiedPreparation<'_> {
-    pub(crate) fn record_approval_claim(&self, sequence: Option<u64>) -> Result<(), Error> {
+    pub(crate) fn record_continuation_claim(&self, sequence: Option<u64>) -> Result<(), Error> {
         self.claim_capture.record(sequence)
     }
-    pub(crate) fn approval_claim_locator(
+    pub(crate) fn continuation_claim_locator(
         &self,
     ) -> Result<Option<crate::session_owner::driver::NativeClaimLocator>, Error> {
         self.claim_capture

@@ -14,7 +14,7 @@ pub(super) fn save(
             .map_err(|_| Error::UnknownStoreOutcome)?;
     if let Some(preparation) = preparation {
         preparation
-            .record_approval_claim(captured)
+            .record_continuation_claim(captured)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
     Ok(())

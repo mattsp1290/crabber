@@ -40,6 +40,10 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
                 let store = MemoryStore::with_clock(clock.clone());
                 let f = Box::pin(fixture(&store, &clock, frontend, recovery, unkeyed)).await;
                 let request = request(&store, &f);
+                Box::pin(crate::successor_driver_contract::tools::inspect_captured(
+                    &store, &f, &request, frontend, recovery,
+                ))
+                .await;
                 let mut state = store.state.lock().unwrap();
                 let mut proof = Proof::bounded(32 << 20);
                 let selected = source::original(&state, &request, &mut proof, None).unwrap();

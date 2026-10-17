@@ -30,6 +30,9 @@ pub use crabber::session::{
     FrontendContinuationRecovery, FrontendPhaseResume, FrontendResolverClaim,
     FrontendStagingReceipt, FrozenFrontendCall, frontend_descriptor_fingerprint,
 };
+#[path = "../../crabber-session/src/frontend_continuation/canonical.rs"]
+#[allow(dead_code)]
+mod frontend_canonical;
 #[path = "../../crabber-session/src/frontend_continuation/origin.rs"]
 #[allow(dead_code)]
 mod frontend_origin;
@@ -37,11 +40,12 @@ mod frontend_origin;
 #[allow(dead_code)]
 mod frontend_record;
 mod frontend_continuation {
+    pub(crate) use crate::frontend_canonical::claim_fingerprint;
     pub(crate) use crate::frontend_origin::{
         FrontendOriginRecord, staging_receipt, verify_assistant_source, verify_declaration,
         verify_receipt as verify_staging_receipt,
     };
-    pub(crate) use crate::frontend_record::FrontendRecoveryRecord;
+    pub(crate) use crate::frontend_record::{FrontendRecoveryRecord, recovery_semantics};
 }
 type Error = crabber::session::ToolContinuationError;
 #[path = "../../crabber-session/src/public_session/rounds.rs"]

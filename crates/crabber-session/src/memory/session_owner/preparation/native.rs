@@ -26,25 +26,29 @@ impl super::super::MemoryStore {
                 )
             }
             PreparedOperation::FrontendClaim(claim) => PreparationCompletion::ToolContinuation(
-                self.claim_frontend_guarded(state, &claim, proof)?.0,
+                self.claim_frontend_guarded(state, &claim, proof, read_proof)?
+                    .0,
             ),
             PreparedOperation::FrontendRecovery(recovery) => {
                 PreparationCompletion::ToolContinuation(
-                    self.recover_frontend_guarded(state, &recovery, proof)?.0,
+                    self.recover_frontend_guarded(state, &recovery, proof, read_proof)?
+                        .0,
                 )
             }
             PreparedOperation::ApprovalClaim(claim) => PreparationCompletion::Approval(
                 self.claim_approval_guarded(state, &claim, Some(proof))?.0,
             ),
             PreparedOperation::ToolClaim(claim) => PreparationCompletion::ToolContinuation(
-                self.claim_tools_guarded(state, &claim, Some(proof))?.0,
+                self.claim_tools_guarded(state, &claim, Some(proof), read_proof)?
+                    .0,
             ),
             PreparedOperation::ApprovalRecovery(recovery) => PreparationCompletion::Approval(
                 self.recover_approval_guarded(state, &recovery, Some(proof))?
                     .0,
             ),
             PreparedOperation::ToolRecovery(recovery) => PreparationCompletion::ToolContinuation(
-                self.recover_tools_guarded(state, &recovery, Some(proof))?.0,
+                self.recover_tools_guarded(state, &recovery, Some(proof), read_proof)?
+                    .0,
             ),
             PreparedOperation::Queue { request, .. } => {
                 let digest = request.fingerprint()?;

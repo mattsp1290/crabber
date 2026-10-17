@@ -25,7 +25,7 @@ impl MemoryStore {
     pub(in crate::memory) fn complete_preparation_captured(
         &self,
         joined: &JoinedPreparation,
-        require_approval_birth: bool,
+        require_input_birth: bool,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         joined.verify_original_intent()?;
@@ -87,8 +87,8 @@ impl MemoryStore {
                         crate::session_owner::preparation::driver_completion::replayed(outcome),
                     );
                 }
-                if require_approval_birth {
-                    verify_approval_birth(state, joined, &mut read_proof.borrow_mut())?;
+                if require_input_birth {
+                    verify_continuation_birth(state, joined, &mut read_proof.borrow_mut())?;
                 }
                 let before = revision(state, &session);
                 let mut proof = state
@@ -123,7 +123,7 @@ impl MemoryStore {
         Ok(outcome)
     }
 }
-fn verify_approval_birth(
+fn verify_continuation_birth(
     state: &super::super::State,
     joined: &JoinedPreparation,
     proof: &mut crate::public_session::v2::proof::Proof,

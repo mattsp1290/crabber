@@ -24,8 +24,15 @@ impl MemoryStore {
         frontend: Option<&crate::FrontendContinuationClaim>,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
         let fault = fault(self);
-        let result =
-            self.transact(|state| self.claim_compound_guarded(state, claim, frontend, None));
+        let result = self.transact(|state| {
+            self.claim_compound_guarded(
+                state,
+                claim,
+                frontend,
+                None,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+        });
         after(result, fault)
     }
     pub(in crate::memory) fn claim_tools_guarded(
@@ -33,16 +40,24 @@ impl MemoryStore {
         state: &mut super::super::State,
         claim: &ToolContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.claim_compound_guarded(state, claim, None, preparation)
+        self.claim_compound_guarded(state, claim, None, preparation, read_proof)
     }
     pub(in crate::memory) fn claim_frontend_guarded(
         &self,
         state: &mut State,
         request: &crate::FrontendContinuationClaim,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.claim_compound_guarded(state, &request.claim, Some(request), Some(preparation))
+        self.claim_compound_guarded(
+            state,
+            &request.claim,
+            Some(request),
+            Some(preparation),
+            read_proof,
+        )
     }
     fn claim_compound_guarded(
         &self,
@@ -50,6 +65,7 @@ impl MemoryStore {
         claim: &ToolContinuationClaim,
         frontend: Option<&crate::FrontendContinuationClaim>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         let digest = match frontend {
             Some(request) => request.fingerprint()?,
@@ -111,11 +127,13 @@ impl MemoryStore {
             claim_token: activated.claim_token.clone(),
         };
 
-        super::super::native_parent::record_run_completed(
+        super::activation::save(
             state,
             &run,
             &activated,
             completion.as_ref(),
+            preparation,
+            read_proof,
         )
         .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);

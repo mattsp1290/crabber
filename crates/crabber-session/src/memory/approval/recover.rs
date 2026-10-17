@@ -73,7 +73,7 @@ impl super::super::MemoryStore {
         let (fence, captured) = activate(state, &run, request, now, completion.as_ref())?;
         if let Some(preparation) = preparation {
             preparation
-                .record_approval_claim(captured)
+                .record_continuation_claim(captured)
                 .map_err(|_| Error::UnknownStoreOutcome)?;
         }
         let execution = super::super::MemoryExecution {

@@ -1,4 +1,5 @@
 //! Explicit tool checkpoint transactions; session gate precedes run/native rows.
+mod activation;
 mod answer;
 mod claim;
 pub(super) mod original_plan;

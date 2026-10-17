@@ -9,6 +9,7 @@ pub(crate) struct Fixture {
     pub native: Box<crate::ToolContinuationGrant>,
     pub receipt: ToolContinuationReceipt,
     pub batch: ToolContinuationSuspension,
+    pub captured: crate::session_owner::driver::NativeClaimLocator,
 }
 
 pub(crate) async fn fixture(
@@ -42,7 +43,7 @@ pub(crate) async fn fixture(
         .unwrap()
         .unwrap();
     let mut joined = prepare(store, &run, source, operation, key, work, intent).await;
-    let (mut receipt, mut native) = complete(store, joined.clone()).await;
+    let (mut receipt, mut native, mut captured) = complete(store, joined.clone()).await;
     if recovery {
         clock.set(clock.now() + time::Duration::seconds(31));
         let revision = store.session_revision(context.session_id()).await.unwrap();
@@ -99,7 +100,7 @@ pub(crate) async fn fixture(
             intent,
         )
         .await;
-        (receipt, native) = complete(store, joined.clone()).await;
+        (receipt, native, captured) = complete(store, joined.clone()).await;
     }
     Fixture {
         context,
@@ -107,6 +108,7 @@ pub(crate) async fn fixture(
         native,
         receipt,
         batch,
+        captured,
     }
 }
 
@@ -121,15 +123,39 @@ fn context_run(operation: &PreparedOperation) -> crabber_core::RunId {
 async fn complete(
     store: &impl Store,
     joined: JoinedPreparation,
-) -> (ToolContinuationReceipt, Box<crate::ToolContinuationGrant>) {
+) -> (
+    ToolContinuationReceipt,
+    Box<crate::ToolContinuationGrant>,
+    crate::session_owner::driver::NativeClaimLocator,
+) {
+    let captured = store
+        .complete_preparation_with_driver_source(joined.clone())
+        .await
+        .unwrap();
+    let claim = captured.claim.expect("actual original Tool publisher");
+    assert_eq!(
+        claim.root_join_id,
+        joined.observed_grant().reconciliation().unwrap().join_id
+    );
     let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
         receipt,
         grant,
-    }) = store.complete_preparation(joined).await.unwrap()
+    }) = captured.completion
     else {
         panic!("actual original Tool completion");
     };
-    (receipt, grant)
+    let replay = store
+        .complete_preparation_with_driver_source(joined)
+        .await
+        .unwrap();
+    assert!(replay.claim.is_none(), "replay cannot export a new locator");
+    let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Replayed(replayed)) =
+        replay.completion
+    else {
+        panic!("exact source replay");
+    };
+    assert_eq!(replayed, receipt);
+    (receipt, grant, claim)
 }
 
 async fn prepare(
@@ -262,4 +288,42 @@ pub(crate) fn replace_frontend_result(
     )
     .unwrap();
     claim.validate_for_batch(&record.batch).unwrap();
+}
+
+/// Compare the actual publisher against independent native-source selection and
+/// exercise only safe metadata inspection, including wrong-family refusal.
+pub(crate) async fn inspect_captured(
+    store: &impl Store,
+    f: &Fixture,
+    request: &crate::session_owner::driver::RegisterSuccessorExecutionDriver,
+    frontend: bool,
+    recovery: bool,
+) {
+    use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+    assert_eq!(request.claim, f.captured);
+    let origin = match (frontend, recovery) {
+        (false, false) => Origin::ToolClaim,
+        (false, true) => Origin::ToolRecovery,
+        (true, false) => Origin::FrontendClaim,
+        (true, true) => Origin::FrontendRecovery,
+    };
+    let original = crate::session_owner::preparation::InspectPreparedToolDriver {
+        request: request.clone(),
+        origin,
+        operation_id: f.receipt.operation_id.clone(),
+        semantic_digest: f.receipt.semantic_digest.clone(),
+    };
+    let inspected = store
+        .inspect_prepared_tool_driver(original.clone())
+        .await
+        .unwrap();
+    assert_eq!(inspected.claim, f.captured);
+    assert_eq!(inspected.receipt, f.receipt);
+    let mut other = original;
+    other.origin = if frontend {
+        Origin::ToolClaim
+    } else {
+        Origin::FrontendClaim
+    };
+    assert!(store.inspect_prepared_tool_driver(other).await.is_err());
 }

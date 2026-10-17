@@ -533,8 +533,8 @@ pub trait Store: Send + Sync {
     > {
         Err(StoreError::HostUnsupported.into())
     }
-    /// Complete an owned Approval preparation, returning the actual committed
-    /// v3 issuer locator. Metadata/replay never reconstructs fresh authority.
+    /// Complete an owned Approval, Tool or Frontend claim/recovery preparation,
+    /// returning its actual committed v3 issuer locator. Metadata/replay never reconstructs fresh authority.
     async fn complete_preparation_with_driver_source(
         &self,
         _joined: crate::session_owner::preparation::JoinedPreparation,
@@ -561,6 +561,17 @@ pub trait Store: Send + Sync {
         _request: crate::session_owner::preparation::InspectPreparedApprovalDriver,
     ) -> Result<
         crate::session_owner::preparation::PreparedApprovalDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported)
+    }
+    /// Authenticate exact original Tool/Frontend completion metadata under one
+    /// bounded coherent read. This read supplies no execution authority.
+    async fn inspect_prepared_tool_driver(
+        &self,
+        _request: crate::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedToolDriverMetadata,
         crate::session_owner::SessionOwnerError,
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported)

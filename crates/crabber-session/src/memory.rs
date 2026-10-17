@@ -855,6 +855,15 @@ impl Store for MemoryStore {
     > {
         self.inspect_approval_driver(&request)
     }
+    async fn inspect_prepared_tool_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedToolDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        self.inspect_tool_driver(&request)
+    }
 
     fn supports_session_owner_cancellation(&self) -> bool {
         true

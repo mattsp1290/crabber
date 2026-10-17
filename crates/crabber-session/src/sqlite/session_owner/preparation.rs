@@ -20,7 +20,7 @@ impl super::SqliteStore {
     pub(in crate::sqlite) async fn complete_preparation_captured(
         &self,
         joined: JoinedPreparation,
-        require_approval_birth: bool,
+        require_input_birth: bool,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         joined.verify_original_intent()?;
@@ -56,7 +56,7 @@ impl super::SqliteStore {
             .await
             .map_err(storage_error)?;
             let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
-            require_birth(&mut tx, &joined, require_approval_birth, &mut read_proof).await?;
+            require_birth(&mut tx, &joined, require_input_birth, &mut read_proof).await?;
             let mut proof = Box::pin(self.verify_service_preparation(
                 &mut tx,
                 joined.observed_grant(),

@@ -1100,6 +1100,15 @@ impl Store for PostgresStore {
     > {
         Box::pin(self.inspect_approval_driver(&request)).await
     }
+    async fn inspect_prepared_tool_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<
+        crate::session_owner::preparation::PreparedToolDriverMetadata,
+        crate::session_owner::SessionOwnerError,
+    > {
+        Box::pin(self.inspect_tool_driver(&request)).await
+    }
 
     fn supports_successor_execution_drivers(&self) -> bool {
         true

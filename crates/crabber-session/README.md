@@ -119,6 +119,15 @@ Keep using the same key; never invent a replacement key to resolve uncertainty.
 Receipts establish admission, not completion or exactly-once external tool effects.
 Existing fenced resume/recover rules remain responsible for execution recovery.
 
+Native stores can return the actual rotating issuer for owned Approval, Tool and
+Frontend claim/recovery completions through
+`complete_preparation_with_driver_source`. Exact retries return metadata without
+a fresh locator or grant. `inspect_prepared_tool_driver` authenticates the full
+original Tool/Frontend source and accepted inputs; its receipt and locator are
+safe metadata, and do not provide dispatch permission. These source APIs do not
+advertise pending Tool-driver support or prove complete resource ownership.
+External Store implementations default to unsupported.
+
 
 A PostgreSQL transport/commit failure is currently sanitized as
 `StoreError::Validation("PostgreSQL operation failed")`. The `Validation` variant

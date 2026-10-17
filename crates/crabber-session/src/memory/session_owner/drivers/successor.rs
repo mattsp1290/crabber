@@ -7,6 +7,8 @@ mod inspection;
 mod pending_approval;
 #[path = "successor/source.rs"]
 mod source;
+#[path = "successor/tool_inspection.rs"]
+mod tool_inspection;
 use super::super::{Error, MemoryStore, before, bump_public_revision, fault, revision};
 use crate::memory::State;
 use crate::public_session::v2::proof::Proof;

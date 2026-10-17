@@ -21,6 +21,7 @@ pub(crate) struct SelectedClaim {
     pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
     pub approval_receipt: Option<crate::ApprovalReceipt>,
     pub tool: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
+    pub tool_receipt: Option<crate::ToolContinuationReceipt>,
 }
 pub(crate) struct ContinuationFacts {
     pub revision: crabber_core::SessionRevision,
@@ -44,6 +45,10 @@ pub(crate) fn selected(
         claim::Native::Approval { evidence, .. } => Some(evidence.receipt.clone()),
         _ => None,
     };
+    let tool_receipt = match &native {
+        claim::Native::Tool { evidence, .. } => Some(evidence.receipt.clone()),
+        _ => None,
+    };
     let verified = AuthenticatedClaim::verify(previous, next, audits, native)?;
     if let Some(binding) = binding {
         verified.verify_binding(binding)?;
@@ -57,6 +62,7 @@ pub(crate) fn selected(
         approval: verified.approval,
         approval_receipt,
         tool: verified.tool,
+        tool_receipt,
     })
 }
 

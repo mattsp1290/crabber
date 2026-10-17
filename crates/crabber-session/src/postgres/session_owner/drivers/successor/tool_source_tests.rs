@@ -37,6 +37,10 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
                         root_join_id: join,
                     },
                 };
+                Box::pin(crate::successor_driver_contract::tools::inspect_captured(
+                    &store, &f, &request, frontend, recovery,
+                ))
+                .await;
                 let mut proof = Proof::bounded(32 << 20);
                 let selected = Box::pin(source::original(&mut tx, &request, &mut proof, None))
                     .await

@@ -74,8 +74,10 @@ pub(crate) mod approval_driver;
 mod capture;
 mod completion;
 pub(crate) mod driver_completion;
+pub(crate) mod tool_driver;
 pub use approval_driver::{InspectPreparedApprovalDriver, PreparedApprovalDriverMetadata};
 pub use driver_completion::PreparedDriverCompletion;
+pub use tool_driver::{InspectPreparedToolDriver, PreparedToolDriverMetadata};
 mod owned;
 mod resource_contract;
 pub use completion::{

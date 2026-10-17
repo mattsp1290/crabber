@@ -26,8 +26,15 @@ impl MemoryStore {
         frontend: Option<&crate::FrontendContinuationRecovery>,
     ) -> Result<ToolContinuationClaimOutcome, Error> {
         let fault = fault(self);
-        let result =
-            self.transact(|state| self.recover_compound_guarded(state, request, frontend, None));
+        let result = self.transact(|state| {
+            self.recover_compound_guarded(
+                state,
+                request,
+                frontend,
+                None,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+        });
         after(result, fault)
     }
     pub(in crate::memory) fn recover_tools_guarded(
@@ -35,20 +42,23 @@ impl MemoryStore {
         state: &mut super::super::State,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
-        self.recover_compound_guarded(state, request, None, preparation)
+        self.recover_compound_guarded(state, request, None, preparation, read_proof)
     }
     pub(in crate::memory) fn recover_frontend_guarded(
         &self,
         state: &mut State,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         self.recover_compound_guarded(
             state,
             &domain::canonical::frontend_recovery(request),
             Some(request),
             Some(preparation),
+            read_proof,
         )
     }
     fn recover_compound_guarded(
@@ -57,6 +67,7 @@ impl MemoryStore {
         request: &ToolContinuationRecovery,
         frontend: Option<&crate::FrontendContinuationRecovery>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(ToolContinuationClaimOutcome, bool), Error> {
         let digest = match frontend {
             Some(request) => request.fingerprint()?,
@@ -105,29 +116,7 @@ impl MemoryStore {
         let now = self.clock.now();
         let activated =
             domain::canonical::activated_run(&run, &request.owner, request.lease_ms, now)?;
-        let mut parent = state
-            .attempts
-            .get(&request.attempt.id)
-            .cloned()
-            .ok_or(Error::NotFound)?;
-        if parent.lease_until > now {
-            return Err(Error::LiveOwner);
-        }
-        parent
-            .change(
-                &activated,
-                &AttemptMutation {
-                    id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
-                    expected_revision,
-                    command: AttemptCommand::ReclaimUnstarted {
-                        target: request.attempt.clone(),
-                    },
-                },
-                None,
-                now,
-                true,
-            )
-            .map_err(|_| Error::CleanupBlocked)?;
+        let parent = reclaimed_parent(state, &activated, request, expected_revision, now)?;
         let authority = parent.authority().map_err(|_| Error::UnknownStoreOutcome)?;
         let phases = super::phases::reclaim(state, &parent, &record)?;
         let frontend_phases = if frontend.is_some() {
@@ -135,7 +124,15 @@ impl MemoryStore {
         } else {
             Vec::new()
         };
-        let fence = save_recovered_owner(state, &run, activated, &parent, completion.as_ref())?;
+        let fence = save_recovered_owner(
+            state,
+            &run,
+            activated,
+            &parent,
+            completion.as_ref(),
+            preparation,
+            read_proof,
+        )?;
         record.capture_recovery(request, frontend)?;
         record.validate()?;
         state
@@ -343,9 +340,18 @@ fn save_recovered_owner(
     activated: Run,
     parent: &crate::attempt::AttemptRecord,
     completion: Option<&crate::native_parent::CompletionSource>,
+    preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
+    read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<RunFence, Error> {
-    super::super::native_parent::record_run_completed(state, original, &activated, completion)
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+    super::activation::save(
+        state,
+        original,
+        &activated,
+        completion,
+        preparation,
+        read_proof,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     let fence = RunFence {
         run_id: original.id.clone(),
         claim_token: activated.claim_token.clone(),
@@ -379,4 +385,37 @@ pub(in crate::memory) fn preparation_frontend_context(
         return Err(Error::LiveOwner);
     }
     Ok(())
+}
+
+fn reclaimed_parent(
+    state: &State,
+    activated: &Run,
+    request: &ToolContinuationRecovery,
+    expected_revision: crabber_core::SessionRevision,
+    now: time::OffsetDateTime,
+) -> Result<crate::attempt::AttemptRecord, Error> {
+    let mut parent = state
+        .attempts
+        .get(&request.attempt.id)
+        .cloned()
+        .ok_or(Error::NotFound)?;
+    if parent.lease_until > now {
+        return Err(Error::LiveOwner);
+    }
+    parent
+        .change(
+            activated,
+            &AttemptMutation {
+                id: domain::derived_id("tool-continuation-reclaim-attempt", &request.id),
+                expected_revision,
+                command: AttemptCommand::ReclaimUnstarted {
+                    target: request.attempt.clone(),
+                },
+            },
+            None,
+            now,
+            true,
+        )
+        .map_err(|_| Error::CleanupBlocked)?;
+    Ok(parent)
 }
