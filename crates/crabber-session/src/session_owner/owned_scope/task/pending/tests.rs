@@ -374,3 +374,6 @@ async fn completion_notice_rejects_changed_original_user_message_receipt() {
     assert!(control.completion().await.is_err());
     assert!(control.bound().await.is_err());
 }
+
+#[path = "initial_tests.rs"]
+mod initial;

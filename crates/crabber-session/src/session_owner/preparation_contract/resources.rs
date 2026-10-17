@@ -446,7 +446,7 @@ pub(crate) async fn initial_driver_completion(
     let joined = initial_driver_observation(store, root, operation).await;
     store.complete_preparation(joined).await.unwrap()
 }
-async fn initial_driver_observation(
+pub(crate) async fn initial_driver_observation(
     store: &impl Store,
     root: PreparationGrant,
     operation: PreparedOperation,

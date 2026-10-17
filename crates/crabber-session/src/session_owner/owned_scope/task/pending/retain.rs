@@ -1,7 +1,6 @@
 use super::super::{Error, JoinedOwnedTask, OwnedMainDisposition};
-use super::{
-    PendingSuccessorControl, PendingSuccessorError, PendingSuccessorObservation, TaskOutput,
-};
+use super::PendingSuccessorError;
+use super::core::{Control, Observation, TaskOutput};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -21,10 +20,10 @@ struct Registry {
 /// registrations. This is not a per-Run history or native ownership limit.
 /// Dropping all public handles still retains supervisors through actual joins.
 #[derive(Clone)]
-pub struct PendingSuccessorTasks {
+pub struct PendingDriverTasks {
     inner: Arc<Registry>,
 }
-impl Default for PendingSuccessorTasks {
+impl Default for PendingDriverTasks {
     fn default() -> Self {
         Self {
             inner: Arc::new(Registry {
@@ -35,7 +34,7 @@ impl Default for PendingSuccessorTasks {
         }
     }
 }
-impl PendingSuccessorTasks {
+impl PendingDriverTasks {
     #[cfg(test)]
     pub(super) fn available_capacity(&self) -> usize {
         self.inner.capacity.available_permits()
@@ -70,8 +69,8 @@ impl PendingSuccessorTasks {
     pub(super) fn retain<T: Send + 'static>(
         &self,
         task: JoinHandle<Result<TaskOutput<T>, PendingSuccessorError>>,
-        control: PendingSuccessorControl,
-        send: oneshot::Sender<PendingSuccessorObservation<T>>,
+        control: Control,
+        send: oneshot::Sender<Observation<T>>,
         capacity: OwnedSemaphorePermit,
     ) {
         let id = uuid::Uuid::new_v4();
@@ -96,11 +95,12 @@ impl PendingSuccessorTasks {
                 Err(_) => (OwnedMainDisposition::Aborted, None, None, None),
             };
             let main = control.binding().map(|bound| JoinedOwnedTask {
-                activation: bound.activation,
+                activation: bound.activation().clone(),
                 disposition,
                 value,
             });
-            let observation = PendingSuccessorObservation {
+            let observation = Observation {
+                family: control.family(),
                 main,
                 disposition,
                 error,

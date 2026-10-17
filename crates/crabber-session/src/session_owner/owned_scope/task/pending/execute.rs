@@ -1,17 +1,10 @@
-use super::super::{OwnedScopeActivation, driver::MainIngress};
-use super::{
-    BoundSuccessorControl, DriverMainContext, Error, PendingSuccessorCompletion,
-    PendingSuccessorControl, PendingSuccessorError, PendingSuccessorReplay, TaskOutput,
-};
+use super::core::execute::{Fresh, Prepared, Registration, administrative};
+use super::core::{Control, Notice, Replay};
+use super::{Error, PendingSuccessorCompletion, PendingSuccessorError, PendingSuccessorReplay};
 use crate::{
     Store,
     session_owner::{
-        driver::{
-            NativeClaimLocator, RegisterSuccessorExecutionDriver, SuccessorExecutionDriverOutcome,
-        },
-        owned_scope::{
-            OwnedDispatchPermit, OwnedScopeActivationOutcome, OwnedScopeParentAuthority,
-        },
+        driver::{NativeClaimLocator, RegisterSuccessorExecutionDriver},
         preparation::{
             AdmissionRecoveryOutcome, ExpiredRunOutcome, JoinedPreparation, PreparationCompletion,
             PreparationPurpose, PreparedOperation,
@@ -19,9 +12,6 @@ use crate::{
     },
 };
 use crabber_core::{RunId, SessionContext};
-use futures::FutureExt;
-use std::{future::Future, sync::Arc};
-
 pub(super) struct Source {
     run: RunId,
     claim: NativeClaimLocator,
@@ -117,7 +107,7 @@ impl Source {
         &self,
         store: &dyn Store,
         context: &SessionContext,
-        control: &PendingSuccessorControl,
+        control: &Control,
     ) -> Result<Option<crabber_core::AdmissionReceipt>, PendingSuccessorError> {
         if let Some(key) = &self.key {
             let Some(_call) = control.enter_call()? else {
@@ -172,37 +162,28 @@ impl Source {
     }
 }
 
-pub(super) async fn run<T, F, W>(
-    store: Arc<dyn Store>,
+pub(super) async fn prepare(
+    store: &dyn Store,
     context: SessionContext,
     original: JoinedPreparation,
     source: Source,
-    control: &PendingSuccessorControl,
-    ingress: Arc<MainIngress>,
-    business: F,
-) -> Result<TaskOutput<T>, PendingSuccessorError>
-where
-    F: FnOnce(DriverMainContext, PreparationCompletion) -> W + Send + 'static,
-    W: Future<Output = T> + Send + 'static,
-{
+    control: &Control,
+) -> Result<Prepared, PendingSuccessorError> {
     if control.stopped() {
-        return Ok(TaskOutput::Stopped);
+        return Ok(Prepared::Stopped);
     }
-    let expected_receipt = source
-        .expected_receipt(store.as_ref(), &context, control)
-        .await?;
+    let expected_receipt = source.expected_receipt(store, &context, control).await?;
     // These futures stay inside the same actual main; ordinary stop never selects
     // them away, aborts them or reconstructs their private result from replay.
     let completion = {
         let Some(_call) = control.enter_call()? else {
-            return Ok(TaskOutput::Stopped);
+            return Ok(Prepared::Stopped);
         };
         administrative(async { store.complete_preparation(original).await }).await?
     };
     if completion.is_replayed() {
         let replay = source.replay(&context, &completion, expected_receipt.as_ref())?;
-        control.completed(PendingSuccessorCompletion::Replayed(replay.clone()))?;
-        return Ok(TaskOutput::Replayed(replay));
+        return Ok(Prepared::Replayed(Replay::Successor(replay)));
     }
     let request = source.request(context, &completion)?;
     let metadata = match &completion {
@@ -216,82 +197,9 @@ where
         }
         _ => return Err(Error::SemanticConflict.into()),
     };
-    control.completed(PendingSuccessorCompletion::Fresh(metadata))?;
-    if control.stopped() {
-        return Ok(TaskOutput::Stopped);
-    }
-    let outcome = {
-        let Some(_call) = control.enter_call()? else {
-            return Ok(TaskOutput::Stopped);
-        };
-        administrative(async {
-            store
-                .register_successor_execution_driver(request.clone())
-                .await
-        })
-        .await?
-    };
-    let SuccessorExecutionDriverOutcome::Applied { receipt, grant } = outcome else {
-        return Err(Error::UnknownStoreOutcome.into());
-    };
-    if grant.receipt() != &receipt
-        || grant.original_request().fingerprint()? != request.fingerprint()?
-    {
-        return Err(Error::UnknownStoreOutcome.into());
-    }
-    let activation = OwnedScopeActivation::new(grant.scope_source()?)?;
-    control.bind(BoundSuccessorControl {
-        grant: (*grant).clone(),
-        activation: activation.clone(),
-    })?;
-    if control.stopped() {
-        return Ok(TaskOutput::Stopped);
-    }
-    let outcome = {
-        let Some(_call) = control.enter_call()? else {
-            return Ok(TaskOutput::Stopped);
-        };
-        administrative(async {
-            store
-                .activate_owned_scope(
-                    activation.clone(),
-                    grant.authority().clone(),
-                    Some(OwnedScopeParentAuthority::SuccessorExecutionDriver(grant)),
-                )
-                .await
-        })
-        .await?
-    };
-    let OwnedScopeActivationOutcome::Applied { permit, .. } = outcome else {
-        return Err(Error::UnknownStoreOutcome.into());
-    };
-    let OwnedDispatchPermit {
-        activation: permitted,
-    } = *permit;
-    if permitted != activation {
-        return Err(Error::SemanticConflict.into());
-    }
-    if !control.dispatch()? {
-        return Ok(TaskOutput::Stopped);
-    }
-    let context = DriverMainContext::dispatched(permitted, ingress);
-    Ok(TaskOutput::Business(business(context, completion).await))
-}
-
-// Catch only the actual administrative future, retaining the fixed executor and
-// binding outside the unwind boundary. Business construction/polling still has
-// its genuine physical panic disposition. A Store panic grants no dispatch.
-async fn administrative<T, E>(
-    call: impl Future<Output = Result<T, E>>,
-) -> Result<T, PendingSuccessorError>
-where
-    PendingSuccessorError: From<E>,
-{
-    match std::panic::AssertUnwindSafe(call).catch_unwind().await {
-        Ok(result) => result.map_err(PendingSuccessorError::from),
-        Err(payload) => {
-            super::retain::discard(payload);
-            Err(Error::UnknownStoreOutcome.into())
-        }
-    }
+    Ok(Prepared::Fresh(Box::new(Fresh {
+        registration: Registration::Successor(request),
+        notice: Notice::Successor(PendingSuccessorCompletion::Fresh(metadata)),
+        completion,
+    })))
 }

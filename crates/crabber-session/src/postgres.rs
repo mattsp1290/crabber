@@ -2576,3 +2576,8 @@ mod snapshot;
 mod abandon_tests;
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+pub(crate) async fn pending_initial_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    tests::TEST_LOCK.lock().await
+}

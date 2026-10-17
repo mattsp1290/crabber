@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Stage {
     Complete,
+    Inspect,
     Register,
     Activate,
 }
@@ -15,6 +16,10 @@ pub(super) struct Interposed {
     pub release: Notify,
     pub fault: bool,
     pub corrupt_receipt: std::sync::atomic::AtomicBool,
+    pub corrupt_operation: std::sync::atomic::AtomicBool,
+    pub corrupt_replay_run: std::sync::atomic::AtomicBool,
+    pub corrupt_version: std::sync::atomic::AtomicBool,
+    pub replacement: std::sync::Mutex<Option<PreparationCompletion>>,
     pub wrong_permit: std::sync::Mutex<Option<OwnedDispatchPermit>>,
 }
 impl Interposed {
@@ -26,6 +31,10 @@ impl Interposed {
             release: Notify::new(),
             fault,
             corrupt_receipt: std::sync::atomic::AtomicBool::new(false),
+            corrupt_operation: std::sync::atomic::AtomicBool::new(false),
+            corrupt_replay_run: std::sync::atomic::AtomicBool::new(false),
+            corrupt_version: std::sync::atomic::AtomicBool::new(false),
+            replacement: std::sync::Mutex::default(),
             wrong_permit: std::sync::Mutex::default(),
         })
     }
@@ -40,12 +49,64 @@ impl Interposed {
 }
 #[async_trait::async_trait]
 impl Store for Interposed {
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_initial_preparation_admission(
+        &self,
+        original: &JoinedPreparation,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationAdmissionReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        let mut result = self
+            .inner
+            .inspect_initial_preparation_admission(original)
+            .await;
+        if let Ok(Some(receipt)) = &mut result {
+            if self
+                .corrupt_operation
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                receipt.operation_id = ControlId::new();
+            }
+            if self
+                .corrupt_replay_run
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                receipt.run_id = RunId("bad\nrun".into());
+            }
+        }
+        if self.pause(Stage::Inspect).await {
+            return Err(Error::UnknownStoreOutcome.into());
+        }
+        result
+    }
+    async fn register_execution_driver(
+        &self,
+        request: crate::session_owner::driver::RegisterExecutionDriver,
+    ) -> Result<crate::session_owner::driver::ExecutionDriverOutcome, Error> {
+        let result = self.inner.register_execution_driver(request).await;
+        if self.pause(Stage::Register).await {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        result
+    }
+
     async fn lookup_admission(
         &self,
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<AdmissionReceipt>, StoreError> {
-        self.inner.lookup_admission(session, key).await
+        let mut receipt = self.inner.lookup_admission(session, key).await?;
+        if self
+            .corrupt_version
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && let Some(receipt) = &mut receipt
+        {
+            receipt.semantic_digest_version = 777;
+        }
+        Ok(receipt)
     }
 
     async fn complete_preparation(
@@ -53,7 +114,28 @@ impl Store for Interposed {
         original: JoinedPreparation,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        let mut result = self.inner.complete_preparation(original).await;
+        let replacement = self.replacement.lock().unwrap().take();
+        let mut result = match replacement {
+            Some(replacement) => Ok(replacement),
+            None => self.inner.complete_preparation(original).await,
+        };
+        if self
+            .corrupt_replay_run
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(PreparationCompletion::AdmissionReplayed(receipt)) = &mut result
+        {
+            receipt.run_id = RunId("bad\nrun".into());
+        }
+        if self
+            .corrupt_receipt
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(PreparationCompletion::Keyed(crate::KeyedAdmitOutcome::Started {
+                receipt,
+                ..
+            })) = &mut result
+        {
+            receipt.user_message_id = MessageId::new();
+        }
         if self
             .corrupt_receipt
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -62,6 +144,16 @@ impl Store for Interposed {
             )) = &mut result
         {
             value.record.receipt.user_message_id = MessageId::new();
+        }
+        if self
+            .corrupt_version
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(PreparationCompletion::Keyed(crate::KeyedAdmitOutcome::Started {
+                receipt,
+                ..
+            })) = &mut result
+        {
+            receipt.semantic_digest_version = 777;
         }
         if self.pause(Stage::Complete).await {
             return Err(Error::UnknownStoreOutcome.into());

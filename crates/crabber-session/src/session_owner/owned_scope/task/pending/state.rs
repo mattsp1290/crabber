@@ -1,11 +1,7 @@
-use super::super::{Error, OwnedMainDisposition, OwnedScopeActivation};
-use super::PendingSuccessorCompletion;
+use super::super::OwnedScopeActivation;
+use super::{Error, PendingSuccessorCompletion, core};
 use crate::session_owner::driver::SuccessorExecutionDriverGrant;
-use std::sync::{Arc, Mutex};
-use tokio::sync::watch;
-
-/// The original acknowledged grant and once-bound activation, never a source
-/// certificate reconstructed from extrinsic Grant metadata. No context minting.
+/// The actual fresh native grant and its once-bound activation.
 #[derive(Clone)]
 pub struct BoundSuccessorControl {
     pub(super) grant: SuccessorExecutionDriverGrant,
@@ -21,186 +17,34 @@ impl BoundSuccessorControl {
         &self.grant
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Ready,
-    Calling,
-    Dispatched,
-    Finished(OwnedMainDisposition),
-}
-struct State {
-    stopped: bool,
-    phase: Phase,
-    bound: Option<BoundSuccessorControl>,
-    completion: Option<PendingSuccessorCompletion>,
-}
-/// Signals/observes this original task. It cannot create a task, context or permit.
+/// Signals/observes this original successor task, without creating authority.
 #[derive(Clone)]
-pub struct PendingSuccessorControl {
-    state: Arc<Mutex<State>>,
-    changed: watch::Sender<()>,
-}
+pub struct PendingSuccessorControl(pub(super) core::Control);
 impl PendingSuccessorControl {
-    pub(super) fn new() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(State {
-                stopped: false,
-                phase: Phase::Ready,
-                bound: None,
-                completion: None,
-            })),
-            changed: watch::channel(()).0,
-        }
-    }
-    /// Stop new administrative calls and business dispatch. An admitted Store
-    /// future stays owned; already-dispatched business work is not aborted.
-    /// Its Runtime owner must signal its independent cancellation/cleanup scope.
+    /// Stops new calls/dispatch, retaining already admitted Store futures.
     pub fn request_stop(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stopped = true;
-        self.changed.send_replace(());
+        self.0.request_stop();
     }
-    /// Metadata from the same original task's validated completion ACK.
+    /// Same-task completion metadata only.
     /// # Errors
-    /// The task ended without an acknowledged completion. No replacement IO runs.
+    /// No original acknowledged completion, or a mismatched internal family.
     pub async fn completion(&self) -> Result<PendingSuccessorCompletion, Error> {
-        let mut changed = self.changed.subscribe();
-        loop {
-            {
-                let state = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(completion) = &state.completion {
-                    return Ok(completion.clone());
-                }
-                if matches!(state.phase, Phase::Finished(_)) {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-            }
-            changed
-                .changed()
-                .await
-                .map_err(|_| Error::UnknownStoreOutcome)?;
+        match self.0.completion().await? {
+            core::Notice::Successor(value) => Ok(value),
+            core::Notice::Initial(_) => Err(Error::SemanticConflict),
         }
     }
-    pub(super) fn completed(&self, completion: PendingSuccessorCompletion) -> Result<(), Error> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.completion.is_some() {
-            return Err(Error::InvalidTransition);
-        }
-        state.completion = Some(completion);
-        drop(state);
-        self.changed.send_replace(());
-        Ok(())
-    }
-    /// Observe a genuine once-binding; unbound termination returns an error.
+    /// Original actual acknowledged grant, never reconstructed from metadata.
     /// # Errors
-    /// No acknowledged binding was retained before the actual task ended.
+    /// The original task ended unbound, or its family is inconsistent.
     pub async fn bound(&self) -> Result<BoundSuccessorControl, Error> {
-        let mut changed = self.changed.subscribe();
-        loop {
-            {
-                let state = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(bound) = &state.bound {
-                    return Ok(bound.clone());
-                }
-                if matches!(state.phase, Phase::Finished(_)) {
-                    return Err(Error::UnknownStoreOutcome);
-                }
-            }
-            changed
-                .changed()
-                .await
-                .map_err(|_| Error::UnknownStoreOutcome)?;
+        match self.0.bound().await? {
+            core::Binding::Successor(value) => Ok(*value),
+            core::Binding::Initial(_) => Err(Error::SemanticConflict),
         }
     }
     #[cfg(test)]
-    pub(super) fn finished_disposition(&self) -> Option<OwnedMainDisposition> {
-        match self.state.lock().unwrap().phase {
-            Phase::Finished(value) => Some(value),
-            _ => None,
-        }
-    }
-    pub(super) fn enter_call(&self) -> Result<Option<CallAdmission>, Error> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.stopped {
-            return Ok(None);
-        }
-        if state.phase != Phase::Ready {
-            return Err(Error::InvalidTransition);
-        }
-        state.phase = Phase::Calling;
-        Ok(Some(CallAdmission(self.clone())))
-    }
-    pub(super) fn stopped(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stopped
-    }
-    pub(super) fn bind(&self, bound: BoundSuccessorControl) -> Result<(), Error> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.bound.is_some() {
-            return Err(Error::InvalidTransition);
-        }
-        state.bound = Some(bound);
-        drop(state);
-        self.changed.send_replace(());
-        Ok(())
-    }
-    pub(super) fn binding(&self) -> Option<BoundSuccessorControl> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .bound
-            .clone()
-    }
-    pub(super) fn dispatch(&self) -> Result<bool, Error> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.phase != Phase::Ready {
-            return Err(Error::InvalidTransition);
-        }
-        if state.stopped {
-            return Ok(false);
-        }
-        state.phase = Phase::Dispatched;
-        Ok(true)
-    }
-    pub(super) fn finish(&self, disposition: OwnedMainDisposition) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .phase = Phase::Finished(disposition);
-        self.changed.send_replace(());
-    }
-}
-
-// Local admission only: it retains no native authority or physical join proof.
-pub(super) struct CallAdmission(PendingSuccessorControl);
-impl Drop for CallAdmission {
-    fn drop(&mut self) {
-        self.0
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .phase = Phase::Ready;
+    pub(super) fn finished_disposition(&self) -> Option<super::OwnedMainDisposition> {
+        self.0.finished_disposition()
     }
 }

@@ -5,7 +5,9 @@ mod task;
 pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask};
 pub(crate) mod join_verify;
 pub use task::{
-    BoundSuccessorControl, DriverMainContext, JoinedOwnedTask, OwnedTaskRegistration,
+    BoundInitialControl, BoundSuccessorControl, DriverMainContext, InitialAdmissionMetadata,
+    InitialAdmissionReplay, JoinedOwnedTask, OwnedTaskRegistration, PendingDriverTasks,
+    PendingInitialCompletion, PendingInitialControl, PendingInitialObservation, PendingInitialTask,
     PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
     PendingSuccessorTasks,
