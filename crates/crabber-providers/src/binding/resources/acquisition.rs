@@ -96,7 +96,9 @@ where
             Err(payload) => {
                 this.uncertain();
                 if let Err(secondary) = this.dispose()
-                    && let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(secondary)))
+                    && let Err(nested) = this
+                        .holds
+                        .sync_scope(|| catch_unwind(AssertUnwindSafe(|| drop(secondary))))
                 {
                     std::mem::forget(nested);
                 }
@@ -147,10 +149,21 @@ impl ProviderResourceContext {
         });
         let cleanup = ticket.clone();
         self.defer(move || async move { cleanup.wait().await })?;
+        let holds = ProviderReleaseHolds::capture_with_original(original.clone());
+        // Retain the ORIGINAL returned future directly. An added async await
+        // wrapper could destroy it during poll unwind before our catch boundary.
+        let future = match holds.sync_scope(|| catch_unwind(AssertUnwindSafe(factory))) {
+            Ok(future) => future,
+            Err(payload) => {
+                std::mem::forget(original);
+                std::mem::forget(holds);
+                resume_unwind(payload);
+            }
+        };
         Acquiring {
-            future: Some(Box::pin(async move { factory().await })),
+            future: Some(Box::pin(future)),
             ticket,
-            holds: ProviderReleaseHolds::capture_with_original(original.clone()),
+            holds,
             original: Some(original),
         }
         .await
