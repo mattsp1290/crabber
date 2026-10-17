@@ -1,6 +1,8 @@
 //! Binding acquisition and exact restoration without selecting a substitute.
 mod future_release;
+mod holds;
 mod release;
+pub use holds::ProviderReleaseHolds;
 mod resources;
 use crate::{ProviderError, Selection, Streamer};
 use crabber_core::ProviderBindingDescriptor;

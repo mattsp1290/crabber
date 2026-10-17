@@ -2,11 +2,12 @@
 //! cleanup of a provider or an independently owned service generation.
 use super::ProviderResourceContext;
 use crate::{
-    BoundProvider, ProviderBindingError, ProviderReleaseObserver, ProviderResourceFailure,
+    BoundProvider, ProviderBindingError, ProviderReleaseHolds, ProviderReleaseObserver,
+    ProviderResourceFailure,
 };
-use futures::channel::oneshot;
 use std::{
     future::Future,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -21,35 +22,14 @@ enum Outcome {
 }
 struct Ticket {
     outcome: Mutex<Outcome>,
-    finished: std::sync::Mutex<Option<oneshot::Sender<()>>>,
-    ready: futures::future::Shared<futures::future::BoxFuture<'static, ()>>,
-}
-impl Default for Ticket {
-    fn default() -> Self {
-        use futures::FutureExt;
-        let (sender, receiver) = oneshot::channel();
-        Self {
-            outcome: Mutex::new(Outcome::Acquiring),
-            finished: Mutex::new(Some(sender)),
-            ready: async move {
-                if receiver.await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
-            .boxed()
-            .shared(),
-        }
-    }
+    ready: ProviderReleaseObserver,
 }
 impl Ticket {
     fn complete(&self, outcome: Outcome) {
         *self.outcome.lock().unwrap() = outcome;
-        if let Some(sender) = self.finished.lock().unwrap().take() {
-            let _ = sender.send(());
-        }
     }
     async fn wait(&self) -> Result<(), ProviderResourceFailure> {
-        self.ready.clone().await;
+        self.ready.released().await;
         let observer = match &*self.outcome.lock().unwrap() {
             Outcome::Acquiring => return Err(ProviderResourceFailure::CleanupFailed),
             Outcome::NoBinding => None,
@@ -62,18 +42,35 @@ impl Ticket {
     }
 }
 
+type Panic = Box<dyn std::any::Any + Send>;
 struct Acquiring<F> {
     future: Option<Pin<Box<F>>>,
     ticket: Arc<Ticket>,
+    original: Option<Arc<super::super::release::Signal>>,
+    holds: ProviderReleaseHolds,
+}
+impl<F> Acquiring<F> {
+    fn dispose(&mut self) -> Result<(), Panic> {
+        let future = self.future.take();
+        self.holds
+            .sync_scope(|| catch_unwind(AssertUnwindSafe(|| drop(future))))
+    }
+    fn uncertain(&mut self) {
+        std::mem::forget(self.original.take());
+    }
 }
 impl<F> Drop for Acquiring<F> {
     fn drop(&mut self) {
-        if let Some(future) = self.future.take() {
-            // Await-frame arguments may otherwise outlive a local drop guard.
-            // Dispose the actual factory future before acknowledging NoBinding.
-            // A panicking destructor deliberately leaves the ticket unfinished.
-            drop(future);
-            self.ticket.complete(Outcome::NoBinding);
+        if self.future.is_some() {
+            match self.dispose() {
+                Ok(()) if !std::thread::panicking() => self.ticket.complete(Outcome::NoBinding),
+                Ok(()) => self.uncertain(),
+                Err(payload) => {
+                    self.uncertain();
+                    resume_unwind(payload);
+                }
+            }
+            drop(self.original.take());
         }
     }
 }
@@ -84,15 +81,34 @@ where
     type Output = Result<BoundProvider, ProviderBindingError>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let outcome = std::task::ready!(
-            this.future
-                .as_mut()
-                .expect("acquisition polled after completion")
-                .as_mut()
-                .poll(cx)
-        );
-        drop(this.future.take());
-        Poll::Ready(match outcome {
+        let polled = this.holds.sync_scope(|| {
+            catch_unwind(AssertUnwindSafe(|| {
+                this.future
+                    .as_mut()
+                    .expect("live acquisition")
+                    .as_mut()
+                    .poll(cx)
+            }))
+        });
+        let outcome = match polled {
+            Ok(Poll::Pending) => return Poll::Pending,
+            Ok(Poll::Ready(outcome)) => outcome,
+            Err(payload) => {
+                this.uncertain();
+                if let Err(secondary) = this.dispose()
+                    && let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(secondary)))
+                {
+                    std::mem::forget(nested);
+                }
+                resume_unwind(payload);
+            }
+        };
+        if let Err(payload) = this.dispose() {
+            this.uncertain();
+            std::mem::forget(outcome);
+            resume_unwind(payload);
+        }
+        let outcome = match outcome {
             Ok(binding) => {
                 let (binding, observer) = binding.observe_release();
                 this.ticket.complete(Outcome::Acquired(observer));
@@ -102,7 +118,10 @@ where
                 this.ticket.complete(Outcome::NoBinding);
                 Err(error)
             }
-        })
+        };
+        // The stored outcome precedes the SAME original ready-signal release.
+        drop(this.original.take());
+        Poll::Ready(outcome)
     }
 }
 
@@ -121,12 +140,18 @@ impl ProviderResourceContext {
         F: FnOnce() -> W,
         W: Future<Output = Result<BoundProvider, ProviderBindingError>>,
     {
-        let ticket = Arc::new(Ticket::default());
+        let (original, ready) = super::super::release::completion();
+        let ticket = Arc::new(Ticket {
+            outcome: Mutex::new(Outcome::Acquiring),
+            ready,
+        });
         let cleanup = ticket.clone();
         self.defer(move || async move { cleanup.wait().await })?;
         Acquiring {
-            future: Some(Box::pin(factory())),
+            future: Some(Box::pin(async move { factory().await })),
             ticket,
+            holds: ProviderReleaseHolds::capture_with_original(original.clone()),
+            original: Some(original),
         }
         .await
     }

@@ -1,6 +1,6 @@
 //! Borrowing a concrete independently owned service is distinct from shutting it down.
 mod acquisition;
-use crate::{BoundProvider, ProviderBindingError};
+use crate::{BoundProvider, ProviderBindingError, ProviderReleaseHolds};
 use futures::{Stream, future::BoxFuture};
 use std::{
     any::Any,
@@ -117,7 +117,11 @@ struct LeasedStreamer {
 }
 impl Drop for LeasedStreamer {
     fn drop(&mut self) {
-        super::super::release::dispose(self.inner.take(), &mut self.lease);
+        let holds = ProviderReleaseHolds::capture_with_original(
+            self.lease.as_ref().expect("live borrowed lease").clone(),
+        );
+        let inner = self.inner.take();
+        holds.sync_scope(|| super::super::release::dispose(inner, &mut self.lease));
     }
 }
 #[async_trait::async_trait]
@@ -126,41 +130,53 @@ impl crate::Streamer for LeasedStreamer {
         &self,
         request: crate::ModelRequest,
     ) -> Result<crate::DeltaStream, crate::ProviderError> {
-        let (result, lease) = crate::binding::future_release::observe(
-            async {
-                self.inner
-                    .as_ref()
-                    .expect("live borrowed provider")
-                    .stream(request)
-                    .await
-            },
+        let holds = ProviderReleaseHolds::capture_with_original(
             self.lease.as_ref().expect("live borrowed lease").clone(),
-        )
-        .await;
+        );
+        let (result, lease) = holds
+            .scope(|| {
+                crate::binding::future_release::observe(
+                    async {
+                        self.inner
+                            .as_ref()
+                            .expect("live borrowed provider")
+                            .stream(request)
+                            .await
+                    },
+                    self.lease.as_ref().expect("live borrowed lease").clone(),
+                )
+            })
+            .await;
         let stream = result?;
         Ok(Box::pin(LeasedStream {
             inner: Some(stream),
             lease: Some(lease),
+            holds,
         }))
     }
 }
 struct LeasedStream {
     inner: Option<crate::DeltaStream>,
     lease: Option<Arc<dyn Any + Send + Sync>>,
+    holds: ProviderReleaseHolds,
 }
 impl Drop for LeasedStream {
     fn drop(&mut self) {
-        super::super::release::dispose(self.inner.take(), &mut self.lease);
+        let inner = self.inner.take();
+        self.holds
+            .sync_scope(|| super::super::release::dispose(inner, &mut self.lease));
     }
 }
 impl Stream for LeasedStream {
     type Item = crate::StreamDelta;
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut()
-            .inner
-            .as_mut()
-            .expect("live borrowed stream")
-            .as_mut()
-            .poll_next(context)
+        let this = self.get_mut();
+        this.holds.sync_scope(|| {
+            this.inner
+                .as_mut()
+                .expect("live borrowed stream")
+                .as_mut()
+                .poll_next(context)
+        })
     }
 }
