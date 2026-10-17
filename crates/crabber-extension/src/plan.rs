@@ -168,12 +168,25 @@ pub trait ToolExecutor: Send + Sync {
         None
     }
     async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError>;
+    /// Forward to the original execution future while observing its disposal.
+    /// # Panics
+    /// Panics if original construction, polling or disposal fails. Retained
+    /// owned callers observe that failure independently of semantic tool errors.
     async fn execute_with_context(
         &self,
         _context: ToolContext,
         arguments: Value,
     ) -> Result<crabber_core::ToolOutput, ExtensionError> {
-        self.execute(arguments).await
+        match crate::dispatch::original::original(
+            || self.execute(arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("original Tool execution observation failed"),
+        }
     }
 }
 
@@ -182,19 +195,41 @@ pub trait ToolExecutor: Send + Sync {
 #[async_trait]
 pub trait JsonToolExecutor: Send + Sync {
     async fn execute(&self, arguments: Value) -> Result<Value, ExtensionError>;
+    /// Forward to the original JSON execution future while observing disposal.
+    /// # Panics
+    /// Panics if original construction, polling or disposal fails. Retained
+    /// owned callers observe that failure independently of semantic tool errors.
     async fn execute_with_context(
         &self,
         _context: ToolContext,
         arguments: Value,
     ) -> Result<Value, ExtensionError> {
-        self.execute(arguments).await
+        match crate::dispatch::original::original(
+            || JsonToolExecutor::execute(self, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            _ => panic!("original JSON Tool execution observation failed"),
+        }
     }
 }
 
 #[async_trait]
 impl<T: JsonToolExecutor + ?Sized> ToolExecutor for T {
     async fn execute(&self, arguments: Value) -> Result<crabber_core::ToolOutput, ExtensionError> {
-        let value = JsonToolExecutor::execute(self, arguments).await?;
+        let value = match crate::dispatch::original::original(
+            || JsonToolExecutor::execute(self, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result?,
+            _ => panic!("original JSON Tool execution observation failed"),
+        };
         crabber_core::ToolOutput::from_json(&value)
             .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
     }
@@ -203,7 +238,16 @@ impl<T: JsonToolExecutor + ?Sized> ToolExecutor for T {
         context: ToolContext,
         arguments: Value,
     ) -> Result<crabber_core::ToolOutput, ExtensionError> {
-        let value = JsonToolExecutor::execute_with_context(self, context, arguments).await?;
+        let value = match crate::dispatch::original::original(
+            || JsonToolExecutor::execute_with_context(self, context, arguments),
+            std::convert::identity,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(Some(result)) => result?,
+            _ => panic!("original JSON Tool execution observation failed"),
+        };
         crabber_core::ToolOutput::from_json(&value)
             .map_err(|_| ExtensionError::Tool("invalid JSON tool output".into()))
     }

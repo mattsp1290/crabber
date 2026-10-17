@@ -18,6 +18,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod original;
+
 pub type Callback =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExtensionError>> + Send + Sync>;
 pub type AroundCallback =

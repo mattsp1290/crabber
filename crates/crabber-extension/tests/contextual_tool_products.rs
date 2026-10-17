@@ -55,6 +55,7 @@ enum Call {
 }
 struct Seen {
     literal: AtomicBool,
+    literal_adapter: AtomicUsize,
     literal_poll_panic: AtomicBool,
     semantic_error: AtomicBool,
     effects: AtomicUsize,
@@ -83,6 +84,7 @@ impl Seen {
     fn new(call: Call) -> Arc<Self> {
         Arc::new(Self {
             literal: AtomicBool::new(false),
+            literal_adapter: AtomicUsize::new(0),
             literal_poll_panic: AtomicBool::new(false),
             semantic_error: AtomicBool::new(false),
             effects: AtomicUsize::new(0),
@@ -246,7 +248,9 @@ impl ContextualToolProductFactory for Factory {
                     retry_safe: false,
                     required_permissions: vec![],
                 },
-                if self.seen.literal.load(Ordering::SeqCst) {
+                if self.seen.literal_adapter.load(Ordering::SeqCst) != 0 {
+                    defaults::tool(self.seen.clone())
+                } else if self.seen.literal.load(Ordering::SeqCst) {
                     Box::new(literal::Tool(Tool(self.seen.clone())))
                 } else {
                     Box::new(Tool(self.seen.clone()))
@@ -357,6 +361,9 @@ mod retention;
 
 #[path = "contextual_tool_products/literal.rs"]
 mod literal;
+
+#[path = "contextual_tool_products/defaults.rs"]
+mod defaults;
 
 fn identity() -> crabber_core::ResumableToolIdentity {
     crabber_core::ResumableToolIdentity {
