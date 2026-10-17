@@ -3692,9 +3692,38 @@ impl PendingCall {
 }
 
 impl Orchestrator {
-    #[allow(clippy::too_many_lines)] // Streaming assembly and durable assistant commit form one turn boundary.
     #[allow(clippy::too_many_arguments)]
     async fn model_turn(
+        &self,
+        execution: &dyn ExecutionStore,
+        run_id: &RunId,
+        session_id: &SessionId,
+        snapshot: &TurnSnapshot,
+        system: Option<String>,
+        plan: &RunPlan,
+        streamer: Arc<dyn Streamer>,
+        cancellation: &CancellationToken,
+        lease_lost: &AtomicBool,
+    ) -> Result<(Vec<PendingCall>, Usage), RuntimeError> {
+        self.with_model_callback_owner(run_id, || {
+            self.model_turn_inner(
+                execution,
+                run_id,
+                session_id,
+                snapshot,
+                system,
+                plan,
+                streamer,
+                cancellation,
+                lease_lost,
+            )
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_lines)] // Streaming assembly and durable assistant commit form one turn boundary.
+    #[allow(clippy::too_many_arguments)]
+    async fn model_turn_inner(
         &self,
         execution: &dyn ExecutionStore,
         run_id: &RunId,
@@ -3817,7 +3846,6 @@ impl Orchestrator {
         };
         let dispatched = self.dispatch_model_callbacks(
             plan,
-            run_id,
             cancellation,
             json!({"provider":snapshot.selection.provider_id,"model":snapshot.selection.model_id,"session_id":snapshot.identity.session_id,"run_id":snapshot.identity.run_id,"turn_id":snapshot.identity.turn_id,"message_count":snapshot.messages.len(),"temperature":null,"max_tokens":snapshot.max_output_tokens,"tool_choice":null}),
             terminal,

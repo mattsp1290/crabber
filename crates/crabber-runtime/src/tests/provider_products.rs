@@ -17,6 +17,8 @@ use std::{
 
 #[derive(Default)]
 struct Seen {
+    disposal_panic: std::sync::atomic::AtomicBool,
+    semantic_error: std::sync::atomic::AtomicBool,
     binds: AtomicUsize,
     creates: AtomicUsize,
     dropped: AtomicUsize,
@@ -58,6 +60,19 @@ struct Backend {
 impl Streamer for Backend {
     async fn stream(&self, request: ModelRequest) -> Result<DeltaStream, ProviderError> {
         self.seen.creates.fetch_add(1, Ordering::SeqCst);
+        if self.seen.disposal_panic.load(Ordering::SeqCst) {
+            return Ok(Box::pin(DisposalPanic {
+                seen: self.seen.clone(),
+                text: false,
+            }));
+        }
+        if self.seen.semantic_error.load(Ordering::SeqCst) {
+            return Err(ProviderError {
+                kind: crabber_providers::ProviderErrorKind::Invalid,
+                message: "genuine semantic refusal".into(),
+                retryable: false,
+            });
+        }
         if self.blocked {
             Ok(Box::pin(PendingStream(self.seen.clone())))
         } else {
@@ -250,3 +265,99 @@ async fn postgres_actual_box_provider_owner() {
     ))
     .await;
 }
+
+struct DisposalPanic {
+    seen: Arc<Seen>,
+    text: bool,
+}
+impl Stream for DisposalPanic {
+    type Item = StreamDelta;
+    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.text {
+            Poll::Ready(Some(StreamDelta::Completed))
+        } else {
+            self.text = true;
+            Poll::Ready(Some(StreamDelta::TextDelta("before disposal".into())))
+        }
+    }
+}
+impl Drop for DisposalPanic {
+    fn drop(&mut self) {
+        self.seen.dropped.fetch_add(1, Ordering::SeqCst);
+        panic!("actual original provider stream disposal failure");
+    }
+}
+async fn failure_contract(store: Arc<dyn Store>) {
+    for panic in [false, true] {
+        let (runtime, plans, seen, _) = runtime(store.clone(), false);
+        seen.disposal_panic.store(panic, Ordering::SeqCst);
+        seen.semantic_error.store(!panic, Ordering::SeqCst);
+        let handle = runtime.start(request()).await.unwrap();
+        let run = handle.run_id().clone();
+        let context = SessionContext::new(handle.session_id().clone(), "test", "/tmp");
+        let result = tokio::time::timeout(Duration::from_secs(5), handle.done())
+            .await
+            .unwrap();
+        let attempt = store
+            .latest_execution_attempt(&run)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt;
+        runtime
+            .drain_session_execution_tasks(context.session_id(), Duration::from_secs(2))
+            .await;
+        let closed = plans.close_session(&context, Duration::from_secs(2)).await;
+        if panic {
+            assert!(
+                matches!(result, Err(RuntimeError::AttemptCleanupIncomplete { .. })),
+                "{result:?}"
+            );
+            assert_eq!(attempt.state, crabber_session::AttemptState::Started);
+            assert_ne!(attempt.cleanup, crabber_session::AttemptCleanup::Complete);
+            assert!(closed.is_err());
+            assert_eq!(seen.dropped.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(
+                matches!(result, Err(RuntimeError::Provider(_))),
+                "{result:?}"
+            );
+            assert_eq!(attempt.state, crabber_session::AttemptState::Failed);
+            assert_eq!(attempt.cleanup, crabber_session::AttemptCleanup::Complete);
+            closed.unwrap();
+        }
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_box_provider_disposal_failure() {
+    failure_contract(Arc::new(MemoryStore::new())).await;
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_box_provider_disposal_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("failure.sqlite");
+    crabber_session::SqliteStore::migrate(&path).await.unwrap();
+    failure_contract(Arc::new(
+        crabber_session::SqliteStore::connect(&path).await.unwrap(),
+    ))
+    .await;
+}
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_box_provider_disposal_failure() {
+    let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
+        assert_ne!(
+            std::env::var("CRABBER_REQUIRE_POSTGRES").as_deref(),
+            Ok("1")
+        );
+        return;
+    };
+    crabber_session::PostgresStore::migrate(&url).await.unwrap();
+    failure_contract(Arc::new(
+        crabber_session::PostgresStore::connect(&url).await.unwrap(),
+    ))
+    .await;
+}
+#[path = "provider_products/preparation.rs"]
+mod preparation;
