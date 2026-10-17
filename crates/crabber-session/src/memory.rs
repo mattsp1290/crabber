@@ -771,6 +771,10 @@ impl Store for MemoryStore {
                 | Origin::ExpiredRun
                 | Origin::ApprovalClaim
                 | Origin::ApprovalRecovery
+                | Origin::ToolClaim
+                | Origin::ToolRecovery
+                | Origin::FrontendClaim
+                | Origin::FrontendRecovery
         )
     }
     async fn register_successor_execution_driver(
@@ -856,7 +860,14 @@ impl Store for MemoryStore {
         &self,
         origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
     ) -> bool {
-        self.supports_successor_execution_driver_origin(origin)
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(
+            origin,
+            Origin::AdmissionRecovery
+                | Origin::ExpiredRun
+                | Origin::ApprovalClaim
+                | Origin::ApprovalRecovery
+        )
     }
     async fn inspect_prepared_approval_driver(
         &self,

@@ -1101,7 +1101,14 @@ impl Store for PostgresStore {
         &self,
         origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
     ) -> bool {
-        self.supports_successor_execution_driver_origin(origin)
+        use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
+        matches!(
+            origin,
+            Origin::AdmissionRecovery
+                | Origin::ExpiredRun
+                | Origin::ApprovalClaim
+                | Origin::ApprovalRecovery
+        )
     }
     async fn inspect_prepared_approval_driver(
         &self,
@@ -1136,6 +1143,10 @@ impl Store for PostgresStore {
                 | Origin::ExpiredRun
                 | Origin::ApprovalClaim
                 | Origin::ApprovalRecovery
+                | Origin::ToolClaim
+                | Origin::ToolRecovery
+                | Origin::FrontendClaim
+                | Origin::FrontendRecovery
         )
     }
     async fn register_successor_execution_driver(

@@ -69,21 +69,23 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
                     .await
                     .is_err()
                 );
-                assert!(matches!(
-                    Box::pin(fresh::fresh(
-                        &mut tx,
-                        &request,
-                        None,
-                        clock.now(),
-                        &mut Proof::bounded(32 << 20)
-                    ))
-                    .await,
-                    Err(Error::Unsupported)
-                ));
+                Box::pin(fresh::fresh(
+                    &mut tx,
+                    &request,
+                    None,
+                    clock.now(),
+                    &mut Proof::bounded(32 << 20),
+                ))
+                .await
+                .unwrap();
                 if frontend {
                     Box::pin(substituted_content(&mut tx, &f, &request)).await;
                 }
                 tx.rollback().await.unwrap();
+                Box::pin(crate::successor_driver_contract::tools::fresh::exercise(
+                    &store, request,
+                ))
+                .await;
             }
         }
     }

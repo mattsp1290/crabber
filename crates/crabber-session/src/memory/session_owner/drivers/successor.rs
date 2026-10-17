@@ -7,6 +7,8 @@ mod inspection;
 mod pending_approval;
 #[path = "successor/source.rs"]
 mod source;
+#[path = "successor/tool.rs"]
+mod tool;
 #[path = "successor/tool_inspection.rs"]
 mod tool_inspection;
 use super::super::{Error, MemoryStore, before, bump_public_revision, fault, revision};
@@ -114,11 +116,6 @@ pub(in crate::memory::session_owner) fn fresh(
         return Err(Error::UnknownStoreOutcome);
     }
     let selected = source::original(state, request, proof, Some(&binding.capsule))?;
-    // Original Tool metadata is authenticated independently, but fresh Tool
-    // dispatch remains unsupported until the complete current-phase guard lands.
-    if selected.tool.is_some() {
-        return Err(Error::Unsupported);
-    }
     if latest.sequence != selected.head
         || crate::native_parent::issuance_digest(latest).map_err(|_| Error::UnknownStoreOutcome)?
             != selected.head_digest
@@ -127,6 +124,20 @@ pub(in crate::memory::session_owner) fn fresh(
     }
     if let Some((continuation, parent)) = &selected.approval {
         approval::fresh(state, run, continuation, parent, now, proof)?;
+    }
+    if let Some((continuation, parent)) = &selected.tool {
+        tool::fresh(
+            state,
+            run,
+            continuation,
+            parent,
+            selected
+                .tool_receipt
+                .as_ref()
+                .ok_or(Error::UnknownStoreOutcome)?,
+            now,
+            proof,
+        )?;
     }
     let root = state
         .session_owners
@@ -169,3 +180,11 @@ mod birth_source_tests;
 #[cfg(test)]
 #[path = "successor/tool_source_tests.rs"]
 mod tool_source_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_guards_tests.rs"]
+mod tool_guards_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_fault_tests.rs"]
+mod tool_fault_tests;

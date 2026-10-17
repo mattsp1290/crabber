@@ -7,6 +7,8 @@ mod inspection;
 #[path = "successor/pending_approval.rs"]
 mod pending_approval;
 mod source;
+#[path = "successor/tool.rs"]
+mod tool;
 #[path = "successor/tool_inspection.rs"]
 mod tool_inspection;
 use super::super::{
@@ -201,3 +203,11 @@ pub(super) mod approval_tests;
 #[cfg(test)]
 #[path = "successor/tool_source_tests.rs"]
 mod tool_source_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_guards_tests.rs"]
+mod tool_guards_tests;
+
+#[cfg(test)]
+#[path = "successor/tool_fault_tests.rs"]
+mod tool_fault_tests;

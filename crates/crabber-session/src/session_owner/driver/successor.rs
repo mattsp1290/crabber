@@ -1,5 +1,6 @@
 //! A distinct worker for one actual prepared native claim, never the initial worker.
 pub(crate) mod source;
+pub(crate) mod tool_fresh;
 use super::{Error, ExecutionDriverIds, ExecutionDriverReceipt};
 use crabber_core::{InputFingerprint, SessionOwnerId, SessionOwnerOperationId};
 use serde::{Deserialize, Serialize};

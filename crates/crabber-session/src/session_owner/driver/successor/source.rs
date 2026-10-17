@@ -20,6 +20,7 @@ pub(crate) struct SelectedClaim {
     pub head_digest: InputFingerprint,
     pub approval: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
     pub approval_receipt: Option<crate::ApprovalReceipt>,
+    pub tool_receipt: Option<crate::ToolContinuationReceipt>,
     pub tool: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
     pub tool_receipt: Option<crate::ToolContinuationReceipt>,
 }

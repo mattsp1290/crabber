@@ -1,4 +1,8 @@
 //! Real original Tool/Frontend preparations, without inferred issuer cursors.
+#[path = "tools/fresh.rs"]
+pub(crate) mod fresh;
+#[path = "tools/mixed.rs"]
+mod mixed;
 use super::*;
 use crate::{ToolContinuationClaimOutcome, ToolContinuationReceipt, ToolContinuationSuspension};
 use crabber_core::{Clock, ControlId, SessionContext, SessionId, SessionRevision};
@@ -19,8 +23,49 @@ pub(crate) async fn fixture(
     recovery: bool,
     unkeyed: bool,
 ) -> Fixture {
+    Box::pin(fixture_kind(
+        store,
+        clock,
+        BatchKind::from_frontend(frontend),
+        recovery,
+        unkeyed,
+    ))
+    .await
+}
+pub(crate) async fn fixture_mixed(
+    store: &impl Store,
+    clock: &ManualClock,
+    recovery: bool,
+    unkeyed: bool,
+) -> Fixture {
+    Box::pin(fixture_kind(
+        store,
+        clock,
+        BatchKind::Mixed,
+        recovery,
+        unkeyed,
+    ))
+    .await
+}
+enum BatchKind {
+    Tool,
+    Frontend,
+    Mixed,
+}
+impl BatchKind {
+    fn from_frontend(frontend: bool) -> Self {
+        if frontend { Self::Frontend } else { Self::Tool }
+    }
+}
+async fn fixture_kind(
+    store: &impl Store,
+    clock: &ManualClock,
+    kind: BatchKind,
+    recovery: bool,
+    unkeyed: bool,
+) -> Fixture {
     let (context, joined, batch) =
-        Box::pin(prepared(store, clock, frontend, recovery, unkeyed)).await;
+        Box::pin(prepared_kind(store, clock, kind, recovery, unkeyed)).await;
     let (receipt, native, captured) = complete(store, joined.clone()).await;
     Fixture {
         context,
@@ -31,7 +76,6 @@ pub(crate) async fn fixture(
         captured,
     }
 }
-
 /// Genuine observed preparation, deliberately not completed by this fixture.
 pub(crate) async fn prepared(
     store: &impl Store,
@@ -44,7 +88,46 @@ pub(crate) async fn prepared(
     JoinedPreparation,
     ToolContinuationSuspension,
 ) {
-    let (context, batch, original) = staged(store, frontend, unkeyed).await;
+    Box::pin(prepared_kind(
+        store,
+        clock,
+        BatchKind::from_frontend(frontend),
+        recovery,
+        unkeyed,
+    ))
+    .await
+}
+pub(crate) async fn prepared_mixed(
+    store: &impl Store,
+    clock: &ManualClock,
+    recovery: bool,
+    unkeyed: bool,
+) -> (
+    SessionContext,
+    JoinedPreparation,
+    ToolContinuationSuspension,
+) {
+    Box::pin(prepared_kind(
+        store,
+        clock,
+        BatchKind::Mixed,
+        recovery,
+        unkeyed,
+    ))
+    .await
+}
+async fn prepared_kind(
+    store: &impl Store,
+    clock: &ManualClock,
+    kind: BatchKind,
+    recovery: bool,
+    unkeyed: bool,
+) -> (
+    SessionContext,
+    JoinedPreparation,
+    ToolContinuationSuspension,
+) {
+    let (context, batch, original) = staged(store, kind, unkeyed).await;
     let (source, operation, key, work, intent) = match &original {
         PreparedOperation::ToolClaim(claim) => (
             PreparationSource::ToolClaim(claim.clone()),
@@ -204,13 +287,15 @@ async fn prepare(
 
 async fn staged(
     store: &impl Store,
-    frontend: bool,
+    kind: BatchKind,
     unkeyed: bool,
 ) -> (
     SessionContext,
     ToolContinuationSuspension,
     PreparedOperation,
 ) {
+    let frontend = !matches!(kind, BatchKind::Tool);
+    let mixed = matches!(kind, BatchKind::Mixed);
     let session = SessionId::new();
     let mut bound =
         crate::session_owner::preparation_contract::fixture(&session, SessionRevision::INITIAL);
@@ -250,6 +335,9 @@ async fn staged(
         admitted.session.workspace_id.clone(),
         admitted.session.directory.clone(),
     );
+    if mixed {
+        return mixed::staged(store, admitted, context, descriptor).await;
+    }
     if frontend {
         let f = crate::frontend_contract::fixture::fixture_on(store, admitted, descriptor).await;
         f.execution

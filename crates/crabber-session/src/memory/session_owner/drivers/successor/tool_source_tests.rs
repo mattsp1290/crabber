@@ -4,7 +4,7 @@ use crate::successor_driver_contract::tools::{Fixture, fixture};
 use crabber_core::Clock;
 use std::sync::Arc;
 
-fn request(store: &MemoryStore, f: &Fixture) -> RegisterSuccessorExecutionDriver {
+pub(super) fn request(store: &MemoryStore, f: &Fixture) -> RegisterSuccessorExecutionDriver {
     let join = f.joined.observed_grant().reconciliation().unwrap().join_id;
     let state = store.state.lock().unwrap();
     let selected: Vec<_> = state
@@ -44,43 +44,55 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
                     &store, &f, &request, frontend, recovery,
                 ))
                 .await;
-                let mut state = store.state.lock().unwrap();
-                let mut proof = Proof::bounded(32 << 20);
-                let selected = source::original(&state, &request, &mut proof, None).unwrap();
-                assert_eq!(
-                    selected.tool,
-                    Some((f.batch.continuation.clone(), f.batch.next_attempt.clone()))
-                );
-                assert_eq!(selected.revision, f.receipt.revision);
-                let used = proof.used();
-                source::original(&state, &request, &mut Proof::bounded(used), None).unwrap();
-                assert!(
-                    source::original(&state, &request, &mut Proof::bounded(used - 1), None)
-                        .is_err()
-                );
-                assert!(matches!(
+                {
+                    let mut state = store.state.lock().unwrap();
+                    let mut proof = Proof::bounded(32 << 20);
+                    let selected = source::original(&state, &request, &mut proof, None).unwrap();
+                    assert_eq!(
+                        selected.tool,
+                        Some((f.batch.continuation.clone(), f.batch.next_attempt.clone()))
+                    );
+                    assert_eq!(selected.revision, f.receipt.revision);
+                    let used = proof.used();
+                    source::original(&state, &request, &mut Proof::bounded(used), None).unwrap();
+                    assert!(
+                        source::original(&state, &request, &mut Proof::bounded(used - 1), None)
+                            .is_err()
+                    );
                     fresh(
                         &state,
                         &request,
                         None,
                         clock.now(),
-                        &mut Proof::bounded(32 << 20)
-                    ),
-                    Err(Error::Unsupported)
-                ));
-                if frontend {
-                    crate::successor_driver_contract::tools::replace_frontend_result(
-                        state
-                            .tool_continuations
-                            .get_mut(&f.batch.continuation.id)
-                            .unwrap(),
-                    );
-                    assert!(
-                        source::original(&state, &request, &mut Proof::bounded(32 << 20), None)
-                            .is_err(),
-                        "full original external content is authenticated"
-                    );
+                        &mut Proof::bounded(32 << 20),
+                    )
+                    .unwrap();
+                    let original = state
+                        .tool_continuations
+                        .get(&f.batch.continuation.id)
+                        .unwrap()
+                        .clone();
+                    if frontend {
+                        crate::successor_driver_contract::tools::replace_frontend_result(
+                            state
+                                .tool_continuations
+                                .get_mut(&f.batch.continuation.id)
+                                .unwrap(),
+                        );
+                        assert!(
+                            source::original(&state, &request, &mut Proof::bounded(32 << 20), None)
+                                .is_err(),
+                            "full original external content is authenticated"
+                        );
+                    }
+                    state
+                        .tool_continuations
+                        .insert(f.batch.continuation.id.clone(), original);
                 }
+                Box::pin(crate::successor_driver_contract::tools::fresh::exercise(
+                    &store, request,
+                ))
+                .await;
             }
         }
     }

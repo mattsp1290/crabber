@@ -37,9 +37,6 @@ pub(in crate::postgres::session_owner::drivers) async fn fresh(
         Some(&binding.capsule),
     ))
     .await?;
-    if selected.tool.is_some() {
-        return Err(Error::Unsupported);
-    }
     if latest.sequence != selected.head
         || crate::native_parent::issuance_digest(&latest).map_err(unknown)? != selected.head_digest
     {
@@ -47,6 +44,21 @@ pub(in crate::postgres::session_owner::drivers) async fn fresh(
     }
     if let Some((continuation, parent)) = &selected.approval {
         super::approval::check(tx, &run, continuation, parent, now, budget).await?;
+    }
+    if let Some((continuation, parent)) = &selected.tool {
+        super::tool::check(
+            tx,
+            &run,
+            continuation,
+            parent,
+            selected
+                .tool_receipt
+                .as_ref()
+                .ok_or(Error::UnknownStoreOutcome)?,
+            now,
+            budget,
+        )
+        .await?;
     }
     let original = super::super::proof::audit(tx, session, &request.claim.root_join_id, budget)
         .await?

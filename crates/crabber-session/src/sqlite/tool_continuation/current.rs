@@ -15,7 +15,7 @@ pub(super) async fn verify(
         .await
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
-pub(super) async fn verify_with_proof(
+pub(in crate::sqlite) async fn verify_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
     record: &ToolContinuationRecord,
     proof: &mut Proof,
