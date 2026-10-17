@@ -4,7 +4,7 @@ mod fresh;
 mod history;
 pub(in crate::postgres) use history::classified;
 mod proof;
-mod source;
+pub(in crate::postgres) mod source;
 mod successor;
 use super::{
     Audit, Error, PostgresStore, Record, SessionOwnerOperation, SessionOwnerOutcome, before, fault,

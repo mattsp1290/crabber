@@ -172,3 +172,10 @@ pub use resources::{
 pub(crate) mod resource_proof;
 #[path = "preparation/resources/source.rs"]
 pub(crate) mod resource_source;
+
+#[path = "preparation/inspection.rs"]
+pub(crate) mod inspection;
+
+#[cfg(test)]
+#[path = "preparation/inspection_private_tests.rs"]
+mod inspection_private_tests;

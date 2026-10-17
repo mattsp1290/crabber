@@ -1,4 +1,5 @@
 //! Physical preparation join and native successor publication share one transaction.
+mod inspection;
 mod native;
 mod replay;
 use super::{Audit, Error, SessionOwnerOperation, publish_revision, reads};

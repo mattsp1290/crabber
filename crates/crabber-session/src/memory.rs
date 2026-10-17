@@ -690,6 +690,18 @@ impl Store for MemoryStore {
     {
         self.reserve_owner(&request, parent.as_ref())
     }
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_initial_preparation_admission(
+        &self,
+        original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationAdmissionReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.inspect_initial_admission(original)
+    }
     fn supports_preparation_protocol(&self) -> bool {
         true
     }

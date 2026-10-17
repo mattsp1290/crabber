@@ -289,7 +289,7 @@ fn journal(
     }
     Ok(())
 }
-type Sources<'a> = (
+pub(super) type Sources<'a> = (
     &'a crabber_core::Session,
     &'a RunIssuance,
     &'a Witness,
@@ -306,7 +306,7 @@ fn sources<'a>(
 fn measure_read(proof: &mut Proof, value: &impl serde::Serialize) -> Result<(), ReadError<Error>> {
     proof.measure(value).map_err(ReadError::Budget)
 }
-fn sources_read<'a>(
+pub(super) fn sources_read<'a>(
     state: &'a State,
     run: &crabber_core::RunId,
     proof: &mut Proof,

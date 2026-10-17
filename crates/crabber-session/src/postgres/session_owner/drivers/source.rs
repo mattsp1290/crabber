@@ -9,7 +9,7 @@ use crate::{
 };
 use crabber_core::{RunId, Session, SessionId};
 use sqlx::{Postgres, Row, Transaction};
-pub(super) struct Original {
+pub(in crate::postgres) struct Original {
     pub session: Session,
     pub initial: RunIssuance,
     pub witness: Witness,
@@ -55,7 +55,7 @@ pub(super) async fn original(
         .await
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
-pub(super) async fn original_read(
+pub(in crate::postgres) async fn original_read(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     run: &RunId,

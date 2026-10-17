@@ -38,3 +38,6 @@ pub(crate) mod intent {
             .map_err(|_| crate::session_owner::SessionOwnerError::InvalidRequest)
     }
 }
+
+#[path = "../../../crabber-session/src/session_owner/preparation/inspection.rs"]
+pub(crate) mod inspection;

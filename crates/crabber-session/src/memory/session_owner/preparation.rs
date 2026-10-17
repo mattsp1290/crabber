@@ -1,4 +1,6 @@
 //! Preparation relinquishment and native successor publication share one gate.
+#[path = "preparation/inspection.rs"]
+mod inspection;
 #[path = "preparation/native.rs"]
 mod native;
 #[path = "preparation/replay.rs"]

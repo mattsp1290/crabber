@@ -389,6 +389,22 @@ pub trait Store: Send + Sync {
     fn supports_preparation_protocol(&self) -> bool {
         false
     }
+    /// Pure protected original unkeyed admission inspection is implemented.
+    /// This capability is required before factories on the owned initial path.
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        false
+    }
+    /// Authenticate the exact original owned unkeyed preparation association.
+    /// Reads only original sources; never completes preparation or returns a fence.
+    async fn inspect_initial_preparation_admission(
+        &self,
+        _original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationAdmissionReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported.into())
+    }
     /// Atomically capture the original CAS before granting preparation capacity.
     /// Exact retries return metadata and never replacement dispatch authority.
     async fn reserve_preparation(

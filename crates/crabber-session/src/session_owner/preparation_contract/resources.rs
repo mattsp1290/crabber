@@ -402,6 +402,15 @@ pub(crate) async fn initial_driver(store: &impl Store) -> crate::AdmitOutcome {
 }
 /// Genuine unkeyed native admission with original declaration and activated child.
 pub(crate) async fn initial_unkeyed_driver(store: &impl Store) -> crate::AdmitOutcome {
+    let joined = initial_unkeyed_observation(store).await;
+    let PreparationCompletion::Admitted(admitted) =
+        store.complete_preparation(joined).await.unwrap()
+    else {
+        panic!("fresh unkeyed admission");
+    };
+    admitted
+}
+pub(crate) async fn initial_unkeyed_observation(store: &impl Store) -> JoinedPreparation {
     let session = SessionId::new();
     let revision = create(store, &fixture(&session, SessionRevision::INITIAL)).await;
     let mut bound = fixture(&session, revision);
@@ -426,18 +435,22 @@ pub(crate) async fn initial_unkeyed_driver(store: &impl Store) -> crate::AdmitOu
         request: bound.keyed.request,
         binding: bound.binding,
     }));
-    let PreparationCompletion::Admitted(admitted) =
-        initial_driver_completion(store, root, operation).await
-    else {
-        panic!("fresh unkeyed admission");
-    };
-    admitted
+    initial_driver_observation(store, root, operation).await
 }
+
 pub(crate) async fn initial_driver_completion(
     store: &impl Store,
     root: PreparationGrant,
     operation: PreparedOperation,
 ) -> PreparationCompletion {
+    let joined = initial_driver_observation(store, root, operation).await;
+    store.complete_preparation(joined).await.unwrap()
+}
+async fn initial_driver_observation(
+    store: &impl Store,
+    root: PreparationGrant,
+    operation: PreparedOperation,
+) -> JoinedPreparation {
     use crate::session_owner::owned_scope::{
         OwnedScopeActivationOutcome, OwnedScopeParentAuthority, OwnedScopeSource,
         OwnedTaskRegistration,
@@ -468,5 +481,5 @@ pub(crate) async fn initial_driver_completion(
         .await
         .unwrap()
         .unwrap();
-    store.complete_preparation(joined).await.unwrap()
+    joined
 }

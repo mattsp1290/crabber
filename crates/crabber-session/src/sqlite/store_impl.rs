@@ -75,6 +75,18 @@ impl Store for SqliteStore {
     > {
         Box::pin(self.pending_owner_cancel(authority)).await
     }
+    fn supports_initial_preparation_admission_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_initial_preparation_admission(
+        &self,
+        original: &crate::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crate::session_owner::preparation::PreparationAdmissionReceipt>,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.inspect_initial_admission(original).await
+    }
     fn supports_preparation_protocol(&self) -> bool {
         true
     }
