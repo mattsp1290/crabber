@@ -32,9 +32,7 @@ impl MemoryStore {
         }
         match joined.observed_operation() {
             crate::session_owner::preparation::PreparedOperation::AdmissionRecovery(recovery) => {
-                recovery
-                    .source
-                    .measure_original(proof)
+                crate::native_enrollment::caller::measure_recovery_source(&recovery.source, proof)
                     .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
                 crate::memory::admission_execution::validate_source_with_proof(
                     state,
@@ -66,10 +64,11 @@ impl MemoryStore {
             joined.observed_operation()
         {
             crate::memory::deletion::ensure_live(state, session)?;
-            let current = crate::memory::expired::context(
+            let current = crate::memory::expired::context_with_proof(
                 state,
                 prepared.source.request().clone(),
                 self.clock.now(),
+                proof,
             )?;
             prepared.source.verify_source(&current)?;
         }

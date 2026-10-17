@@ -32,8 +32,20 @@ impl MemoryStore {
         require_approval_birth: bool,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        let read_proof =
-            std::cell::RefCell::new(crate::public_session::v2::proof::Proof::bounded(32 << 20));
+        self.complete_preparation_captured_with_proof(
+            joined,
+            require_approval_birth,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+    }
+    pub(in crate::memory) fn complete_preparation_captured_with_proof(
+        &self,
+        joined: &JoinedPreparation,
+        require_approval_birth: bool,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        let read_proof = std::cell::RefCell::new(read_proof);
         crate::native_enrollment::caller::initial::preparation_input(
             joined,
             &mut read_proof.borrow_mut(),

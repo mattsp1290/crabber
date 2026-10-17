@@ -1336,7 +1336,7 @@ impl Store for MemoryStore {
         &self,
         request: crate::ClaimUnstartedAdmissionRequest,
     ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
-        self.claim_admission(request)
+        self.claim_admission(&request)
     }
     async fn abandon_run(
         &self,

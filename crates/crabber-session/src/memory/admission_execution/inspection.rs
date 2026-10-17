@@ -35,8 +35,7 @@ pub(in crate::memory) fn validate_source_with_proof(
     now: time::OffsetDateTime,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
-    source
-        .measure_original(proof)
+    crate::native_enrollment::caller::measure_recovery_source(source, proof)
         .map_err(|_| Error::UnknownStoreFailure)?;
     source.fingerprint()?;
     let (_, sequence, binding) = context_with_proof(state, source.request(), now, proof)?;

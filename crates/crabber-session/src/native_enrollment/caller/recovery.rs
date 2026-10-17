@@ -173,7 +173,7 @@ fn replacement(
     // The clone is bounded by this SAME original caller context before allocation.
     proof.measure(previous)?;
     let mut expected = previous.clone();
-    expected.owner = owner.to_owned();
+    owner.clone_into(&mut expected.owner);
     expected.claim_token.clone_from(&updated.claim_token);
     expected.lease_until = updated
         .updated_at

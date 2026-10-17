@@ -19,6 +19,18 @@ impl Harness for crate::PostgresStore {
         self.queue_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    async fn complete_with_proof(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.complete_preparation_captured_with_proof(joined, false, proof))
+            .await
+            .map(|value| value.completion)
+    }
     async fn initial_retained(&self, session: &SessionId) -> crabber_core::InputFingerprint {
         let mut values = Vec::new();
         for table in [
@@ -286,4 +298,19 @@ async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
+}
+
+#[tokio::test]
+async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
 }

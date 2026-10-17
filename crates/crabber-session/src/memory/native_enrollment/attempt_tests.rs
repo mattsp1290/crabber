@@ -18,6 +18,21 @@ impl Harness for crate::MemoryStore {
         self.queue_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn complete_with_proof(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::session_owner::preparation::PreparationCompletion,
+            crate::session_owner::preparation::PreparationCommitError,
+        >,
+    > {
+        std::future::ready(
+            self.complete_preparation_captured_with_proof(&joined, false, proof)
+                .map(|value| value.completion),
+        )
+    }
     fn initial_retained(
         &self,
         session: &SessionId,
@@ -168,7 +183,7 @@ impl Harness for crate::MemoryStore {
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> impl std::future::Future<Output = Result<crate::ClaimedAdmission, crate::AdmissionExecutionError>>
     {
-        std::future::ready(self.claim_admission_with_proof(request, proof))
+        std::future::ready(self.claim_admission_with_proof(&request, proof))
     }
     fn retained(
         &self,
@@ -352,4 +367,13 @@ async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
     ));
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
+}
+
+#[tokio::test]
+async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
 }

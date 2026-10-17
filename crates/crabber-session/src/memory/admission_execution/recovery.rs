@@ -11,16 +11,16 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
 impl MemoryStore {
     pub(in crate::memory) fn claim_admission(
         &self,
-        request: ClaimUnstartedAdmissionRequest,
+        request: &ClaimUnstartedAdmissionRequest,
     ) -> Result<ClaimedAdmission, Error> {
         self.claim_admission_with_proof(request, &mut Proof::bounded(32 << 20))
     }
     pub(in crate::memory) fn claim_admission_with_proof(
         &self,
-        request: ClaimUnstartedAdmissionRequest,
+        request: &ClaimUnstartedAdmissionRequest,
         proof: &mut Proof,
     ) -> Result<ClaimedAdmission, Error> {
-        crate::native_enrollment::caller::recovery::measure_request(&request, proof)
+        crate::native_enrollment::caller::recovery::measure_request(request, proof)
             .map_err(unknown)?;
         #[cfg(test)]
         let run_id = request.expected_fence.run_id.clone();
@@ -30,10 +30,10 @@ impl MemoryStore {
                 if state.session_owners.has_preparation(&request.session_id) {
                     return Err(Error::PreparationBusy);
                 }
-                selected(state, &request, proof)?;
+                selected(state, request, proof)?;
                 Ok(None)
             },
-            |state, proof| self.claim_admission_transaction(state, &request, None, proof),
+            |state, proof| self.claim_admission_transaction(state, request, None, proof),
         );
         #[cfg(test)]
         if result.is_ok() && self.native_raw_probe.after_admission_recovery(&run_id) {
@@ -45,7 +45,7 @@ impl MemoryStore {
         &self,
         state: &mut super::super::State,
         request: &ClaimUnstartedAdmissionRequest,
-        completion: Option<crate::native_parent::CompletionSource>,
+        completion: Option<&crate::native_parent::CompletionSource>,
         proof: &mut Proof,
     ) -> Result<ClaimedAdmission, Error> {
         crate::native_enrollment::caller::recovery::measure_request(request, proof)
@@ -91,7 +91,7 @@ impl MemoryStore {
             state,
             &previous,
             &outcome.run,
-            completion.as_ref(),
+            completion,
             proof,
             Capture::Original,
         )
@@ -109,7 +109,7 @@ impl MemoryStore {
                 request,
                 previous: &previous,
                 result: &outcome,
-                completion: completion.as_ref(),
+                completion,
                 publication,
             }),
             proof,

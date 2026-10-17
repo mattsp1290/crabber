@@ -339,7 +339,7 @@ pub(super) async fn page_with_proof(
     page(tx, request).await
 }
 
-pub(super) async fn latest_metadata_with_proof(
+pub(in super::super) async fn latest_metadata_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &RunId,
     call: &ToolCallId,

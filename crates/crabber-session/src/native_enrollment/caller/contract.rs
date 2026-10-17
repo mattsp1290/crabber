@@ -8,6 +8,14 @@ pub(crate) trait Harness: Store {
     fn fault(&self, stage: u8);
     fn phase_fault(&self, stage: u8);
     fn initial_fault(&self, stage: u8);
+    async fn complete_with_proof(
+        &self,
+        joined: crate::session_owner::preparation::JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<
+        crate::session_owner::preparation::PreparationCompletion,
+        crate::session_owner::preparation::PreparationCommitError,
+    >;
     async fn initial_retained(&self, session: &SessionId) -> InputFingerprint;
     async fn phase_with_proof(
         &self,
@@ -149,3 +157,7 @@ pub(crate) use recovery_contract::run as recoveries;
 #[path = "initial_contract.rs"]
 mod initial;
 pub(crate) use initial::run as initials;
+
+#[path = "prepared_recovery_contract.rs"]
+mod prepared_recovery_contract;
+pub(crate) use prepared_recovery_contract::run as prepared_recoveries;

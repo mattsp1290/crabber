@@ -15,12 +15,6 @@ pub(super) async fn load_owned(
 ) -> Result<Option<phase::PhaseRecord>, Error> {
     records::load(tx, run, id).await
 }
-pub(super) async fn metadata_page(
-    tx: &mut Transaction<'_, Postgres>,
-    request: &crate::PhasePageRequest,
-) -> Result<crate::PhasePage, Error> {
-    records::page(tx, request).await
-}
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
 use crate::{
     PhaseAuthority, PhaseCommand, PhaseError as Error, PhaseMutation,

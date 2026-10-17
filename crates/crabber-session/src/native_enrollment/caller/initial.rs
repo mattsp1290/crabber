@@ -307,8 +307,12 @@ pub(crate) fn preparation_input(
 ) -> Result<(), Failure> {
     use crate::session_owner::preparation::PreparedOperation;
     match joined.observed_operation() {
+        PreparedOperation::ExpiredRunResume(prepared) => {
+            super::recovery::measure_expired(&prepared.source, proof)?;
+            proof.measure(&*prepared.binding)?;
+        }
         PreparedOperation::AdmissionRecovery(recovery) => {
-            recovery.source.measure_original(proof)?;
+            crate::native_enrollment::caller::measure_recovery_source(&recovery.source, proof)?;
             proof.measure(&*recovery.binding)?;
         }
         PreparedOperation::Admit(bound) => proof.measure(&(&bound.request, &bound.binding))?,

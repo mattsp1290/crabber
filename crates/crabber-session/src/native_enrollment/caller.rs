@@ -56,3 +56,11 @@ pub(crate) fn measure_owner_authority(
 ) -> Result<(), Failure> {
     proof.measure(&(&authority.session_id, &authority.target, &authority.token))
 }
+
+/// Count the actual private recovery source before hashing or cloning it.
+pub(crate) fn measure_recovery_source(
+    source: &crate::session_owner::preparation::AdmissionRecoveryPreparation,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    source.measure_original(proof)
+}

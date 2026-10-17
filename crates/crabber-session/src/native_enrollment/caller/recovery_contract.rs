@@ -55,7 +55,10 @@ pub(crate) async fn run(store: &impl Harness, clock: &ManualClock) {
                 .await
                 .is_err()
         );
-        assert!(store.probe().hits().is_empty());
+        assert_eq!(
+            store.probe().hits(),
+            [] as [crabber_core::InputFingerprint; 0]
+        );
         assert_eq!(store.retained(session, run, false).await, before);
         if lost {
             store.probe().lose_ack();
@@ -82,7 +85,10 @@ pub(crate) async fn run(store: &impl Harness, clock: &ManualClock) {
                 .unwrap_err(),
             Error::StaleOwner
         );
-        assert!(store.probe().hits().is_empty());
+        assert_eq!(
+            store.probe().hits(),
+            [] as [crabber_core::InputFingerprint; 0]
+        );
         assert_eq!(store.retained(session, run, false).await, committed);
     }
 }

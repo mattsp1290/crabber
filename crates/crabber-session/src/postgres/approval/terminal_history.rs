@@ -7,21 +7,6 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
 
-pub(super) async fn validate(
-    tx: &mut Transaction<'_, Postgres>,
-    run: &Run,
-    old: &PhaseRecord,
-    call: &ToolCallRecord,
-) -> Result<(), Error> {
-    validate_with_proof(
-        tx,
-        run,
-        old,
-        call,
-        &mut crate::public_session::v2::proof::Proof::legacy(),
-    )
-    .await
-}
 pub(super) async fn validate_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

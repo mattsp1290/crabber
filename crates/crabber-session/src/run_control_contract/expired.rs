@@ -417,3 +417,35 @@ pub(crate) async fn faults(store: &impl Store, clock: &ManualClock, inject: impl
         assert_eq!(lookup(store, &pending.source).await, Some(receipt));
     }
 }
+
+/// Genuine keyed initial source before a cold prepared claim.
+#[cfg(test)]
+pub(crate) async fn pending_keyed(store: &impl Store, clock: &ManualClock) -> Pending {
+    let session = SessionId::new();
+    let bound = bound(&session, clock.now());
+    let binding = bound.binding.clone();
+    let crate::KeyedAdmitOutcome::Started { admitted, .. } =
+        store.admit_bound_keyed_run(bound).await.unwrap()
+    else {
+        panic!("fresh keyed source")
+    };
+    store
+        .execution(admitted.fence.clone())
+        .await
+        .unwrap()
+        .begin_admission_execution()
+        .await
+        .unwrap();
+    clock.set(admitted.run.lease_until);
+    let source = store
+        .inspect_expired_run_preparation(InspectExpiredRunPreparation {
+            session_id: session,
+            expected_fence: admitted.fence,
+            owner: "keyed cold claim".into(),
+            lease: std::time::Duration::from_secs(30),
+        })
+        .await
+        .unwrap();
+    let joined = prepare(store, &source, binding).await;
+    Pending { source, joined }
+}

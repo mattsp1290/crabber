@@ -217,14 +217,6 @@ pub(in super::super) async fn cancel_waiting(
     Ok(())
 }
 
-pub(in super::super) async fn validate_terminal_phases(
-    tx: &mut Transaction<'_, Postgres>,
-    run: &Run,
-    revision: crabber_core::SessionRevision,
-) -> Result<(), Error> {
-    terminal_phases::validate(tx, run, revision).await
-}
-
 pub(in super::super) async fn validate_terminal_phases_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

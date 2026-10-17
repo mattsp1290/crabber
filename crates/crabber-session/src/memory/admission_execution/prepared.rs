@@ -11,9 +11,7 @@ impl MemoryStore {
         proof: &VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::ClaimedAdmission, PreparationCommitError> {
-        recovery
-            .source
-            .measure_original(read_proof)
+        crate::native_enrollment::caller::measure_recovery_source(&recovery.source, read_proof)
             .map_err(|_| Error::UnknownStoreFailure)?;
         read_proof
             .measure(&*recovery.binding)
@@ -32,7 +30,7 @@ impl MemoryStore {
         Ok(self.claim_admission_transaction(
             state,
             source.request(),
-            Some(completion),
+            Some(&completion),
             read_proof,
         )?)
     }

@@ -14,7 +14,7 @@ mod recover;
 mod suspend;
 mod terminal_history;
 mod terminate;
-pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
+pub(super) use terminate::cancel_waiting;
 pub(super) mod write;
 use super::{SqliteStore, db};
 use crate::{

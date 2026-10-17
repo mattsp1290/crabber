@@ -66,3 +66,15 @@ pub(crate) fn measure_owner_authority(
 
 #[path = "../../../crabber-session/src/native_enrollment/caller/recovery.rs"]
 pub(crate) mod recovery;
+
+// The public source exposes request/revision/issuance; its remaining private
+// InputFingerprint is constructor-validated to exactly 64 ASCII hex bytes.
+// Only the native module above can measure those actual private fields.
+pub(crate) fn measure_recovery_source(
+    source: &crate::session_owner::preparation::AdmissionRecoveryPreparation,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    recovery::measure_request(source.request(), proof)?;
+    proof.measure(&(source.expected_revision(), source.expected_issuance()))?;
+    proof.charge(64 + 2 + 1)
+}
