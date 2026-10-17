@@ -429,3 +429,6 @@ mod protocol;
 pub(in crate::sqlite) mod scope_origin;
 
 pub(super) use protocol::selected as authenticate_source_audit;
+
+#[cfg(test)]
+pub(super) use drivers::classified as classify_driver_join;

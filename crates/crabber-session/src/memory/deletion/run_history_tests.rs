@@ -205,3 +205,46 @@ async fn joined_driver_does_not_cover_later_same_fence_begin() {
         "new native work did not rotate the Run fence"
     );
 }
+
+#[tokio::test]
+async fn joined_driver_does_not_cover_external_same_fence_begin_before_join() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = std::sync::Arc::new(MemoryStore::with_clock(clock));
+    let fixture =
+        crate::session_owner::driver::history_fixture::begin_before_join(store.clone()).await;
+    let state = store.state.lock().unwrap();
+    let run = state.runs.get(&fixture.request.fence.run_id).unwrap();
+    let record = &state
+        .session_owners
+        .source_audit(fixture.request.context.session_id(), &fixture.join)
+        .unwrap()
+        .record;
+    assert!(
+        crate::memory::session_owner::classify_driver_join(&state, record, &mut bounded()).unwrap()
+    );
+    let report = report(&state, run, &mut bounded()).unwrap();
+    assert_eq!(
+        report.initial_source,
+        crate::deletion::history::Fact::Authenticated
+    );
+    assert_eq!(
+        report.every_noninitial_claim,
+        crate::deletion::history::Fact::Authenticated
+    );
+    assert_eq!(report.main_join, crate::deletion::history::Fact::Unproven);
+    assert!(!report.complete());
+    let current = crate::memory::native_parent::source_protocol::current(
+        &state,
+        &run.session_id,
+        &run.id,
+        &mut bounded(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        current.sequence, 1,
+        "new native work did not rotate the Run fence"
+    );
+}

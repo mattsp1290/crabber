@@ -59,7 +59,7 @@ pub(crate) async fn start<S: Store + 'static>(store: Arc<S>, unkeyed: bool) -> A
     }
 }
 impl Active {
-    pub(crate) async fn finish(mut self, store: &impl Store) {
+    pub(crate) async fn finish(mut self, store: &impl Store) -> SessionOwnerOperationId {
         self.release.send(()).unwrap();
         let joined = self.main.join().await.unwrap();
         let mut cleanup = OwnedCleanupTask::from_host_task(
@@ -67,9 +67,11 @@ impl Active {
             tokio::spawn(async { Ok(()) }),
         );
         let proof = joined.observe_resources(&mut cleanup).await.unwrap();
+        let join = proof.request().unwrap().id;
         store
             .join_owned_scope(proof, self.grant.authority().clone())
             .await
             .unwrap();
+        join
     }
 }

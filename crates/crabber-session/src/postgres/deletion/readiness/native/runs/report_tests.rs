@@ -198,3 +198,70 @@ async fn joined_driver_does_not_cover_later_same_fence_begin() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn joined_driver_does_not_cover_external_same_fence_begin_before_join() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = std::sync::Arc::new(
+        crate::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock),
+    );
+    let fixture =
+        crate::session_owner::driver::history_fixture::begin_before_join(store.clone()).await;
+    let mut tx = store.pool.begin().await.unwrap();
+    let record = crate::postgres::session_owner::source_audit(
+        &mut tx,
+        fixture.request.context.session_id(),
+        &fixture.join,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .record;
+    assert!(
+        crate::postgres::session_owner::classify_driver_join(
+            &mut tx,
+            &record,
+            &mut Proof::bounded(MAX_PROOF_BYTES),
+        )
+        .await
+        .unwrap()
+    );
+    let mut proof = Proof::bounded(MAX_PROOF_BYTES);
+    let report = verify(
+        &mut tx,
+        fixture.request.context.session_id(),
+        &fixture.request.fence.run_id,
+        RunStatus::Running,
+        &mut proof,
+    )
+    .await
+    .unwrap_or_else(|_| panic!("actual joined Driver history report"));
+    assert_eq!(report.initial_source, Fact::Authenticated);
+    assert_eq!(report.every_noninitial_claim, Fact::Authenticated);
+    assert_eq!(report.main_join, Fact::Unproven);
+    assert!(!report.complete());
+    let current = crate::postgres::native_parent::source_protocol::current(
+        &mut tx,
+        fixture.request.context.session_id(),
+        &fixture.request.fence.run_id,
+        &mut proof,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        current.sequence, 1,
+        "new native work did not rotate the Run fence"
+    );
+    tx.rollback().await.unwrap();
+}

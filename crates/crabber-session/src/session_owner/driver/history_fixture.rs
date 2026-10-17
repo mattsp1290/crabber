@@ -85,16 +85,13 @@ pub(crate) async fn joined<S: Store + 'static>(
     Fixture { request, join }
 }
 
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
 #[path = "history_fixture/active.rs"]
 pub(crate) mod active;
 
 /// New same-fence native work is not inside the already joined outer task.
 pub(crate) async fn begin_after_join<S: Store + 'static>(store: Arc<S>) -> Fixture {
-    use crate::{AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState};
     let fixture = joined(store.clone(), false, true).await;
     let session = fixture.request.context.session_id();
-    let fence = &fixture.request.fence;
     let original = store
         .lookup_session_owner(session, &fixture.join)
         .await
@@ -104,8 +101,32 @@ pub(crate) async fn begin_after_join<S: Store + 'static>(store: Arc<S>) -> Fixtu
         original.owner.state,
         crate::session_owner::SessionOwnerState::Joined
     );
+    begin_same_fence(store.as_ref(), &fixture.request).await;
+    assert_eq!(
+        store
+            .lookup_session_owner(session, &fixture.join)
+            .await
+            .unwrap(),
+        Some(original)
+    );
+    fixture
+}
+
+/// Raw external work begins while the genuine Driver main is still blocked.
+pub(crate) async fn begin_before_join<S: Store + 'static>(store: Arc<S>) -> Fixture {
+    let active = active::start(store.clone(), false).await;
+    let request = active.request.clone();
+    begin_same_fence(store.as_ref(), &request).await;
+    let join = active.finish(store.as_ref()).await;
+    Fixture { request, join }
+}
+
+async fn begin_same_fence(store: &impl Store, request: &RegisterExecutionDriver) {
+    use crate::{AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState};
+    let session = request.context.session_id();
+    let fence = &request.fence;
     let execution = store.execution(fence.clone()).await.unwrap();
-    // This is the genuine one-shot transition, after the original task joined.
+    // Genuine external one-shot admission and Attempt Begin with the same real fence.
     execution.begin_admission_execution().await.unwrap();
     let AttemptMutationOutcome::Applied {
         receipt: reserved,
@@ -151,12 +172,4 @@ pub(crate) async fn begin_after_join<S: Store + 'static>(store: Arc<S>) -> Fixtu
     let run = store.get_run(&fence.run_id).await.unwrap().unwrap();
     assert_eq!(run.status, crabber_core::RunStatus::Running);
     assert_eq!(run.claim_token, fence.claim_token);
-    assert_eq!(
-        store
-            .lookup_session_owner(session, &fixture.join)
-            .await
-            .unwrap(),
-        Some(original)
-    );
-    fixture
 }
