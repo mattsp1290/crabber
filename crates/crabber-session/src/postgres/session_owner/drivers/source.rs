@@ -1,6 +1,7 @@
 //! Exact independent initial sources, usable after later native work for metadata replay.
 use super::super::{Audit, Error, unknown};
 use super::proof;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::admission::{SourceAudits, Witness};
 use crate::{
     admission_journal::{Init, Source},
@@ -8,7 +9,7 @@ use crate::{
     public_session::v2::proof::{Proof, ReadError},
 };
 use crabber_core::{RunId, Session, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) struct Original {
     pub session: Session,
     pub initial: RunIssuance,

@@ -1,9 +1,10 @@
 //! Narrow exact original abandonment domain, with a single caller proof budget.
 use crate::abandonment::history::{self, Commit, Event, RunView};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{EventCursor, RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 /// False is explicitly unproven; it never certifies cleanup or ownership.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,

@@ -1,13 +1,14 @@
 //! One fresh owner consumes the complete accepted response set atomically.
 use super::super::{PostgresExecution, PostgresStore};
 use super::{Error, approval, finish, load, sql, write};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ApprovalClaimOutcome, ApprovalContinuationClaim, ApprovalContinuationState, ApprovalGrant,
     ApprovalOutcome, AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome,
     AttemptState,
 };
 use crabber_core::{Run, RunFence, RunStatus};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 impl PostgresStore {
     pub(in super::super) async fn claim_approval(
@@ -36,7 +37,7 @@ impl PostgresStore {
     }
     pub(in crate::postgres) async fn claim_approval_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         claim: &ApprovalContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,

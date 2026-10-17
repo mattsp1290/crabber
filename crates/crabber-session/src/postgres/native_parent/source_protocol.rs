@@ -1,9 +1,10 @@
 //! Protected issuer slots and a monotonic source head, never execution authority.
 use crate::native_parent::source_protocol::{JournalHead, JournalSource};
 use crate::native_parent::{Error, RunIssuance, RunState};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crabber_core::{InputFingerprint, RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 type Result<T> = std::result::Result<T, ReadError<Error>>;
 fn bad(_: impl std::fmt::Debug) -> ReadError<Error> {
     ReadError::Domain(Error)

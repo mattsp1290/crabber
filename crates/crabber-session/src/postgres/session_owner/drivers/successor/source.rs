@@ -6,12 +6,13 @@ pub(super) mod tool;
 use super::super::proof;
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
 use crate::native_parent::{CompletionOperation, RunIssuance};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::{
     audit::Audit,
     driver::successor::source::{self, SelectedClaim, claim::Native},
     preparation::{ExpiredRunOrigin, expired::replay::Native as Expired},
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn original(
     tx: &mut Transaction<'_, Postgres>,
     request: &RegisterSuccessorExecutionDriver,

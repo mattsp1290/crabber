@@ -3,12 +3,13 @@ use super::{PostgresStore, db};
 use super::{decode, json, lookup_receipt};
 use crate::public_session::v2::proof::{Proof, ReadError};
 
+use crate::postgres::transaction::Transaction;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionBindingCapsule, KeyedAdmitOutcome, KeyedAdmitRequest,
     RetainedExecutionBinding, StoreError,
 };
 use crabber_core::{AdmissionReceipt, Message, RunId, Session, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 async fn finish<T>(
     tx: Transaction<'_, Postgres>,
@@ -218,7 +219,9 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<RetainedExecutionBinding>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

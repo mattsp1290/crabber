@@ -1,6 +1,7 @@
 use super::{Audit, Error, Failure, ImportedHistory, MESSAGE, MessageId, Proof, unknown};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{ImportedMessageProvenance, ImportedToolCall};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 use std::collections::BTreeSet;
 pub(super) async fn imported(
     tx: &mut Transaction<'_, Postgres>,

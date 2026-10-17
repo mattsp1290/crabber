@@ -1,9 +1,10 @@
 //! Coherent pure recovery preflight; no owner, grant or revision publication.
 use super::{Error, PostgresStore};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ClaimUnstartedAdmissionRequest, session_owner::preparation::AdmissionRecoveryPreparation,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(in crate::postgres) async fn inspect(
     store: &PostgresStore,

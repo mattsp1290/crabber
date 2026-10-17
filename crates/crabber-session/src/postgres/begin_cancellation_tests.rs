@@ -1,5 +1,7 @@
 //! Regression only: cancellation while the server has begun but `SQLx` has not acknowledged BEGIN.
+mod finishing;
 mod proxy;
+mod store_commit;
 
 use proxy::Proxy;
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -15,7 +17,12 @@ enum Case {
 
 async fn begin_case(pool: &PgPool, proxy: &Proxy, case: Case) {
     if matches!(case, Case::Complete) {
-        pool.begin().await.unwrap().rollback().await.unwrap();
+        crate::postgres::transaction::begin(pool)
+            .await
+            .unwrap()
+            .rollback()
+            .await
+            .unwrap();
         return;
     }
     let (established, ready) = oneshot::channel();
@@ -24,7 +31,7 @@ async fn begin_case(pool: &PgPool, proxy: &Proxy, case: Case) {
     }
     let pool = pool.clone();
     let task = tokio::spawn(async move {
-        let _transaction = pool.begin().await.unwrap();
+        let _transaction = crate::postgres::transaction::begin(&pool).await.unwrap();
         let _ = established.send(());
         std::future::pending::<()>().await;
     });
@@ -60,7 +67,7 @@ async fn safe_reuse(url: &str, case: Case) -> (bool, Option<String>, bool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    let mut transaction = pool.begin().await.unwrap();
+    let mut transaction = crate::postgres::transaction::begin(&pool).await.unwrap();
     let result = sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *transaction)
         .await;
@@ -87,13 +94,25 @@ async fn cancelled_begin_never_returns_an_open_transaction_to_the_pool() {
     let cancelled = safe_reuse(&url, Case::CancelBegin).await;
     assert!(complete.0, "no-cancel control failed: {:?}", complete.1);
     assert!(
+        complete.2,
+        "ordinary completed transaction must reuse its connection"
+    );
+    assert!(
         established.0,
         "established-Tx cancellation failed: {:?}",
         established.1
     );
     assert!(
+        established.2,
+        "established transaction Drop must retain normal reuse"
+    );
+    assert!(
         cancelled.0,
         "cancelled BEGIN leaked its transaction; SQLSTATE {:?}, reused original backend {}",
         cancelled.1, cancelled.2
+    );
+    assert!(
+        !cancelled.2,
+        "cancelled opening owner must discard its original connection"
     );
 }

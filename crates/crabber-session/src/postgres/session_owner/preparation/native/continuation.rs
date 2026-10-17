@@ -1,9 +1,10 @@
 //! Prepared continuation writes share the enclosing source allowance.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::{
     PreparationCommitError, PreparationCompletion, PreparedOperation, proof::VerifiedPreparation,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl crate::PostgresStore {
     pub(super) async fn apply_prepared_continuation(
         &self,

@@ -27,9 +27,7 @@ async fn ordered_claim_sources_reject_borrowing_but_never_infer_erased_history_c
         crate::session_owner::preparation_contract::claim_history::fixture(&store, &clock).await;
     let session = &f.before_tail.session_id;
     let run = &f.before_tail.id;
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
     let mut charged = proof();
@@ -107,9 +105,7 @@ async fn erased_tail(
 ) {
     let session = &f.before_tail.session_id;
     let run = &f.before_tail.id;
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
     sqlx::query(
@@ -159,9 +155,7 @@ async fn missing_and_oversized(
     store: &crate::PostgresStore,
     f: &crate::session_owner::preparation_contract::claim_history::Fixture,
 ) {
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
     sqlx::query("DELETE FROM operation_receipts WHERE session_id=$1 AND operation_id=$2")
@@ -183,9 +177,7 @@ async fn missing_and_oversized(
     tx.rollback()
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded claim fixture failed"));
     sqlx::query(

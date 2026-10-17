@@ -1,7 +1,9 @@
 //! Actual oversized raw carrier and valid source never supply resource policy.
 use super::*;
 pub(super) async fn oversized(store: &crate::PostgresStore, receipt: &AdmissionReceipt) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut wrong = receipt.clone();
     wrong.session_id = SessionId::new();
     assert!(matches!(
@@ -40,7 +42,9 @@ pub(super) async fn no_effect_still_requires_resource_policy(store: &crate::Post
         })
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         super::super::super::verify(
             &mut tx,

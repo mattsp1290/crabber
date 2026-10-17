@@ -1,17 +1,20 @@
 //! Pure pre-effect source availability; never a native claim or loan.
 use super::{Error, Proof, approval, source, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{
     InspectPendingToolPreparation as Request, PendingToolPreparationMetadata as Metadata,
     pending_tool as choice,
 };
 use crabber_core::{Run, Session};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 impl crate::PostgresStore {
     pub(in crate::postgres) async fn inspect_pending_tool(
         &self,
         request: &Request,
     ) -> Result<Metadata, Error> {
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

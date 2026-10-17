@@ -1,10 +1,11 @@
 //! Coherent bounded source authentication; copied history never obtains authority.
 use super::{Audit, Error, ForkBoundary, ForkSession, ImportedHistory, unknown};
 use crate::fork::history::{AdmittedCall, AdmittedResult, Decision, Selection, SourceCall};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{
     ContentBlock, EventKind, EventRecord, Message, MessageId, Role, RunId, ToolCallRecord,
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) enum Failure {
     Limited,

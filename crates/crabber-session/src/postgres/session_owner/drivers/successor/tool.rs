@@ -1,8 +1,9 @@
 //! Current compound guards, with the caller's enclosing source budget.
 use super::{Error, Proof, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::driver::successor::tool_fresh as validate;
 use crabber_core::Run;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

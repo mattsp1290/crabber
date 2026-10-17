@@ -1,9 +1,10 @@
 //! Fresh successor effects require protected current native and owner membership.
 use super::{super::proof, source};
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::{SessionOwnerState, driver::SuccessorDriverLink};
 use crabber_core::{Run, Session, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres::session_owner::drivers) async fn fresh(
     tx: &mut Transaction<'_, Postgres>,
     request: &RegisterSuccessorExecutionDriver,

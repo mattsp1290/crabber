@@ -68,7 +68,9 @@ async fn aggregate_approval_current_actual_shared_carrier_budget() {
         .suspend_for_approval(f.batch.clone(), f.owner.clone())
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = Proof::bounded(32 * 1024 * 1024);
     let (record, _) = super::load_with_proof(&mut tx, &f.run.session_id, &f.run.id, &mut proof)
         .await

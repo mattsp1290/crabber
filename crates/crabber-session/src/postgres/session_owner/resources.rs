@@ -3,11 +3,12 @@ use super::{
     Audit, Error, MutateSessionOwner, PostgresStore, Record, SessionOwnerCommand,
     SessionOwnerOperation, before, fault, finish, publish_revision, reads, revision, unknown,
 };
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{
     PreparationGrant, PreparationResourceLink, PreparationResourceOutcome,
     PreparationResourceReceipt,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl PostgresStore {
     pub(in crate::postgres) async fn retain_preparation_resources(
         &self,

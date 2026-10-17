@@ -1,8 +1,9 @@
 //! Bounded immutable result evidence for an exact native terminal phase.
 use super::Error;
+use crate::postgres::transaction::Transaction;
 use crate::{PhaseReceipt, phase::PhaseRecord};
 use crabber_core::{EventCursor, EventRecord, Run, ToolCallRecord};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }

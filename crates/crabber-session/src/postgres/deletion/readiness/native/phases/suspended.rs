@@ -1,10 +1,11 @@
 //! Compound suspension journals authenticate historical checkpoint phases.
 use super::super::{run_ids, scan};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crate::{PhaseState, ToolContinuationState};
 use crabber_core::{ContinuationId, PhaseId, RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(in super::super::super) async fn released_suspensions(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

@@ -8,7 +8,7 @@ use crate::{KeyedAdmitOutcome, RetainedExecutionBinding};
 impl super::super::PostgresStore {
     pub(super) async fn apply_prepared_native(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         operation: PreparedOperation,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
@@ -78,7 +78,7 @@ impl super::super::PostgresStore {
 impl super::super::PostgresStore {
     async fn admit_prepared_bound(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         bound: crate::BoundAdmitRequest,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,

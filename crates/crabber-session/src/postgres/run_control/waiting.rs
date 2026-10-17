@@ -1,11 +1,12 @@
 //! Host-supervised progress of an already accepted cancellation.
 use super::{PostgresStore, finish, reads, suspension};
+use crate::postgres::transaction::Transaction;
 use crate::{
     RunControlError as Error, RunControlKind, RunControlStatus, RunControlSummary,
     WaitingCancellation,
     run_control::{unknown, valid_scope, verify_terminal},
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 async fn current(
     tx: &mut Transaction<'_, Postgres>,
     request: &WaitingCancellation,

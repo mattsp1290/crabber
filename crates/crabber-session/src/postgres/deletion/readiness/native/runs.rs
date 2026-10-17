@@ -5,10 +5,11 @@ mod sources;
 mod terminal;
 use crate::deletion::history::{NoninitialClaims, RunHistoryReport};
 use crate::native_parent::{RunIssuance, RunState};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 /// Independent source facts remain distinct from actual resource joins.
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,

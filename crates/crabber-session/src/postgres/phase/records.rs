@@ -1,4 +1,5 @@
 use super::super::db;
+use crate::postgres::transaction::Transaction;
 use crate::{
     PhaseError as Error, PhaseMutation, PhaseReceipt, PhaseSnapshot,
     phase::{self, PhaseRecord, sql},
@@ -7,7 +8,7 @@ use crabber_core::{
     ControlId, EventCursor, InputFingerprint, PhaseId, Run, RunId, SessionId, SessionRevision,
     ToolCallId,
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 use time::OffsetDateTime;
 
 const BOUNDS: &str = "octet_length(s.id)<=512 AND octet_length(p.run_id)<=128 AND octet_length(p.id)<=128 AND octet_length(p.call_id)<=512 AND octet_length(p.attempt_id)<=128 AND octet_length(p.state)<=32 AND octet_length(p.quiescence_state)<=32 AND octet_length(p.outcome_json)<=4198400";

@@ -9,7 +9,9 @@ async fn read(
     limit: u16,
     cap: usize,
 ) -> (Result<Vec<PublicRegisteredOwner>, Failure>, usize) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await

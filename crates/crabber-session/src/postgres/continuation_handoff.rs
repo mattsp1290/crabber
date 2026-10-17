@@ -2,9 +2,10 @@
 use super::{approval, tool_continuation};
 use crate::ApprovalError as Error;
 use crate::continuation_handoff::{Domain, Handoff, Source};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventCursor, InputFingerprint, Run, RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 fn unknown<T>(_: T) -> Error {
     Error::UnknownStoreOutcome
 }

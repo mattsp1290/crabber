@@ -124,7 +124,7 @@ fn storage_error(error: Error) -> StoreError {
 }
 
 async fn verify_replay(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     grant: &crate::session_owner::preparation::PreparationGrant,
 ) -> Result<(), Error> {
     let join = crate::session_owner::preparation::proof::join_request(grant)?;
@@ -161,7 +161,7 @@ fn after_commit(
 }
 
 async fn publish_join(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &crabber_core::SessionId,
     record: crate::session_owner::record::Record,
     join: &crate::session_owner::MutateSessionOwner,
@@ -190,7 +190,7 @@ async fn publish_join(
 }
 
 async fn require_birth(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     joined: &JoinedPreparation,
     required: bool,
     proof: &mut crate::public_session::v2::proof::Proof,

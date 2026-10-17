@@ -89,7 +89,7 @@ pub(super) async fn original_sources(store: &crate::PostgresStore, f: &Fixture) 
     }
 }
 pub(super) async fn malformed_witness(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &crabber_core::Run,
     f: &Fixture,
     begun: &crate::AttemptReceipt,

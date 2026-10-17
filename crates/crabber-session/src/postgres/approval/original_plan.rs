@@ -15,7 +15,9 @@ impl PostgresStore {
     ) -> Result<InputFingerprint, Error> {
         crate::continuation_origin::validate_scope(session, run, target)
             .map_err(|()| Error::InvalidRequest)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -39,7 +41,7 @@ impl PostgresStore {
 
 /// Exact immutable-batch projection; including its authenticated original birth.
 pub(in crate::postgres) async fn batch_with_proof(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &SessionId,
     run: &RunId,
     target: &crate::ContinuationTarget,

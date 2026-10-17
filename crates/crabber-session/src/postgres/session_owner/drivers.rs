@@ -10,13 +10,14 @@ use super::{
     Audit, Error, PostgresStore, Record, SessionOwnerOperation, SessionOwnerOutcome, before, fault,
     finish, publish_revision, reads, unknown,
 };
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::driver::{
     DriverLink, ExecutionDriverGrant, ExecutionDriverOutcome, ExecutionDriverReceipt,
     RegisterExecutionDriver,
 };
 use crate::session_owner::owned_scope::{OwnedScopeActivation, OwnedScopeParentAuthority};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 fn budget() -> Proof {
     Proof::bounded(crate::deletion::coverage::MAX_PROOF_BYTES)
 }

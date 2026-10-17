@@ -7,10 +7,11 @@ pub(super) use continuation::{
 mod stage;
 use super::{PostgresExecution, PostgresStore};
 use crate::frontend_continuation::FrontendOriginRecord;
+use crate::postgres::transaction::Transaction;
 use crate::{FrontendCallOrigin, FrontendStagingReceipt, ToolContinuationError as Error};
 use crabber_core::{ControlId, Run, RunId, SessionId, ToolCallId};
 pub(super) use read::declared;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
@@ -39,7 +40,9 @@ impl PostgresStore {
         run: &RunId,
     ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
         supported()?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         super::lock_session(&mut tx, session)
             .await
             .map_err(unknown)?;
@@ -56,7 +59,9 @@ impl PostgresStore {
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&run.0, 128)?;
         crate::tool_continuation::canonical::identity(&call.0, 512)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -88,7 +93,9 @@ impl PostgresStore {
         supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&id.0, 128)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }

@@ -5,13 +5,14 @@ pub(super) use prepared::claim_prepared;
 mod inspection;
 use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt};
 use crate::StoreError;
+use crate::postgres::transaction::Transaction;
 use crate::{
     AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
     ClaimUnstartedAdmissionRequest, ClaimedAdmission,
 };
 use crabber_core::{Run, RunFence, RunId};
 pub(super) use inspection::{inspect, validate_source};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
@@ -286,7 +287,9 @@ mod tests {
             .with_clock(clock.clone());
         let (_, admitted, request) = admission(&store, now).await;
         clock.set(now + time::Duration::seconds(30));
-        let mut session_lock = store.pool.begin().await.unwrap();
+        let mut session_lock = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("SELECT id FROM sessions WHERE id=$1 FOR UPDATE")
             .bind(&admitted.session.id.0)
             .fetch_one(&mut *session_lock)

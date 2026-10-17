@@ -1,7 +1,8 @@
 //! Active barriers constrain native attempts and terminal release in their transaction.
+use crate::postgres::transaction::Transaction;
 use crate::{ApprovalContinuationState, AttemptError as Error, AttemptMutation};
 use crabber_core::Run;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(in super::super) async fn guard_attempt(
     tx: &mut Transaction<'_, Postgres>,

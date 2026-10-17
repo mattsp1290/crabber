@@ -5,7 +5,9 @@ pub(super) async fn corrupt_origin(
     session: &SessionId,
     value: Option<String>,
 ) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("ALTER TABLE session_owner_scope_origins DISABLE TRIGGER USER")
         .execute(&mut *tx)
         .await
@@ -31,7 +33,9 @@ pub(super) async fn corrupt_origin(
     tx.commit().await.unwrap();
 }
 pub(super) async fn erase_old_scope(store: &PostgresStore, session: &SessionId) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     for table in [
         "session_owner_scope_origins",
         "session_owner_contexts",

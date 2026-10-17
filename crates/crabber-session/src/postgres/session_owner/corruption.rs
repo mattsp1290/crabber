@@ -75,7 +75,9 @@ async fn corrupt(
     original: &str,
     corruption: u8,
 ) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     match corruption {
         0 => {
             sqlx::query(
@@ -163,7 +165,7 @@ async fn corrupt(
     tx.commit().await.unwrap();
 }
 async fn assert_current_guard(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     request: &ReserveSessionOwner,
     moving: bool,
 ) {
@@ -351,7 +353,9 @@ async fn restored_phase(store: &PostgresStore) {
         .phase
         .as_ref()
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let original = super::super::phase::load_owned(&mut tx, &admitted.run.id, &target.id)
         .await
         .unwrap()
@@ -374,7 +378,9 @@ async fn restored_phase(store: &PostgresStore) {
         )
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     super::super::phase::save_host_record(&mut tx, &original, false)
         .await
         .unwrap();

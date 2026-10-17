@@ -59,7 +59,7 @@ impl PostgresStore {
     }
     pub(in crate::postgres) async fn recover_tools_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         request: &ToolContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -70,7 +70,7 @@ impl PostgresStore {
     }
     pub(in crate::postgres) async fn recover_frontend_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         request: &crate::FrontendContinuationRecovery,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
@@ -88,7 +88,7 @@ impl PostgresStore {
     }
     async fn recover_compound_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         request: &ToolContinuationRecovery,
         frontend: Option<&crate::FrontendContinuationRecovery>,
@@ -196,7 +196,7 @@ impl PostgresStore {
     }
 }
 async fn eligible(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     request: &ToolContinuationRecovery,
     frontend: Option<&crate::FrontendContinuationRecovery>,
@@ -276,7 +276,7 @@ async fn eligible(
 }
 
 pub(in crate::postgres) async fn preparation_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     request: &ToolContinuationRecovery,
     now: time::OffsetDateTime,
@@ -293,7 +293,7 @@ pub(in crate::postgres) async fn preparation_context(
 }
 
 pub(in crate::postgres) async fn preparation_frontend_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     request: &crate::FrontendContinuationRecovery,
     now: time::OffsetDateTime,

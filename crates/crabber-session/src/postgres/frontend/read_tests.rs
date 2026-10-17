@@ -1,5 +1,6 @@
 use super::read;
 use crate::PublicSessionLimitV2;
+use crate::postgres::transaction::begin;
 use crate::public_session::v2::proof::{Proof, ReadError};
 #[tokio::test]
 async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
@@ -14,7 +15,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .stage_frontend_call(f.request.clone(), f.authority.clone())
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = begin(&store.pool).await.unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await
@@ -56,7 +57,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .execute(&store.pool)
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = begin(&store.pool).await.unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await
@@ -81,7 +82,7 @@ async fn aggregate_frontend_actual_carrier_budget_and_narrow_scope() {
         .execute(&store.pool)
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = begin(&store.pool).await.unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await

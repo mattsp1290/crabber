@@ -2,11 +2,12 @@
 mod approval;
 mod waiting;
 use crate::attempt::terminal::{self, TerminalFacts};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{EventCursor, RunId, RunStatus, SessionId, Usage};
 use serde::Deserialize;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {

@@ -5,7 +5,9 @@ async fn check(
     store: &crate::PostgresStore,
     session: &SessionId,
 ) -> Result<Readiness, DeletionError> {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     crate::postgres::lock_session_scope(&mut tx, session)
         .await
         .unwrap();
@@ -91,7 +93,9 @@ async fn corrupt_identity(
     let mut call: crabber_core::ImportedToolCall = serde_json::from_str(&raw).unwrap();
     let old = std::mem::replace(&mut call.id, new.clone());
     let mut messages = store.list_all_messages(session).await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let accounting = crate::sql_snapshot::imported_call_record(&call).unwrap();
     sqlx::query("UPDATE imported_tool_calls SET id=$1,data_json=$2,snapshot_text=$3,snapshot_bytes=$4 WHERE id=$5")
         .bind(&new.0).bind(accounting.record).bind(accounting.text).bind(accounting.bytes).bind(&old.0).execute(&mut *tx).await.unwrap();

@@ -1,7 +1,8 @@
 //! Original suspension anchors presentation and Store-clock deadlines.
 use super::{Error, approval};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{ApprovalReadError, Proof};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 #[cfg(test)]
 pub(in super::super) async fn verify(

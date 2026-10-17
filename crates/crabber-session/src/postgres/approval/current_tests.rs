@@ -23,7 +23,9 @@ async fn immutable_current_approval_sources_reject_coherent_private_changes() {
         .with_clock(clock.clone());
     for case in current::CASES {
         let saved = current::run(&store, &clock, case, |target| corrupt(&store, target)).await;
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         save_record(&mut tx, &saved.record).await;
         save_run(&mut tx, &saved.run).await;
         if saved.barrier {
@@ -36,7 +38,9 @@ async fn immutable_current_approval_sources_reject_coherent_private_changes() {
     }
 }
 async fn corrupt(store: &crate::PostgresStore, target: Target) -> Saved {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let data: String = sqlx::query_scalar("SELECT data_json FROM continuations WHERE id=$1")
         .bind(&target.id.0)
         .fetch_one(&mut *tx)
@@ -145,7 +149,9 @@ async fn current_approval_accepts_authentic_successor_and_parent_retirement() {
         let store = &store;
         async move {
             assert_eq!(run.status, crabber_core::RunStatus::Paused);
-            let mut tx = store.pool.begin().await.unwrap();
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
             let (latest, _) = super::load(&mut tx, &run.session_id, &run.id)
                 .await
                 .unwrap()

@@ -2,8 +2,9 @@
 #[path = "approval/witness.rs"]
 mod witness;
 use super::{Error, Proof, unknown};
+use crate::postgres::transaction::Transaction;
 use crabber_core::Run;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) use witness::unstarted;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,

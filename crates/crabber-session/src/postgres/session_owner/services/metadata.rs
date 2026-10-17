@@ -1,9 +1,10 @@
 //! Original immutable metadata replay does not consult current eligibility.
 use super::super::{Error, SessionId, SessionOwnerId, reads, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::service::{
     RegisterSessionServiceDependency, SessionServiceDependencyReceipt,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn exists(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

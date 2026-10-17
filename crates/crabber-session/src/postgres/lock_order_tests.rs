@@ -297,7 +297,9 @@ async fn foreign_run_records_are_rejected_before_taking_their_row_locks() {
         )
         .await
         .unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     for (table, id) in [
         ("messages", &message_b.0),
         ("tool_calls", &call_b.0),

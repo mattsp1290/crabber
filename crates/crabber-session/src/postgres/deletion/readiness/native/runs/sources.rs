@@ -3,10 +3,11 @@ mod admission;
 mod execution;
 mod unkeyed;
 use crate::native_parent::RunIssuance;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::Result;
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

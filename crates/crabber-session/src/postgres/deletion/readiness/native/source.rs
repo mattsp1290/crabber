@@ -1,8 +1,9 @@
 //! Independent latest immutable sources, never a mutable receipt pointer.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{ControlId, EventCursor, EventRecord, RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     Attempt,

@@ -1,8 +1,9 @@
 use super::{Error, Proof, unknown};
 use crate::native_parent::RunIssuance;
+use crate::postgres::transaction::Transaction;
 pub(super) use crate::session_owner::driver::successor::source::scope::Scope;
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) struct Pair {
     pub previous: RunIssuance,
     pub next: RunIssuance,

@@ -1,8 +1,9 @@
 //! Fresh termination proof only; bounded source selection precedes private carrier decoding.
 use super::Error;
 use crate::phase::PhaseRecord;
+use crate::postgres::transaction::Transaction;
 use crabber_core::{ContinuationId, Run, ToolCallRecord};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }

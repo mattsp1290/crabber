@@ -1,9 +1,10 @@
 //! Actual claim under the exact authenticated preparation Join transaction.
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{
     PreparationCommitError, PreparedAdmissionRecovery, proof::VerifiedPreparation,
 };
 use crate::{AdmissionExecutionError as Error, ClaimedAdmission};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(in crate::postgres) async fn claim_prepared(
     store: &super::PostgresStore,
     tx: &mut Transaction<'_, Postgres>,

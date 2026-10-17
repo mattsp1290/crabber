@@ -35,7 +35,9 @@ async fn original_unstarted_abandonment_has_bounded_positive_domain_proof() {
             })
             .await
             .unwrap();
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         let result = verify(
             &mut tx,
             &receipt.session_id,
@@ -60,7 +62,9 @@ async fn original_unstarted_abandonment_has_bounded_positive_domain_proof() {
         tx.rollback().await.unwrap();
         if !started {
             sqlx::query("UPDATE abandonment_commits SET data=jsonb_set(data,'{no_effect_v1}','null'::jsonb) WHERE run_id=$1").bind(&receipt.run_id.0).execute(&store.pool).await.unwrap();
-            let mut tx = store.pool.begin().await.unwrap();
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
             assert!(matches!(
                 verify(
                     &mut tx,
@@ -73,7 +77,9 @@ async fn original_unstarted_abandonment_has_bounded_positive_domain_proof() {
             ));
             tx.rollback().await.unwrap();
             sqlx::query("UPDATE abandonment_commits SET data=jsonb_set(data,'{outcome,run,checkpoint}',to_jsonb(repeat('x',34603008))) WHERE run_id=$1").bind(&receipt.run_id.0).execute(&store.pool).await.unwrap();
-            let mut tx = store.pool.begin().await.unwrap();
+            let mut tx = crate::postgres::transaction::begin(&store.pool)
+                .await
+                .unwrap();
             assert!(matches!(
                 verify(
                     &mut tx,

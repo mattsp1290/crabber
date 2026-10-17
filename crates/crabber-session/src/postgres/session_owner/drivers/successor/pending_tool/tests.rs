@@ -41,7 +41,9 @@ async fn pending_tool_preflight_is_pure_and_one_budget() {
         let mut wrong = metadata.clone();
         wrong.expected_revision = wrong.expected_revision.next().unwrap();
         assert!(request.verify_metadata(&wrong).is_err());
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         let mut proof = Proof::bounded(32 << 20);
         Box::pin(read(&mut tx, &request, clock.now(), &mut proof))
             .await

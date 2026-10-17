@@ -10,7 +10,7 @@ use crate::session_owner::{
     },
 };
 pub(super) async fn register(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     request: &RegisterSessionServiceDependency,
     source: &SessionServiceLink,
     now: time::OffsetDateTime,

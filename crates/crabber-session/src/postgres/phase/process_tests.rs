@@ -69,7 +69,9 @@ async fn crash(store: &super::PostgresStore, mode: process::Mode) {
     // The session and SQL identifier are generated UUIDs; operation is a fixed enum.
     sqlx::query(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind='phase' AND NEW.session_id='{}' AND NEW.data_json::jsonb->>'operation'='{operation}' THEN PERFORM pg_advisory_xact_lock(751302925); END IF; RETURN NEW; END $$",fixture.session.0)).execute(&store.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {name} AFTER INSERT ON operation_receipts FOR EACH ROW EXECUTE FUNCTION {name}()")).execute(&store.pool).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302925)")
         .execute(&mut *held)
         .await

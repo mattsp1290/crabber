@@ -1,11 +1,12 @@
 //! Immutable initial issuer dictates exact per-Run witness membership.
 use super::super::super::super::super::super as backend;
 use crate::native_parent::RunIssuance;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::admission::{SourceAudits, Witness};
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{RunId, Session, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

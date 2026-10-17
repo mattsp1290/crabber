@@ -1,8 +1,9 @@
 //! Authenticate the immutable original imported prefix in the caller's budget.
 use super::{Failure, Proof};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure as ReadFailure, Proof as SharedProof, unknown};
 use crabber_core::SessionId;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(in crate::postgres) async fn verify_imported_history(
     tx: &mut Transaction<'_, Postgres>,

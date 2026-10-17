@@ -1,9 +1,10 @@
 //! Original Raw birth and first-grant poison, never positive main membership.
 use crate::native_enrollment::{Origin, SOURCE_BYTES, Status, Unclassified};
 use crate::native_parent::{RunIssuance, source_protocol::JournalSource};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn birth(
     tx: &mut Transaction<'_, Postgres>,

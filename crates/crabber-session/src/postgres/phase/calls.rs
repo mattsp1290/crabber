@@ -1,7 +1,8 @@
 use super::super::{call_status, db, json};
+use crate::postgres::transaction::Transaction;
 use crate::{PhaseError as Error, phase::sql, sql_snapshot as snapshot};
 use crabber_core::{Run, ToolCallId, ToolCallRecord, ToolCallStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(in super::super) async fn load(
     tx: &mut Transaction<'_, Postgres>,

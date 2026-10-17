@@ -1,4 +1,5 @@
 use super::super::{PostgresStore, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     StoreError,
     queue::{
@@ -7,7 +8,7 @@ use crate::{
     },
 };
 use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN octet_length(data_json)<=33554432 AND octet_length(data_json)<=$3 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
 pub(super) const SUMMARY: &str = "SELECT CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
 pub(super) async fn record(
@@ -221,7 +222,9 @@ impl PostgresStore {
         id: &SessionId,
     ) -> Result<crate::SessionSummary, StoreError> {
         scope(id, &ControlId("session".into()))?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -239,7 +242,9 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<QueueReceipt>, StoreError> {
         scope(session, id)?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -255,7 +260,9 @@ impl PostgresStore {
     ) -> Result<RetainedQueue, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -274,7 +281,9 @@ impl PostgresStore {
     ) -> Result<QueueSummary, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -302,7 +311,9 @@ impl PostgresStore {
                 .unwrap_or(SessionRevision::INITIAL),
             vec![],
         )?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

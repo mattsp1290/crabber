@@ -29,7 +29,9 @@ async fn owner_publication_roster_and_monotonic_head_detect_cancel_rollback() {
             .await
             .is_err()
         );
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::raw_sql(
             "DROP TRIGGER session_owner_publication_immutable ON session_owner_publications",
         )
@@ -83,7 +85,9 @@ async fn selected_owner_publication_sources_charge_shared_budget() {
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let (request, receipt, _next) =
         crate::session_owner_contract::services::cohort::source_fixture(&store).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(1);
     assert!(matches!(
         super::verify(
@@ -190,7 +194,9 @@ async fn legacy_owner_mutation_never_mints_a_publication_cohort() {
             .await
             .unwrap();
     }
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = crate::public_session::v2::proof::Proof::bounded(32 * 1024 * 1024);
     assert_eq!(
         super::verify(
@@ -239,7 +245,9 @@ pub(in super::super) async fn legacy_fixture(
     store: &crate::PostgresStore,
     request: &crate::session_owner::ReserveSessionOwner,
 ) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let text: String = sqlx::query_scalar(
         "SELECT data_json FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2",
     )
@@ -303,7 +311,9 @@ async fn migration_preserves_legacy_owner_bytes_without_positive_backfill() {
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let namespace = format!("owner_protocol_{}", uuid::Uuid::new_v4().simple());
     sqlx::raw_sql(&format!(
         "CREATE SCHEMA {namespace}; SET LOCAL search_path TO {namespace}"

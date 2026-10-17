@@ -2,6 +2,7 @@
 use super::super::super::super::super::super as backend;
 use super::{fields, source_cursor};
 use crate::attempt::terminal::TerminalFacts;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::{budget::Budget, v2::proof::Proof};
 use crate::run_control::{
     self,
@@ -9,7 +10,7 @@ use crate::run_control::{
 };
 use crate::sql_deletion::readiness::{MAX_PROOF_BYTES, Result, unknown};
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

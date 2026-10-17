@@ -1,11 +1,12 @@
 //! Exact original preparation and native control leaves for one retained claim.
 use super::super::super::super::super as backend;
 use crate::native_parent::{CompletionOperation, RunIssuance, completion_history};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{EventCursor, SessionId, SessionOwnerOperationId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn source(
     tx: &mut Transaction<'_, Postgres>,
     previous: Option<&RunIssuance>,

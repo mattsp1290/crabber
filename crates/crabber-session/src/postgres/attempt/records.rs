@@ -1,4 +1,5 @@
 use super::super::{db, micros};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{
     AttemptError as Error, AttemptMutation, AttemptReceipt, AttemptSnapshot, StoreError,
@@ -7,7 +8,7 @@ use crate::{
 use crabber_core::{
     AttemptId, ControlId, EventCursor, InputFingerprint, Run, RunId, SessionId, SessionRevision,
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 const RECORD: &str = r"SELECT
     s.public_revision,

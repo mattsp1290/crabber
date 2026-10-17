@@ -1,8 +1,9 @@
 //! Explicit original unkeyed input, never inferred from a missing keyed journal.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::preparation::admission::Witness;
 use crate::sql_deletion::readiness::{Result, unknown};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     original: &Witness,

@@ -90,7 +90,9 @@ async fn bypass(store: &PostgresStore, native: &str, session: &str) {
 async fn lifecycle(store: &PostgresStore, cold: &PostgresStore, native: &str, session: &str) {
     // A rolled-back reservation is reusable and a committed record owns its key.
     let reusable = format!("rollback-{}", uuid::Uuid::new_v4());
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query(IMPORTED)
         .bind(&reusable)
         .bind(session)

@@ -8,13 +8,14 @@ pub(super) use control::host_turn;
 mod pristine;
 pub(super) mod records;
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     AttemptAuthority, AttemptCommand, AttemptError as Error, AttemptMutation,
     AttemptMutationOutcome as Outcome, AttemptReceipt, VersionedAttempt,
     attempt::{self, sql},
 };
 use crabber_core::{AttemptId, ControlId, Run, RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
@@ -37,7 +38,10 @@ impl PostgresStore {
         if let Some(id) = id {
             attempt::validate_identifier(&id.0)?;
         }
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         let result = async {
             if let Some((record, revision)) = records::load(&mut tx, run, id, false).await? {
                 return Ok(Some(VersionedAttempt {
@@ -65,7 +69,10 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<AttemptReceipt>, Error> {
         attempt::validate_identifier(&id.0)?;
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         let result = records::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }
@@ -417,7 +424,7 @@ async fn apply_run_transition(
 
 /// Pure no-parent eligibility; caller holds the same session transaction.
 pub(super) async fn pristine_for_expired(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, Postgres>,
     run: &crabber_core::Run,
 ) -> Result<(), crate::AttemptError> {
     pristine::check(tx, run).await

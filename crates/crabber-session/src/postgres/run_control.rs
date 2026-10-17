@@ -5,6 +5,7 @@ mod reads;
 pub(super) mod suspension;
 mod waiting;
 use super::{PostgresExecution, PostgresStore};
+use crate::postgres::transaction::Transaction;
 use crate::{
     RunControlError as Error,
     run_control::{
@@ -15,7 +16,7 @@ use crate::{
     },
 };
 use crabber_core::{ControlId, EventCursor, Run, SessionId, TurnId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
         Ok(value) => {
@@ -128,7 +129,9 @@ impl PostgresStore {
     ) -> Result<crate::RunControlBinding, Error> {
         valid_scope(session, &ControlId("read".into()))?;
         let mut tx = {
-            let mut tx = self.pool.begin().await.map_err(unknown)?;
+            let mut tx = crate::postgres::transaction::begin(&self.pool)
+                .await
+                .map_err(unknown)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 .execute(&mut *tx)
                 .await
@@ -145,7 +148,9 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<RunControlReceipt>, Error> {
         valid_scope(session, id)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = reads::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }
@@ -155,7 +160,9 @@ impl PostgresStore {
     ) -> Result<RunControlPage, Error> {
         crate::run_control::validate_target(target)?;
         let mut tx = {
-            let mut tx = self.pool.begin().await.map_err(unknown)?;
+            let mut tx = crate::postgres::transaction::begin(&self.pool)
+                .await
+                .map_err(unknown)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 .execute(&mut *tx)
                 .await

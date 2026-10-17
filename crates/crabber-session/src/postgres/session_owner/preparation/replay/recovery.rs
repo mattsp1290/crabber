@@ -1,11 +1,12 @@
 //! Exact successor issuer plus original sources, never current state or a grant.
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::SessionOwnerError as Error;
 use crate::session_owner::preparation::{
     AdmissionRecoveryOutcome, JoinedPreparation, PreparationCommitError, PreparationCompletion,
     PreparedOperation,
     recovery::replay::{self, NativeSources},
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 impl crate::postgres::PostgresStore {
     pub(super) async fn replay_recovery(
         tx: &mut Transaction<'_, Postgres>,

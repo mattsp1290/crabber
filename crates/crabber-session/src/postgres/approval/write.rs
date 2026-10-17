@@ -2,8 +2,9 @@
 use super::super::db;
 use super::{Error, approval, receipt, sql};
 use crate::ApprovalReceipt;
+use crate::postgres::transaction::Transaction;
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in super::super) async fn replay(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

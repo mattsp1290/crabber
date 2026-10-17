@@ -1,10 +1,11 @@
 //! Read-only staged proof, sharing one allowance including original coverage.
 use crate::deletion::coverage::VerifiedDeletionCoverage;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Failure, MAX_PROOF_BYTES, Readiness, unknown};
 use crate::{DeletionBlocker, DeletionError, sql_deletion::VerifiedScope};
 use crabber_core::SessionId;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 mod domains;
 mod native;
 

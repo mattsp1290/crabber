@@ -17,13 +17,14 @@ use super::super::{
 };
 use super::proof;
 use crate::postgres::PostgresStore;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::driver::{
     ExecutionDriverReceipt, RegisterSuccessorExecutionDriver, SuccessorDriverLink,
     SuccessorExecutionDriverGrant, SuccessorExecutionDriverOutcome,
     SuccessorExecutionDriverReceipt,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl PostgresStore {
     pub(in crate::postgres) async fn register_successor_driver(
         &self,

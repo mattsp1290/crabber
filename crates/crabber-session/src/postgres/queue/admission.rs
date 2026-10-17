@@ -1,6 +1,7 @@
 use super::{AdmissionGuard, PostgresStore, complete};
 use crate::StoreError;
-use sqlx::{Postgres, Transaction};
+use crate::postgres::transaction::Transaction;
+use sqlx::Postgres;
 impl PostgresStore {
     pub(super) async fn queue_admission(
         &self,

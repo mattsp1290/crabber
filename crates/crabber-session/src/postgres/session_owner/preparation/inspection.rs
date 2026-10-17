@@ -1,4 +1,5 @@
 //! Read-only original association; no completion/replay writer or current Run.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::{
     SessionOwnerError as Error,
@@ -6,7 +7,7 @@ use crate::session_owner::{
         JoinedPreparation, PreparationAdmissionReceipt, PreparationCommitError, inspection,
     },
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl super::super::PostgresStore {
     pub(in crate::postgres) async fn inspect_initial_admission(
         &self,
@@ -30,7 +31,9 @@ impl super::super::PostgresStore {
             .binding
             .session_id;
         crate::session_owner::validation::identifier(&session.0, 512, false)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

@@ -1,9 +1,10 @@
 //! Exact current phase/call carriers, not a grant or a historical membership claim.
 use super::{Error, Proof, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::driver::successor::tool_fresh as validate;
 use crate::session_owner::preparation::pending_tool as choice;
 use crabber_core::Run;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

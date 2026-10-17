@@ -17,9 +17,7 @@ async fn run_history_report_preserves_noninitial_and_missing_proof() {
         .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     let report = verify(
@@ -98,9 +96,7 @@ async fn relinked_and_oversized(
     receipt: &crabber_core::AdmissionReceipt,
     mut next: RunIssuance,
 ) {
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     next.sequence = 1;
@@ -124,9 +120,7 @@ async fn relinked_and_oversized(
     tx.rollback()
         .await
         .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
-    let mut tx = store
-        .pool
-        .begin()
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
         .await
         .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     sqlx::query("UPDATE native_run_issuances SET data_json=$2 WHERE run_id=$1 AND sequence=1")
@@ -168,7 +162,9 @@ async fn joined_driver_does_not_cover_later_same_fence_begin() {
     );
     let fixture =
         crate::session_owner::driver::history_fixture::begin_after_join(store.clone()).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = Proof::bounded(MAX_PROOF_BYTES);
     let report = verify(
         &mut tx,
@@ -217,7 +213,9 @@ async fn joined_driver_does_not_cover_external_same_fence_begin_before_join() {
     );
     let fixture =
         crate::session_owner::driver::history_fixture::begin_before_join(store.clone()).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let record = crate::postgres::session_owner::source_audit(
         &mut tx,
         fixture.request.context.session_id(),

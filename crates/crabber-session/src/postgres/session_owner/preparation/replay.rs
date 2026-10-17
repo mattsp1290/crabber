@@ -12,7 +12,7 @@ use crate::{KeyedAdmitOutcome, StoreError};
 impl super::super::PostgresStore {
     pub(super) async fn replay_prepared(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,
@@ -119,7 +119,7 @@ impl super::super::PostgresStore {
 impl super::super::PostgresStore {
     async fn replay_keyed(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         bound: &crate::BoundKeyedAdmitRequest,
     ) -> Result<
         Option<PreparationCompletion>,
@@ -152,7 +152,7 @@ impl super::super::PostgresStore {
 
 impl super::super::PostgresStore {
     async fn replay_frontend(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,

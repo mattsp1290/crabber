@@ -1,4 +1,5 @@
 //! Exact original generic claim reconciliation; no current Run or grant.
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::SessionOwnerError as Error;
 use crate::session_owner::preparation::{
     ExpiredRunOrigin, ExpiredRunOutcome, JoinedPreparation, PreparationCommitError,
@@ -6,7 +7,7 @@ use crate::session_owner::preparation::{
     expired::{history, replay::Native},
 };
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl crate::postgres::PostgresStore {
     pub(super) async fn replay_expired(
         tx: &mut Transaction<'_, Postgres>,

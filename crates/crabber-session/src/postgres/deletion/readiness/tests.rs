@@ -27,7 +27,9 @@ async fn empty_managed_scope_is_ready_and_pending_input_blocks_without_mutation(
         .manage_session(crate::management_contract::create())
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let proof = coverage(&mut tx, &created.session_id).await;
     let Readiness::Ready(scope) = readiness(&mut tx, &created.session_id, &proof)
         .await
@@ -55,7 +57,9 @@ async fn empty_managed_scope_is_ready_and_pending_input_blocks_without_mutation(
     .execute(&store.pool)
     .await
     .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let proof = coverage(&mut tx, &created.session_id).await;
     assert!(matches!(
         readiness(&mut tx, &created.session_id, &proof)
@@ -85,7 +89,9 @@ async fn native_cleanup_authenticates_output_before_reporting_phase_blocker() {
     )));
     let fixture = crate::fork_pending_contract::fixture(&store).await;
     let session = &fixture.request.source_session_id;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await
@@ -111,7 +117,9 @@ async fn native_cleanup_authenticates_output_before_reporting_phase_blocker() {
         Err(Failure::Blocked(DeletionBlocker::Phase))
     ));
     tx.rollback().await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE tool_phases SET outcome_json=repeat('x',33554433) WHERE id=$1")
         .bind(&fixture.target.id.0)
         .execute(&mut *tx)
@@ -124,7 +132,9 @@ async fn native_cleanup_authenticates_output_before_reporting_phase_blocker() {
     ));
     tx.rollback().await.unwrap();
     let (call, _, output) = crate::fork_pending_contract::forge(&store, &fixture).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut phase =
         super::super::super::phase::load_host_record(&mut tx, &fixture.run, &fixture.target.id)
             .await
@@ -157,7 +167,9 @@ async fn released_native_checkpoint_authenticates_exact_suspended_ancestry() {
     )));
     let fixture = crate::tool_continuation_contract::lifecycle(&store).await;
     let session = &fixture.admitted.session.id;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = Proof::bounded(MAX_PROOF_BYTES);
     assert!(native::runtime(&mut tx, session, &mut proof).await.is_ok());
     assert!(matches!(
@@ -242,7 +254,9 @@ async fn generic_joined_registry_does_not_upgrade_creation_coverage() {
         .await
         .unwrap();
     crate::sql_deletion::readiness::contract::generic_joined(&store, &created.summary).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let coverage = coverage(&mut tx, &created.session_id).await;
     assert!(matches!(
         readiness(&mut tx, &created.session_id, &coverage)

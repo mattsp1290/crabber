@@ -1,16 +1,19 @@
 //! Exact original closure, with bounded accepted-input projection only.
 use super::{Error, Proof, source, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{
     InspectPreparedApprovalDriver, PreparedApprovalDriverMetadata,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl crate::PostgresStore {
     pub(in crate::postgres) async fn inspect_approval_driver(
         &self,
         request: &InspectPreparedApprovalDriver,
     ) -> Result<PreparedApprovalDriverMetadata, Error> {
         crate::session_owner::preparation::approval_driver::validate(request)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

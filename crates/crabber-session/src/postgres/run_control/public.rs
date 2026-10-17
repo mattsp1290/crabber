@@ -1,12 +1,13 @@
 //! Latest-Run control metadata with the same immutable acceptance/progress checks.
 use super::reads;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::{
     budget::Budget,
     v2::proof::{Failure, Proof, unknown},
 };
 use crate::{PublicSessionLimitV2, RunControlSummary};
 use crabber_core::{RunId, RunStatus, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) async fn controls(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

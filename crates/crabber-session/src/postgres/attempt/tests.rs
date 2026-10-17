@@ -116,7 +116,9 @@ async fn crash(
         .execute(&store.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {name} AFTER INSERT ON operation_receipts FOR EACH ROW EXECUTE FUNCTION {name}()"))
         .execute(&store.pool).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302924)")
         .execute(&mut *held)
         .await
@@ -196,7 +198,9 @@ async fn foreign_locked_attempt_is_not_locked_or_changed_by_another_run() {
         .await
         .unwrap();
     let revision = store.session_revision(&left.session.id).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT id FROM execution_attempts WHERE run_id=$1 AND id=$2 FOR UPDATE")
         .bind(&right.run.id.0)
         .bind(&target.id.0)

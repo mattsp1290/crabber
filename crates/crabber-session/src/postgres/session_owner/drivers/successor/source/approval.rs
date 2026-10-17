@@ -1,10 +1,11 @@
 //! Exact original approval sources; neither later continuation nor head is read.
 use super::{Error, Proof, RegisterSuccessorExecutionDriver, read, unknown};
 use crate::native_parent::RunIssuance;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::driver::successor::source::{self, SelectedClaim, claim::Native};
 use crate::session_owner::driver::successor::source::{approval::Evidence, input::Input};
 use crate::session_owner::{audit::Audit, preparation::PreparationKey};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(super) async fn original(
     tx: &mut Transaction<'_, Postgres>,

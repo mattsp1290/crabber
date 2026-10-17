@@ -63,7 +63,9 @@ async fn corrupted_carriers(store: &PostgresStore) {
     let (request, original, execution) = run_control_contract::corruption_fixture(store).await;
     let session = &request.target.session_id.0;
     let operation = &request.id.0;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE run_controls SET summary_json=$3 WHERE session_id=$1 AND operation_id=$2")
         .bind(session)
         .bind(operation)
@@ -96,7 +98,9 @@ async fn corrupted_carriers(store: &PostgresStore) {
             .unwrap()
             .is_some()
     );
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     for table in ["run_control_progress", "run_controls", "operation_receipts"] {
         sqlx::query(&format!(
             "DELETE FROM {table} WHERE session_id=$1 AND operation_id=$2"
@@ -118,7 +122,9 @@ async fn corrupted_termination(store: &PostgresStore) {
     for corruption in 0..4 {
         let (request, termination, continuation) =
             run_control_contract::termination_fixture(store).await;
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         match corruption {
             0 => {
                 let data: String =

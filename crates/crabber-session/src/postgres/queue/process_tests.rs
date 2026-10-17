@@ -67,7 +67,9 @@ async fn kill_before(store: &crate::PostgresStore, step: u8) {
     let function = format!("queue_barrier_{}", uuid::Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.session_id='{}' THEN PERFORM pg_advisory_xact_lock(751302929); END IF; RETURN NEW; END $$", request.session_id.0)).execute(&store.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {function} AFTER INSERT ON operation_receipts FOR EACH ROW EXECUTE FUNCTION {function}()")).execute(&store.pool).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302929)")
         .execute(&mut *held)
         .await

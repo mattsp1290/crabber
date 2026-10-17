@@ -1,7 +1,8 @@
 use super::*;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{PendingApprovalSource, PendingToolSource};
 use crabber_core::Clock;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 use std::sync::Arc;
 #[tokio::test]
 async fn pending_tool_preflight_rejects_coherent_tool_and_approval_claim_rewrites() {

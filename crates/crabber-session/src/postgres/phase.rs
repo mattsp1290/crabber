@@ -20,13 +20,14 @@ pub(super) async fn metadata_page(
     records::page(tx, request).await
 }
 use super::{PostgresExecution, PostgresStore, admission_execution, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     PhaseAuthority, PhaseCommand, PhaseError as Error, PhaseMutation,
     PhaseMutationOutcome as Outcome, PhaseReceipt, PhaseWriteAuthority, VersionedPhase,
     phase::{self, sql},
 };
 use crabber_core::{ControlId, PhaseId, Run, RunId, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
@@ -46,7 +47,10 @@ impl PostgresStore {
         request: &crate::PhasePageRequest,
     ) -> Result<crate::PhasePage, Error> {
         request.validate()?;
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -62,7 +66,10 @@ impl PostgresStore {
         id: &PhaseId,
     ) -> Result<VersionedPhase, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         let result = records::metadata(&mut tx, run, id).await.and_then(|value| {
             let (phase, revision) = value.ok_or(Error::NotFound)?;
             Ok(VersionedPhase { revision, phase })
@@ -75,7 +82,10 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<PhaseReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         let result = records::receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }

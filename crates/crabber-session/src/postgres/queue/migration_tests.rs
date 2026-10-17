@@ -5,7 +5,7 @@ async fn migration_preserves_predecessor_queue_bytes_and_legacy_membership() {
     };
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&pool).await.unwrap();
     let namespace = format!("queue_migration_{}", uuid::Uuid::new_v4().simple());
     sqlx::raw_sql(&format!(
         "CREATE SCHEMA {namespace}; SET LOCAL search_path TO {namespace}"

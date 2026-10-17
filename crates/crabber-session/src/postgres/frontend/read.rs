@@ -1,12 +1,13 @@
 use super::{Error, FrontendOriginRecord, FrontendStagingReceipt, unknown};
 use crate::FrontendCallStaging;
 use crate::frontend_continuation::FrontendReadScope;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crabber_core::{
     ControlId, EventCursor, EventRecord, Message, Run, RunId, SessionId, ToolCallId, ToolCallRecord,
 };
 use serde::de::DeserializeOwned;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 fn decode<T: DeserializeOwned>(value: Option<String>) -> Result<T, Error> {
     serde_json::from_str(&value.ok_or(Error::UnknownStoreOutcome)?).map_err(unknown)
 }

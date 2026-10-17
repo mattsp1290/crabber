@@ -4,9 +4,10 @@ use super::{
 };
 use crate::StoreError;
 use crate::abandonment::{AbandonCommit, AbandonEvidence, interrupted_tool, terminal_event};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 use crabber_core::{EventCursor, EventRecord, Run, RunStatus, ToolCallRecord, ToolCallStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn abandon(
     store: &PostgresStore,

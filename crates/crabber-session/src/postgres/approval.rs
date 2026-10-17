@@ -17,6 +17,7 @@ mod terminate;
 pub(super) use terminate::{cancel_waiting, validate_terminal_phases};
 pub(super) mod write;
 use super::{PostgresStore, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ApprovalError as Error, ApprovalReceipt, ApprovalSnapshot, ContinuationTarget,
     approval::{self, sql},
@@ -24,7 +25,7 @@ use crate::{
 use crabber_core::{ContinuationGeneration, ContinuationId, ControlId, Run, RunId, SessionId};
 pub(super) use current::session as verify_session;
 pub(super) use guards::{guard_attempt, guard_claiming, release_terminal, retirement_context};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 const SNAPSHOT: &str = r"SELECT s.public_revision,CASE WHEN octet_length(s.data->>'workspace_id')<=512 THEN s.data->>'workspace_id' END AS workspace,CASE WHEN octet_length(c.id)<=128 THEN c.id END AS id,c.generation,CASE WHEN octet_length(c.state)<=32 THEN c.state END AS state,c.format_version::bigint AS format_version,
     CASE WHEN octet_length(c.data_json)<=4194304 THEN c.data_json END AS data_json
@@ -45,7 +46,10 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ApprovalSnapshot>, Error> {
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -62,7 +66,10 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<ApprovalReceipt>, Error> {
         crate::attempt::validate_identifier(&id.0).map_err(approval::attempt_error)?;
-        let mut tx = self.pool.begin().await.map_err(db).map_err(sql::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)
+            .map_err(sql::unknown)?;
         let result = receipt(&mut tx, session, id).await;
         finish(tx, result).await
     }

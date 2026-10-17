@@ -4,10 +4,11 @@ mod run;
 #[path = "native_parent/source_protocol.rs"]
 pub(super) mod source_protocol;
 use crate::native_parent::{Error, Kind, Witness};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{EventCursor, EventRecord, Run};
 pub(super) use run::change_captured_with_proof as record_run_captured_with_proof;
 pub(super) use run::change_with_proof as record_run_with_proof;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn record_attempt(
     tx: &mut Transaction<'_, Postgres>,

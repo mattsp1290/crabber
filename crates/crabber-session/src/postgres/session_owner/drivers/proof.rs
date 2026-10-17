@@ -1,8 +1,9 @@
 //! Selected actual proof leaves are charged before transfer/validation.
 use super::super::{Audit, Error, Record, public, reads, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn charge(
     tx: &mut Transaction<'_, Postgres>,
     sql: &str,

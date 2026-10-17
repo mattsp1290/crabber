@@ -98,7 +98,9 @@ async fn killed_parent_control_writer_rolls_back_every_boundary() {
         let name = format!("parent_control_barrier_{}", uuid::Uuid::new_v4().simple());
         sqlx::query(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.session_id='{}' THEN PERFORM pg_advisory_xact_lock(751302925); END IF; RETURN NEW; END $$",f.control.scope().0.0)).execute(&store.pool).await.unwrap();
         sqlx::query(&format!("CREATE TRIGGER {name} AFTER INSERT ON operation_receipts FOR EACH ROW EXECUTE FUNCTION {name}()")).execute(&store.pool).await.unwrap();
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("SELECT pg_advisory_xact_lock(751302925)")
             .execute(&mut *held)
             .await

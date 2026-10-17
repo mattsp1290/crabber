@@ -1,7 +1,8 @@
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ReadError};
 use crate::{StoreError, run_facts::RunFacts};
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

@@ -1,7 +1,8 @@
 //! The journal is independent of mutable Run rows. No lease renewal entry.
 use crate::native_parent::{Error, RunIssuance, RunState};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{Run, RunStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn latest(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

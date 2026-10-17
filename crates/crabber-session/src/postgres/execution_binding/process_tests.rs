@@ -54,7 +54,9 @@ async fn crash(store: &crate::PostgresStore, keyed: bool, typed: bool) {
     // IDs are generated UUIDs, never caller SQL or data used as an identifier.
     sqlx::query(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF EXISTS(SELECT 1 FROM runs WHERE id=NEW.run_id AND session_id='{}') THEN PERFORM pg_advisory_xact_lock(751302926); END IF; RETURN NEW; END $$", target.session.0)).execute(&store.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {name} AFTER INSERT ON run_execution_bindings FOR EACH ROW EXECUTE FUNCTION {name}()")).execute(&store.pool).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302926)")
         .execute(&mut *held)
         .await

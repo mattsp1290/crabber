@@ -1,9 +1,10 @@
+use crate::postgres::transaction::Transaction;
 use crate::{
     AttemptError as Error,
     attempt_control::{TurnContext, TurnState},
 };
 use crabber_core::{EventRecord, Run};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in super::super::super) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

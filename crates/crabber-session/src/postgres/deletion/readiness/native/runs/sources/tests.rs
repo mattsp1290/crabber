@@ -14,7 +14,9 @@ async fn run_history_sources_authenticate_owned_journal_and_original_input() {
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
         Ok(true)
@@ -36,7 +38,9 @@ async fn run_history_sources_authenticate_owned_journal_and_original_input() {
     tx.rollback().await.unwrap();
     // Each original root/child audit is required, including historical Begin.
     for operation in witness.audit_ids().unwrap() {
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
             .bind(&receipt.session_id.0)
             .bind(&operation.0)
@@ -61,7 +65,9 @@ async fn run_history_sources_authenticate_owned_journal_and_original_input() {
         .begin_admission_execution()
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
         Ok(true)
@@ -91,7 +97,9 @@ async fn read(
     .await
 }
 async fn original_input(store: &crate::PostgresStore, receipt: &AdmissionReceipt) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let raw: String = sqlx::query_scalar("SELECT snapshot_record FROM messages WHERE id=$1")
         .bind(&receipt.user_message_id.0)
         .fetch_one(&mut *tx)
@@ -111,7 +119,9 @@ async fn original_input(store: &crate::PostgresStore, receipt: &AdmissionReceipt
     tx.rollback().await.unwrap();
 }
 async fn original_issuer(store: &crate::PostgresStore, receipt: &AdmissionReceipt) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let raw: String = sqlx::query_scalar(
         "SELECT data_json FROM native_run_issuances WHERE run_id=$1 AND sequence=1",
     )
@@ -150,7 +160,9 @@ async fn unowned(store: &crate::PostgresStore) {
     else {
         panic!("actual keyed admission")
     };
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         read(&mut tx, &receipt, MAX_PROOF_BYTES).await,
         Ok(false)

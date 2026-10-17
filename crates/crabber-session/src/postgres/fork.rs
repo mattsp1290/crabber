@@ -4,9 +4,10 @@ use crate::fork::{
     Audit,
     history::{Decision, ImportedHistory},
 };
+use crate::postgres::transaction::Transaction;
 use crate::{ForkBoundary, ForkError as Error, ForkOutcome, ForkReceipt, ForkSession};
 use crabber_core::{ControlId, Session, SessionId, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 mod source;
 pub(super) use source::verify_imported_history;
 fn unknown(_: impl std::fmt::Debug) -> Error {
@@ -77,13 +78,17 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<ForkReceipt>, Error> {
         crate::management::validate_scope(target, id).map_err(|_| Error::InvalidRequest)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = receipt(&mut tx, target, id).await;
         finish(tx, result).await
     }
     pub(super) async fn fork(&self, request: ForkSession) -> Result<ForkOutcome, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             let mut sessions=[&request.source_session_id,&request.target_session_id]; sessions.sort();
             for session in sessions { super::lock_session_scope(&mut tx,session).await.map_err(unknown)?; }

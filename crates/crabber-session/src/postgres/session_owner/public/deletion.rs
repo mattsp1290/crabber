@@ -1,8 +1,9 @@
 //! Source-bound detached resource coverage; the Run's terminal proof is separate.
 use crate::native_parent::{RunIssuance, Witness};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crate::session_owner::{coverage::detached_parent, record::Record};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 pub(super) async fn classified(
     tx: &mut Transaction<'_, Postgres>,

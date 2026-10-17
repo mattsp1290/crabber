@@ -1,5 +1,6 @@
 use super::{Error, Proof, source, unknown};
-use sqlx::{Postgres, Transaction};
+use crate::postgres::transaction::Transaction;
+use sqlx::Postgres;
 pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,
     run: &crabber_core::Run,

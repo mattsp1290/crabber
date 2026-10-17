@@ -10,7 +10,9 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
 
     let receipt =
         crate::session_owner::preparation_contract::resources::successful(&store, false).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     super::super::lock_session_scope(&mut tx, &receipt.session_id)
         .await
         .unwrap();
@@ -29,7 +31,9 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(
         sqlx::query("UPDATE preparation_admission_witnesses SET data_json='{}' WHERE run_id=$1")
             .bind(&receipt.run_id.0)
@@ -53,7 +57,9 @@ async fn prepared_admission_origin_authenticates_independent_sources() {
         .execute(&store.pool)
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     super::super::lock_session_scope(&mut tx, &receipt.session_id)
         .await
         .unwrap();

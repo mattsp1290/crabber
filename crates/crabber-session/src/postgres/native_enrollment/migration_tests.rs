@@ -1,6 +1,5 @@
 //! The migration preserves actual predecessor fields and never repairs births.
 use super::*;
-use sqlx::Acquire;
 
 #[tokio::test]
 async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_sources() {
@@ -9,7 +8,7 @@ async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_
     };
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&pool).await.unwrap();
     let namespace = format!("enrollment_migration_{}", uuid::Uuid::new_v4().simple());
     sqlx::raw_sql(&format!(
         "CREATE SCHEMA {namespace}; SET LOCAL search_path TO {namespace}"

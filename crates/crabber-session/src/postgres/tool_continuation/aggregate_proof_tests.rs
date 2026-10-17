@@ -9,7 +9,9 @@ async fn aggregate_tool_current_actual_shared_carrier_budget() {
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let (f, batch, _) = crate::frontend_contract::fixture::paused(&store).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut proof = Proof::bounded(32 * 1024 * 1024);
     let record = super::read::load_with_proof(
         &mut tx,

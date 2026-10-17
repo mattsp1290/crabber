@@ -9,7 +9,9 @@ use std::sync::atomic::Ordering;
 #[async_trait]
 impl FixtureStore for PostgresStore {
     async fn seed_run(&self, run: Run) {
-        let mut tx = self.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .unwrap();
         load_run(&mut tx, &run.id, true).await.unwrap();
         save_run(&mut tx, &run).await.unwrap();
         tx.commit().await.unwrap();
@@ -239,7 +241,9 @@ async fn independent_pools_renew_resume_and_abandon_serialize() {
             clock.set(admitted.run.lease_until);
         }
         let request = abandon_request(&admitted, AbandonAuthority::ExpiredLease);
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         load_run(&mut held, &admitted.run.id, true).await.unwrap();
         let competing_store = other.clone();
         let competing_run = admitted.run.clone();
@@ -374,7 +378,9 @@ async fn clock_is_read_under_lock_and_abandonment_wins_queued_recovery() {
     for resume in [false, true] {
         let admitted = store.admit_run(request()).await.unwrap();
         let execution = other.execution(admitted.fence.clone()).await.unwrap();
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         load_run(&mut held, &admitted.run.id, true).await.unwrap();
         let abandoning = store.clone();
         let expected = abandon_request(&admitted, AbandonAuthority::ExpiredLease);

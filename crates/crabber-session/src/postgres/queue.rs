@@ -4,6 +4,7 @@ pub(in crate::postgres) mod protocol;
 pub(super) mod public;
 pub(super) mod reads;
 use super::{PostgresStore, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     StoreError,
     queue::{
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 use crabber_core::SessionRevision;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 impl PostgresStore {
     pub(super) async fn queue_mutate(
         &self,

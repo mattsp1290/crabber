@@ -1,8 +1,9 @@
 //! One selected outer-worker join cannot certify complete Run membership.
 use super::super::Record;
 use super::source;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(in crate::postgres) async fn classified(
     tx: &mut Transaction<'_, Postgres>,
     record: &Record,

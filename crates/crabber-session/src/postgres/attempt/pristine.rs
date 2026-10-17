@@ -1,8 +1,9 @@
 //! Called under the session gate and fenced run transaction before reservation.
 use super::super::{db, execution_binding};
+use crate::postgres::transaction::Transaction;
 use crate::{AttemptError as Error, attempt};
 use crabber_core::Run;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(super) async fn check(tx: &mut Transaction<'_, Postgres>, run: &Run) -> Result<(), Error> {
     let binding = execution_binding::read(tx, &run.session_id, &run.id)

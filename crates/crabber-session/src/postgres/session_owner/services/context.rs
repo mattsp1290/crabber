@@ -11,7 +11,7 @@ use crate::session_owner::{
 impl crate::postgres::PostgresStore {
     pub(in crate::postgres::session_owner) async fn verify_service_preparation<'a>(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         grant: &'a PreparationGrant,
         activating: Option<&SessionOwnerTarget>,
         strict: bool,
@@ -70,7 +70,7 @@ impl crate::postgres::PostgresStore {
 }
 
 async fn verify_owner(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &crabber_core::SessionId,
     id: &crabber_core::SessionOwnerId,
     strict: bool,

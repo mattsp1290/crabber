@@ -1,4 +1,5 @@
 //! Internal physical purge qualification; no fixture asserts lifecycle readiness.
+use crate::postgres::transaction::Transaction;
 use crate::sql_deletion::{
     VerifiedScope,
     contract::{self, Graph},
@@ -7,7 +8,7 @@ use crate::{
     DeleteSession, DeletionError, DeletionReceipt, PostgresStore, SessionDisposition, Store,
 };
 use crabber_core::{ControlId, RunFence, SessionId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 fn clock() -> std::sync::Arc<crabber_core::ManualClock> {
     std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
@@ -27,7 +28,9 @@ async fn graph(store: &PostgresStore) -> (Graph, DeleteSession) {
         .fetch_one(&store.pool)
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     for statement in graph.statements(event, true) {
         sqlx::query(&statement).execute(&mut *tx).await.unwrap();
     }
@@ -79,7 +82,9 @@ async fn atomic_purge_preserves_survivor_cursors_and_registry() {
         .await
         .unwrap();
     rollback_fault(&store, &request).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let receipt = tombstone(&mut tx, &request).await;
     super::purge(
         &mut tx,
@@ -150,7 +155,9 @@ async fn atomic_purge_preserves_survivor_cursors_and_registry() {
     );
 }
 async fn missing_scope(store: &PostgresStore, request: &DeleteSession) {
-    let mut missing = store.pool.begin().await.unwrap();
+    let mut missing = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(
         super::purge(
             &mut missing,
@@ -168,7 +175,9 @@ async fn cross_scope(
     survivor: &SessionId,
     request: &DeleteSession,
 ) {
-    let mut stale = store.pool.begin().await.unwrap();
+    let mut stale = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(
         super::purge(
             &mut stale,
@@ -185,7 +194,9 @@ async fn cross_scope(
     let id = format!("cross-{}", uuid::Uuid::new_v4());
     sqlx::query("INSERT INTO messages(id,session_id,run_id,data,snapshot_parts,snapshot_text,snapshot_bytes,snapshot_record) VALUES($1,$2,$3,'{}',0,0,2,'{}')")
         .bind(&id).bind(&survivor.0).bind(&target.run).execute(&store.pool).await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert_eq!(
         super::purge(
             &mut tx,
@@ -212,7 +223,9 @@ async fn cross_scope(
 async fn rollback_fault(store: &PostgresStore, request: &DeleteSession) {
     let name = format!("purge_fault_{}", uuid::Uuid::new_v4().simple());
     sqlx::raw_sql(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'purge rollback'; END$$; CREATE TRIGGER {name} BEFORE DELETE ON sessions FOR EACH ROW WHEN(OLD.id='{}') EXECUTE FUNCTION {name}();",request.session_id.0)).execute(&store.pool).await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     tombstone(&mut tx, request).await;
     assert_eq!(
         super::purge(
@@ -307,7 +320,9 @@ async fn process_helper() {
     let store = PostgresStore::connect(&crate::postgres::tests::test_url().unwrap())
         .await
         .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     tombstone(&mut tx, &request).await;
     super::purge(
         &mut tx,
@@ -349,7 +364,9 @@ async fn scoped_purge_removes_only_owned_admission_witness() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     tombstone(&mut tx, &request).await;
     // This private fixture tests physical routing, not lifecycle readiness.
     super::purge(
@@ -411,7 +428,9 @@ async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_
         expected_revision: revision,
     };
     let scope = VerifiedScope::fixture(session.clone(), revision);
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     tombstone(&mut tx, &request).await;
     super::purge(&mut tx, &scope).await.unwrap();
     tx.rollback().await.unwrap();
@@ -422,7 +441,9 @@ async fn protected_native_source_purge_requires_tombstone_even_for_missing_head_
             .await
             .unwrap();
     assert_eq!(sources, 1);
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     tombstone(&mut tx, &request).await;
     super::purge(&mut tx, &scope).await.unwrap();
     tx.commit().await.unwrap();

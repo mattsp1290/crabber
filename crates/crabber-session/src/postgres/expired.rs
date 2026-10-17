@@ -4,12 +4,13 @@ pub(super) mod unkeyed;
 #[path = "expired/unstarted.rs"]
 pub(super) mod unstarted;
 use super::PostgresStore;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::{
     SessionOwnerError as Error,
     preparation::{ExpiredRunPreparation, InspectExpiredRunPreparation},
 };
 use crabber_core::{InputFingerprint, Run, RunStatus, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn inspect(
     store: &PostgresStore,
     request: InspectExpiredRunPreparation,

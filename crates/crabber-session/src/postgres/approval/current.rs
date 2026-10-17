@@ -1,10 +1,11 @@
 //! Bounded immutable audit selectors shared with public proof preflight.
 use super::{Error, approval, sql};
 use crate::approval::current::{CurrentProof, NativeSource, Release, Source};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::budget::{Budget, Failure, unknown};
 use crate::public_session::v2::proof::{ApprovalReadError, Proof};
 use crabber_core::{EventRecord, Run, RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 #[derive(Clone, Copy)]
 pub(in super::super) enum Select {
     Answers,

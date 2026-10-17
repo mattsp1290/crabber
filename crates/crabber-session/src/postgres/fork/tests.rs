@@ -85,7 +85,9 @@ async fn retained_phase_cleanup_is_unsafe_and_forgery_is_unknown() {
     let fixture = crate::fork_pending_contract::fixture(&store).await;
     let (call, message, output) = crate::fork_pending_contract::forge(&store, &fixture).await;
     let run = store.get_run(&fixture.run).await.unwrap().unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut phase =
         super::super::phase::load_host_record(&mut tx, &fixture.run, &fixture.target.id)
             .await

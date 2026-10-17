@@ -3,12 +3,13 @@
 mod queue;
 use super::super::{Error, unknown};
 use super::{proof, source};
+use crate::postgres::transaction::Transaction;
 use crate::{
     public_session::v2::proof::Proof,
     session_owner::driver::{DriverLink, RegisterExecutionDriver},
 };
 use crabber_core::{Run, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn fresh(
     tx: &mut Transaction<'_, Postgres>,
     request: &RegisterExecutionDriver,

@@ -1,11 +1,12 @@
 use super::super::{PostgresStore, db};
 use super::{records, sql};
+use crate::postgres::transaction::Transaction;
 use crate::{
     AttemptControlOutcome as Outcome, AttemptError as Error,
     attempt_control::{self, Control},
 };
 use crabber_core::{PhaseId, Run, ToolCallId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl PostgresStore {
     pub(in super::super) async fn host_attempt(&self, control: Control) -> Result<Outcome, Error> {
         let digest = control.fingerprint()?;

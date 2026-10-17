@@ -1,10 +1,11 @@
 use super::{PostgresStore, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ListSessions, ManageSession, ManagementError as Error, ManagementReceipt, SessionListPage,
     SessionSummary, management,
 };
 use crabber_core::{ControlId, Session, SessionId, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 
 const CURRENT: &str = "SELECT s.id,s.public_revision,CASE WHEN octet_length(s.data::text)<=16384 THEN s.data END AS session_data,m.workspace_id,m.archived,m.format_version,CASE WHEN octet_length(m.data_json)<=2048 THEN m.data_json END AS metadata FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1";
 const RECEIPT: &str = "SELECT r.kind,r.semantic_digest,r.event_seq,CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS receipt,CASE WHEN octet_length(a.data_json)<=32768 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN session_management_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2";
@@ -116,9 +117,7 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<ManagementReceipt>, Error> {
         management::validate_scope(session, id)?;
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)
             .map_err(management::unknown)?;
@@ -126,9 +125,7 @@ impl PostgresStore {
         finish(tx, result).await
     }
     pub(super) async fn read_summary(&self, session: &SessionId) -> Result<SessionSummary, Error> {
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)
             .map_err(management::unknown)?;
@@ -165,9 +162,7 @@ impl PostgresStore {
     }
     pub(super) async fn manage(&self, request: ManageSession) -> Result<ManagementReceipt, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)
             .map_err(management::unknown)?;

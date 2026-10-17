@@ -34,7 +34,9 @@ async fn expired_unstarted_refuses_actual_begin_projection_restore() {
     else {
         panic!("genuine Begin");
     };
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE execution_attempts SET state='Unstarted' WHERE run_id=$1 AND id=$2")
         .bind(&admitted.run.id.0)
         .bind(&reserved.attempt.target.id.0)

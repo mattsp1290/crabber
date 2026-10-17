@@ -675,7 +675,7 @@ async fn current_migration_never_relocks_runtime_tables() {
         .connect(&url)
         .await
         .unwrap();
-    let mut active = pool.begin().await.unwrap();
+    let mut active = crate::postgres::transaction::begin(&pool).await.unwrap();
     sqlx::query("LOCK TABLE operation_receipts IN ROW EXCLUSIVE MODE")
         .execute(&mut *active)
         .await

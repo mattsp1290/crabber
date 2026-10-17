@@ -1,12 +1,13 @@
 //! Bounded owner membership proofs in the caller's coherent read transaction.
 use super::{SessionId, reads};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::{
     budget::Budget,
     v2::proof::{Failure, Proof, owner, unknown},
 };
 use crate::session_owner::SessionOwnerState;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 #[path = "public/deletion.rs"]
 mod deletion;
 #[cfg(test)]

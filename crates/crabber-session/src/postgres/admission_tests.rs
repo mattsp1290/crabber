@@ -291,7 +291,9 @@ async fn independent_processes_and_fresh_process_lifecycle() {
     wait_child(&mut child(&session, "replay", Some(&expected))).await;
     // Persist a truly expired lease so the fresh child uses its ordinary system clock.
     let store = PostgresStore::connect(&url).await.unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut expired = original.clone();
     expired.lease_until = OffsetDateTime::now_utc() - time::Duration::seconds(1);
     save_run(&mut tx, &expired).await.unwrap();
@@ -355,7 +357,9 @@ async fn process_crash_before_commit_rolls_back_every_record() {
     // UUID session IDs and generated SQL identifiers contain no caller-controlled text.
     sqlx::query(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.session_id = '{}' THEN PERFORM pg_advisory_xact_lock(751302920); END IF; RETURN NEW; END $$", session.0)).execute(&store.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {function} AFTER INSERT ON admission_executions FOR EACH ROW EXECUTE FUNCTION {function}()" )).execute(&store.pool).await.unwrap();
-    let mut held = store.pool.begin().await.unwrap();
+    let mut held = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock(751302920)")
         .execute(&mut *held)
         .await

@@ -2,9 +2,10 @@ use super::{
     Error, FrontendOriginRecord, FrontendStagingReceipt, PostgresExecution, finish, read,
     supported, unknown,
 };
+use crate::postgres::transaction::Transaction;
 use crate::{AttemptAuthority, AttemptCleanup, AttemptState, FrontendCallStaging};
 use crabber_core::{EventCursor, Run};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl PostgresExecution {
     pub(in super::super) async fn stage_frontend(
         &self,
@@ -17,7 +18,9 @@ impl PostgresExecution {
         let digest = request.fingerprint()?;
         supported()?;
         let fault = super::super::tool_continuation::fault(&self.store);
-        let mut tx = self.store.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.store.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             super::super::lock_session(&mut tx, &request.session_id).await.map_err(unknown)?;
             if let Some(saved) = read::receipt(&mut tx, &request.session_id, &request.id).await? {

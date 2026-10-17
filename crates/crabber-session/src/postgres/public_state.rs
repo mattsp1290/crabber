@@ -1,10 +1,11 @@
 use super::{PostgresExecution, PostgresStore, admission_execution, bump_public_revision, db};
+use crate::postgres::transaction::Transaction;
 use crate::{
     PublicStateError as Error, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
     public_state,
 };
 use crabber_core::{ControlId, EventCursor, InputFingerprint, Run, SessionId, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 use time::OffsetDateTime;
 
 const UPSERT_STATE: &str = "INSERT INTO session_public_state(session_id,format_version,state_json,activities_json) VALUES($1,1,$2,$3) ON CONFLICT(session_id) DO UPDATE SET format_version=1,state_json=excluded.state_json,activities_json=excluded.activities_json";
@@ -91,9 +92,7 @@ impl PostgresStore {
         &self,
         session: &SessionId,
     ) -> Result<PublicStateSnapshot, Error> {
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)
             .map_err(public_state::unknown)?;
@@ -106,9 +105,7 @@ impl PostgresStore {
         id: &ControlId,
     ) -> Result<Option<PublicStateReceipt>, Error> {
         public_state::validate_id(id)?;
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(db)
             .map_err(public_state::unknown)?;
@@ -304,7 +301,9 @@ mod tests {
             .execute(&store.pool).await.unwrap();
         sqlx::query(&format!("CREATE TRIGGER {function} AFTER INSERT ON operation_receipts FOR EACH ROW EXECUTE FUNCTION {function}()"))
             .execute(&store.pool).await.unwrap();
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("SELECT pg_advisory_xact_lock(751302922)")
             .execute(&mut *held)
             .await

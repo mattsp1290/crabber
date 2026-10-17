@@ -10,7 +10,9 @@ impl PostgresStore {
         request: DeleteSession,
     ) -> Result<DeletionOutcome, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self.pool.begin().await.map_err(super::unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(super::unknown)?;
         super::super::lock_session_scope(&mut tx, &request.session_id)
             .await
             .map_err(super::unknown)?;

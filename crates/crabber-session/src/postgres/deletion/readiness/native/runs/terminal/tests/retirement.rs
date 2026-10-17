@@ -29,7 +29,9 @@ async fn checked(
     };
     let session = &fixture.admitted.session.id;
     let run = &fixture.admitted.run.id;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         verify(
             &mut tx,
@@ -77,7 +79,9 @@ async fn checked(
     ));
     tx.rollback().await.unwrap();
     reject_coherent_status(store, fixture).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut audit = fixture.audit.clone();
     audit.payload["settlement"] = serde_json::to_value(&fixture.older).unwrap();
     sqlx::query("UPDATE events SET data=$1 WHERE seq=$2")
@@ -114,7 +118,9 @@ async fn reject_coherent_status(
     } else {
         "interrupted"
     };
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE runs SET status=$2,data=jsonb_set(data,'{status}',to_jsonb($2::TEXT)) WHERE id=$1",
     )

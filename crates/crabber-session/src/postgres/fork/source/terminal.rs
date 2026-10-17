@@ -1,5 +1,6 @@
 use super::{Error, Failure, ForkSession, Proof, ToolCallRecord, decode_event, unknown};
-use sqlx::{Postgres, Transaction};
+use crate::postgres::transaction::Transaction;
+use sqlx::Postgres;
 pub(super) async fn terminal(
     tx: &mut Transaction<'_, Postgres>,
     request: &ForkSession,

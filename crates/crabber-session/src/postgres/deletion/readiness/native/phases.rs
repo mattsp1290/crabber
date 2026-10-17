@@ -1,10 +1,11 @@
 //! All historical phases are authenticated before cleanup classification.
 use super::{scan, source};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, blocked, unknown};
 use crate::{DeletionBlocker, PhaseQuiescence, PhaseState};
 use crabber_core::{PhaseId, RunId, SessionId, ToolCallId, ToolCallRecord, ToolCallStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in super::super) async fn phases(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

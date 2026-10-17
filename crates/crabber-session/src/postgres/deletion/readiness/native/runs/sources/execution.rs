@@ -1,10 +1,11 @@
 //! Original keyed journal or explicitly witnessed unkeyed input.
 use super::super::super::super::super::super as backend;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{AdmissionReceipt, RunId, SessionId};
 use serde::Deserialize;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {

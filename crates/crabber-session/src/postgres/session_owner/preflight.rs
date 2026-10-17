@@ -4,7 +4,7 @@ use crate::session_owner::preparation::ReservePreparation;
 impl super::PostgresStore {
     pub(super) async fn preparation_preflight(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         preparation: &ReservePreparation,
         actual: crabber_core::SessionRevision,
         proof: &mut crate::public_session::v2::proof::Proof,
@@ -29,7 +29,7 @@ impl super::PostgresStore {
     }
     pub(super) async fn preparation_source_context(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         preparation: &ReservePreparation,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
@@ -85,7 +85,7 @@ impl super::PostgresStore {
     }
     async fn verify_preparation_native_source(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &crabber_core::Run,
         source: &crate::session_owner::preparation::PreparationSource,
     ) -> Result<(), Error> {

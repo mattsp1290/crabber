@@ -1,10 +1,11 @@
 //! Exact owned unkeyed replay carries metadata, never a replacement Run fence.
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::SessionOwnerError as Error;
 use crate::session_owner::preparation::{
     JoinedPreparation, PreparationCompletion, PreparedOperation,
     admission::{SourceAudits, Witness},
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 impl crate::postgres::PostgresStore {
     pub(super) async fn replay_admission(
         tx: &mut Transaction<'_, Postgres>,

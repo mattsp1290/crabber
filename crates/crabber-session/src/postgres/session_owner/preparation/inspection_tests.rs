@@ -56,7 +56,9 @@ async fn original_initial_admission_inspection_is_pure_and_bounded() {
     assert_eq!(inspected.unwrap(), expected);
     // Mutable issuer projection changed coherently: independent protected slot rejects it.
     let (other, actual) = contract::fresh(&store).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let raw: String = sqlx::query_scalar("SELECT data_json FROM native_run_issuances WHERE session_id=$1 AND run_id=$2 AND sequence=1").bind(&actual.session.id.0).bind(&actual.run.id.0).fetch_one(&mut *tx).await.unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     value["state"]["token"] = serde_json::json!("c".repeat(64));

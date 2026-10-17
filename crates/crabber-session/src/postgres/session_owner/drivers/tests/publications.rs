@@ -16,7 +16,9 @@ async fn driver_original_publication_refuses_valid_projection_rewrites() {
             crate::driver_contract::request(&store).await
         };
         let session = request.context.session_id();
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         let original =
             source::original_read(&mut tx, session, &request.fence.run_id, &mut allowance())
                 .await
@@ -99,7 +101,7 @@ fn allowance() -> Proof {
 }
 
 async fn marker_rewind_is_refused(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     audit: &crate::session_owner::audit::Audit,
 ) {
     sqlx::query("SAVEPOINT marker_corruption")

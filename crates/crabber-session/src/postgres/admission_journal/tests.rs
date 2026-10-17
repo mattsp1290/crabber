@@ -121,7 +121,9 @@ async fn legacy_execution_cohort_cannot_gain_original_no_effect_sources() {
             .get("no_effect_v1")
             .is_none()
     );
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         super::super::abandon_history::verify(
             &mut tx,
@@ -160,7 +162,9 @@ async fn oversized_execution_carrier_returns_typed_failure_before_decode() {
             .await
             .is_err()
     );
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         super::super::admission_execution::load_record_with_proof(
             &mut tx,

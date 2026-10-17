@@ -1,8 +1,9 @@
 //! Walk bounded phase pages; terminal metadata alone cannot authenticate a result.
 use super::Error;
+use crate::postgres::transaction::Transaction;
 use crate::{PhasePageRequest, PhaseQuiescence, PhaseState};
 use crabber_core::{Run, SessionRevision};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(super) async fn validate(
     tx: &mut Transaction<'_, Postgres>,

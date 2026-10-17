@@ -48,7 +48,9 @@ async fn terminal_source_rejects_forgery_relink_and_bounded_overflow() {
         .find(|event| event.cursor == Some(receipt.event_cursor))
         .unwrap()
         .clone();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     assert!(matches!(
         verify(
             &mut tx,
@@ -73,7 +75,9 @@ async fn terminal_source_rejects_forgery_relink_and_bounded_overflow() {
     ));
     tx.rollback().await.unwrap();
     reject_forged_status(&store, &admitted).await;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     audit.payload["settlement"] = serde_json::to_value(older).unwrap();
     sqlx::query("UPDATE events SET data=$1 WHERE seq=$2")
         .bind(crate::public_state::encode_event(&audit).unwrap())
@@ -98,7 +102,9 @@ async fn terminal_source_rejects_forgery_relink_and_bounded_overflow() {
 }
 
 async fn reject_forged_status(store: &crate::PostgresStore, admitted: &crate::AdmitOutcome) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE runs SET status='failed',data=jsonb_set(data,'{status}',to_jsonb('failed'::TEXT)) WHERE id=$1").bind(&admitted.run.id.0).execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE native_run_issuances SET data_json=jsonb_set(data_json::jsonb,'{state,status}',to_jsonb('failed'::TEXT))::TEXT WHERE run_id=$1 AND sequence=(SELECT max(sequence) FROM native_run_issuances WHERE run_id=$1)").bind(&admitted.run.id.0).execute(&mut *tx).await.unwrap();
     assert!(matches!(
@@ -116,7 +122,9 @@ async fn reject_forged_status(store: &crate::PostgresStore, admitted: &crate::Ad
 }
 
 async fn reject_oversized_error(store: &crate::PostgresStore, admitted: &crate::AdmitOutcome) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE runs SET data=jsonb_set(data,'{error}',to_jsonb(repeat('x',33554433))) WHERE id=$1",
     )

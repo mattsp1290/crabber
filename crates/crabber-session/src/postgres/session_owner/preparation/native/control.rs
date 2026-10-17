@@ -1,10 +1,11 @@
 //! Bounded exact current/adjacent issuer and original sources in the native Tx.
 use crate::native_parent::{RunIssuance, completion_history as history};
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::{
     SessionOwnerError as Error,
     preparation::{PreparationCompletion, PreparationGrant},
 };
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn verify(
     tx: &mut Transaction<'_, Postgres>,
     grant: &PreparationGrant,

@@ -58,7 +58,7 @@ impl PostgresStore {
     }
     pub(in crate::postgres) async fn claim_tools_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         claim: &ToolContinuationClaim,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -69,7 +69,7 @@ impl PostgresStore {
     }
     pub(in crate::postgres) async fn claim_frontend_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         request: &crate::FrontendContinuationClaim,
         preparation: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
@@ -87,7 +87,7 @@ impl PostgresStore {
     }
     async fn claim_compound_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         claim: &ToolContinuationClaim,
         frontend: Option<&crate::FrontendContinuationClaim>,
@@ -187,7 +187,7 @@ impl PostgresStore {
     }
 }
 async fn ready(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     claim: &ToolContinuationClaim,
     frontend: Option<&crate::FrontendContinuationClaim>,
@@ -216,7 +216,7 @@ async fn ready(
     Ok(record)
 }
 pub(in super::super) async fn waiting_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
 ) -> Result<Option<ToolContinuationRecord>, Error> {
     let Some(record) = write::active(tx, run).await? else {
@@ -246,7 +246,7 @@ pub(in super::super) async fn waiting_context(
 }
 
 pub(in crate::postgres) async fn preparation_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     claim: &ToolContinuationClaim,
 ) -> Result<ToolContinuationRecord, Error> {
@@ -254,7 +254,7 @@ pub(in crate::postgres) async fn preparation_context(
 }
 
 pub(in crate::postgres) async fn preparation_frontend_context(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     run: &Run,
     request: &crate::FrontendContinuationClaim,
 ) -> Result<ToolContinuationRecord, Error> {

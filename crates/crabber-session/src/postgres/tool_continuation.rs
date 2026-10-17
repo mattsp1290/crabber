@@ -17,6 +17,7 @@ mod recover;
 mod suspend;
 pub(super) mod write;
 use super::{PostgresExecution, PostgresStore};
+use crate::postgres::transaction::Transaction;
 use crate::tool_continuation::{self as domain, ToolContinuationRecord};
 use crate::{
     ToolContinuationClaim, ToolContinuationClaimOutcome, ToolContinuationError as Error,
@@ -26,7 +27,7 @@ use crate::{
 };
 use crabber_core::{ControlId, InputFingerprint, Run, RunId, SessionId, SessionRevision};
 pub(super) use guards::{guard_attempt, release_terminal};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 use time::OffsetDateTime;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
@@ -81,7 +82,9 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<Option<ToolContinuationSnapshot>, Error> {
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -100,7 +103,9 @@ impl PostgresStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<ToolContinuationReceipt>, Error> {
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = read::receipt(&mut tx, session, id)
             .await
             .map(|saved| saved.map(|(receipt, _)| receipt));

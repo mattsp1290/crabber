@@ -1,8 +1,9 @@
 //! Bounded explicit Witness2 source; selected original audits never grant work.
 use super::Error;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::preparation::{admission::Witness, expired::unkeyed::Original};
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

@@ -1,9 +1,10 @@
 //! Canonical logical tool results, independent of native phase transitions.
 use super::{call_status, db, json};
+use crate::postgres::transaction::Transaction;
 use crate::sql_snapshot as snapshot;
 use crate::{PhaseError as Error, phase::sql};
 use crabber_core::{Run, ToolCallRecord};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 pub(super) async fn apply(
     tx: &mut Transaction<'_, Postgres>,

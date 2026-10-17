@@ -1,7 +1,6 @@
 //! Actual native admission, immutable negative source, rollback and replay.
 use super::*;
 use crate::{KeyedAdmitOutcome, Store};
-use sqlx::Acquire;
 fn proof() -> Proof {
     Proof::bounded(32 << 20)
 }
@@ -23,7 +22,9 @@ async fn raw_birth_original_source_is_bounded_immutable_and_independent_of_curre
         panic!("fresh admission")
     };
     let run = &admitted.run.id;
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut measured = proof();
     assert_eq!(
         original(&mut tx, &session, run, &mut measured)
@@ -90,7 +91,9 @@ async fn raw_birth_original_source_is_bounded_immutable_and_independent_of_curre
 }
 
 async fn immutable(store: &crate::PostgresStore, run: &RunId) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     for statement in [
         "UPDATE runs SET execution_enrollment_protocol=0,execution_enrollment_origin_id=NULL WHERE id=$1",
         "DELETE FROM runs WHERE id=$1",
@@ -155,7 +158,9 @@ async fn raw_birth_before_and_after_commit_faults_keep_exact_atomic_sources() {
             }
         };
         assert_eq!(count(&store, &session).await, (1, 1, 1));
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         assert_eq!(
             original(&mut tx, &session, &receipt.run_id, &mut proof())
                 .await
@@ -182,7 +187,9 @@ async fn reserved_kind_is_not_supported(store: &crate::PostgresStore, actual: &c
     let source = JournalSource::new(None, &issuer).unwrap();
     let (origin, poison) = Origin::raw_birth(&issuer, &source, &mut proof()).unwrap();
     let digest = origin.digest(&mut proof()).unwrap();
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) VALUES($1,$2,'completed',$3,0,$4::jsonb,1,1,$1)")
         .bind(&run.id.0).bind(&run.session_id.0).bind(&run.claim_token).bind(serde_json::to_string(&run).unwrap()).execute(&mut *tx).await.unwrap();
     sqlx::query(

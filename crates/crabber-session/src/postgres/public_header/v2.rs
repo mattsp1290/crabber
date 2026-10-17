@@ -1,5 +1,6 @@
 //! Coherent fixed-profile metadata; every private reader shares one proof context.
 use super::super::{PostgresStore, approval, queue, run_control, session_owner, tool_continuation};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::budget::{self, Budget};
 use crate::public_session::v2::{
     projection,
@@ -11,7 +12,7 @@ use crate::{
     PublicHeaderRequestV2, PublicHeaderUsage, PublicSessionError, PublicSessionLimit,
 };
 use crabber_core::{RunStatus, SessionRevision};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 impl PostgresStore {
     pub(in crate::postgres) async fn read_public_header_v2(
         &self,
@@ -19,7 +20,7 @@ impl PostgresStore {
     ) -> Result<PublicHeaderOutcomeV2, PublicSessionError> {
         request.validate()?;
         let result=async {
-            let mut tx=self.pool.begin().await.map_err(unknown)?; sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY").execute(&mut *tx).await.map_err(unknown)?;
+            let mut tx=crate::postgres::transaction::begin(&self.pool).await.map_err(unknown)?; sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY").execute(&mut *tx).await.map_err(unknown)?;
             let row=sqlx::query("SELECT s.public_revision,CAST(octet_length(s.data::text)+COALESCE(octet_length(m.data_json),0)+COALESCE(octet_length(m.workspace_id),0) AS BIGINT) AS bytes FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&request.session_id.0).fetch_optional(&mut *tx).await.map_err(unknown)?.ok_or(Failure::Error(PublicSessionError::NotFound))?;
             let revision=SessionRevision::new(u64::try_from(row.try_get::<i64,_>("public_revision").map_err(unknown)?).map_err(unknown)?).map_err(unknown)?;
             if revision!=request.expected_revision {tx.commit().await.map_err(unknown)?;return Ok(None)}

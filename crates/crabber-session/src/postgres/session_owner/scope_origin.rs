@@ -2,9 +2,10 @@
 mod source;
 mod write;
 use super::{Audit, Error, SessionId, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof};
 use crate::session_owner::publication::scope::{Origin, Source};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) use write::created;
 pub(super) use write::{context_protocol, record_absent};
 fn failure(error: &Failure) -> Error {

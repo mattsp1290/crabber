@@ -4,7 +4,7 @@ use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
 impl crate::postgres::PostgresStore {
     pub(super) async fn owned_scope_context(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         record: &Record,
         authority: Option<&OwnedScopeParentAuthority>,
         proof: &mut crate::public_session::v2::proof::Proof,
@@ -79,7 +79,7 @@ impl crate::postgres::PostgresStore {
 }
 
 pub(super) async fn preflight(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     request: &crate::session_owner::owned_scope::OwnedScopeActivation,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {

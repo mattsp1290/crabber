@@ -2,13 +2,14 @@
 //! Budgets bound client transfer/materialization. Database JSON inspection work
 //! is not a transfer of the enclosing private audit input.
 use super::reads;
+use crate::postgres::transaction::Transaction;
 use crate::public_session::{
     budget::Budget,
     v2::proof::{Failure, Proof, unknown},
 };
 use crate::{PublicSessionLimitV2, QueueReceipt, QueueState, QueueSummary};
 use crabber_core::{QueueId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) async fn pending(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
@@ -189,7 +190,9 @@ async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
     // Keep the authoritative serialized original body unchanged while changing
     // both mutable routing indexes and the copied receipt coherently. A plain
     // replacement projection would now make that different original ID match.
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE future_queue_audit SET operation_id=$3 WHERE session_id=$1 AND operation_id=$2",
     )

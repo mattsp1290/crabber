@@ -1,9 +1,10 @@
 //! Complete bounded witnesses, never nullable target-field classification.
 use super::{Error, Proof, unknown};
 use crate::native_parent::{Kind, Witness};
+use crate::postgres::transaction::Transaction;
 use crabber_core::Run;
 use futures::TryStreamExt;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(in crate::postgres::session_owner::drivers::successor) async fn unstarted(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

@@ -14,8 +14,9 @@ pub(super) fn domain(error: ReadError<StoreError>) -> StoreError {
         "queue proof limit or source failure".into(),
     ))
 }
+use crate::postgres::transaction::Transaction;
 use crabber_core::{ControlId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 fn budget(error: Failure) -> ReadError<StoreError> {
     ReadError::Budget(error)
 }

@@ -1,12 +1,13 @@
 //! Exact expired-Unstarted approval recovery in the session mutation transaction.
 use super::super::{PostgresExecution, PostgresStore};
 use super::{Error, approval, finish, load, receipt, sql, write};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ApprovalClaimOutcome, ApprovalContinuationRecovery, ApprovalGrant, ApprovalOutcome,
     AttemptCleanup, AttemptCommand, AttemptMutation, AttemptMutationOutcome, AttemptState,
 };
 use crabber_core::{Run, RunFence};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 impl PostgresStore {
     pub(in super::super) async fn recover_approval(
         &self,
@@ -36,7 +37,7 @@ impl PostgresStore {
 
     pub(in crate::postgres) async fn recover_approval_guarded(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
         run: &Run,
         request: &ApprovalContinuationRecovery,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,

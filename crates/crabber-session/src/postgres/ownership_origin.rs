@@ -4,7 +4,7 @@ mod admission;
 use crate::deletion::origin::OwnershipOrigin;
 pub(super) use admission::record_admission;
 pub(super) async fn record(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     origin: &OwnershipOrigin,
 ) -> Result<(), crate::StoreError> {
     sqlx::query("INSERT INTO session_ownership_origins(session_id,data_json) VALUES($1,$2)")
@@ -29,7 +29,7 @@ fn unknown(_: impl std::fmt::Debug) -> Error {
 /// Caller holds the ordinary session mutation gate throughout these reads and
 /// native readiness/purge. No carrier is fetched before its SQL byte cap.
 pub(super) async fn coverage(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &SessionId,
 ) -> Result<CoverageRead, Error> {
     let row = sqlx::query(CURRENT)
@@ -57,7 +57,7 @@ pub(super) async fn coverage(
 }
 
 async fn original(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &SessionId,
     evidence: OriginEvidence,
 ) -> Result<CoverageRead, Error> {
@@ -106,7 +106,9 @@ mod tests {
         store: &crate::PostgresStore,
         session: &SessionId,
     ) -> Result<CoverageRead, Error> {
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         super::super::lock_session_scope(&mut tx, session)
             .await
             .unwrap();

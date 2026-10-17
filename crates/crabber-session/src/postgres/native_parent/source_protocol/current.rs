@@ -2,7 +2,8 @@
 use super::{
     Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head, history, original,
 };
-use sqlx::{Postgres, Row, Transaction};
+use crate::postgres::transaction::Transaction;
+use sqlx::{Postgres, Row};
 pub(in crate::postgres) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

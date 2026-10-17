@@ -4,7 +4,7 @@ use crate::{StoreError, queue::AdmissionGuard};
 use crabber_core::{Run, Session, SessionRevision};
 
 pub(in super::super) async fn record_admission(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &Session,
     run: &Run,
     new_session: bool,
@@ -65,7 +65,7 @@ fn invalid(_: impl std::fmt::Debug) -> StoreError {
 /// SQL bounds each original carrier before transferring or decoding it. The
 /// resulting byte count joins the caller's single whole-operation allowance.
 pub(super) async fn coverage(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
     session: &crabber_core::SessionId,
     evidence: crate::deletion::coverage::sql::OriginEvidence,
 ) -> Result<crate::deletion::coverage::CoverageRead, crate::DeletionError> {

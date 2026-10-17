@@ -1,7 +1,8 @@
 //! Charge both selected raw-history and immutable-proof carriers before decoding.
 use super::{Error, Failure, ForkSession, Proof, ToolCallRecord, unknown};
+use crate::postgres::transaction::Transaction;
 use crabber_core::{RunId, ToolCallId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 pub(super) async fn read(
     tx: &mut Transaction<'_, Postgres>,
     request: &ForkSession,

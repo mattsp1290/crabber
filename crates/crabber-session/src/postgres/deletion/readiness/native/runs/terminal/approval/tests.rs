@@ -16,7 +16,9 @@ async fn approval_terminal_history_requires_frozen_origin_and_independent_cursor
     let store = store.with_clock(clock.clone());
     for expire in [false, true] {
         let f = fixture(&store, &clock, expire).await;
-        let mut tx = store.pool.begin().await.unwrap();
+        let mut tx = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         assert!(matches!(read(&mut tx, &f, MAX_PROOF_BYTES).await, Ok(true)));
         exact(&mut tx, &f).await;
         assert!(matches!(
@@ -58,7 +60,9 @@ fn rejected(value: &Result<bool>) {
     ));
 }
 async fn relink(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut audit = f.audit.clone();
     audit.payload["terminal"]["settlement"] = serde_json::to_value(&f.older).unwrap();
     save(&mut tx, &audit).await;
@@ -66,7 +70,9 @@ async fn relink(store: &crate::PostgresStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn coherent_usage(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE runs SET data=jsonb_set(data,'{usage,output_tokens}',to_jsonb(13::BIGINT)) WHERE id=$1").bind(&f.current.id.0).execute(&mut *tx).await.unwrap();
     let mut original = f.original.clone();
     original.payload["usage"]["output_tokens"] = serde_json::json!(13);
@@ -79,7 +85,9 @@ async fn coherent_usage(store: &crate::PostgresStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn missing_origin(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM operation_receipts WHERE session_id=$1 AND operation_id=$2")
         .bind(&f.current.session_id.0)
         .bind(&f.batch.id.0)
@@ -90,7 +98,9 @@ async fn missing_origin(store: &crate::PostgresStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn legacy(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut audit = f.audit.clone();
     audit.payload["version"] = serde_json::json!(1);
     audit.payload.as_object_mut().unwrap().remove("terminal");
@@ -99,7 +109,9 @@ async fn legacy(store: &crate::PostgresStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn oversized(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE runs SET data=jsonb_set(data,'{error}',to_jsonb($2::TEXT)) WHERE id=$1")
         .bind(&f.current.id.0)
         .bind("x".repeat(MAX_PROOF_BYTES + 1))
@@ -114,7 +126,9 @@ async fn oversized(store: &crate::PostgresStore, f: &Fixture) {
 }
 
 async fn coherent_turn(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     let mut original = f.original.clone();
     original.turn_id = Some(crabber_core::TurnId::new());
     let mut audit = f.audit.clone();
@@ -125,7 +139,9 @@ async fn coherent_turn(store: &crate::PostgresStore, f: &Fixture) {
     tx.rollback().await.unwrap();
 }
 async fn current_error(store: &crate::PostgresStore, f: &Fixture) {
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE runs SET data=jsonb_set(data,'{error}',to_jsonb($2::TEXT)) WHERE id=$1")
         .bind(&f.current.id.0)
         .bind("forged private error")

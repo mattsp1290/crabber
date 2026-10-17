@@ -11,6 +11,7 @@ mod resources;
 pub(super) mod run;
 mod services;
 use super::PostgresStore;
+use crate::postgres::transaction::Transaction;
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
     SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerOutcome,
@@ -19,7 +20,7 @@ use crate::session_owner::{
     record::Record,
 };
 use crabber_core::{SessionId, SessionOwnerId, SessionOwnerOperationId};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 fn unknown<T>(_: T) -> Error {
     Error::UnknownStoreOutcome
 }
@@ -90,7 +91,9 @@ impl PostgresStore {
             || request.fingerprint(),
             super::super::session_owner::preparation::ReservePreparation::fingerprint,
         )?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             super::lock_session(&mut tx, &request.binding.session_id)
                 .await
@@ -214,7 +217,9 @@ impl PostgresStore {
         authority: Option<SessionOwnerAuthority>,
     ) -> Result<SessionOwnerOutcome, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             super::lock_session(&mut tx, &request.session_id)
                 .await
@@ -272,7 +277,9 @@ impl PostgresStore {
     ) -> Result<Option<crate::session_owner::preparation::PreparationReconciliation>, Error> {
         validate_scope(session, "preparation")?;
         let ids = crate::session_owner::preparation::identity::ids(key, session)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -294,7 +301,9 @@ impl PostgresStore {
         id: &SessionOwnerId,
     ) -> Result<SessionOwnerSnapshot, Error> {
         validate_scope(session, &id.0)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -318,7 +327,9 @@ impl PostgresStore {
         id: &SessionOwnerOperationId,
     ) -> Result<Option<SessionOwnerReceipt>, Error> {
         validate_scope(session, &id.0)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

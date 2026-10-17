@@ -39,12 +39,14 @@ mod public_run;
 mod public_state;
 mod session_owner;
 mod tool_result;
+mod transaction;
 
 mod fork;
 mod frontend;
 mod queue;
 mod run_control;
 mod tool_continuation;
+use crate::postgres::transaction::Transaction;
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
@@ -57,9 +59,7 @@ use crabber_core::{
     ToolResultStatus, Usage,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::{
-    PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions, types::Json,
-};
+use sqlx::{PgConnection, PgPool, Postgres, Row, postgres::PgPoolOptions, types::Json};
 use std::{collections::BTreeMap, sync::Arc};
 use time::OffsetDateTime;
 
@@ -560,7 +560,9 @@ impl PostgresStore {
             .connect(url)
             .await
             .map_err(db)?;
-        let mut tx = pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SELECT pg_advisory_xact_lock(751302919)")
             .execute(&mut *tx)
             .await
@@ -665,7 +667,9 @@ impl PostgresStore {
         &self,
         session: &SessionId,
     ) -> Result<Transaction<'_, Postgres>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         lock_session(&mut tx, session).await?;
         Ok(tx)
     }
@@ -676,7 +680,9 @@ impl PostgresStore {
         &self,
         id: &RunId,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         let session: String = sqlx::query_scalar("SELECT session_id FROM runs WHERE id=$1")
             .bind(&id.0)
             .fetch_optional(&mut *tx)
@@ -1691,9 +1697,7 @@ impl Store for PostgresStore {
         session: &SessionId,
         key: &AdmissionKey,
     ) -> Result<Option<crate::AdmissionExecutionRecord>, crate::AdmissionExecutionError> {
-        let mut tx = self
-            .pool
-            .begin()
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(|_| crate::AdmissionExecutionError::UnknownStoreFailure)?;
         let receipt = lookup_receipt(&mut tx, session, key)
@@ -1842,7 +1846,9 @@ impl Store for PostgresStore {
         &self,
         run: &RunId,
     ) -> Result<Option<crate::AdmissionExecutionState>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         let state = admission_execution::load_record(&mut tx, run)
             .await?
             .map(|record| record.state);
@@ -1892,7 +1898,9 @@ impl Store for PostgresStore {
         extension_id: &str,
         session: &SessionId,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -2600,7 +2608,9 @@ mod tests {
 
         // Hold this run's row lock until the other session has admitted and written.
         // A global store mutex would prevent the bounded operation below from finishing.
-        let mut held = store.pool.begin().await.unwrap();
+        let mut held = crate::postgres::transaction::begin(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("SELECT id FROM runs WHERE id=$1 FOR UPDATE")
             .bind(&a.run.id.0)
             .fetch_one(&mut *held)

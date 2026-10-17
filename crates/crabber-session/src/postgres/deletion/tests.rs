@@ -271,7 +271,9 @@ async fn deleted_queue_guards_precede_retained_and_erased_history() {
     .await
     .unwrap();
     assert_eq!(after, before);
-    let mut tx = store.pool.begin().await.unwrap();
+    let mut tx = crate::postgres::transaction::begin(&store.pool)
+        .await
+        .unwrap();
     super::purge::purge(
         &mut tx,
         &crate::sql_deletion::VerifiedScope::fixture(session.clone(), revision),

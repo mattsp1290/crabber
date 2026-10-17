@@ -1,7 +1,8 @@
 use super::{Error, ToolContinuationRecord, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::{AttemptAuthority, ToolPhaseResume};
 use crabber_core::{Run, ToolCallStatus};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn claim(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,

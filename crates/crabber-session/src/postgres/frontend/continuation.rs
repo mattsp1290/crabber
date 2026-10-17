@@ -1,12 +1,13 @@
 //! Frontend calls extend the same exact compound barrier and native ownership.
 use super::{Error, FrontendOriginRecord, origin, read, supported, unknown};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crate::{
     FrozenFrontendCall, PhaseSnapshot, ToolContinuationSuspension,
     tool_continuation::ToolContinuationRecord,
 };
 use crabber_core::{Run, ToolCallRecord, ToolCallStatus};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 fn verify_frozen(record: &FrontendOriginRecord, frozen: &FrozenFrontendCall) -> Result<(), Error> {
     if record.request.descriptor != frozen.descriptor
         || record.request.descriptor_fingerprint != frozen.descriptor_fingerprint

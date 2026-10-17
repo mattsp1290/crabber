@@ -1,8 +1,9 @@
 //! Finite keyset routing pages; actual carriers are charged before decoding.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::sql_deletion::readiness::{Result, unknown};
 use crabber_core::{RunId, SessionId};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row};
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     Run,

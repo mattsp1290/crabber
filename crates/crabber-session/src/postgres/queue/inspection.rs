@@ -18,7 +18,9 @@ impl PostgresStore {
             &crabber_core::ControlId("inspect".into()),
         )?;
         crate::queue::identifier(&authority.queue_id.0)?;
-        let mut tx = self.pool.begin().await.map_err(super::super::db)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(super::super::db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

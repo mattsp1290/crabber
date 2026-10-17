@@ -1,12 +1,13 @@
 //! Whole-batch suspension and native attempt conclusion share one transaction.
 use super::super::{PostgresExecution, db};
 use super::{Error, approval, finish, load, sql, write};
+use crate::postgres::transaction::Transaction;
 use crate::{
     ApprovalContinuationState, ApprovalReceipt, ApprovalSuspension, AttemptAuthority,
     AttemptMutationOutcome,
 };
 use crabber_core::{ContinuationGeneration, Run, RunStatus, SessionId, ToolCallStatus};
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 impl PostgresExecution {
     pub(in super::super) async fn suspend_approval(

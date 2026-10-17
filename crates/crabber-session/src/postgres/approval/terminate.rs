@@ -3,9 +3,10 @@
 mod terminal_phases;
 use super::super::PostgresStore;
 use super::{Error, approval, finish, load, receipt, sql, write};
+use crate::postgres::transaction::Transaction;
 use crate::{ApprovalReceipt, ApprovalTermination, AttemptCleanup, AttemptState};
 use crabber_core::Run;
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 
 impl PostgresStore {
     pub(in super::super) async fn terminate_approval_inner(

@@ -12,7 +12,9 @@ impl PostgresStore {
         request: RequestSessionOwnerCancel,
     ) -> Result<SessionOwnerOutcome, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             super::super::lock_session(&mut tx, &request.session_id)
                 .await
@@ -61,7 +63,9 @@ impl PostgresStore {
         authority: SessionOwnerAuthority,
     ) -> Result<SessionOwnerOutcome, Error> {
         let digest = request.fingerprint()?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         let result = async {
             super::super::lock_session(&mut tx, &request.session_id)
                 .await
@@ -108,7 +112,9 @@ impl PostgresStore {
         authority: &SessionOwnerAuthority,
     ) -> Result<Option<SessionOwnerCancellation>, Error> {
         validate_scope(&authority.session_id, &authority.target.id.0)?;
-        let mut tx = self.pool.begin().await.map_err(unknown)?;
+        let mut tx = crate::postgres::transaction::begin(&self.pool)
+            .await
+            .map_err(unknown)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

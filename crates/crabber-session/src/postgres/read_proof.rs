@@ -1,7 +1,8 @@
 //! Materialization accounting shared by every nested aggregate proof reader.
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
+use sqlx::Postgres;
 use sqlx::Row;
-use sqlx::{Postgres, Transaction};
 pub(super) async fn charge(
     tx: &mut Transaction<'_, Postgres>,
     query: sqlx::query::QueryScalar<'_, Postgres, Option<i64>, sqlx::postgres::PgArguments>,

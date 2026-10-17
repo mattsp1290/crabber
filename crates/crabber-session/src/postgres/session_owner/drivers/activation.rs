@@ -1,12 +1,13 @@
 //! Fresh typed driver dispatch checks before any effect permit is published.
 use super::super::{Error, Record};
 use super::{fresh, proof};
+use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::Proof;
 use crate::session_owner::{
     SessionOwnerAuthority,
     owned_scope::{OwnedScopeActivation, OwnedScopeParentAuthority},
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::Postgres;
 pub(super) async fn record(
     tx: &mut Transaction<'_, Postgres>,
     request: &OwnedScopeActivation,
