@@ -2778,6 +2778,27 @@ impl Store for DelayedTerminalStore {
         self.inner.tool_continuation_snapshot(session, run).await
     }
 
+    async fn answer_tool_interaction(
+        &self,
+        answer: crabber_session::ToolInteractionAnswer,
+    ) -> Result<crabber_session::ToolContinuationReceipt, crabber_session::ToolContinuationError>
+    {
+        self.inner.answer_tool_interaction(answer).await
+    }
+    async fn claim_tool_continuation(
+        &self,
+        claim: crabber_session::ToolContinuationClaim,
+    ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
+    {
+        self.inner.claim_tool_continuation(claim).await
+    }
+    async fn recover_tool_continuation(
+        &self,
+        request: crabber_session::ToolContinuationRecovery,
+    ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
+    {
+        self.inner.recover_tool_continuation(request).await
+    }
     async fn original_tool_continuation_plan(
         &self,
         selected: &crabber_core::SessionId,
