@@ -49,6 +49,13 @@ impl Source {
         receipt: Receipt<'_>,
         context: &SessionContext,
     ) -> Result<PendingSuccessorReplay, Error> {
+        let bytes = match receipt {
+            Receipt::Approval(r) => crate::snapshot::encoded_bytes(r, 32768),
+            Receipt::Tool(r) => crate::snapshot::encoded_bytes(r, 32768),
+        };
+        if bytes.is_none() {
+            return Err(Error::UnknownStoreOutcome);
+        }
         let (session, run, id, digest) = match receipt {
             Receipt::Approval(r) => (
                 &r.session_id,

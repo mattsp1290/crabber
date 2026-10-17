@@ -1,5 +1,6 @@
 //! Four genuine Tool families keep completion, inspection and main in one task.
 mod capacity;
+mod cleanup;
 mod faults;
 use super::tests::interposed::{Interposed, Stage};
 use super::*;
@@ -32,6 +33,7 @@ async fn contract<S: Store + 'static>(store: Arc<S>, clock: Arc<ManualClock>) {
                 .await;
             }
             Box::pin(faults::contract(store.clone(), &clock, frontend, recovery)).await;
+            Box::pin(cleanup::blocked(store.clone(), &clock, frontend, recovery)).await;
         }
     }
 }

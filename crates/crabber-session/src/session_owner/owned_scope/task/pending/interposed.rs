@@ -58,7 +58,7 @@ impl Interposed {
     fn corrupt_tool(&self, completion: &mut PreparationCompletion) {
         let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
             receipt,
-            ..
+            grant,
         }) = completion
         else {
             return;
@@ -80,6 +80,17 @@ impl Interposed {
                 };
                 receipt.outcome = ToolContinuationOutcome::Suspended { continuation };
             }
+            6 => grant.fence.claim_token = "x".repeat(513),
+            7 => grant.fence.run_id = RunId::new(),
+            8 => match &mut receipt.outcome {
+                ToolContinuationOutcome::Claimed { attempt, .. }
+                | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
+                | ToolContinuationOutcome::FrontendClaimed { attempt, .. }
+                | ToolContinuationOutcome::FrontendReclaimedUnstarted { attempt, .. } => {
+                    attempt.target.id = AttemptId("x".repeat(32768));
+                }
+                _ => panic!("fresh claimed ACK"),
+            },
             _ => (),
         }
     }

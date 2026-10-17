@@ -19,7 +19,7 @@ pub(super) async fn contract<S: Store + 'static>(
             Box::pin(held(store.clone(), clock, frontend, recovery, stage, fault)).await;
         }
     }
-    for corruption in 0..9 {
+    for corruption in 0..12 {
         Box::pin(malformed(
             store.clone(),
             clock,

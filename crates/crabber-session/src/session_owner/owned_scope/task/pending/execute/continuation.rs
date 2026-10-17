@@ -115,6 +115,10 @@ pub(super) async fn prepare(
         }
         return Ok(Prepared::Replayed(Replay::Successor(metadata)));
     };
+    crate::session_owner::identifier(&fence.claim_token, 512, false)?;
+    if fence.run_id != source.run {
+        return Err(Error::SemanticConflict.into());
+    }
     let claim = captured.claim.ok_or(Error::UnknownStoreOutcome)?;
     if claim.root_join_id != source.join {
         return Err(Error::SemanticConflict.into());

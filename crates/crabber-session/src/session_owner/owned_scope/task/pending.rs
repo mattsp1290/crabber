@@ -1,8 +1,8 @@
 //! One retained task spans preparation completion and its gated successor main.
 //!
-//! Admission recovery, expired-run recovery, Approval claim and Approval recovery
-//! share the explicit 64-task registry. Approval locators come only from the
-//! acknowledged transaction publisher, then undergo exact original inspection.
+//! Initial, Queue and all eight successor tags share the 64-task registry.
+//! Continuation locators come only from the acknowledged transaction publisher,
+//! then undergo exact original inspection.
 //! Cancellation/unknown acknowledgments never replay business work or remint
 //! authority. Native source and local task observations do not prove complete
 //! native enrollment, resource policy or whole-Run main ownership.
