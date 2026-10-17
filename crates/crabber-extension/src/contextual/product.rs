@@ -1,6 +1,7 @@
 //! Non-exposing actual Box roots. Disposal is a component, not physical policy.
 mod cell;
 mod construction;
+pub(crate) mod provider;
 mod registration;
 pub(crate) mod tool;
 use super::{FactoryContext, FactoryScope};

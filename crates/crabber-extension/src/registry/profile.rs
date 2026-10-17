@@ -50,6 +50,7 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
                     services: r.services.clone(),
                     tools: r.tools.clone(),
                     product_tools: std::collections::BTreeMap::new(),
+                    product_providers: r.product_providers.clone(),
                     prompts: r.prompts.clone(),
                     guards: r.guards.clone(),
                     restrictions: r.restrictions.clone(),

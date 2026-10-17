@@ -20,24 +20,28 @@ pub(super) struct Graph {
 enum Product {
     Root(Arc<crate::contextual::product::Cell>),
     Tool(Arc<crate::contextual::product::tool::Node>),
+    Provider(Arc<crate::contextual::product::provider::Node>),
 }
 impl Product {
     fn close(&self) {
         match self {
             Self::Root(root) => root.close(),
             Self::Tool(node) => node.close(),
+            Self::Provider(node) => node.close(),
         }
     }
     async fn join(&self) -> Result<(), ExtensionError> {
         match self {
             Self::Root(root) => root.join().await,
             Self::Tool(node) => node.join().await,
+            Self::Provider(node) => node.join().await,
         }
     }
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Root(left), Self::Root(right)) => Arc::ptr_eq(left, right),
             (Self::Tool(left), Self::Tool(right)) => Arc::ptr_eq(left, right),
+            (Self::Provider(left), Self::Provider(right)) => Arc::ptr_eq(left, right),
             _ => false,
         }
     }
@@ -303,6 +307,17 @@ impl Graph {
         let member = members[index].as_mut().expect("entered tool member");
         assert!(member.root.is_none());
         member.root = Some(Product::Tool(node));
+        member.joined = None;
+    }
+    pub(super) fn provider(
+        &self,
+        index: usize,
+        node: Arc<crate::contextual::product::provider::Node>,
+    ) {
+        let mut members = self.members.lock().unwrap();
+        let member = members[index].as_mut().expect("entered provider member");
+        assert!(member.root.is_none());
+        member.root = Some(Product::Provider(node));
         member.joined = None;
     }
     pub(super) fn failed(&self, index: usize) {

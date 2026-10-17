@@ -93,3 +93,9 @@ pub use contextual::product::tool::{
     ContextualToolProduct, ContextualToolProductFactory, ContextualToolProductObservation,
     DisposedContextualToolProduct,
 };
+
+// Fixed-route unique Box products; no native or resource-policy authority.
+pub use contextual::product::provider::{
+    ContextualProviderBindingBody, ContextualProviderProduct, ContextualProviderProductFactory,
+    ContextualStreamerProduct,
+};

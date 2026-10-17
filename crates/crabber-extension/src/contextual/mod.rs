@@ -110,6 +110,7 @@ enum FactoryBody {
     Extension(Arc<dyn ExtensionFactory>),
     ProductRoot(Arc<dyn ContextualProductFactory>),
     ToolProduct(Arc<dyn product::tool::ContextualToolProductFactory>),
+    ProviderProduct(Arc<dyn product::provider::ContextualProviderProductFactory>),
 }
 struct FactoryRegistration {
     root_component: Option<ComponentIdentity>,

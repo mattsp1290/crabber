@@ -12,6 +12,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod actor;
+pub(crate) use actor::{Actor, ActorClose};
 mod caller;
 mod inline;
 pub(crate) use caller::current;
@@ -67,12 +69,16 @@ impl Entries {
 struct Task {
     join: AsyncMutex<Option<JoinHandle<bool>>>,
     result: Mutex<Option<bool>>,
+    actor: Option<actor::Observation>,
     // Release only AFTER observing the actual task join, never on output send.
     member: Mutex<Option<MountMemberLease>>,
     cancel: CancellationToken,
 }
 impl Task {
     async fn join(&self) -> bool {
+        if let Some(actor) = &self.actor {
+            return actor.join(&self.result).await;
+        }
         let mut join = self.join.lock().await;
         if let Some(handle) = join.as_mut() {
             let success = match handle.await {
@@ -145,10 +151,16 @@ impl OriginalRoster {
 }
 impl State {
     pub(super) fn close(&self) {
-        let mut entries = self.tasks.lock().unwrap();
-        entries.sealed = true;
-        for task in &entries.tasks {
+        let tasks = {
+            let mut entries = self.tasks.lock().unwrap();
+            entries.sealed = true;
+            entries.tasks.clone()
+        };
+        for task in tasks {
             task.cancel.cancel();
+            if let Some(actor) = &task.actor {
+                actor.close();
+            }
         }
         self.changed.notify_waiters();
     }
@@ -170,10 +182,13 @@ impl State {
         let tasks = self.tasks.lock().unwrap().tasks.clone();
         for task in tasks {
             // Only observe completed actual handles; never wait behind live work.
-            let finished = task
-                .join
-                .try_lock()
-                .is_ok_and(|join| join.as_ref().is_some_and(JoinHandle::is_finished));
+            let finished = if let Some(actor) = &task.actor {
+                actor.observer_finished()
+            } else {
+                task.join
+                    .try_lock()
+                    .is_ok_and(|join| join.as_ref().is_some_and(JoinHandle::is_finished))
+            };
             if finished {
                 task.join().await;
             }
@@ -270,6 +285,7 @@ impl Source {
             task = Arc::new(Task {
                 join: AsyncMutex::new(Some(handle)),
                 result: Mutex::new(None),
+                actor: None,
                 member: Mutex::new(Some(MountMemberLease(Some(mount.clone())))),
                 cancel: task_cancel,
             });

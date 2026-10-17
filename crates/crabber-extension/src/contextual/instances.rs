@@ -262,6 +262,46 @@ impl ContextualPlanProvider {
         Ok(())
     }
 
+    async fn install_product(
+        &self,
+        slot: &Arc<Slot>,
+        scope: FactoryScope,
+        index: usize,
+        registration: &FactoryRegistration,
+        factory_context: FactoryContext,
+    ) -> Result<Option<FactoryContext>, ExtensionError> {
+        match &registration.factory {
+            super::FactoryBody::ProductRoot(factory) => {
+                super::product::create_member(slot, index, factory, factory_context).await?;
+                Ok(None)
+            }
+            super::FactoryBody::ToolProduct(_) => {
+                super::product::tool::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
+            super::FactoryBody::ProviderProduct(_) => {
+                super::product::provider::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
+            super::FactoryBody::Extension(_) => Ok(Some(factory_context)),
+        }
+    }
     async fn install_factories(
         &self,
         slot: &Arc<Slot>,
@@ -275,24 +315,14 @@ impl ContextualPlanProvider {
             let failed = || ExtensionError::ContextInitializationFailed {
                 component: registration.identity.id.clone(),
             };
-            let factory = match &registration.factory {
-                super::FactoryBody::ProductRoot(factory) => {
-                    super::product::create_member(slot, index, factory, factory_context).await?;
-                    continue;
-                }
-                super::FactoryBody::ToolProduct(_) => {
-                    super::product::tool::install(
-                        self,
-                        slot,
-                        scope,
-                        index,
-                        registration,
-                        factory_context,
-                    )
-                    .await?;
-                    continue;
-                }
-                super::FactoryBody::Extension(factory) => factory,
+            let Some(factory_context) = self
+                .install_product(slot, scope, index, registration, factory_context)
+                .await?
+            else {
+                continue;
+            };
+            let super::FactoryBody::Extension(factory) = &registration.factory else {
+                unreachable!("product handled")
             };
             let extension = AssertUnwindSafe(factory.create(factory_context))
                 .catch_unwind()

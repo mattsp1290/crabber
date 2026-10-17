@@ -86,6 +86,10 @@ impl CallbackInvocationCapability {
             Err(ResourceFailure::CleanupFailed)
         }
     }
+    pub(crate) fn matches_current(&self) -> bool {
+        !self.is_closed()
+            && current().is_some_and(|current| Arc::ptr_eq(&self.state, &current.state))
+    }
     pub(super) async fn reap(&self) {
         self.state.reap().await;
     }

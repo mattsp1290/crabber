@@ -21,8 +21,8 @@ use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
 pub(crate) use owned::current_callback_invocations;
+pub(crate) use owned::{Actor, ActorClose, InvocationSource, OriginalRoster};
 pub use owned::{CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations};
-pub(crate) use owned::{InvocationSource, OriginalRoster};
 pub use owned::{OwnedMountHandle, OwnedMountJoin};
 pub(crate) use profile::RegistrationSnapshot;
 use serde::Serialize;
@@ -124,6 +124,8 @@ pub struct Registrar {
     services: HostServices,
     tools: Vec<Arc<ToolDefinition>>,
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
+    product_providers:
+        std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
     prompts: Vec<Arc<PromptSection>>,
     guards: Vec<Arc<dyn ToolGuard>>,
     restrictions: Vec<Vec<String>>,
@@ -138,6 +140,7 @@ impl Registrar {
             services: HostServices::default(),
             tools: vec![],
             product_tools: std::collections::BTreeMap::new(),
+            product_providers: std::collections::BTreeMap::new(),
             prompts: vec![],
             guards: vec![],
             restrictions: vec![],
@@ -159,6 +162,15 @@ impl Registrar {
         let index = self.tools.len();
         self.tools.push(node.template()?);
         self.product_tools.insert(index, node);
+        Ok(())
+    }
+    pub(crate) fn product_provider(
+        &mut self,
+        node: Arc<crate::contextual::product::provider::Node>,
+    ) -> Result<(), ExtensionError> {
+        let index = self.providers.len();
+        self.providers.push(node.template()?);
+        self.product_providers.insert(index, node);
         Ok(())
     }
     pub fn tool(&mut self, tool: Arc<ToolDefinition>) {
@@ -909,7 +921,12 @@ impl Registry {
             if mount.owned.is_some() {
                 invocations.push((mount.id, InvocationSource::new(mount)));
             }
-            providers.extend(r.providers.iter().cloned());
+            for (index, provider) in r.providers.iter().enumerate() {
+                providers.push(match r.product_providers.get(&index) {
+                    Some(node) => node.project(InvocationSource::new(mount))?,
+                    None => provider.clone(),
+                });
+            }
             let overrides = if mount.owned.is_some() {
                 owned::services::project(&r.services, &InvocationSource::new(mount))
             } else {
@@ -1018,6 +1035,31 @@ impl RegistrationIdentity {
         }
     }
 }
+fn append_provider_components(
+    r: &Registrar,
+    components: &mut Vec<ComponentIdentity>,
+    captured: Option<&CapturedRegistration>,
+) {
+    for (index, provider) in r.providers.iter().enumerate() {
+        if let Some(node) = r.product_providers.get(&index) {
+            components.push(ComponentIdentity {
+                id: "contextual.provider-product-routes".into(),
+                version: node.fingerprint(),
+            });
+        }
+        let (id, name) = captured.map_or_else(
+            || {
+                let info = provider.info();
+                (info.id, info.name)
+            },
+            |captured| captured.providers[index].clone(),
+        );
+        components.push(ComponentIdentity {
+            id: format!("provider:{id}"),
+            version: name,
+        });
+    }
+}
 fn append_registration_components(
     identity: &RegistrationIdentity,
     scope_rank: u8,
@@ -1083,19 +1125,7 @@ fn append_registration_components(
             version: handler_version(h, plan_sequence),
         });
     }
-    for (index, provider) in r.providers.iter().enumerate() {
-        let (id, name) = captured.map_or_else(
-            || {
-                let info = provider.info();
-                (info.id, info.name)
-            },
-            |captured| captured.providers[index].clone(),
-        );
-        components.push(ComponentIdentity {
-            id: format!("provider:{id}"),
-            version: name,
-        });
-    }
+    append_provider_components(r, components, captured);
     let service_presence = [
         r.services.subprocess.is_some(),
         r.services.workspace_fs.is_some(),

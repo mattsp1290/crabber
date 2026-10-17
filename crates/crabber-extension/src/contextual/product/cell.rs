@@ -35,6 +35,8 @@ struct Task {
 }
 pub(in crate::contextual) struct Cell {
     owner: Owner,
+    drop_context: Mutex<Option<crate::dispatch::CallbackTaskContext>>,
+    drop_context_missing: std::sync::atomic::AtomicBool,
     runtime: tokio::runtime::Handle,
     published: Mutex<Option<JoinHandle<bool>>>,
     value: Mutex<Value>,
@@ -56,6 +58,8 @@ impl Cell {
     pub(in crate::contextual) fn new(owner: Owner) -> Arc<Self> {
         let cell = Arc::new(Self {
             owner,
+            drop_context: Mutex::new(None),
+            drop_context_missing: std::sync::atomic::AtomicBool::new(false),
             runtime: tokio::runtime::Handle::current(),
             published: Mutex::new(None),
             value: Mutex::new(Value::default()),
@@ -82,6 +86,17 @@ impl Cell {
             .handle = Some(task);
         let _ = release.send(());
         cell
+    }
+    pub(in crate::contextual) fn with_callback_drop_context(&self, require_owner: bool) -> bool {
+        let present = !require_owner || crate::registry::current_callback_invocations().is_some();
+        if !present {
+            self.drop_context_missing
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return false;
+        }
+        *self.drop_context.lock().unwrap() =
+            Some(crate::dispatch::CallbackTaskContext::capture_existing());
+        true
     }
     pub(in crate::contextual) fn install(self: &Arc<Self>, root: Box<dyn ContextualProductRoot>) {
         let mut value = self.value.lock().unwrap();
@@ -132,12 +147,19 @@ impl Cell {
     // Synchronous ingress launches the actual destructor before returning to
     // untrusted create-future disposal; an async actor may not have polled yet.
     fn launch(self: &Arc<Self>, value: &mut Value) {
-        if !value.closing || value.stage != RootStage::Installed {
+        if self
+            .drop_context_missing
+            .load(std::sync::atomic::Ordering::SeqCst)
+            || !value.closing
+            || value.stage != RootStage::Installed
+        {
             return;
         }
         let (release, ready) = oneshot::channel();
         let cell = self.clone();
         let owner = self.owner.clone();
+        let context = self.drop_context.lock().unwrap().take();
+        let runtime = self.runtime.clone();
         let handle = self.runtime.spawn_blocking(move || {
             INITIALIZING.sync_scope(owner, || {
                 if ready.blocking_recv().is_err() {
@@ -150,12 +172,16 @@ impl Cell {
                     .root
                     .take()
                     .expect("installed original root");
-                match std::panic::catch_unwind(AssertUnwindSafe(|| drop(root))) {
+                let dispose = || match std::panic::catch_unwind(AssertUnwindSafe(|| drop(root))) {
                     Ok(()) => true,
                     Err(payload) => {
                         crate::dispatch::discard_panic_payload(payload);
                         false
                     }
+                };
+                match context {
+                    Some(context) => runtime.block_on(context.scope(async move { dispose() })),
+                    None => dispose(),
                 }
             })
         });

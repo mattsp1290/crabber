@@ -687,10 +687,13 @@ pub(crate) struct CallbackTaskContext {
 }
 impl CallbackTaskContext {
     pub(crate) fn capture(mount: u64) -> Self {
-        let mut mounts = ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default();
-        mounts.push(mount);
+        let mut context = Self::capture_existing();
+        context.mounts.push(mount);
+        context
+    }
+    pub(crate) fn capture_existing() -> Self {
         Self {
-            mounts,
+            mounts: ACTIVE_MOUNTS.try_with(Clone::clone).unwrap_or_default(),
             next: ACTIVE_NEXT.try_with(|next| *next).ok(),
             initialization: crate::contextual::InitializationContext::capture(),
             state: crate::current_state_sink(),

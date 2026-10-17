@@ -6,9 +6,9 @@ pub(super) mod tools;
 use super::{ExtensionError, Mount, MountCloseTimeout, MountHandle, dispatch};
 use crate::{ComponentIdentity, ResourceDrain, ResourceFailure, ToolResourceOwner};
 use futures::FutureExt;
-pub(crate) use invocations::OriginalRoster;
 pub(crate) use invocations::Source as InvocationSource;
 pub(crate) use invocations::current as current_callback_invocations;
+pub(crate) use invocations::{Actor, ActorClose, OriginalRoster};
 pub use invocations::{
     CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations,
 };
