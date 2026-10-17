@@ -7,6 +7,8 @@ pub(crate) trait Harness: Store {
     fn probe(&self) -> &Probe;
     fn fault(&self, stage: u8);
     fn phase_fault(&self, stage: u8);
+    fn initial_fault(&self, stage: u8);
+    async fn initial_retained(&self, session: &SessionId) -> InputFingerprint;
     async fn phase_with_proof(
         &self,
         fence: crabber_core::RunFence,
@@ -144,3 +146,6 @@ pub(crate) use compat_contract::run as compatibility;
 #[path = "recovery_contract.rs"]
 mod recovery_contract;
 pub(crate) use recovery_contract::run as recoveries;
+#[path = "initial_contract.rs"]
+mod initial;
+pub(crate) use initial::run as initials;

@@ -58,43 +58,56 @@ impl super::super::MemoryStore {
                 )?)
             }
             PreparedOperation::Admit(bound) => {
+                read_proof
+                    .measure(&(&bound.request, &bound.binding))
+                    .map_err(|_| crate::StoreError::Conflict)?;
                 bound.binding.validate(&bound.request)?;
-                let admitted = super::super::super::admission::admit_transaction_with_proof(
+                let captured = super::super::super::admission::admit_transaction_captured(
                     state,
                     &bound.request,
                     self.clock.now(),
                     false,
                     guard,
+                    crate::native_enrollment::caller::Caller::Raw,
                     read_proof,
                 )?;
                 let retained = RetainedExecutionBinding::new(
-                    &admitted.run,
+                    &captured.admitted.run,
                     &bound.request.user_message,
-                    bound.binding,
+                    bound.binding.clone(),
                 );
                 state
                     .execution_bindings
-                    .insert(admitted.run.id.clone(), retained.encode()?);
+                    .insert(captured.admitted.run.id.clone(), retained.encode()?);
+                let admitted = super::super::super::admission::finish_initial(
+                    state,
+                    crate::native_enrollment::caller::initial::Input::Bound {
+                        request: &bound.request,
+                        binding: &bound.binding,
+                    },
+                    captured,
+                    read_proof,
+                    #[cfg(test)]
+                    &self.native_raw_probe,
+                )?;
                 PreparationCompletion::Admitted(admitted)
             }
             PreparedOperation::AdmitKeyed(bound) => {
-                let outcome = super::super::super::admission::admit_keyed_with_proof(
-                    state,
-                    &bound.keyed,
-                    self.clock.now(),
-                    guard,
-                    read_proof,
-                )?;
-                if let KeyedAdmitOutcome::Started { admitted, .. } = &outcome {
-                    let retained = RetainedExecutionBinding::new(
-                        &admitted.run,
-                        &bound.keyed.request.user_message,
-                        bound.binding,
-                    );
-                    state
-                        .execution_bindings
-                        .insert(admitted.run.id.clone(), retained.encode()?);
-                }
+                read_proof
+                    .measure(&(&bound.keyed, &bound.binding))
+                    .map_err(|_| crate::StoreError::Conflict)?;
+                let outcome=match super::super::super::admission::admit_keyed_captured(state,&bound.keyed,self.clock.now(),guard,
+                    crate::native_enrollment::caller::Caller::Raw,read_proof)?{
+                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Replayed(receipt)=>KeyedAdmitOutcome::Replayed(receipt),
+                    crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started{receipt,admitted}=>{
+                        let retained=RetainedExecutionBinding::new(&admitted.admitted.run,&bound.keyed.request.user_message,bound.binding.clone());
+                        state.execution_bindings.insert(admitted.admitted.run.id.clone(),retained.encode()?);
+                        let admitted=super::super::super::admission::finish_initial(state,
+                            crate::native_enrollment::caller::initial::Input::BoundKeyed{request:&bound.keyed,binding:&bound.binding,receipt:&receipt},*admitted,read_proof,
+                            #[cfg(test)] &self.native_raw_probe)?;
+                        KeyedAdmitOutcome::Started{receipt,admitted:Box::new(admitted)}
+                    }
+                };
                 PreparationCompletion::Keyed(outcome)
             }
         };

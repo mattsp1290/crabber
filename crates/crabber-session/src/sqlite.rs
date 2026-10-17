@@ -1,5 +1,7 @@
 //! File-backed SQLite lifecycle. Migration owns schema and journal changes;
 //! connecting only verifies a current-version Crabber database already using WAL.
+#[path = "sqlite/admission_reads.rs"]
+mod admission_reads;
 #[path = "sqlite/expired.rs"]
 mod expired;
 #[path = "sqlite/read_proof.rs"]

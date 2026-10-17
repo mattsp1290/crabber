@@ -24,6 +24,9 @@ impl super::SqliteStore {
         require_approval_birth: bool,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
+        let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        crate::native_enrollment::caller::initial::preparation_input(&joined, &mut read_proof)
+            .map_err(|_| Error::Capacity)?;
         joined.verify_original_intent()?;
         let session = joined
             .observed_grant()
@@ -41,10 +44,11 @@ impl super::SqliteStore {
             if let Some(outcome) = self.replay_prepared(&mut tx, &joined).await? {
                 return Ok(crate::session_owner::preparation::driver_completion::replayed(outcome));
             }
+            read_proof.charge(2).map_err(|_| Error::Capacity)?;
             reads::scope(&mut tx, &session)
                 .await
                 .map_err(storage_error)?;
-            let mut record = reads::current(
+            let mut record = reads::current_with_proof(
                 &mut tx,
                 &session,
                 &joined
@@ -53,10 +57,10 @@ impl super::SqliteStore {
                     .owner
                     .binding
                     .id,
+                &mut read_proof,
             )
             .await
             .map_err(storage_error)?;
-            let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
             require_birth(&mut tx, &joined, require_approval_birth, &mut read_proof).await?;
             let mut proof = Box::pin(self.verify_service_preparation(
                 &mut tx,

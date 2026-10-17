@@ -220,19 +220,25 @@ mod tests;
 /// Admission uses the same bounded, coherent decoder as metadata reads. Missing
 /// metadata is the explicit legacy baseline; contradictory persisted metadata
 /// cannot bypass archive visibility by changing only its relational index.
-pub(super) async fn admission_archived(
+pub(super) async fn admission_archived_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     id: &SessionId,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<bool, crate::StoreError> {
-    let query = format!("{CURRENT} AND m.session_id IS NOT NULL");
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(s.id)+octet_length(s.data::text)+COALESCE(octet_length(m.workspace_id),0)+COALESCE(octet_length(m.data_json),0)+16 AS BIGINT) FROM sessions s JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&id.0),proof).await.map_err(|_|crate::StoreError::Conflict)?;
+    let query = format!(
+        "{} AND m.session_id IS NOT NULL",
+        CURRENT.replace(
+            "m.workspace_id",
+            "CASE WHEN octet_length(m.workspace_id)<=512 THEN m.workspace_id END AS workspace_id"
+        )
+    );
     let row = sqlx::query(&query)
         .bind(&id.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?;
-    let Some(row) = row else {
-        return Ok(false);
-    };
+    let Some(row) = row else { return Ok(false) };
     let (_, metadata, _) = decode_current(&row)
         .map_err(|_| crate::StoreError::Validation("invalid session management metadata".into()))?;
     Ok(metadata.archived)

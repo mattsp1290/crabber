@@ -74,9 +74,8 @@ pub(super) async fn save_run_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    save_run_captured_with_proof(tx, run, source, proof)
-        .await
-        .map(|_| ())
+    super::native_parent::record_run_with_proof(tx, run, false, source, proof).await?;
+    update_run_row(tx, run).await
 }
 pub(super) async fn save_run_captured_with_proof(
     tx: &mut Transaction<'_, Sqlite>,
@@ -84,8 +83,32 @@ pub(super) async fn save_run_captured_with_proof(
     source: Option<&crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<u64>, StoreError> {
-    let captured =
-        super::native_parent::record_run_captured_with_proof(tx, run, false, source, proof).await?;
+    save_run_publication_with_proof(
+        tx,
+        run,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .await
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+pub(super) async fn save_run_publication_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, StoreError> {
+    let captured = super::native_parent::record_run_publication_with_proof(
+        tx, run, false, source, proof, capture,
+    )
+    .await?;
+    update_run_row(tx, run).await?;
+    Ok(captured)
+}
+
+async fn update_run_row(tx: &mut Transaction<'_, Sqlite>, run: &Run) -> Result<(), StoreError> {
     sqlx::query(
         "UPDATE runs SET status=$2, claim_token=$3, lease_until=$4, data=$5 WHERE \
             id=$1",
@@ -98,7 +121,7 @@ pub(super) async fn save_run_captured_with_proof(
     .execute(&mut **tx)
     .await
     .map_err(db)?;
-    Ok(captured)
+    Ok(())
 }
 pub(super) async fn save_call(
     tx: &mut Transaction<'_, Sqlite>,

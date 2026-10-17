@@ -22,6 +22,7 @@ mod current;
 #[path = "tool_continuation/scan.rs"]
 pub(super) mod scan;
 pub(super) use scan::pending as pending_in_session;
+pub(super) use scan::pending_with_proof as pending_in_session_with_proof;
 fn active(state: &State, run: &Run) -> Result<Option<ToolContinuationRecord>, Error> {
     scan::run(state, run).map(|(_, active)| active)
 }

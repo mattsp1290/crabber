@@ -108,7 +108,7 @@ impl PostgresStore {
             now,
             preparation,
         )?;
-        let admitted = self
+        let pending_initial = self
             .queue_admission(tx, &mut change, preparation, read_proof)
             .await?;
         super::bump_public_revision(tx, &request.session_id).await?;
@@ -124,6 +124,9 @@ impl PostgresStore {
             revision: SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
             summary: change.record.summary.clone(),
         };
+        let admitted = self
+            .finish_queue_initial(tx, &request, &saved, pending_initial, read_proof)
+            .await?;
         let audit = Audit {
             request,
             receipt: saved.clone(),

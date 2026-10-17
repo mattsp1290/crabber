@@ -1,49 +1,113 @@
 //! Transaction-only admission helpers shared by bound and legacy entry points.
 use super::{State, initial_epoch, insert_message, project_messages};
+use crate::native_enrollment::caller::{
+    Caller, Fresh,
+    initial::{CapturedAdmission, CapturedKeyedAdmission, Initial, Input},
+};
 use crate::{AdmitOutcome, AdmitRequest, KeyedAdmitOutcome, KeyedAdmitRequest, StoreError};
 use crabber_core::{
     AdmissionReceipt, EpochId, MessageId, Run, RunFence, RunId, RunStatus, Session, Usage,
 };
 use time::OffsetDateTime;
 
-pub(super) fn admit_transaction(
-    state: &mut State,
+pub(super) fn selected(
+    state: &State,
     request: &AdmitRequest,
-    now: OffsetDateTime,
-    allow_create: bool,
-) -> Result<AdmitOutcome, StoreError> {
-    admit_transaction_guarded(
-        state,
-        request,
-        now,
-        allow_create,
-        crate::queue::AdmissionGuard::Ordinary,
-    )
-}
-pub(super) fn admit_transaction_guarded(
-    state: &mut State,
-    request: &AdmitRequest,
-    now: OffsetDateTime,
-    allow_create: bool,
-    guard: crate::queue::AdmissionGuard<'_>,
-) -> Result<AdmitOutcome, StoreError> {
-    admit_transaction_with_proof(
-        state,
-        request,
-        now,
-        allow_create,
-        guard,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-}
-pub(super) fn admit_transaction_with_proof(
-    state: &mut State,
-    request: &AdmitRequest,
-    now: OffsetDateTime,
-    allow_create: bool,
-    guard: crate::queue::AdmissionGuard<'_>,
+    keyed: Option<&KeyedAdmitRequest>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<AdmitOutcome, StoreError> {
+) -> Result<(), StoreError> {
+    proof.measure(request).map_err(initial_invalid)?;
+    let session = request
+        .session_id
+        .as_ref()
+        .unwrap_or(&request.user_message.session_id);
+    proof
+        .measure(&state.sessions.get(session))
+        .map_err(initial_invalid)?;
+    if let Some(keyed) = keyed {
+        proof.measure(keyed).map_err(initial_invalid)?;
+        if let Some(receipt) = state
+            .receipts
+            .get(&(session.clone(), keyed.options.key.clone()))
+        {
+            proof.measure(receipt).map_err(initial_invalid)?;
+            return Ok(());
+        }
+    }
+    state
+        .session_owners
+        .context_with_proof(session, &request.workspace_id, &request.directory, proof)
+        .map_err(|_| StoreError::Conflict)?;
+    proof
+        .measure(&state.management.get(session))
+        .map_err(initial_invalid)?;
+    for record in state
+        .queue
+        .values()
+        .filter(|r| r.summary.session_id == *session)
+    {
+        // This guard borrows only routing, state and preparation presence. Queue
+        // selection separately charges the full selected head before cloning;
+        // unrelated backlog inputs are not materialized by this admission read.
+        proof
+            .measure(&(
+                &record.summary.session_id,
+                record.summary.state,
+                record.prepared.is_some(),
+            ))
+            .map_err(initial_invalid)?;
+    }
+    for run in state.runs.values().filter(|r| r.session_id == *session) {
+        proof.measure(run).map_err(initial_invalid)?;
+    }
+    if let Some(run) = state
+        .run_order
+        .iter()
+        .rev()
+        .filter_map(|id| state.runs.get(id))
+        .find(|r| r.session_id == *session)
+    {
+        proof
+            .measure(&state.epochs.get(&run.epoch_id))
+            .map_err(initial_invalid)?;
+    }
+    for message in state.messages.iter().filter(|m| m.session_id == *session) {
+        proof.measure(message).map_err(initial_invalid)?;
+    }
+    pending_with_proof(state, session, proof)?;
+    Ok(())
+}
+fn pending_with_proof(
+    state: &State,
+    session: &crabber_core::SessionId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<bool, StoreError> {
+    super::approval::verify_session_with_proof(state, session, proof).map_err(|error| {
+        error
+            .map_domain(|_| StoreError::Validation("approval integrity failure".into()))
+            .into_domain_or(initial_invalid("approval proof budget"))
+    })?;
+    let pending = super::tool_continuation::pending_in_session_with_proof(state, session, proof)
+        .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?;
+    proof
+        .measure(&state.approval_barriers.get(session))
+        .map_err(initial_invalid)?;
+    Ok(state.approval_barriers.contains_key(session) || pending)
+}
+pub(super) fn admit_transaction_captured(
+    state: &mut State,
+    request: &AdmitRequest,
+    now: OffsetDateTime,
+    allow_create: bool,
+    guard: crate::queue::AdmissionGuard<'_>,
+    caller: Caller,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<CapturedAdmission, StoreError> {
+    match caller {
+        Caller::Raw => (),
+    }
+    proof.measure(request).map_err(initial_invalid)?;
+    selected(state, request, None, proof)?;
     guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
         request.validate_messages()?;
@@ -55,7 +119,7 @@ pub(super) fn admit_transaction_with_proof(
     }
     let session = admission_session(state, request, now, allow_create, guard)?;
     let session_id = session.id.clone();
-    admission_guards(state, &session_id, guard)?;
+    admission_guards(state, &session_id, guard, proof)?;
     request.validate_messages()?;
     if request.user_message.session_id != session_id {
         return Err(StoreError::Validation(
@@ -110,7 +174,7 @@ pub(super) fn admit_transaction_with_proof(
         insert_message(state, &run, message)?;
     }
     let new_session = !state.sessions.contains_key(&session_id);
-    record_ownership(state, &session, &run, new_session, guard, proof)?;
+    let first = record_ownership(state, &session, &run, new_session, guard, proof)?;
     if new_session {
         super::native_parent::source_protocol::session_birth(state, &session_id)
             .map_err(|_| StoreError::Conflict)?;
@@ -121,16 +185,19 @@ pub(super) fn admit_transaction_with_proof(
     let epoch = initial_epoch(epoch_id.clone(), session_id, run_id.clone(), previous_epoch);
     crate::ensure_storable(&epoch)?;
     state.epochs.insert(epoch_id.clone(), epoch);
-    Ok(AdmitOutcome {
-        session,
-        run,
-        fence: RunFence {
-            run_id,
-            claim_token: token,
+    Ok(CapturedAdmission {
+        first,
+        admitted: AdmitOutcome {
+            session,
+            run,
+            fence: RunFence {
+                run_id,
+                claim_token: token,
+            },
+            assistant_placeholder: MessageId::new(),
+            epoch: epoch_id,
+            prior_history,
         },
-        assistant_placeholder: MessageId::new(),
-        epoch: epoch_id,
-        prior_history,
     })
 }
 
@@ -138,6 +205,7 @@ fn admission_guards(
     state: &State,
     session_id: &crabber_core::SessionId,
     guard: crate::queue::AdmissionGuard<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
     if state
         .management
@@ -155,7 +223,7 @@ fn admission_guards(
     {
         return Err(StoreError::Busy);
     }
-    if super::has_pending_continuation(state, session_id)? {
+    if pending_with_proof(state, session_id, proof)? {
         return Err(StoreError::Busy);
     }
 
@@ -221,27 +289,7 @@ fn admission_session(
     Ok(session)
 }
 
-pub(super) fn admit_keyed_transaction(
-    state: &mut State,
-    keyed: &KeyedAdmitRequest,
-    now: OffsetDateTime,
-) -> Result<KeyedAdmitOutcome, StoreError> {
-    admit_keyed_guarded(state, keyed, now, crate::queue::AdmissionGuard::Ordinary)
-}
-pub(super) fn admit_keyed_guarded(
-    state: &mut State,
-    keyed: &KeyedAdmitRequest,
-    now: OffsetDateTime,
-    guard: crate::queue::AdmissionGuard<'_>,
-) -> Result<KeyedAdmitOutcome, StoreError> {
-    admit_keyed_with_proof(
-        state,
-        keyed,
-        now,
-        guard,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-}
+#[cfg(test)]
 pub(super) fn admit_keyed_with_proof(
     state: &mut State,
     keyed: &KeyedAdmitRequest,
@@ -249,7 +297,36 @@ pub(super) fn admit_keyed_with_proof(
     guard: crate::queue::AdmissionGuard<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<KeyedAdmitOutcome, StoreError> {
-    let digest = keyed.validated_digest()?;
+    let captured = admit_keyed_captured(state, keyed, now, guard, Caller::Raw, proof)?;
+    match captured {
+        CapturedKeyedAdmission::Replayed(receipt) => Ok(KeyedAdmitOutcome::Replayed(receipt)),
+        CapturedKeyedAdmission::Started { receipt, admitted } => {
+            let admitted = finish_initial(
+                state,
+                Input::Keyed {
+                    request: keyed,
+                    receipt: &receipt,
+                },
+                *admitted,
+                proof,
+                #[cfg(test)]
+                &crate::native_enrollment::caller::Probe::default(),
+            )?;
+            Ok(KeyedAdmitOutcome::Started {
+                receipt,
+                admitted: Box::new(admitted),
+            })
+        }
+    }
+}
+pub(super) fn admit_keyed_captured(
+    state: &mut State,
+    keyed: &KeyedAdmitRequest,
+    now: OffsetDateTime,
+    guard: crate::queue::AdmissionGuard<'_>,
+    caller: Caller,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<CapturedKeyedAdmission, StoreError> {
     let request = &keyed.request;
     let session_id = request
         .session_id
@@ -261,11 +338,16 @@ pub(super) fn admit_keyed_with_proof(
     }
     let key = (session_id.clone(), keyed.options.key.clone());
     if let Some(receipt) = state.receipts.get(&key) {
+        // Historical exact replay keeps its existing bounded-domain validation;
+        // this fresh-only witness does not claim to bound replay materialization.
+        let digest = keyed.validated_digest()?;
         if receipt.fingerprint != keyed.options.fingerprint || receipt.semantic_digest != digest {
             return Err(StoreError::AdmissionConflict);
         }
-        return Ok(KeyedAdmitOutcome::Replayed(receipt.clone()));
+        return Ok(CapturedKeyedAdmission::Replayed(receipt.clone()));
     }
+    proof.measure(keyed).map_err(initial_invalid)?;
+    let digest = keyed.validated_digest()?;
     if guard.is_ordinary()
         && state.queue.values().any(|record| {
             record.summary.session_id == *session_id
@@ -274,7 +356,8 @@ pub(super) fn admit_keyed_with_proof(
     {
         return Err(StoreError::AdmissionConflict);
     }
-    let admitted = admit_transaction_with_proof(state, request, now, true, guard, proof)?;
+    let captured = admit_transaction_captured(state, request, now, true, guard, caller, proof)?;
+    let admitted = &captured.admitted;
     let receipt = AdmissionReceipt {
         session_id: session_id.clone(),
         run_id: admitted.run.id.clone(),
@@ -306,9 +389,14 @@ pub(super) fn admit_keyed_with_proof(
             .insert(admitted.run.id.clone(), execution);
     }
     state.receipts.insert(key, receipt.clone());
-    Ok(KeyedAdmitOutcome::Started {
+    proof
+        .charge(std::mem::size_of::<
+            crate::native_enrollment::caller::initial::CapturedAdmission,
+        >())
+        .map_err(initial_invalid)?;
+    Ok(CapturedKeyedAdmission::Started {
         receipt,
-        admitted: Box::new(admitted),
+        admitted: Box::new(captured),
     })
 }
 
@@ -319,7 +407,8 @@ fn record_ownership(
     new_session: bool,
     guard: crate::queue::AdmissionGuard<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), StoreError> {
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, StoreError> {
+    proof.measure(&(session, run)).map_err(initial_invalid)?;
     let invalid = |_| StoreError::Validation("preparation admission evidence unavailable".into());
     let witness = guard
         .preparation()
@@ -340,20 +429,129 @@ fn record_ownership(
         .map_err(invalid)?
         .flatten();
     if let Some(witness) = witness {
+        proof.measure(&witness).map_err(initial_invalid)?;
         let origin = if new_session {
             Some(crate::deletion::origin::OwnershipOrigin::prepared(&witness).map_err(invalid)?)
         } else {
             None
         };
-        super::native_parent::record_owned_admission_with_proof(state, run, witness, proof)
-            .map_err(|_| StoreError::Conflict)?;
+        let first =
+            super::native_parent::record_owned_admission_with_proof(state, run, witness, proof)
+                .map_err(|_| StoreError::Conflict)?;
         if let Some(origin) = origin {
             state.ownership_protocol_sessions.insert(session.id.clone());
             state.ownership_origins.insert(session.id.clone(), origin);
         }
+        Ok(first)
     } else {
-        super::native_parent::record_run_with_proof(state, None, run, proof)
-            .map_err(|_| StoreError::Conflict)?;
+        super::native_parent::record_initial_run_with_proof(state, run, proof)
+            .map_err(|_| StoreError::Conflict)
     }
-    Ok(())
+}
+pub(super) fn finish_initial(
+    state: &State,
+    input: Input<'_>,
+    captured: CapturedAdmission,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    #[cfg(test)] probe: &crate::native_enrollment::caller::Probe,
+) -> Result<AdmitOutcome, StoreError> {
+    super::native_enrollment::record_raw_native(
+        state,
+        Caller::Raw,
+        &Fresh::Initial(Initial {
+            input,
+            result: &captured.admitted,
+            first: &captured.first,
+        }),
+        proof,
+        #[cfg(test)]
+        probe,
+    )
+    .map_err(initial_invalid)?;
+    Ok(captured.admitted)
+}
+fn initial_invalid(_: impl std::fmt::Debug) -> StoreError {
+    StoreError::Validation("native initial caller evidence unavailable".into())
+}
+
+impl super::MemoryStore {
+    pub(super) fn admit_raw(&self, request: &AdmitRequest) -> Result<AdmitOutcome, StoreError> {
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let result = self.transact_selected(
+            &mut proof,
+            |state, proof| {
+                selected(state, request, None, proof)?;
+                Ok(None)
+            },
+            |state, proof| {
+                let captured = admit_transaction_captured(
+                    state,
+                    request,
+                    self.clock.now(),
+                    false,
+                    crate::queue::AdmissionGuard::Ordinary,
+                    Caller::Raw,
+                    proof,
+                )?;
+                finish_initial(
+                    state,
+                    Input::Ordinary(request),
+                    captured,
+                    proof,
+                    #[cfg(test)]
+                    &self.native_raw_probe,
+                )
+            },
+        )?;
+        #[cfg(test)]
+        crate::binding_fault::trip(&self.binding_fault, 2)?;
+        Ok(result)
+    }
+    pub(super) fn admit_keyed_raw(
+        &self,
+        request: &KeyedAdmitRequest,
+    ) -> Result<KeyedAdmitOutcome, StoreError> {
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let result = self.transact_selected(
+            &mut proof,
+            |state, proof| {
+                selected(state, &request.request, Some(request), proof)?;
+                Ok(None)
+            },
+            |state, proof| match admit_keyed_captured(
+                state,
+                request,
+                self.clock.now(),
+                crate::queue::AdmissionGuard::Ordinary,
+                Caller::Raw,
+                proof,
+            )? {
+                CapturedKeyedAdmission::Replayed(receipt) => {
+                    Ok(KeyedAdmitOutcome::Replayed(receipt))
+                }
+                CapturedKeyedAdmission::Started { receipt, admitted } => {
+                    let admitted = finish_initial(
+                        state,
+                        Input::Keyed {
+                            request,
+                            receipt: &receipt,
+                        },
+                        *admitted,
+                        proof,
+                        #[cfg(test)]
+                        &self.native_raw_probe,
+                    )?;
+                    Ok(KeyedAdmitOutcome::Started {
+                        receipt,
+                        admitted: Box::new(admitted),
+                    })
+                }
+            },
+        )?;
+        #[cfg(test)]
+        if matches!(&result, KeyedAdmitOutcome::Started { .. }) {
+            crate::binding_fault::trip(&self.binding_fault, 2)?;
+        }
+        Ok(result)
+    }
 }

@@ -17,6 +17,16 @@ pub(in super::super) async fn pending(
         .await
         .map(|records| records.active.is_some())
 }
+pub(in super::super) async fn pending_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    proof: &mut Proof,
+) -> Result<bool, Error> {
+    scan_with_proof(tx, session, None, proof)
+        .await
+        .map(|records| records.active.is_some())
+        .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))
+}
 pub(super) async fn scan(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,

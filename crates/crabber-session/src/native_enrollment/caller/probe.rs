@@ -16,6 +16,7 @@ struct Selection {
 }
 #[derive(PartialEq, Eq)]
 enum Identity {
+    Initial,
     Control(ControlId),
     LegacyTool(RunId, ToolCallId),
     AdmissionBegin(RunId),
@@ -24,6 +25,7 @@ enum Identity {
 impl Identity {
     fn matches(&self, fresh: &Fresh<'_>) -> bool {
         match (self, fresh) {
+            (Self::Initial, Fresh::Initial(_)) => true,
             (Self::Control(id), Fresh::Attempt(a)) => *id == a.request.id,
             (Self::Control(id), Fresh::Phase(p)) => *id == p.request.id,
             (Self::AdmissionBegin(run), Fresh::AdmissionBegin(a)) => *run == a.run.id,
@@ -38,6 +40,15 @@ impl Probe {
         *self.0.lock().unwrap() = Some(Selection {
             session: session.clone(),
             operation: Identity::Control(operation.clone()),
+            refuse,
+            lose_ack: false,
+            hits: Vec::new(),
+        });
+    }
+    pub(crate) fn arm_initial(&self, session: &SessionId, refuse: bool) {
+        *self.0.lock().unwrap() = Some(Selection {
+            session: session.clone(),
+            operation: Identity::Initial,
             refuse,
             lose_ack: false,
             hits: Vec::new(),
@@ -109,6 +120,19 @@ impl Probe {
             return Ok(());
         };
         let digest = match fresh {
+            Fresh::Initial(i) => crate::native_enrollment::caller::contract::snapshot_digest(&(
+                "crabber.native.raw-initial.test.v1",
+                i.input.test_digest(),
+                &i.first.issuer,
+                &i.first.source,
+                &i.result.session,
+                &i.result.run,
+                &i.result.fence,
+                &i.result.assistant_placeholder,
+                &i.result.epoch,
+                &i.result.prior_history,
+            )),
+
             Fresh::AdmissionRecovery(a) => {
                 crate::native_enrollment::caller::contract::snapshot_digest(&(
                     "crabber.native.raw-admission-recovery.test.v1",

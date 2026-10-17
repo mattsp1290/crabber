@@ -192,6 +192,23 @@ pub(super) fn record_run_with_proof(
         proof,
     )
 }
+pub(super) fn record_initial_run_with_proof(
+    state: &mut State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
+    proof.measure(run).map_err(|_| Error)?;
+    record_run_states_output(
+        state,
+        None,
+        RunState::from_run(run)?,
+        None,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )?
+    .first
+    .ok_or(Error)
+}
 pub(super) fn record_run_completed(
     state: &mut State,
     previous: &Run,
@@ -210,7 +227,7 @@ pub(super) fn record_owned_admission_with_proof(
     run: &Run,
     witness: crate::session_owner::preparation::admission::Witness,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), Error> {
+) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
     proof.measure(&witness).map_err(|_| Error)?;
     let issuance = witness.initial_issuance(run).map_err(|_| Error)?;
     let key = (run.session_id.clone(), run.id.clone(), 1);
@@ -227,13 +244,16 @@ pub(super) fn record_owned_admission_with_proof(
     {
         return Err(Error);
     }
-    source_protocol::append_with_proof(state, &issuance, true, proof).map_err(|_| Error)?;
+    let first = source_protocol::append_captured_with_proof(state, &issuance, true, proof)
+        .map_err(|_| Error)?
+        .first
+        .ok_or(Error)?;
     state
         .preparation_admission_joins
         .insert(join, run.id.clone());
     state.preparation_admissions.insert(run.id.clone(), witness);
     state.native_run_issuances.insert(key, issuance);
-    Ok(())
+    Ok(first)
 }
 pub(super) fn record_run_states(
     state: &mut State,
@@ -262,12 +282,49 @@ pub(super) fn record_run_completed_captured(
     updated: &Run,
     source: Option<&crate::native_parent::CompletionSource>,
 ) -> Result<Option<u64>, Error> {
-    record_run_states_captured(
+    record_run_completed_captured_with_proof(
+        state,
+        previous,
+        updated,
+        source,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+pub(super) fn record_run_completed_captured_with_proof(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, Error> {
+    record_run_completed_publication_with_proof(
+        state,
+        previous,
+        updated,
+        source,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+pub(super) fn record_run_completed_publication_with_proof(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    proof
+        .measure(&(previous, updated, source))
+        .map_err(|_| Error)?;
+    record_run_states_output(
         state,
         Some(&RunState::from_run(previous)?),
         RunState::from_run(updated)?,
         source.cloned(),
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        proof,
+        capture,
     )
 }
 pub(super) fn record_run_completed_captured_with_proof(
@@ -304,6 +361,24 @@ fn record_run_states_captured(
     completion: Option<crate::native_parent::CompletionSource>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<u64>, Error> {
+    record_run_states_output(
+        state,
+        previous,
+        next,
+        completion,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(crate::native_enrollment::caller::initial::RunPublication::into_sequence)
+}
+fn record_run_states_output(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
     crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
         .native_run_issuances
@@ -317,6 +392,7 @@ fn record_run_states_captured(
         )
         .next_back()
         .map(|(_, value)| value);
+    proof.measure(&latest).map_err(|_| Error)?;
     if let Some(previous) = previous {
         source_protocol::verify_previous(state, previous, latest, proof)?;
     }
@@ -335,15 +411,37 @@ fn record_run_states_captured(
         if state.native_run_issuances.contains_key(&key) {
             return Err(Error);
         }
-        source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)
-            .map_err(|_| Error)?;
+        let source = match capture {
+            crate::native_enrollment::caller::initial::Capture::Original => {
+                source_protocol::append_captured_with_proof(
+                    state,
+                    &issuance,
+                    previous.is_none(),
+                    proof,
+                )
+                .map_err(|_| Error)?
+            }
+            crate::native_enrollment::caller::initial::Capture::None => {
+                source_protocol::append_with_proof(state, &issuance, previous.is_none(), proof)
+                    .map_err(|_| Error)?;
+                crate::native_enrollment::caller::initial::SourcePublication::default()
+            }
+        };
         let sequence = issuance.sequence;
         state.native_run_issuances.insert(key, issuance);
-        return Ok(Some(sequence));
+        return Ok(crate::native_enrollment::caller::initial::RunPublication {
+            sequence: Some(sequence),
+            first: source.first,
+            updated: source.updated,
+        });
     } else if completion.is_some() {
         return Err(Error);
     }
-    Ok(None)
+    Ok(crate::native_enrollment::caller::initial::RunPublication {
+        sequence: None,
+        first: None,
+        updated: None,
+    })
 }
 pub(super) fn latest_run<'a>(
     state: &'a State,

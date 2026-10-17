@@ -7,6 +7,8 @@ use crate::native_parent::{Error, Kind, Witness};
 use crabber_core::{EventCursor, EventRecord, Run};
 pub(super) use run::change_captured_with_proof as record_run_captured_with_proof;
 pub(super) use run::change_with_proof as record_run_with_proof;
+pub(super) use run::initial_with_proof as record_initial_run_with_proof;
+pub(super) use run::publication_with_proof as record_run_publication_with_proof;
 use sqlx::{Postgres, Row, Transaction};
 
 pub(super) async fn record_attempt(

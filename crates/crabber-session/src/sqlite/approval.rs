@@ -329,3 +329,5 @@ const RECEIPT_PROOF_COST: &str = r"SELECT CAST(COALESCE(length(CAST(r.data_json 
 const QUESTION_PROOF_COST: &str = r"SELECT CAST(COALESCE(SUM(bytes),0) AS BIGINT) FROM (SELECT length(CAST(id AS BLOB))+length(CAST(call_id AS BLOB)) AS bytes FROM continuation_interactions WHERE continuation_id=$1 AND run_id=$2 LIMIT 65) bounded_questions";
 
 pub(super) use guards::guard_attempt_with_proof;
+
+pub(super) use current::session_with_proof as verify_session_with_proof;

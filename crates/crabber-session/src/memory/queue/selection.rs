@@ -42,6 +42,16 @@ pub(in crate::memory) fn select(
     } else {
         None
     };
+    if matches!(request.action, crate::QueueAction::Admit { .. })
+        && let Some(prepared) = original.as_ref().and_then(|r| r.prepared.as_ref())
+    {
+        crate::memory::admission::selected(
+            state,
+            &prepared.keyed.request,
+            Some(&prepared.keyed),
+            proof,
+        )?;
+    }
     let previous = if let Some(record) = &original {
         let scope = Scope {
             session: request.session_id.clone(),

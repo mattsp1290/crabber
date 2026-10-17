@@ -13,6 +13,64 @@ impl Harness for crate::PostgresStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn initial_fault(&self, stage: u8) {
+        self.binding_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+        self.queue_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    async fn initial_retained(&self, session: &SessionId) -> crabber_core::InputFingerprint {
+        let mut values = Vec::new();
+        for table in [
+            "sessions",
+            "runs",
+            "messages",
+            "epochs",
+            "admission_receipts",
+            "admission_executions",
+            "admission_execution_sources",
+            "run_execution_bindings",
+            "native_run_issuances",
+            "native_run_sources",
+            "native_run_source_heads",
+            "native_execution_origins",
+            "native_execution_unclassified",
+            "preparation_admission_witnesses",
+            "session_ownership_origins",
+            "session_owner_contexts",
+            "session_owner_current",
+            "session_owner_audits",
+            "session_owner_publication_cohorts",
+            "session_owner_publications",
+            "session_owner_scope_origins",
+            "queue_publication_sources",
+            "queue_publication_cohorts",
+            "future_queue",
+            "future_queue_audit",
+            "operation_receipts",
+        ] {
+            let scope = if table == "sessions" {
+                "id"
+            } else {
+                "session_id"
+            };
+            let scope = if table == "run_execution_bindings" {
+                "run_id IN (SELECT id FROM runs WHERE session_id=$1)".to_owned()
+            } else {
+                format!("{scope}=$1")
+            };
+            let query = format!(
+                "SELECT to_jsonb(t)::text AS record FROM {table} t WHERE {scope} ORDER BY record"
+            );
+            let rows = sqlx::query_scalar::<_, String>(&query)
+                .bind(&session.0)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap();
+            values.push((table, rows));
+        }
+        crate::native_enrollment::caller::contract::snapshot_digest(&values)
+    }
     async fn phase_with_proof(
         &self,
         fence: crabber_core::RunFence,
@@ -213,4 +271,19 @@ async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
         &store, &clock,
     ))
     .await;
+}
+
+#[tokio::test]
+async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
 }

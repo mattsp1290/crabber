@@ -139,3 +139,5 @@ pub(super) use claim::preparation_frontend_context;
 pub(super) use recover::preparation_frontend_context as preparation_frontend_recovery_context;
 
 pub(super) use guards::guard_attempt_with_proof;
+
+pub(super) use scan::pending_with_proof as pending_in_session_with_proof;

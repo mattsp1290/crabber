@@ -57,6 +57,15 @@ async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> R
         }
     }
 }
+pub(super) async fn context_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    workspace: &str,
+    directory: &str,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    reads::context_with_proof(tx, session, workspace, directory, proof).await
+}
 pub(super) async fn context(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

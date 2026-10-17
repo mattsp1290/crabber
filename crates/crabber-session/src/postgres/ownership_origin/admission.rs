@@ -10,10 +10,11 @@ pub(in super::super) async fn record_admission(
     new_session: bool,
     guard: AdmissionGuard<'_>,
     read_proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<(), StoreError> {
+) -> Result<Option<crate::native_enrollment::caller::initial::FirstPublication>, StoreError> {
     if !guard.has_owned_resources() {
-        return Ok(());
+        return Ok(None);
     }
+    read_proof.measure(&(session, run)).map_err(invalid)?;
     let preparation = guard.preparation().ok_or(StoreError::Conflict)?;
     let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
         .bind(&session.id.0)
@@ -24,7 +25,9 @@ pub(in super::super) async fn record_admission(
     let witness = Witness::from_preparation(preparation, session, run, revision)
         .map_err(invalid)?
         .ok_or(StoreError::Conflict)?;
+    read_proof.measure(&witness).map_err(invalid)?;
     let issuance = witness.initial_issuance(run).map_err(invalid)?;
+    read_proof.measure(&issuance).map_err(invalid)?;
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_run_issuances WHERE run_id=$1)")
             .bind(&run.id.0)
@@ -37,9 +40,13 @@ pub(in super::super) async fn record_admission(
     let encoded = witness.encoded().map_err(invalid)?;
     let join = witness.join_id().map_err(invalid)?;
     let initial = serde_json::to_string(&issuance).map_err(invalid)?;
-    super::super::native_parent::source_protocol::append(tx, &issuance, true, read_proof)
-        .await
-        .map_err(invalid)?;
+    let first = super::super::native_parent::source_protocol::append_captured(
+        tx, &issuance, true, read_proof,
+    )
+    .await
+    .map_err(invalid)?
+    .first
+    .ok_or(StoreError::Conflict)?;
     sqlx::query(
         "INSERT INTO native_run_issuances(session_id,run_id,sequence,data_json) VALUES($1,$2,1,$3)",
     )
@@ -56,7 +63,7 @@ pub(in super::super) async fn record_admission(
             crate::deletion::origin::OwnershipOrigin::prepared(&witness).map_err(invalid)?;
         super::record(tx, &origin).await?;
     }
-    Ok(())
+    Ok(Some(first))
 }
 fn invalid(_: impl std::fmt::Debug) -> StoreError {
     StoreError::Validation("preparation admission evidence unavailable".into())

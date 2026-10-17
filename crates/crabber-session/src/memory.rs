@@ -8,15 +8,14 @@ mod continuation_handoff;
 mod continuation_input;
 #[path = "memory/deletion.rs"]
 mod deletion;
+#[path = "memory/events.rs"]
+mod events;
 #[path = "memory/fork.rs"]
 mod fork;
 #[path = "memory/frontend.rs"]
 mod frontend;
 #[path = "memory/tool_continuation.rs"]
 mod tool_continuation;
-use admission::{admit_keyed_transaction, admit_transaction};
-#[path = "memory/events.rs"]
-mod events;
 use events::EventLog;
 #[path = "memory/history.rs"]
 mod history;
@@ -1257,27 +1256,26 @@ impl Store for MemoryStore {
             .unwrap_or(crabber_core::SessionRevision::INITIAL))
     }
     async fn admit_run(&self, request: AdmitRequest) -> Result<AdmitOutcome, StoreError> {
-        self.transact(|state| admit_transaction(state, &request, self.clock.now(), false))
+        self.admit_raw(&request)
     }
 
     async fn admit_keyed_run(
         &self,
         keyed: KeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        keyed.validated_digest()?;
-        self.transact(|state| admit_keyed_transaction(state, &keyed, self.clock.now()))
+        self.admit_keyed_raw(&keyed)
     }
     async fn admit_bound_run(
         &self,
         request: crate::BoundAdmitRequest,
     ) -> Result<AdmitOutcome, StoreError> {
-        self.admit_with_binding(request)
+        self.admit_with_binding(&request)
     }
     async fn admit_bound_keyed_run(
         &self,
         request: crate::BoundKeyedAdmitRequest,
     ) -> Result<KeyedAdmitOutcome, StoreError> {
-        self.admit_keyed_with_binding(request)
+        self.admit_keyed_with_binding(&request)
     }
     async fn execution_binding(
         &self,

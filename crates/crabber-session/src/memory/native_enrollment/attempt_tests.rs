@@ -12,6 +12,93 @@ impl Harness for crate::MemoryStore {
         self.phase_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn initial_fault(&self, stage: u8) {
+        self.binding_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+        self.queue_fault
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn initial_retained(
+        &self,
+        session: &SessionId,
+    ) -> impl std::future::Future<Output = crabber_core::InputFingerprint> {
+        let state = self.state.lock().unwrap();
+        let runs = state
+            .runs
+            .values()
+            .filter(|r| r.session_id == *session)
+            .collect::<Vec<_>>();
+        let bindings = state
+            .execution_bindings
+            .iter()
+            .filter(|(id, _)| runs.iter().any(|r| r.id == **id))
+            .collect::<Vec<_>>();
+        let admission = (
+            runs,
+            bindings,
+            state
+                .messages
+                .iter()
+                .filter(|m| m.session_id == *session)
+                .collect::<Vec<_>>(),
+            state
+                .epochs
+                .values()
+                .filter(|e| e.session_id == *session)
+                .collect::<Vec<_>>(),
+            state
+                .receipts
+                .iter()
+                .filter(|((s, _), _)| s == session)
+                .collect::<Vec<_>>(),
+            state
+                .admission_executions
+                .values()
+                .filter(|r| r.receipt.session_id == *session)
+                .collect::<Vec<_>>(),
+            state
+                .admission_execution_sources
+                .iter()
+                .filter(|((id, _), _)| state.runs.get(id).is_some_and(|r| r.session_id == *session))
+                .collect::<Vec<_>>(),
+        );
+        let native = raw_initial_native(&state, session);
+        let owners = (
+            state.session_owners.raw_initial_snapshot(session),
+            state.ownership_origins.get(session),
+            state
+                .preparation_admissions
+                .values()
+                .filter(|w| w.session_id() == session)
+                .collect::<Vec<_>>(),
+        );
+        std::future::ready(crate::native_enrollment::caller::contract::snapshot_digest(
+            &(
+                state.sessions.get(session),
+                state.public_revisions.get(session),
+                state.snapshot_revisions.get(session),
+                state.queue_publications.raw_initial_snapshot(session),
+                admission,
+                native,
+                owners,
+                state
+                    .queue
+                    .iter()
+                    .filter(|((s, _), _)| s == session)
+                    .collect::<Vec<_>>(),
+                state
+                    .queue_audits
+                    .iter()
+                    .filter(|((s, _), _)| s == session)
+                    .collect::<Vec<_>>(),
+                state
+                    .operation_receipts
+                    .iter()
+                    .filter(|((s, _), _)| s == session)
+                    .collect::<Vec<_>>(),
+            ),
+        ))
+    }
     fn phase_with_proof(
         &self,
         fence: crabber_core::RunFence,
@@ -164,6 +251,40 @@ impl Harness for crate::MemoryStore {
         ))
     }
 }
+fn raw_initial_native(state: &State, session: &SessionId) -> crabber_core::InputFingerprint {
+    crate::native_enrollment::caller::contract::snapshot_digest(&(
+        state
+            .native_run_issuances
+            .iter()
+            .filter(|((s, _, _), _)| s == session)
+            .collect::<Vec<_>>(),
+        state
+            .native_run_sources
+            .iter()
+            .filter(|((s, _, _), _)| s == session)
+            .collect::<Vec<_>>(),
+        state
+            .native_run_source_heads
+            .iter()
+            .filter(|((s, _), _)| s == session)
+            .collect::<Vec<_>>(),
+        state
+            .execution_enrollment_protocols
+            .iter()
+            .filter(|(s, _)| s == session)
+            .collect::<Vec<_>>(),
+        state
+            .execution_enrollment_origins
+            .iter()
+            .filter(|((s, _), _)| s == session)
+            .collect::<Vec<_>>(),
+        state
+            .execution_enrollment_unclassified
+            .iter()
+            .filter(|((s, _), _)| s == session)
+            .collect::<Vec<_>>(),
+    ))
+}
 #[tokio::test]
 async fn raw_attempt_fresh_replay_rollback_and_ack_loss() {
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
@@ -222,4 +343,13 @@ async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
         &store, &clock,
     ))
     .await;
+}
+
+#[tokio::test]
+async fn raw_initial_fresh_replay_rollback_and_ack_loss() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::initials(&store)).await;
 }

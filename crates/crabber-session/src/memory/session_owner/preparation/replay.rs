@@ -11,8 +11,7 @@ use crate::session_owner::preparation::{
 use crate::{KeyedAdmitOutcome, StoreError};
 impl super::super::MemoryStore {
     pub(super) fn replay_prepared(
-        &self,
-        state: &mut super::super::super::State,
+        state: &super::super::super::State,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,
@@ -28,7 +27,7 @@ impl super::super::MemoryStore {
             return Ok(Some(outcome));
         }
         if let PreparedOperation::AdmitKeyed(bound) = joined.observed_operation()
-            && let Some(outcome) = self.replay_keyed(state, bound)?
+            && let Some(outcome) = Self::replay_keyed(state, bound)?
         {
             super::verify_replay(state, joined.observed_grant())?;
             return Ok(Some(outcome));
@@ -110,30 +109,41 @@ impl super::super::MemoryStore {
 
 impl super::super::MemoryStore {
     fn replay_keyed(
-        &self,
-        state: &mut super::super::super::State,
+        state: &super::super::super::State,
         bound: &crate::BoundKeyedAdmitRequest,
     ) -> Result<
         Option<PreparationCompletion>,
         crate::session_owner::preparation::PreparationCommitError,
     > {
         let session = bound.binding.request.session_id.clone();
-        let now = self.clock.now();
 
         bound.binding.validate_keyed(&bound.keyed)?;
         if state
             .receipts
             .contains_key(&(session.clone(), bound.keyed.options.key.clone()))
         {
-            let outcome =
-                super::super::super::admission::admit_keyed_transaction(state, &bound.keyed, now)?;
-            if let KeyedAdmitOutcome::Replayed(receipt) = &outcome
-                && super::super::super::execution_binding::read(state, &session, &receipt.run_id)?
-                    .is_none_or(|saved| saved.capsule != bound.binding)
+            super::super::super::deletion::ensure_live(state, &session)?;
+            if let Some(existing) = state.sessions.get(&session) {
+                existing.ensure_identity(
+                    &bound.keyed.request.workspace_id,
+                    &bound.keyed.request.directory,
+                )?;
+            }
+            let receipt = state
+                .receipts
+                .get(&(session.clone(), bound.keyed.options.key.clone()))
+                .ok_or(StoreError::AdmissionConflict)?;
+            if receipt.fingerprint != bound.keyed.options.fingerprint
+                || receipt.semantic_digest != bound.keyed.validated_digest()?
             {
                 return Err(StoreError::AdmissionConflict.into());
             }
-
+            if super::super::super::execution_binding::read(state, &session, &receipt.run_id)?
+                .is_none_or(|saved| saved.capsule != bound.binding)
+            {
+                return Err(StoreError::AdmissionConflict.into());
+            }
+            let outcome = KeyedAdmitOutcome::Replayed(receipt.clone());
             return Ok(Some(PreparationCompletion::Keyed(outcome)));
         }
 
@@ -143,7 +153,7 @@ impl super::super::MemoryStore {
 
 impl super::super::MemoryStore {
     fn replay_frontend(
-        state: &mut super::super::super::State,
+        state: &super::super::super::State,
         joined: &JoinedPreparation,
     ) -> Result<
         Option<PreparationCompletion>,

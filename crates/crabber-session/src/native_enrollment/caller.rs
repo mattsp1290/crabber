@@ -45,5 +45,14 @@ pub(crate) fn measure_phase_authority(
     authority.map_or(Ok(()), |a| crate::phase::measure_native_authority(a, proof))
 }
 
+#[path = "caller/initial.rs"]
+pub(crate) mod initial;
 #[path = "caller/recovery.rs"]
 pub(crate) mod recovery;
+
+pub(crate) fn measure_owner_authority(
+    authority: &crate::session_owner::SessionOwnerAuthority,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    proof.measure(&(&authority.session_id, &authority.target, &authority.token))
+}

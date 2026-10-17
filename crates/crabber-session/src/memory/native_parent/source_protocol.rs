@@ -85,6 +85,42 @@ pub(super) fn append_with_proof(
     creation: bool,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
+    append_output(
+        state,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::None,
+    )
+    .map(|_| ())
+}
+pub(super) fn append_captured_with_proof(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output(
+        state,
+        issuer,
+        creation,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+    )
+}
+fn append_output(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
     use crate::public_session::v2::proof::ReadError;
     proof.measure(issuer).map_err(ReadError::Budget)?;
     if crate::snapshot::encoded_bytes(issuer, 2048).is_none() {
@@ -129,7 +165,10 @@ pub(super) fn append_with_proof(
         {
             Err(Error.into())
         } else {
-            Ok(())
+            crate::native_enrollment::caller::initial::SourcePublication::legacy(
+                capture, issuer, creation, proof,
+            )
+            .map_err(ReadError::Budget)
         };
     }
     if state.native_run_sources.contains_key(&key) {
@@ -162,13 +201,17 @@ pub(super) fn append_with_proof(
     } else {
         None
     };
+    let captured = crate::native_enrollment::caller::initial::SourcePublication::capture(
+        capture, issuer, &source, creation, proof,
+    )
+    .map_err(ReadError::Budget)?;
     if let Some(birth) = birth {
         crate::memory::native_enrollment::publish_birth(state, birth).map_err(ReadError::Budget)?;
     }
     state.native_run_protocols.insert(scope.clone());
     state.native_run_sources.insert(key, source);
     state.native_run_source_heads.insert(scope, head);
-    Ok(())
+    Ok(captured)
 }
 
 #[path = "source_protocol/original.rs"]

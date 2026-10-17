@@ -309,15 +309,17 @@ impl MemoryStore {
             now,
             preparation,
         )?;
-        let admitted = self.queue_admission(state, &mut change, preparation, read_proof)?;
-        super::bump_public_revision(state, &request.session_id)?;
-        let saved = QueueReceipt {
-            session_id: request.session_id.clone(),
-            operation_id: request.id.clone(),
-            semantic_digest: digest,
-            revision: revision_of(state, &request.session_id),
-            summary: change.record.summary.clone(),
-        };
+        let pending_initial = self.queue_admission(state, &mut change, preparation, read_proof)?;
+        let saved = publish_queue_revision(state, &request, digest, change.record.summary.clone())?;
+        let admitted = Self::finish_queue_initial(
+            state,
+            &request,
+            &saved,
+            pending_initial,
+            read_proof,
+            #[cfg(test)]
+            &self.native_raw_probe,
+        )?;
         change.record.validate(
             &request.session_id,
             &saved.summary.queue_id,
@@ -361,16 +363,47 @@ impl MemoryStore {
             admitted,
         })
     }
+    fn finish_queue_initial(
+        state: &mut State,
+        request: &crate::QueueMutation,
+        saved: &crate::QueueReceipt,
+        pending_initial: Option<crate::native_enrollment::caller::initial::CapturedQueueAdmission>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+        #[cfg(test)] probe: &crate::native_enrollment::caller::Probe,
+    ) -> Result<Option<Box<crate::AdmitOutcome>>, StoreError> {
+        Ok(if let Some(captured) = pending_initial {
+            let input = crate::native_enrollment::caller::initial::Input::Queue {
+                request,
+                prepared: &captured.prepared,
+                receipt: &captured.receipt,
+                queue_receipt: saved,
+            };
+            Some(Box::new(super::admission::finish_initial(
+                state,
+                input,
+                captured.admitted,
+                read_proof,
+                #[cfg(test)]
+                probe,
+            )?))
+        } else {
+            None
+        })
+    }
     fn queue_admission(
         &self,
         state: &mut State,
         change: &mut Change,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<Option<Box<crate::AdmitOutcome>>, StoreError> {
+    ) -> Result<Option<crate::native_enrollment::caller::initial::CapturedQueueAdmission>, StoreError>
+    {
         if let Some(proof) = &change.admission {
+            read_proof
+                .measure(proof.bound_ref())
+                .map_err(|_| StoreError::Conflict)?;
             let bound = proof.bound();
-            let outcome = super::admission::admit_keyed_with_proof(
+            let outcome = super::admission::admit_keyed_captured(
                 state,
                 &bound.keyed,
                 self.clock.now(),
@@ -380,21 +413,32 @@ impl MemoryStore {
                         preparation,
                     }
                 }),
+                crate::native_enrollment::caller::Caller::Raw,
                 read_proof,
             )?;
-            let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {
+            let crate::native_enrollment::caller::initial::CapturedKeyedAdmission::Started {
+                receipt,
+                admitted,
+            } = outcome
+            else {
                 return Err(StoreError::AdmissionConflict);
             };
             let binding = crate::RetainedExecutionBinding::new(
-                &admitted.run,
+                &admitted.admitted.run,
                 &bound.keyed.request.user_message,
-                bound.binding,
+                bound.binding.clone(),
             );
             state
                 .execution_bindings
-                .insert(admitted.run.id.clone(), binding.encode()?);
-            complete(change, &admitted, receipt);
-            Ok(Some(admitted))
+                .insert(admitted.admitted.run.id.clone(), binding.encode()?);
+            complete(change, &admitted.admitted, receipt.clone());
+            Ok(Some(
+                crate::native_enrollment::caller::initial::CapturedQueueAdmission {
+                    admitted: *admitted,
+                    prepared: bound,
+                    receipt,
+                },
+            ))
         } else {
             Ok(None)
         }
@@ -663,3 +707,19 @@ pub(super) fn preflight(
 #[cfg(test)]
 #[path = "queue/publication_tests.rs"]
 mod publication_tests;
+
+fn publish_queue_revision(
+    state: &mut State,
+    request: &QueueMutation,
+    digest: crabber_core::InputFingerprint,
+    summary: QueueSummary,
+) -> Result<QueueReceipt, StoreError> {
+    super::bump_public_revision(state, &request.session_id)?;
+    Ok(QueueReceipt {
+        session_id: request.session_id.clone(),
+        operation_id: request.id.clone(),
+        semantic_digest: digest,
+        revision: revision_of(state, &request.session_id),
+        summary,
+    })
+}

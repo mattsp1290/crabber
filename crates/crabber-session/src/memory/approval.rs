@@ -351,3 +351,5 @@ fn fault(store: &super::MemoryStore) -> u8 {
 #[path = "approval/native_attempt.rs"]
 mod native_attempt;
 pub(super) use native_attempt::guard_with_proof as guard_attempt_with_proof;
+
+pub(super) use current::session_with_proof as verify_session_with_proof;

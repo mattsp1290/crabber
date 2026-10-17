@@ -51,3 +51,18 @@ pub(crate) use legacy::LegacyTool;
 #[path = "../../../crabber-session/src/native_enrollment/caller/admission_begin.rs"]
 mod admission_begin;
 pub(crate) use admission_begin::AdmissionBegin;
+#[path = "../../../crabber-session/src/native_enrollment/caller/initial.rs"]
+pub(crate) mod initial;
+
+pub(crate) fn measure_owner_authority(
+    authority: &crate::session_owner::SessionOwnerAuthority,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    proof.measure(&(authority.session_id(), authority.target()))?;
+    // This scaffold accounts only the documented 512-byte constructor token;
+    // real authority validation remains the unchanged opaque authenticator.
+    proof.charge(2 * 512 + 2)
+}
+
+#[path = "../../../crabber-session/src/native_enrollment/caller/recovery.rs"]
+pub(crate) mod recovery;
