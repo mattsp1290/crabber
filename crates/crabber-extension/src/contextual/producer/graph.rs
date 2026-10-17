@@ -21,6 +21,7 @@ enum Product {
     Root(Arc<crate::contextual::product::Cell>),
     Tool(Arc<crate::contextual::product::tool::Node>),
     ToolGuard(Arc<crate::contextual::product::tool_guard::Node>),
+    Prompt(Arc<crate::contextual::product::prompt::Node>),
     WorkspaceFs(Arc<crate::contextual::product::workspace_fs::Node>),
     WorkspaceReaderResolver(Arc<crate::contextual::product::workspace_reader::Node>),
     Subprocess(Arc<crate::contextual::product::subprocess::Node>),
@@ -32,6 +33,7 @@ impl Product {
             Self::Root(root) => root.close(),
             Self::Tool(node) => node.close(),
             Self::ToolGuard(node) => node.close(),
+            Self::Prompt(node) => node.close(),
             Self::WorkspaceFs(node) => node.close(),
             Self::WorkspaceReaderResolver(node) => node.close(),
             Self::Subprocess(node) => node.close(),
@@ -43,6 +45,7 @@ impl Product {
             Self::Root(root) => root.join().await,
             Self::Tool(node) => node.join().await,
             Self::ToolGuard(node) => node.join().await,
+            Self::Prompt(node) => node.join().await,
             Self::WorkspaceFs(node) => node.join().await,
             Self::WorkspaceReaderResolver(node) => node.join().await,
             Self::Subprocess(node) => node.join().await,
@@ -54,6 +57,7 @@ impl Product {
             (Self::Root(left), Self::Root(right)) => Arc::ptr_eq(left, right),
             (Self::Tool(left), Self::Tool(right)) => Arc::ptr_eq(left, right),
             (Self::ToolGuard(left), Self::ToolGuard(right)) => Arc::ptr_eq(left, right),
+            (Self::Prompt(left), Self::Prompt(right)) => Arc::ptr_eq(left, right),
             (Self::WorkspaceFs(left), Self::WorkspaceFs(right)) => Arc::ptr_eq(left, right),
             (Self::WorkspaceReaderResolver(left), Self::WorkspaceReaderResolver(right)) => {
                 Arc::ptr_eq(left, right)
@@ -200,6 +204,34 @@ impl ContextualGenerationObservation {
             })
             .ok_or(ExtensionError::ContextInitializationIncomplete)?;
         Ok(crate::ContextualToolGuardProductObservation {
+            graph: self.clone(),
+            node,
+            member,
+        })
+    }
+    /// Inspect the exact original entered Box `Prompt` node.
+    /// # Errors
+    /// Refuses a different or not-yet-entered member.
+    /// # Panics
+    /// Panics if an internal ownership lock is poisoned.
+    pub fn prompt_product(
+        &self,
+        member: usize,
+    ) -> Result<crate::ContextualPromptProductObservation, ExtensionError> {
+        let node = self
+            .registration
+            .graph
+            .members
+            .lock()
+            .unwrap()
+            .get(member)
+            .and_then(Option::as_ref)
+            .and_then(|member| match &member.root {
+                Some(Product::Prompt(node)) => Some(node.clone()),
+                _ => None,
+            })
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+        Ok(crate::ContextualPromptProductObservation {
             graph: self.clone(),
             node,
             member,
@@ -448,6 +480,13 @@ impl Graph {
         let member = members[index].as_mut().expect("entered tool member");
         assert!(member.root.is_none());
         member.root = Some(Product::ToolGuard(node));
+        member.joined = None;
+    }
+    pub(super) fn prompt(&self, index: usize, node: Arc<crate::contextual::product::prompt::Node>) {
+        let mut members = self.members.lock().unwrap();
+        let member = members[index].as_mut().expect("entered tool member");
+        assert!(member.root.is_none());
+        member.root = Some(Product::Prompt(node));
         member.joined = None;
     }
     pub(super) fn workspace_fs(

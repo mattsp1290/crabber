@@ -237,6 +237,12 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_prompt(&self, index: usize, node: Arc<super::product::prompt::Node>) {
+        self.graph.prompt(index, node);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_workspace_fs(
         &self,
         index: usize,

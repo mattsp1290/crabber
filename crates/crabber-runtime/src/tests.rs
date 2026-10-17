@@ -40,6 +40,8 @@ mod native_phase;
 mod owned_tool_invocations;
 #[path = "tests/preparation_resources.rs"]
 mod preparation_resources;
+#[path = "tests/prompt_products.rs"]
+mod prompt_products;
 #[path = "tests/provider_products.rs"]
 mod provider_products;
 #[path = "tests/public_state.rs"]

@@ -159,13 +159,37 @@ pub(crate) enum PromptContributorIdentity {
 enum MountedPromptCallback {
     Legacy(PromptContributor),
     SystemPrompt(Arc<dyn SystemPromptMiddleware>),
+    Product(Arc<crate::contextual::product::prompt::facade::Prompt>),
+    ProductTemplate,
+}
+
+impl MountedPromptCallback {
+    fn product_creator(
+        &self,
+        source: Option<&crate::registry::InvocationSource>,
+    ) -> Result<Option<crate::CallbackInvocationCapability>, ()> {
+        if !matches!(self, Self::Product(_) | Self::ProductTemplate) {
+            return Ok(None);
+        }
+        let creator = crate::registry::current_callback_invocations().ok_or(())?;
+        if !creator.matches_current() || source.is_none() {
+            return Err(());
+        }
+        Ok(Some(creator))
+    }
 }
 
 async fn invoke_prompt(
     callback: MountedPromptCallback,
     invocation: PromptAttemptContext,
     resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
+    creator: Option<crate::CallbackInvocationCapability>,
 ) -> Result<Option<String>, ()> {
+    if let MountedPromptCallback::Product(callback) = &callback {
+        return callback
+            .invoke(invocation, resolver, &creator.ok_or(())?)
+            .await;
+    }
     let cancellation = invocation.cancellation().clone();
     let observed = match callback {
         MountedPromptCallback::Legacy(callback) => {
@@ -186,6 +210,9 @@ async fn invoke_prompt(
                 &cancellation,
             )
             .await
+        }
+        MountedPromptCallback::Product(_) | MountedPromptCallback::ProductTemplate => {
+            return Err(());
         }
     };
     match observed {
@@ -229,6 +256,32 @@ impl MountedPromptContributor {
         }
     }
 
+    pub(crate) fn product_template(
+        name: String,
+        order: i32,
+        identity: PromptContributorIdentity,
+    ) -> Self {
+        Self {
+            name,
+            order,
+            identity,
+            mount_id: 0,
+            mount_seq: 0,
+            cleanup: CleanupTracker::detached(),
+            invocation: None,
+            callback: MountedPromptCallback::ProductTemplate,
+        }
+    }
+    pub(crate) fn product(
+        name: String,
+        order: i32,
+        identity: PromptContributorIdentity,
+        callback: Arc<crate::contextual::product::prompt::facade::Prompt>,
+    ) -> Self {
+        let mut projected = Self::product_template(name, order, identity);
+        projected.callback = MountedPromptCallback::Product(callback);
+        projected
+    }
     #[allow(dead_code)]
     pub(crate) fn middleware_descriptor(&self) -> Option<&MiddlewareDescriptor> {
         match &self.identity {
@@ -288,6 +341,10 @@ pub async fn collect_prompt_contributions_with_resolver(
             .with_cancellation(child.clone())
             .with_cleanup(contributor.cleanup.clone());
         let callback = contributor.callback.clone();
+        let Ok(creator) = callback.product_creator(contributor.invocation.as_ref()) else {
+            return failed();
+        };
+        let outward_creator = creator.clone();
         let resolver = workspace_reader_resolver.clone();
         let source = contributor.invocation.clone();
         let deadline =
@@ -295,7 +352,7 @@ pub async fn collect_prompt_contributions_with_resolver(
         let mut future = InFlight::new(
             AssertUnwindSafe(with_mount(contributor.mount_id, async move {
                 let construct = move || -> BoxFuture<'static, _> {
-                    Box::pin(invoke_prompt(callback, invocation, resolver))
+                    Box::pin(invoke_prompt(callback, invocation, resolver, creator))
                 };
                 if let Some(source) = source {
                     source.invoke(construct).await.map_err(|_| ())?
@@ -330,6 +387,14 @@ pub async fn collect_prompt_contributions_with_resolver(
         let Ok(Ok(text)) = output else {
             return failed();
         };
+        // Source::invoke returned only after its SAME original task was joined.
+        // This creator check is separate from the body's literal-Drop boundary.
+        if outward_creator
+            .as_ref()
+            .is_some_and(|creator| !creator.matches_current())
+        {
+            return failed();
+        }
         if let Some(text) = text {
             if text.len() > MAX_PROMPT_CONTRIBUTION_BYTES {
                 return failed();

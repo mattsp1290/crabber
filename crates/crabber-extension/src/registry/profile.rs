@@ -64,11 +64,12 @@ pub(super) fn capture(registry: &Registry) -> Result<RegistrationSnapshot, Exten
             super::owned::append_contract(&mount, &mut components);
             freeze_contributors(
                 &registrar.contributors,
+                &registrar.product_prompts,
                 &mut contributors,
                 &mut components,
                 0,
                 None,
-            );
+            )?;
             finish_contributors(&mut contributors, &mut components);
             let handlers = registrar
                 .handlers
@@ -130,6 +131,7 @@ impl Registrar {
             tools: self.tools.clone(),
             product_tools: std::collections::BTreeMap::new(),
             product_guards: std::collections::BTreeMap::new(),
+            product_prompts: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
             product_subprocess: None,
             product_workspace_reader_resolver: None,

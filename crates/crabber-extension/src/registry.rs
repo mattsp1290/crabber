@@ -130,6 +130,8 @@ pub struct Registrar {
     product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
     product_guards:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool_guard::Node>>,
+    product_prompts:
+        std::collections::BTreeMap<usize, Arc<crate::contextual::product::prompt::Node>>,
     product_providers:
         std::collections::BTreeMap<usize, Arc<crate::contextual::product::provider::Node>>,
     prompts: Vec<Arc<PromptSection>>,
@@ -147,6 +149,7 @@ impl Registrar {
             tools: vec![],
             product_tools: std::collections::BTreeMap::new(),
             product_guards: std::collections::BTreeMap::new(),
+            product_prompts: std::collections::BTreeMap::new(),
             product_workspace_fs: None,
             product_subprocess: None,
             product_workspace_reader_resolver: None,
@@ -164,6 +167,15 @@ impl Registrar {
     /// behavior/configuration is versioned by the extension's declared metadata.
     pub fn host_services(&mut self, services: HostServices) {
         self.services = std::mem::take(&mut self.services).overlay(services);
+    }
+    pub(crate) fn product_prompt(
+        &mut self,
+        node: Arc<crate::contextual::product::prompt::Node>,
+    ) -> Result<(), ExtensionError> {
+        let index = self.contributors.len();
+        self.contributors.push(node.template()?);
+        self.product_prompts.insert(index, node);
+        Ok(())
     }
     pub(crate) fn product_tool_guard(
         &mut self,
@@ -786,6 +798,9 @@ impl Registry {
             #[cfg(test)]
             drain_hook: Mutex::new(None),
         });
+        for node in mount.registrar.lock().unwrap().product_prompts.values() {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
         for node in mount.registrar.lock().unwrap().product_guards.values() {
             node.bind(InvocationSource::new(&mount).original_roster()?)?;
         }
@@ -960,11 +975,12 @@ impl Registry {
             let prompt_invocation = mount.owned.as_ref().map(|_| InvocationSource::new(mount));
             freeze_contributors(
                 &r.contributors,
+                &r.product_prompts,
                 &mut contributors,
                 &mut components,
                 plan_sequence,
                 prompt_invocation.as_ref(),
-            );
+            )?;
             if let Some(captured) = &mount.registration {
                 for (index, (guard, identity)) in r.guards.iter().zip(&captured.guards).enumerate()
                 {
@@ -1283,12 +1299,13 @@ struct SystemPromptIdentity<'a> {
 
 fn freeze_contributors(
     registrations: &[MountedPromptContributor],
+    products: &std::collections::BTreeMap<usize, Arc<crate::contextual::product::prompt::Node>>,
     contributors: &mut Vec<MountedPromptContributor>,
     components: &mut Vec<ComponentIdentity>,
     plan_sequence: u64,
     invocation: Option<&InvocationSource>,
-) {
-    for contributor in registrations {
+) -> Result<(), ExtensionError> {
+    for (index, contributor) in registrations.iter().enumerate() {
         let replaced_typed = contributors.iter().any(|old| {
             old.name == contributor.name
                 && matches!(old.identity, PromptContributorIdentity::SystemPrompt(_))
@@ -1306,7 +1323,10 @@ fn freeze_contributors(
             }
             PromptContributorIdentity::Legacy => {}
         }
-        let mut projected = contributor.clone();
+        let mut projected = match (invocation, products.get(&index)) {
+            (Some(_), Some(node)) => node.project()?,
+            _ => contributor.clone(),
+        };
         projected.invocation = invocation.cloned();
         contributors.push(projected);
         match &contributor.identity {
@@ -1329,7 +1349,9 @@ fn freeze_contributors(
             }
         }
     }
+    Ok(())
 }
+
 fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
     if matches!(a, Scope::Global) || matches!(b, Scope::Global) {
         return true;

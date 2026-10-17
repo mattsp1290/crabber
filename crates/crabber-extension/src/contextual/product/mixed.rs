@@ -1,11 +1,11 @@
 //! Explicit composition of the existing Box factory routes and original graph.
-use super::{provider, subprocess, tool, tool_guard, workspace_fs, workspace_reader};
+use super::{prompt, provider, subprocess, tool, tool_guard, workspace_fs, workspace_reader};
 use crate::{
     ContextualGenerationHost, ContextualPlanProvider, ContextualProductFactory,
-    ContextualProviderProductFactory, ContextualSubprocessProductFactory,
-    ContextualToolGuardProductFactory, ContextualToolProductFactory,
-    ContextualWorkspaceFsProductFactory, ContextualWorkspaceReaderResolverProductFactory,
-    ExtensionError, Registry,
+    ContextualPromptProductFactory, ContextualProviderProductFactory,
+    ContextualSubprocessProductFactory, ContextualToolGuardProductFactory,
+    ContextualToolProductFactory, ContextualWorkspaceFsProductFactory,
+    ContextualWorkspaceReaderResolverProductFactory, ExtensionError, Registry,
 };
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -22,6 +22,7 @@ pub enum ContextualOwnedProductFactory {
     Subprocess(Arc<dyn ContextualSubprocessProductFactory>),
     WorkspaceReaderResolver(Arc<dyn ContextualWorkspaceReaderResolverProductFactory>),
     ToolGuard(Arc<dyn ContextualToolGuardProductFactory>),
+    Prompt(Arc<dyn ContextualPromptProductFactory>),
 }
 
 impl ContextualPlanProvider {
@@ -62,6 +63,9 @@ impl ContextualPlanProvider {
                 }
                 ContextualOwnedProductFactory::ToolGuard(factory) => {
                     tool_guard::capture(factory, &mut names)
+                }
+                ContextualOwnedProductFactory::Prompt(factory) => {
+                    prompt::capture(factory, &mut names)
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;

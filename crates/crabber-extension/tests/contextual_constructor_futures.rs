@@ -114,6 +114,11 @@ factory!(
     ContextualWorkspaceReaderResolverProduct
 );
 factory!(
+    ContextualPromptProductFactory,
+    create_prompt,
+    ContextualPromptProduct
+);
+factory!(
     ContextualToolGuardProductFactory,
     create_tool_guard,
     ContextualToolGuardProduct
@@ -138,6 +143,12 @@ fn provider(family: &str, factory: Arc<Factory>, host: Arc<Host>) -> ContextualP
         "tool" => {
             ContextualPlanProvider::new_with_tool_products(registry, vec![factory], BOUND, host)
         }
+        "prompt" => ContextualPlanProvider::new_with_owned_products(
+            registry,
+            vec![ContextualOwnedProductFactory::Prompt(factory)],
+            BOUND,
+            host,
+        ),
         "guard" => ContextualPlanProvider::new_with_tool_guard_products(
             registry,
             vec![factory],
@@ -267,4 +278,13 @@ regression!(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordinary_guard_factory_error_preserves_original_cleanup_semantics() {
     exercise("guard", Mode::SemanticError).await;
+}
+
+regression!(
+    literal_prompt_factory_poll_and_drop_panics_fail_without_abort,
+    "prompt"
+);
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordinary_prompt_factory_error_preserves_original_cleanup_semantics() {
+    exercise("prompt", Mode::SemanticError).await;
 }

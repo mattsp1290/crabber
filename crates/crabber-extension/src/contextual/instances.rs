@@ -299,6 +299,18 @@ impl ContextualPlanProvider {
                 .await?;
                 Ok(None)
             }
+            super::FactoryBody::PromptProduct(_) => {
+                super::product::prompt::install(
+                    self,
+                    slot,
+                    scope,
+                    index,
+                    registration,
+                    factory_context,
+                )
+                .await?;
+                Ok(None)
+            }
             super::FactoryBody::WorkspaceFsProduct(_) => {
                 super::product::workspace_fs::install(
                     self,

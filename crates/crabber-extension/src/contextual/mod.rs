@@ -111,6 +111,7 @@ enum FactoryBody {
     ProductRoot(Arc<dyn ContextualProductFactory>),
     ToolProduct(Arc<dyn product::tool::ContextualToolProductFactory>),
     ToolGuardProduct(Arc<dyn product::tool_guard::ContextualToolGuardProductFactory>),
+    PromptProduct(Arc<dyn product::prompt::ContextualPromptProductFactory>),
     WorkspaceFsProduct(Arc<dyn product::workspace_fs::ContextualWorkspaceFsProductFactory>),
     SubprocessProduct(Arc<dyn product::subprocess::ContextualSubprocessProductFactory>),
     WorkspaceReaderResolverProduct(

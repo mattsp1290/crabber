@@ -3,6 +3,7 @@ mod cell;
 mod construction;
 mod mixed;
 pub use mixed::ContextualOwnedProductFactory;
+pub(crate) mod prompt;
 pub(crate) mod provider;
 mod reference;
 mod registration;
