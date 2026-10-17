@@ -16,6 +16,9 @@ pub(in crate::postgres) async fn pending(
     safe: &mut Budget,
     proof: &mut Proof,
 ) -> Result<Vec<QueueSummary>, Failure> {
+    super::protocol::whole_scope(tx, session, proof)
+        .await
+        .map_err(crate::public_session::v2::proof::ReadError::public)?;
     let mismatch: bool = sqlx::query_scalar(SCOPE)
         .bind(&session.0)
         .fetch_one(&mut **tx)
@@ -68,6 +71,16 @@ pub(in crate::postgres) async fn pending(
                 .await
                 .map_err(unknown)?;
             let summary = reads::summary(&row, session).map_err(unknown)?;
+            let protected = super::protocol::projected(
+                tx,
+                &crate::queue::source::Scope {
+                    session: session.clone(),
+                    queue: QueueId(id.clone()),
+                },
+                proof,
+            )
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::public)?;
             let source: QueueReceipt = projected_receipt(
                 &row.try_get::<Option<String>, _>("immutable_receipt")
                     .map_err(unknown)?
@@ -84,6 +97,9 @@ pub(in crate::postgres) async fn pending(
                 || i64::try_from(source.summary.sequence).ok() != Some(sequence)
             {
                 return Err(unknown("queue immutable summary"));
+            }
+            if let Some(protected) = protected {
+                protected.verify_receipt(&source).map_err(unknown)?;
             }
             if matches!(summary.state, QueueState::Queued | QueueState::Claimed) {
                 if result.len() >= usize::from(limit) {
@@ -105,8 +121,9 @@ const COST: &str = r"SELECT CAST(octet_length(q.summary_json)+COALESCE(octet_len
 // temporary marker lets valid private NUL context remain server-side. A selected
 // receipt containing either decoded marker spelling is rejected before it can
 // authenticate state: replacement must never create an alias for original IDs.
-const RECEIPT: &str = r"CAST(replace(a.data_json, '\u0000', '\u0001')::json->'receipt' AS TEXT)";
-fn projected_receipt(text: &str) -> Result<QueueReceipt, Failure> {
+pub(super) const RECEIPT: &str =
+    r"CAST(replace(a.data_json, '\u0000', '\u0001')::json->'receipt' AS TEXT)";
+pub(super) fn projected_receipt(text: &str) -> Result<QueueReceipt, Failure> {
     let value: serde_json::Value = serde_json::from_str(text).map_err(unknown)?;
     if marked(&value) {
         return Err(unknown("queue receipt projection marker"));

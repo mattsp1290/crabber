@@ -344,9 +344,10 @@ fn worker_with_tool(
 }
 
 pub(crate) async fn cancel_handoffs(store: Arc<dyn Store>) {
-    for after_resume in [false, true] {
-        cancel_handoff(store.clone(), after_resume, |_| async {}).await;
-    }
+    cancel_handoff(store.clone(), false, |_| async {}).await;
+    cancel_with_probe(store.clone(), |_| async {}).await;
+    // Keep the public Memory baseline paired with the private terminal probe.
+    cancel_completed_with_probe(store, true, |_| async {}).await;
 }
 pub(crate) async fn cancel_with_probe<F: std::future::Future<Output = ()>>(
     store: Arc<dyn Store>,

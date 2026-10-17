@@ -1,7 +1,7 @@
 //! Native fork metadata survives independent controllers and original retry races.
 use crate::{
-    ForkBoundary, ForkError, ForkOutcome, ForkSession, ManageSession, SessionChange,
-    SessionDefaults, SessionSummary, SnapshotLimits, Store,
+    ForkError, ForkOutcome, ForkSession, ManageSession, SessionChange, SessionDefaults,
+    SessionSummary, Store,
 };
 use crabber_core::{ControlId, SessionId, SessionRevision};
 
@@ -19,26 +19,9 @@ pub(crate) fn create() -> ManageSession {
     }
 }
 pub(crate) fn request(source: &SessionSummary) -> ForkSession {
-    ForkSession {
-        id: ControlId::new(),
-        source_session_id: source.session_id.clone(),
-        workspace_id: source.workspace_id.clone(),
-        directory: source.directory.clone(),
-        expected_source_revision: source.revision,
-        boundary: ForkBoundary::Empty,
-        target_session_id: SessionId::new(),
-        title: "copy".into(),
-        defaults: source.defaults.clone(),
-        limits: SnapshotLimits {
-            messages: 64,
-            tool_calls: 64,
-            parts: 256,
-            text_bytes: 4_194_304,
-            encoded_bytes: 4_194_304,
-        },
-        max_proof_bytes: 32 * 1024 * 1024,
-    }
+    crate::fork_pending_contract::request(source)
 }
+
 #[allow(clippy::too_many_lines)] // Independent controller races and immutable replay boundaries.
 pub(crate) async fn guards(store: &dyn Store, cold: &dyn Store) {
     let source = store.manage_session(create()).await.unwrap().summary;

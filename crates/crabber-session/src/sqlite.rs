@@ -85,6 +85,9 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0015_native_run_sources.sql"),
     "\nINSERT INTO schema_version(version) VALUES(15);\n",
     include_str!("../migrations/sqlite/0016_continuation_input_sources.sql"),
+    "\n",
+    "\nINSERT INTO schema_version(version) VALUES(16);\n",
+    include_str!("../migrations/sqlite/0017_queue_publications.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

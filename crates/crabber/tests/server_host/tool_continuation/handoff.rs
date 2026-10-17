@@ -2,7 +2,9 @@
 use super::*;
 #[path = "handoff/journey.rs"]
 mod fixture;
-use fixture::{header, journey};
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+use fixture::header;
+use fixture::journey;
 #[tokio::test]
 async fn memory_bidirectional_approval_tool_handoff() {
     journey(Arc::new(MemoryStore::new())).await;

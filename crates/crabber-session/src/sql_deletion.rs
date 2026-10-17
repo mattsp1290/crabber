@@ -42,6 +42,9 @@ pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
  UNION ALL SELECT 1 FROM session_owner_current c WHERE c.session_id=$1 AND c.source_protocol=1 AND NOT EXISTS(SELECT 1 FROM session_owner_publication_cohorts h WHERE h.session_id=c.session_id AND h.owner_id=c.owner_id)
  UNION ALL SELECT 1 FROM session_owner_publication_cohorts h LEFT JOIN session_owner_current c ON c.session_id=h.session_id AND c.owner_id=h.owner_id WHERE (h.session_id=$1 OR c.session_id=$1) AND (c.owner_id IS NULL OR c.source_protocol<>h.protocol_version)
  UNION ALL SELECT 1 FROM session_owner_publications p LEFT JOIN session_owner_publication_cohorts h ON h.session_id=p.session_id AND h.owner_id=p.owner_id WHERE (p.session_id=$1 OR h.session_id=$1) AND h.owner_id IS NULL
+ UNION ALL SELECT 1 FROM future_queue q WHERE q.session_id=$1 AND q.source_protocol=1 AND NOT EXISTS(SELECT 1 FROM queue_publication_cohorts c WHERE c.session_id=q.session_id AND c.queue_id=q.queue_id)
+ UNION ALL SELECT 1 FROM queue_publication_cohorts c LEFT JOIN future_queue q ON q.session_id=c.session_id AND q.queue_id=c.queue_id WHERE (c.session_id=$1 OR q.session_id=$1) AND (q.queue_id IS NULL OR q.source_protocol<>c.protocol_version)
+ UNION ALL SELECT 1 FROM queue_publication_sources s LEFT JOIN queue_publication_cohorts c ON c.session_id=s.session_id AND c.queue_id=s.queue_id WHERE (s.session_id=$1 OR c.session_id=$1) AND c.queue_id IS NULL
  UNION ALL SELECT 1 FROM inbox i JOIN runs r ON r.id=i.consumed_by_run WHERE i.session_id<>r.session_id AND (i.session_id=$1 OR r.session_id=$1)
 )";
 
@@ -53,6 +56,8 @@ pub(crate) const PURGE: &[&str] = &[
     "DELETE FROM tool_input_cohorts WHERE session_id=$1",
     "DELETE FROM run_control_progress WHERE session_id=$1",
     "DELETE FROM run_controls WHERE session_id=$1",
+    "DELETE FROM queue_publication_sources WHERE session_id=$1",
+    "DELETE FROM queue_publication_cohorts WHERE session_id=$1",
     "DELETE FROM future_queue_audit WHERE session_id=$1",
     "DELETE FROM session_management_audit WHERE session_id=$1",
     "DELETE FROM session_fork_audit WHERE session_id=$1",

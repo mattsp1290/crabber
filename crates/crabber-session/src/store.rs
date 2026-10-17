@@ -322,6 +322,22 @@ pub trait Store: Send + Sync {
     fn supports_future_queue(&self) -> bool {
         false
     }
+    /// Whether original queue lifecycle sources can be inspected before owned factories.
+    /// This pure capability check grants no worker or queue authority.
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        false
+    }
+    /// Fresh, proof-bounded original queue input and live control inspection.
+    /// Historical receipt replay uses `lookup_queue` separately. This read never
+    /// creates a claim, refreshes a revision or authorizes execution.
+    async fn inspect_owned_queue_preparation(
+        &self,
+        _context: &crabber_core::SessionContext,
+        _authority: &crate::QueueAuthority,
+        _expected_revision: crabber_core::SessionRevision,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        Err(StoreError::HostUnsupported)
+    }
     /// Coherent preparation defaults and revision; does not infer workspace authorization.
     /// Queue implementations must preserve valid lazy-session scope verbatim.
     async fn queue_preparation_snapshot(

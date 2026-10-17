@@ -219,6 +219,53 @@ impl Orchestrator {
         self.verify_queued_request(request, &retained)?;
         Ok(retained)
     }
+    async fn queue_fresh_owned(
+        &self,
+        request: &Request,
+        control: &QueueControl,
+    ) -> Result<RetainedQueue, RuntimeError> {
+        if request.session_id.as_ref() != Some(&control.authority.session_id) {
+            return Err(StoreError::SessionIdentityMismatch.into());
+        }
+        if !self.store.supports_owned_queue_preparation_inspection() {
+            return Err(StoreError::HostUnsupported.into());
+        }
+        let retained = self
+            .store
+            .inspect_owned_queue_preparation(
+                &SessionContext::new(
+                    control.authority.session_id.clone(),
+                    request.workspace_id.clone(),
+                    request.directory.clone(),
+                ),
+                &control.authority,
+                control.expected_revision,
+            )
+            .await?;
+        self.verify_queued_request(request, &retained)?;
+        Ok(retained)
+    }
+    fn apply_queue_defaults(
+        captured: &mut Request,
+        session: crabber_session::SessionSummary,
+    ) -> Result<(), RuntimeError> {
+        if let crabber_session::AdmissionSelectionPolicy::SessionDefaults { fallback } =
+            &captured.selection_policy
+        {
+            captured.selection_policy.validate()?;
+            captured.selection = crabber_providers::Selection {
+                provider_id: session
+                    .defaults
+                    .provider_id
+                    .unwrap_or_else(|| fallback.provider_id.clone()),
+                model_id: session
+                    .defaults
+                    .model_id
+                    .unwrap_or_else(|| fallback.model_id.clone()),
+            };
+        }
+        Ok(())
+    }
     /// Reconcile the exact original prepare key before readiness/default reads/factories.
     /// # Errors
     /// Changed authority, revision, input or configuration conflicts.
@@ -265,7 +312,18 @@ impl Orchestrator {
         request: Request,
         control: QueueControl,
     ) -> Result<QueueReceipt, RuntimeError> {
-        let retained = self.queue_retained(&request, &control).await?;
+        if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
+            return Ok(saved);
+        }
+        let retained = match self.queue_fresh_owned(&request, &control).await {
+            Ok(retained) => retained,
+            Err(error) => {
+                if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
+                    return Ok(saved);
+                }
+                return Err(error);
+            }
+        };
         if retained.prepared.is_some() {
             if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
                 return Ok(saved);
@@ -295,21 +353,7 @@ impl Orchestrator {
         {
             return Err(StoreError::SessionIdentityMismatch.into());
         }
-        if let crabber_session::AdmissionSelectionPolicy::SessionDefaults { fallback } =
-            &captured.selection_policy
-        {
-            captured.selection_policy.validate()?;
-            captured.selection = crabber_providers::Selection {
-                provider_id: session
-                    .defaults
-                    .provider_id
-                    .unwrap_or_else(|| fallback.provider_id.clone()),
-                model_id: session
-                    .defaults
-                    .model_id
-                    .unwrap_or_else(|| fallback.model_id.clone()),
-            };
-        }
+        Self::apply_queue_defaults(&mut captured, session)?;
         let grant = self
             .begin_control_preparation(
                 &mut captured,
@@ -406,12 +450,23 @@ impl Orchestrator {
         request: Request,
         control: QueueControl,
     ) -> Result<Admission, RuntimeError> {
+        if let Some(receipt) = self.replay_queue_admit(&request, &control).await? {
+            return Ok(Admission::Replayed(receipt));
+        }
         self.reject_pending_preparation(
             &control.authority.session_id,
             &crabber_session::session_owner::preparation::PreparationKey::Queue(control.id.clone()),
         )
         .await?;
-        let retained = self.queue_retained(&request, &control).await?;
+        let retained = match self.queue_fresh_owned(&request, &control).await {
+            Ok(retained) => retained,
+            Err(error) => {
+                if let Some(saved) = self.replay_queue_admit(&request, &control).await? {
+                    return Ok(Admission::Replayed(saved));
+                }
+                return Err(error);
+            }
+        };
         let original = retained.prepared.ok_or(StoreError::Conflict)?;
         let mut captured = Request::from_binding(&original.binding);
         let grant = self

@@ -26,8 +26,9 @@ impl PostgresStore {
             reads::scope(&mut tx, &link.session_id).await?;
             let root = reads::current(&mut tx, &link.session_id, &link.root.id).await?;
             reads::preparation_order(&mut tx, &grant).await?;
-            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None, &mut crate::public_session::v2::proof::Proof::bounded(32*1024*1024)).await?;
-            self.preparation_source_context(&mut tx, grant.original_reservation()).await?;
+            let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+            let audits = reads::preparation_audits(&mut tx, &link.session_id, &link.root.id, None, &mut read_proof).await?;
+            self.preparation_source_context(&mut tx, grant.original_reservation(), &mut read_proof).await?;
             let current = revision(&mut tx, &link.session_id).await?;
             let now = self.clock.now();
             crate::session_owner::preparation::proof::verify_root_for_link(&grant, &root, &audits, current, now)?;

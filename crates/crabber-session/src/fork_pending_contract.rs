@@ -1,11 +1,11 @@
 //! Actual native resolution produces closed output before its cleanup is joined.
 use crate::{
     ForkBoundary, ForkOutcome, ForkSession, PhaseCommand, PhaseQuiescence, PhaseQuiescenceResult,
-    PhaseResolverClaim, PhaseTarget, Store,
+    PhaseResolverClaim, PhaseTarget, SessionSummary, SnapshotLimits, Store,
 };
 use crabber_core::{
-    ContentBlock, EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind, Role, RunId,
-    SessionId, ToolCallRecord, ToolOutput,
+    ContentBlock, ControlId, EventKind, EventRecord, Message, MessageId, Part, PartId, PartKind,
+    Role, RunId, SessionId, ToolCallRecord, ToolOutput,
 };
 use time::OffsetDateTime;
 pub(crate) struct Fixture {
@@ -13,6 +13,27 @@ pub(crate) struct Fixture {
     pub target: PhaseTarget,
     pub run: RunId,
     pub output: ToolOutput,
+}
+pub(crate) fn request(source: &SessionSummary) -> ForkSession {
+    ForkSession {
+        id: ControlId::new(),
+        source_session_id: source.session_id.clone(),
+        workspace_id: source.workspace_id.clone(),
+        directory: source.directory.clone(),
+        expected_source_revision: source.revision,
+        boundary: ForkBoundary::Empty,
+        target_session_id: SessionId::new(),
+        title: "copy".into(),
+        defaults: source.defaults.clone(),
+        limits: SnapshotLimits {
+            messages: 64,
+            tool_calls: 64,
+            parts: 256,
+            text_bytes: 4_194_304,
+            encoded_bytes: 4_194_304,
+        },
+        max_proof_bytes: 32 * 1024 * 1024,
+    }
 }
 fn claim() -> PhaseResolverClaim {
     PhaseResolverClaim {
@@ -128,7 +149,7 @@ pub(crate) async fn fixture(store: &impl Store) -> Fixture {
     assert_eq!(receipt.phase.quiescence, PhaseQuiescence::Pending);
     let summary = store.session_summary(&session).await.unwrap();
     let messages = store.list_all_messages(&session).await.unwrap();
-    let mut request = crate::sql_fork_contract::request(&summary);
+    let mut request = self::request(&summary);
     request.boundary = ForkBoundary::AfterMessage {
         message_id: messages.last().unwrap().id.clone(),
     };
@@ -217,6 +238,15 @@ async fn memory_retained_cleanup_is_unsafe_and_forgery_is_unknown() {
         crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
     ));
     let fixture = fixture(&store).await;
+    assert_eq!(
+        store
+            .get_run(&fixture.run)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id,
+        fixture.request.source_session_id
+    );
     let (call, message, output) = forge(&store, &fixture).await;
     store.corrupt_fork_call_for_test(&fixture.target, call, message, output);
     assert_eq!(

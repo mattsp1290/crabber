@@ -1,5 +1,8 @@
+mod admission;
+mod inspection;
+mod protocol;
 pub(super) mod public;
-mod reads;
+pub(super) mod reads;
 use super::{SqliteStore, db};
 use crate::{
     StoreError,
@@ -49,14 +52,33 @@ impl SqliteStore {
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
-        let (session, metadata, revision) = reads::current(tx, &request.session_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        protocol::routing(tx, &request.session_id, read_proof)
+            .await
+            .map_err(protocol::domain)?;
+        let (session, metadata, revision) =
+            reads::current_with_proof(tx, &request.session_id, read_proof)
+                .await
+                .map_err(protocol::domain)?
+                .ok_or(StoreError::NotFound)?;
         let summary = crate::management::summary(&session, metadata, revision);
         let head = reads::head(tx, &request.session_id).await?;
         let id = target(&request.action).or_else(|| head.as_ref().map(|r| &r.queue_id));
         let original = if let Some(id) = id {
-            reads::record(tx, &request.session_id, id).await?
+            reads::record_with_proof(tx, &request.session_id, id, read_proof).await?
+        } else {
+            None
+        };
+        let previous = if let Some(id) = id {
+            protocol::verified_head(
+                tx,
+                &crate::queue::source::Scope {
+                    session: request.session_id.clone(),
+                    queue: id.clone(),
+                },
+                read_proof,
+            )
+            .await
+            .map_err(protocol::domain)?
         } else {
             None
         };
@@ -86,38 +108,9 @@ impl SqliteStore {
             now,
             preparation,
         )?;
-        let admitted = if let Some(proof) = &change.admission {
-            let bound = proof.bound();
-            let outcome = self
-                .admit_keyed_guarded_with_proof(
-                    tx,
-                    bound.keyed.clone(),
-                    preparation.map_or(AdmissionGuard::Queue(proof), |preparation| {
-                        AdmissionGuard::PreparedQueue {
-                            queue: proof,
-                            preparation,
-                        }
-                    }),
-                    read_proof,
-                )
-                .await?;
-            let crate::KeyedAdmitOutcome::Started { receipt, admitted } = outcome else {
-                return Err(StoreError::AdmissionConflict);
-            };
-            super::execution_binding::save(
-                tx,
-                &crate::RetainedExecutionBinding::new(
-                    &admitted.run,
-                    &bound.keyed.request.user_message,
-                    bound.binding,
-                ),
-            )
+        let admitted = self
+            .queue_admission(tx, &mut change, preparation, read_proof)
             .await?;
-            complete(&mut change, &admitted, receipt);
-            Some(admitted)
-        } else {
-            None
-        };
         super::records::bump_public_revision(tx, &request.session_id).await?;
         let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
             .bind(&request.session_id.0)
@@ -131,15 +124,13 @@ impl SqliteStore {
             revision: SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
             summary: change.record.summary.clone(),
         };
-        save(
-            tx,
-            &request,
-            &saved,
-            &change.record,
-            change.authority.clone(),
-            now,
-        )
-        .await?;
+        let audit = Audit {
+            request,
+            receipt: saved.clone(),
+            authority: change.authority.clone(),
+            created_at: now,
+        };
+        save(tx, &audit, &change.record, previous, read_proof).await?;
         Ok(QueueOutcome::Applied {
             receipt: saved,
             authority: change.authority,
@@ -195,20 +186,33 @@ impl SqliteStore {
 }
 async fn save(
     tx: &mut Transaction<'_, Sqlite>,
-    request: &QueueMutation,
-    saved: &QueueReceipt,
+    audit: &Audit,
     record: &Record,
-    authority: Option<QueueAuthority>,
-    created_at: time::OffsetDateTime,
+    previous: Option<crate::queue::source::Source>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
+    let request = &audit.request;
+    let saved = &audit.receipt;
     record.validate(
         &request.session_id,
         &saved.summary.queue_id,
         saved.summary.sequence,
     )?;
     let seq = i64::try_from(record.summary.sequence).map_err(|_| invalid())?;
-    sqlx::query("INSERT INTO future_queue(session_id,queue_id,sequence,state,prepared,summary_json,data_json,admission_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(session_id,queue_id) DO UPDATE SET state=excluded.state,prepared=excluded.prepared,summary_json=excluded.summary_json,data_json=excluded.data_json")
-        .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(seq).bind(format!("{:?}", record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).bind(record.input.admission.key.as_str()).execute(&mut **tx).await.map_err(db)?;
+    let fresh = matches!(request.action, QueueAction::Enqueue { .. });
+    if fresh {
+        sqlx::query("INSERT INTO future_queue(session_id,queue_id,sequence,state,prepared,summary_json,data_json,admission_key,source_protocol) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1)")
+            .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(seq).bind(format!("{:?}",record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).bind(record.input.admission.key.as_str()).execute(&mut **tx).await.map_err(db)?;
+    } else {
+        let changed = sqlx::query("UPDATE future_queue SET state=$3,prepared=$4,summary_json=$5,data_json=$6 WHERE session_id=$1 AND queue_id=$2")
+            .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(format!("{:?}",record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).execute(&mut **tx).await.map_err(db)?;
+        if changed.rows_affected() != 1 {
+            return Err(corrupt());
+        }
+    }
+    protocol::publish(tx, audit, previous, fresh, proof)
+        .await
+        .map_err(protocol::domain)?;
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'future_queue',$3,NULL,$4)")
         .bind(&request.session_id.0).bind(&request.id.0).bind(saved.semantic_digest.as_str()).bind(encode(saved)?).execute(&mut **tx).await.map_err(db)?;
     sqlx::query(
@@ -218,12 +222,7 @@ async fn save(
     .bind(&request.id.0)
     .bind(&record.summary.queue_id.0)
     .bind(i64::try_from(saved.revision.get()).map_err(|_| invalid())?)
-    .bind(encode(&Audit {
-        request: request.clone(),
-        receipt: saved.clone(),
-        authority,
-        created_at,
-    })?)
+    .bind(encode(audit)?)
     .execute(&mut **tx)
     .await
     .map_err(db)?;
@@ -258,10 +257,31 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         authority: &QueueAuthority,
         intent: &crabber_core::InputFingerprint,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), StoreError> {
-        let saved = reads::record(tx, &authority.session_id, &authority.queue_id)
+        reads::current_with_proof(tx, &authority.session_id, proof)
+            .await
+            .map_err(protocol::domain)?
+            .ok_or(StoreError::NotFound)?;
+        protocol::routing(tx, &authority.session_id, proof)
+            .await
+            .map_err(protocol::domain)?;
+        let saved = reads::record_with_proof(tx, &authority.session_id, &authority.queue_id, proof)
             .await?
             .ok_or(StoreError::NotFound)?;
+        if !protocol::protocol(
+            tx,
+            &crate::queue::source::Scope {
+                session: authority.session_id.clone(),
+                queue: authority.queue_id.clone(),
+            },
+            proof,
+        )
+        .await
+        .map_err(protocol::domain)?
+        {
+            return Err(StoreError::HostUnsupported);
+        }
         if let Some(prepared) = &saved.prepared
             && crate::session_owner::preparation::queue_admission_intent(prepared)
                 .map_err(|_| StoreError::AdmissionConflict)?
@@ -287,3 +307,9 @@ impl SqliteStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod publication_tests;
+
+#[cfg(test)]
+mod migration_tests;

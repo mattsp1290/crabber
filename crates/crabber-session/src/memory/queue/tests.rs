@@ -30,3 +30,8 @@ async fn queue_bounds() {
     crate::queue_contract::bounds(&store).await;
     crate::queue_contract::byte_bound(&store).await;
 }
+
+#[tokio::test]
+async fn owned_queue_original_publication_inspection() {
+    crate::queue_contract::publications::owned_inspection(&crate::MemoryStore::new()).await;
+}

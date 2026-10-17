@@ -71,6 +71,7 @@ async fn postgres_initial_inspection_private_binding() {
         );
         return;
     };
+    let _guard = crate::postgres::test_lock().lock().await;
     crate::PostgresStore::migrate(&url).await.unwrap();
     private_binding(&crate::PostgresStore::connect(&url).await.unwrap()).await;
 }

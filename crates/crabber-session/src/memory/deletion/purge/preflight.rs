@@ -276,6 +276,8 @@ fn routed(state: &State, session: &SessionId, proof: &mut Proof) -> Result<(), F
     }
     check!(state.run_controls, value => &value.summary.receipt.target.session_id);
     check!(state.run_control_audits, value => &value.receipt.target.session_id);
+    super::super::super::queue::protocol::consistent(state, session, proof)
+        .map_err(crate::public_session::v2::proof::ReadError::public)?;
     check!(state.queue, value => &value.summary.session_id);
     check!(state.queue_audits, value => &value.receipt.session_id);
     check!(state.receipts, value => &value.session_id);

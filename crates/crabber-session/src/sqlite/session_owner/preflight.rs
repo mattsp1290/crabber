@@ -7,6 +7,7 @@ impl super::SqliteStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         preparation: &ReservePreparation,
         actual: crabber_core::SessionRevision,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
         let binding = &preparation.owner.binding;
         let running: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=$1 AND status IN ('pending','running','paused'))")
@@ -23,18 +24,20 @@ impl super::SqliteStore {
         if actual != preparation.expected_revision {
             return Err(Error::RevisionConflict);
         }
-        self.preparation_source_context(tx, preparation).await
+        self.preparation_source_context(tx, preparation, proof)
+            .await
     }
     pub(super) async fn preparation_source_context(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         preparation: &ReservePreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), Error> {
         let binding = &preparation.owner.binding;
         match &preparation.purpose {
             crate::session_owner::preparation::PreparationPurpose::OrdinaryAdmission => (),
             crate::session_owner::preparation::PreparationPurpose::Queue { authority } => {
-                self.queue_preparation_context(tx, authority, &preparation.intent)
+                self.queue_preparation_context(tx, authority, &preparation.intent, proof)
                     .await
                     .map_err(unknown)?;
             }

@@ -61,6 +61,14 @@ async fn check(
     domains::continuations(tx, session, &mut proof).await?;
     native::released_suspensions(tx, session, &mut proof).await?;
     domains::queue(tx, session, &mut proof).await?;
+    proof.charge(1)?;
+    let unproven_queue: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND source_protocol=0)",
+    )
+    .bind(&session.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(unknown)?;
     domains::pending_input(tx, session).await?;
     domains::controls(tx, session, &mut proof).await?;
     let unknown_owner = domains::owners(tx, session, &mut proof).await?;
@@ -68,6 +76,7 @@ async fn check(
     // Runtime resource policy. The retained-Run gate remains conservative.
     if native_protocol != 1
         || unproven_run_sources
+        || unproven_queue
         || unknown_native
         || unknown_calls
         || unknown_owner

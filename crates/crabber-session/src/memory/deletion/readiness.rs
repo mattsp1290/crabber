@@ -79,6 +79,7 @@ fn verify(
     }
     super::native::suspended(state, session)?;
     let mut safe = Budget::new(MAX_PROOF_BYTES, PublicSessionLimit::HeaderBytes);
+    let unproven_queue = unproven_queue(state, session, proof)?;
     let pending = queue::public_pending(state, session, 64, &mut safe, proof)?;
     if !pending.is_empty() {
         return Ok(Some(Blocker::Queue));
@@ -115,7 +116,12 @@ fn verify(
     // generic Joined owner history. Sealed native preparation associations and
     // typed positive resource/dispatch join proofs are still required.
     Ok(
-        if legacy_native_scope || has_runs || unproven_run_sources || owners.unclassified {
+        if legacy_native_scope
+            || has_runs
+            || unproven_run_sources
+            || unproven_queue
+            || owners.unclassified
+        {
             Some(Blocker::OwnershipUnknown)
         } else {
             None
@@ -242,4 +248,22 @@ fn continuations(state: &State, session: &SessionId, proof: &mut Proof) -> Resul
         return Ok(true);
     }
     Ok(false)
+}
+
+fn unproven_queue(state: &State, session: &SessionId, proof: &mut Proof) -> Result<bool, Failure> {
+    let mut unproven_queue = false;
+    for (routing, id) in state.queue.keys() {
+        if routing != session {
+            continue;
+        }
+        let scope = crate::queue::source::Scope {
+            session: session.clone(),
+            queue: id.clone(),
+        };
+        unproven_queue |= !state
+            .queue_publications
+            .protocol(&scope, proof)
+            .map_err(crate::public_session::v2::proof::ReadError::public)?;
+    }
+    Ok(unproven_queue)
 }

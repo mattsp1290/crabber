@@ -216,11 +216,15 @@ pub use crabber::session::{
 #[path = "../../crabber-session/src/queue/records.rs"]
 #[allow(dead_code)]
 mod queue_records;
+#[path = "../../crabber-session/src/queue/source.rs"]
+#[allow(dead_code)]
+pub(crate) mod queue_source;
 #[path = "../../crabber-session/src/queue/transition.rs"]
 #[allow(dead_code)]
 mod queue_transition;
 mod queue {
     pub(crate) use crate::queue_records::*;
+    pub(crate) use crate::queue_source as source;
     pub(crate) use crate::queue_transition::*;
     pub(crate) use crabber::core::{ControlId, QueueId, SessionId, SessionRevision};
     pub(crate) use crabber::session::{

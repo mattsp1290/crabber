@@ -1343,6 +1343,18 @@ impl Store for PostgresStore {
     fn supports_future_queue(&self) -> bool {
         true
     }
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_owned_queue_preparation(
+        &self,
+        context: &crabber_core::SessionContext,
+        authority: &crate::QueueAuthority,
+        expected_revision: crabber_core::SessionRevision,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_owned_inspection(context, authority, expected_revision)
+            .await
+    }
     async fn mutate_queue(
         &self,
         request: crate::QueueMutation,
@@ -2350,6 +2362,11 @@ impl PostgresExecution {
         tx.commit().await.map_err(db)?;
         Ok(claimed)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> &'static tokio::sync::Mutex<()> {
+    &tests::TEST_LOCK
 }
 
 #[cfg(test)]

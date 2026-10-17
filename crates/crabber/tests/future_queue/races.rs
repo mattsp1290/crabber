@@ -91,3 +91,37 @@ pub(super) async fn same_key_prepare(native: Arc<dyn Store>) {
     assert_eq!(probe.fake.requests().len(), 0);
     assert_eq!(probe.resolutions.load(Ordering::SeqCst), 0);
 }
+
+pub(super) async fn same_key_prepare_during_inspection(native: Arc<dyn Store>) {
+    let wrapped = Arc::new(TestStore::new(native.clone()));
+    let probe = Probe::new(1);
+    let host = agent(wrapped.clone(), &probe);
+    let session = create(native.as_ref(), defaults(None, None)).await;
+    let (queue, _, _) = enqueue(&host, native.as_ref(), &session).await;
+    let authority = claim(&host, native.as_ref(), &session).await;
+    let control = QueueControl {
+        id: ControlId::new(),
+        expected_revision: native.session_revision(&session).await.unwrap(),
+        authority,
+    };
+    wrapped.hold_queue_inspection.store(true, Ordering::SeqCst);
+    let scope = context(&session);
+    let first = host.prepare_queue_in(&scope, control.clone());
+    let second = async {
+        wrapped.entered.notified().await;
+        let receipt = host
+            .prepare_queue_in(&scope, control.clone())
+            .await
+            .unwrap();
+        wrapped.release.notify_one();
+        receipt
+    };
+    let (left, right) = tokio::join!(first, second);
+    assert_eq!(left.unwrap(), right);
+    assert_eq!(
+        native.get_queue(&session, &queue).await.unwrap(),
+        right.summary
+    );
+    assert_eq!(probe.fake.requests().len(), 0);
+    assert_eq!(probe.resolutions.load(Ordering::SeqCst), 0);
+}

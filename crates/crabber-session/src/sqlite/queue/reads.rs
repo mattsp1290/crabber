@@ -4,22 +4,41 @@ use crate::{
     queue::{
         Audit, QueuePage, QueuePageRequest, QueueReceipt, QueueSummary, Record, RetainedQueue,
         corrupt, decode, identifier, invalid, page, scope, validate_summary, verify_audit,
-        verify_sources,
     },
 };
 use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Row, Sqlite, Transaction};
-const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN length(CAST(data_json AS BLOB))<=33554432 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
+const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN length(CAST(data_json AS BLOB))<=33554432 AND length(CAST(data_json AS BLOB))<=$3 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
 pub(super) const SUMMARY: &str = "SELECT CASE WHEN length(CAST(q.queue_id AS BLOB))<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN length(CAST(q.summary_json AS BLOB))<=16384 THEN q.summary_json END AS summary, CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN length(CAST(a.operation_id AS BLOB))<=128 THEN a.operation_id END AS latest_operation,CASE WHEN length(CAST(CAST(ar.data AS TEXT) AS BLOB))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
 pub(super) async fn record(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     id: &QueueId,
 ) -> Result<Option<Record>, StoreError> {
+    record_with_proof(
+        tx,
+        session,
+        id,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn record_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &QueueId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Record>, StoreError> {
     super::super::deletion::ensure_live(tx, session).await?;
+    let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(length(CAST(data_json AS BLOB)) AS BIGINT) FROM future_queue WHERE session_id=$1 AND queue_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    proof
+        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
+        .map_err(|_| corrupt())?;
     let Some(row) = sqlx::query(RECORD)
         .bind(&session.0)
         .bind(&id.0)
+        .bind(allowance)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)?
@@ -39,39 +58,25 @@ pub(super) async fn record(
     {
         return Err(corrupt());
     }
-    let row = sqlx::query(SUMMARY)
+    let summary_allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(length(CAST(q.summary_json AS BLOB))+COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(a.operation_id AS BLOB)),0)+COALESCE(length(CAST(ar.data AS BLOB)),0) AS BIGINT) FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    proof
+        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
+        .map_err(|_| corrupt())?;
+    let query=SUMMARY.replace(" THEN "," AND (length(CAST(q.summary_json AS BLOB))+COALESCE(length(CAST(r.data_json AS BLOB)),0)+COALESCE(length(CAST(a.operation_id AS BLOB)),0)+COALESCE(length(CAST(CAST(ar.data AS TEXT) AS BLOB)),0))<=$3 THEN ");
+    let row = sqlx::query(&query)
         .bind(&session.0)
         .bind(&id.0)
+        .bind(summary_allowance)
         .fetch_one(&mut **tx)
         .await
         .map_err(db)?;
     if summary(&row, session)? != result.summary {
         return Err(corrupt());
     }
-    let (_, enqueue) = audited_receipt(tx, session, &result.enqueue_operation)
-        .await?
-        .ok_or_else(corrupt)?;
-    let prepare = if let Some(id) = &result.prepare_operation {
-        Some(
-            audited_receipt(tx, session, id)
-                .await?
-                .ok_or_else(corrupt)?
-                .1,
-        )
-    } else {
-        None
-    };
-    let claim = if let Some(claim) = &result.claim {
-        Some(
-            audited_receipt(tx, session, &claim.operation)
-                .await?
-                .ok_or_else(corrupt)?
-                .1,
-        )
-    } else {
-        None
-    };
-    verify_sources(&result, &enqueue, prepare.as_ref(), claim.as_ref())?;
+    super::protocol::verify_record(tx, &result, proof)
+        .await
+        .map_err(super::protocol::domain)?;
     Ok(Some(result))
 }
 pub(super) fn summary(
@@ -140,9 +145,30 @@ async fn audited_receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    let result = audited_leaf(tx, session, id, &mut proof).await?;
+    if let Some((_, audit)) = &result {
+        super::protocol::selected(tx, audit, &mut proof)
+            .await
+            .map_err(super::protocol::domain)?;
+    }
+    Ok(result)
+}
+pub(super) async fn audited_leaf(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<(QueueReceipt, Audit)>, StoreError> {
     super::super::deletion::ensure_live(tx, session).await?;
-    let Some(row) = sqlx::query("SELECT CASE WHEN length(CAST(r.kind AS BLOB))<=64 THEN r.kind END AS kind,CASE WHEN length(CAST(r.semantic_digest AS BLOB))<=64 THEN r.semantic_digest END AS semantic_digest,r.event_seq,CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 THEN r.data_json END AS receipt,CASE WHEN length(CAST(a.data_json AS BLOB))<=33554432 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2")
-        .bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
+    let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(length(CAST(r.kind AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+length(CAST(r.data_json AS BLOB))+COALESCE(length(CAST(a.data_json AS BLOB)),0) AS BIGINT) FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    proof
+        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
+        .map_err(|_| corrupt())?;
+
+    let Some(row) = sqlx::query("SELECT CASE WHEN length(CAST(r.kind AS BLOB))<=64 AND (length(CAST(r.kind AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+length(CAST(r.data_json AS BLOB))+COALESCE(length(CAST(a.data_json AS BLOB)),0))<=$3 THEN r.kind END AS kind,CASE WHEN length(CAST(r.semantic_digest AS BLOB))<=64 AND (length(CAST(r.kind AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+length(CAST(r.data_json AS BLOB))+COALESCE(length(CAST(a.data_json AS BLOB)),0))<=$3 THEN r.semantic_digest END AS semantic_digest,r.event_seq,CASE WHEN length(CAST(r.data_json AS BLOB))<=16384 AND (length(CAST(r.kind AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+length(CAST(r.data_json AS BLOB))+COALESCE(length(CAST(a.data_json AS BLOB)),0))<=$3 THEN r.data_json END AS receipt,CASE WHEN length(CAST(a.data_json AS BLOB))<=33554432 AND (length(CAST(r.kind AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+length(CAST(r.data_json AS BLOB))+COALESCE(length(CAST(a.data_json AS BLOB)),0))<=$3 THEN a.data_json END AS audit FROM operation_receipts r LEFT JOIN future_queue_audit a ON a.session_id=r.session_id AND a.operation_id=r.operation_id WHERE r.session_id=$1 AND r.operation_id=$2")
+        .bind(&session.0).bind(&id.0).bind(allowance).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
     if row
         .try_get::<Option<String>, _>("kind")
         .map_err(db)?
@@ -266,6 +292,13 @@ impl SqliteStore {
         let mut tx = self.readers.begin().await.map_err(db)?;
 
         super::super::deletion::ensure_live(&mut tx, &request.session_id).await?;
+        super::protocol::whole_scope(
+            &mut tx,
+            &request.session_id,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
+        .map_err(super::protocol::domain)?;
         let raw: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
             .bind(&request.session_id.0)
             .fetch_optional(&mut *tx)
@@ -286,19 +319,48 @@ impl SqliteStore {
     }
 }
 
+type Current = (
+    crabber_core::Session,
+    crate::management::Metadata,
+    SessionRevision,
+);
 pub(super) async fn current(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
-) -> Result<
-    Option<(
-        crabber_core::Session,
-        crate::management::Metadata,
-        SessionRevision,
-    )>,
-    StoreError,
-> {
+) -> Result<Option<Current>, StoreError> {
+    current_with_proof(
+        tx,
+        session,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+    .map_err(super::protocol::domain)
+}
+/// Charge all selected context text before database transfer or JSON decoding.
+pub(in crate::sqlite) async fn current_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<Current>, crate::public_session::v2::proof::ReadError<StoreError>> {
+    use crate::public_session::v2::proof::ReadError;
     super::super::deletion::ensure_live(tx, session).await?;
-    let Some(row) = sqlx::query("SELECT CASE WHEN length(CAST(CAST(s.data AS TEXT) AS BLOB))<=32768 THEN CAST(s.data AS TEXT) END AS session_data,s.public_revision,m.workspace_id,m.archived,m.format_version,CASE WHEN length(CAST(m.data_json AS BLOB))<=2048 THEN m.data_json END AS metadata FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&session.0).fetch_optional(&mut **tx).await.map_err(db)? else { return Ok(None); };
+    let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
+    let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST((length(CAST(CAST(s.data AS TEXT) AS BLOB))+COALESCE(length(CAST(m.data_json AS BLOB)),0)+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+64) AS BIGINT) FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1")
+        .bind(&session.0).fetch_optional(&mut **tx).await.map_err(db)?;
+    proof
+        .charge(usize::try_from(bytes.unwrap_or(0)).map_err(|_| corrupt())?)
+        .map_err(ReadError::Budget)?;
+    let row = sqlx::query("SELECT CASE WHEN length(CAST(CAST(s.data AS TEXT) AS BLOB))<=32768 AND (length(CAST(CAST(s.data AS TEXT) AS BLOB))+COALESCE(length(CAST(m.data_json AS BLOB)),0)+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+64)<=$2 THEN CAST(s.data AS TEXT) END AS session_data,s.public_revision,CASE WHEN length(CAST(m.workspace_id AS BLOB))<=512 AND (length(CAST(CAST(s.data AS TEXT) AS BLOB))+COALESCE(length(CAST(m.data_json AS BLOB)),0)+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+64)<=$2 THEN m.workspace_id END AS workspace_id,m.archived,m.format_version,CASE WHEN length(CAST(m.data_json AS BLOB))<=2048 AND (length(CAST(CAST(s.data AS TEXT) AS BLOB))+COALESCE(length(CAST(m.data_json AS BLOB)),0)+COALESCE(length(CAST(m.workspace_id AS BLOB)),0)+64)<=$2 THEN m.data_json END AS metadata FROM sessions s LEFT JOIN session_management m ON m.session_id=s.id WHERE s.id=$1").bind(&session.0).bind(allowance)
+        .fetch_optional(&mut **tx).await.map_err(db)?;
+    row.as_ref()
+        .map(|row| decode_current(row, session))
+        .transpose()
+        .map_err(Into::into)
+}
+fn decode_current(
+    row: &sqlx::sqlite::SqliteRow,
+    session: &SessionId,
+) -> Result<Current, StoreError> {
     let stored: crabber_core::Session = decode(
         &row.try_get::<Option<String>, _>("session_data")
             .map_err(db)?
@@ -334,9 +396,9 @@ pub(super) async fn current(
     };
     crate::queue::validate_session(&stored, &metadata)?;
     let raw: i64 = row.try_get("public_revision").map_err(db)?;
-    Ok(Some((
+    Ok((
         stored,
         metadata,
         SessionRevision::new(u64::try_from(raw).map_err(|_| corrupt())?)?,
-    )))
+    ))
 }

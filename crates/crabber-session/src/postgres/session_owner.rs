@@ -133,9 +133,21 @@ impl PostgresStore {
             &binding.directory,
         )
         .await?;
-        let current = super::management::current(tx, &binding.session_id)
-            .await
-            .map_err(unknown)?;
+        let mut read_proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let current = if preparation.is_some_and(|value| {
+            matches!(
+                value.purpose,
+                crate::session_owner::preparation::PreparationPurpose::Queue { .. }
+            )
+        }) {
+            super::queue::reads::current_with_proof(tx, &binding.session_id, &mut read_proof)
+                .await
+                .map_err(unknown)?
+        } else {
+            super::management::current(tx, &binding.session_id)
+                .await
+                .map_err(unknown)?
+        };
         if binding.parent.is_some() && current.is_none() {
             return Err(Error::UnknownStoreOutcome);
         }
@@ -144,7 +156,8 @@ impl PostgresStore {
                 crabber_core::SessionRevision::INITIAL,
                 |(_, _, revision)| *revision,
             );
-            self.preparation_preflight(tx, preparation, actual).await?;
+            self.preparation_preflight(tx, preparation, actual, &mut read_proof)
+                .await?;
         }
         if let Some((session, metadata, _)) = current {
             session

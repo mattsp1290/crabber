@@ -128,6 +128,7 @@ struct State {
     queue: BTreeMap<(SessionId, crabber_core::QueueId), crate::queue::Record>,
     queue_audits: BTreeMap<(SessionId, crabber_core::ControlId), crate::queue::Audit>,
     continuation_inputs: crate::continuation_input::Ledger,
+    queue_publications: crate::queue::source::Ledger,
     tool_continuations:
         BTreeMap<crabber_core::ContinuationId, crate::tool_continuation::ToolContinuationRecord>,
     tool_barriers: BTreeMap<SessionId, crabber_core::ContinuationId>,
@@ -648,11 +649,22 @@ impl Store for MemoryStore {
     fn supports_future_queue(&self) -> bool {
         true
     }
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        true
+    }
+    async fn inspect_owned_queue_preparation(
+        &self,
+        context: &crabber_core::SessionContext,
+        authority: &crate::QueueAuthority,
+        expected_revision: crabber_core::SessionRevision,
+    ) -> Result<crate::RetainedQueue, StoreError> {
+        self.queue_owned_inspection(context, authority, expected_revision)
+    }
     async fn mutate_queue(
         &self,
         request: crate::QueueMutation,
     ) -> Result<crate::QueueOutcome, StoreError> {
-        self.queue_mutate(request)
+        self.queue_mutate(&request)
     }
     async fn lookup_queue(
         &self,

@@ -47,8 +47,19 @@ impl MemoryStore {
             super::super::session_owner::preparation::ReservePreparation::fingerprint,
         )?;
         let fault = fault(self);
+        let read_proof =
+            std::cell::RefCell::new(crate::public_session::v2::proof::Proof::bounded(32 << 20));
         let outcome = self.transact_or_replay(
             |state| {
+                if let Some(replayed) = preflight_queue_reservation(
+                    state,
+                    preparation,
+                    &digest,
+                    self.clock.now(),
+                    &mut read_proof.borrow_mut(),
+                )? {
+                    return Ok(Some(replayed));
+                }
                 preflight_expired_reservation(
                     state,
                     request,
@@ -95,7 +106,13 @@ impl MemoryStore {
                 let parent = parent_proof(state, request, parent, now)?;
                 let revision = revision(state, &request.binding.session_id);
                 if let Some(preparation) = preparation {
-                    validate_preparation(state, preparation, revision, now)?;
+                    validate_preparation(
+                        state,
+                        preparation,
+                        revision,
+                        now,
+                        &mut read_proof.borrow_mut(),
+                    )?;
                 }
                 let outcome = state.session_owners.reserve_with_origin(
                     request,
@@ -185,6 +202,37 @@ fn preflight_expired_begin(
     }
     Ok(None)
 }
+fn preflight_queue_reservation(
+    state: &State,
+    preparation: Option<&crate::session_owner::preparation::ReservePreparation>,
+    digest: &crabber_core::InputFingerprint,
+    now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<SessionOwnerOutcome>, Error> {
+    let Some(preparation) = preparation else {
+        return Ok(None);
+    };
+    if !matches!(
+        preparation.purpose,
+        crate::session_owner::preparation::PreparationPurpose::Queue { .. }
+    ) {
+        return Ok(None);
+    }
+    let request = &preparation.owner;
+    super::deletion::ensure_live(state, &request.binding.session_id)
+        .map_err(crate::deletion::owner_error)?;
+    if let Some(saved) = state
+        .session_owners
+        .receipt(&request.binding.session_id, &request.id)?
+    {
+        if &saved.semantic_digest != digest {
+            return Err(Error::SemanticConflict);
+        }
+        return Ok(Some(SessionOwnerOutcome::Replayed(saved)));
+    }
+    validate_preparation_source_with_proof(state, preparation, now, proof)?;
+    Ok(None)
+}
 fn preflight_expired_reservation(
     state: &State,
     request: &ReserveSessionOwner,
@@ -214,6 +262,7 @@ fn preflight_expired_reservation(
             preparation.ok_or(Error::InvalidRequest)?,
             revision(state, &request.binding.session_id),
             now,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
         )?;
     }
     Ok(None)
@@ -373,6 +422,7 @@ fn validate_preparation(
     request: &crate::session_owner::preparation::ReservePreparation,
     revision: RevisionState,
     now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     use crate::session_owner::preparation::PreparationPurpose;
     if matches!(request.purpose, PreparationPurpose::OrdinaryAdmission)
@@ -391,12 +441,25 @@ fn validate_preparation(
     if actual != request.expected_revision {
         return Err(Error::RevisionConflict);
     }
-    validate_preparation_source(state, request, now)
+    validate_preparation_source_with_proof(state, request, now, proof)
 }
 fn validate_preparation_source(
     state: &State,
     request: &crate::session_owner::preparation::ReservePreparation,
     now: OffsetDateTime,
+) -> Result<(), Error> {
+    validate_preparation_source_with_proof(
+        state,
+        request,
+        now,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+}
+fn validate_preparation_source_with_proof(
+    state: &State,
+    request: &crate::session_owner::preparation::ReservePreparation,
+    now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     use crate::session_owner::preparation::PreparationPurpose;
     match &request.purpose {
@@ -466,7 +529,7 @@ fn validate_preparation_source(
             Ok(())
         }
         PreparationPurpose::Queue { authority } => {
-            super::queue::preparation_context(state, authority, &request.intent, now)
+            super::queue::preparation_context(state, authority, &request.intent, now, proof)
                 .map_err(|_| Error::StaleOwner)
         }
     }

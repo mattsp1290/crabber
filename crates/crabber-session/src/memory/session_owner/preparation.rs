@@ -3,6 +3,8 @@
 mod inspection;
 #[path = "preparation/native.rs"]
 mod native;
+#[path = "preparation/queue.rs"]
+mod queue;
 #[path = "preparation/replay.rs"]
 mod replay;
 use super::{MemoryStore, revision};
@@ -34,8 +36,23 @@ impl MemoryStore {
             .binding
             .session_id
             .clone();
+        let read_proof =
+            std::cell::RefCell::new(crate::public_session::v2::proof::Proof::bounded(32 << 20));
+        let queue_selection = std::cell::RefCell::new(None);
         let outcome = self.transact_or_replay(
             |state| {
+                match queue::before(
+                    state,
+                    joined,
+                    &mut read_proof.borrow_mut(),
+                    self.clock.now(),
+                )? {
+                    queue::Before::Other => (),
+                    queue::Before::Replayed(outcome) => return Ok(Some(*outcome)),
+                    queue::Before::Selected(selected) => {
+                        *queue_selection.borrow_mut() = Some(*selected);
+                    }
+                }
                 if let crate::session_owner::preparation::PreparedOperation::ExpiredRunResume(
                     prepared,
                 ) = joined.observed_operation()
@@ -93,8 +110,13 @@ impl MemoryStore {
                 if state.sessions.contains_key(&session) {
                     super::super::bump_public_revision(state, &session)?;
                 }
-                let outcome =
-                    self.apply_prepared_native(state, joined.observed_operation().clone(), &proof)?;
+                let outcome = self.apply_prepared_native(
+                    state,
+                    joined.observed_operation().clone(),
+                    &proof,
+                    &mut read_proof.borrow_mut(),
+                    queue_selection.borrow_mut().take(),
+                )?;
                 let outcome =
                     crate::session_owner::preparation::driver_completion::native(outcome, &proof)?;
                 super::before(super::fault(self))?;

@@ -1,6 +1,7 @@
 //! Durable future admissions. Public metadata never carries a dispatch capability.
 mod fingerprint;
 mod records;
+pub(crate) mod source;
 mod transition;
 use crate::{AdmissionRequestData, BoundKeyedAdmitRequest, StoreError};
 use crabber_core::{

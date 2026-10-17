@@ -25,23 +25,25 @@ async fn queue_rejects_replaced_prepared_and_coherent_input() {
     }
 }
 #[tokio::test]
-async fn queue_bounds_corrupt_index_id_before_transfer() {
+async fn queue_identity_guard_rejects_oversized_index_id() {
     let (store, _, _directory) = crate::sqlite::tests::temp_store().await;
     let fixture = crate::queue_contract::fixture(&store).await;
     store.mutate_queue(fixture.enqueue).await.unwrap();
-    sqlx::query("UPDATE future_queue SET queue_id=$1 WHERE session_id=$2")
-        .bind("x".repeat(1 << 20))
-        .bind(&fixture.session.0)
-        .execute(&store.writer)
-        .await
-        .unwrap();
+    assert!(
+        sqlx::query("UPDATE future_queue SET queue_id=$1 WHERE session_id=$2")
+            .bind("x".repeat(1 << 20))
+            .bind(&fixture.session.0)
+            .execute(&store.writer)
+            .await
+            .is_err()
+    );
     let request = QueuePageRequest {
         session_id: fixture.session,
         limit: 64,
         after_sequence: None,
         expected_revision: None,
     };
-    assert!(store.list_queue(request).await.is_err());
+    assert!(store.list_queue(request).await.is_ok());
 }
 
 async fn write_record(store: &crate::SqliteStore, record: &Record) {

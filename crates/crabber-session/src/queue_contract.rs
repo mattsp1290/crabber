@@ -110,3 +110,6 @@ mod limits;
 
 #[path = "queue_contract/corruption.rs"]
 pub(crate) mod corruption;
+
+#[path = "queue_contract/publications.rs"]
+pub(crate) mod publications;

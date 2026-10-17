@@ -9,6 +9,8 @@ impl super::super::MemoryStore {
         state: &mut super::super::super::State,
         operation: PreparedOperation,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+        queue_selection: Option<super::super::super::queue::selection::Selected>,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let guard = crate::queue::AdmissionGuard::Preparation(proof);
@@ -51,6 +53,8 @@ impl super::super::MemoryStore {
                     request,
                     digest,
                     Some(proof),
+                    read_proof,
+                    queue_selection.ok_or(crate::StoreError::AdmissionConflict)?,
                 )?)
             }
             PreparedOperation::Admit(bound) => {

@@ -42,6 +42,7 @@ pub(super) async fn run(native: Arc<dyn Store>, clock: Arc<ManualClock>) {
     contexts::unsupported(native.clone()).await;
     races::defaults_cas(native.clone()).await;
     Box::pin(races::same_key_prepare(native.clone())).await;
+    Box::pin(races::same_key_prepare_during_inspection(native.clone())).await;
     closed(native).await;
 }
 async fn enqueue(

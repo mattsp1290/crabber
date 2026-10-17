@@ -24,6 +24,7 @@ pub(super) struct TestStore {
     pub queue_loss: AtomicUsize,
     pub unsupported: AtomicBool,
     pub hold_summary: AtomicBool,
+    pub hold_queue_inspection: AtomicBool,
     pub hold_admission: AtomicBool,
     pub lose_ack: AtomicBool,
     pub entered: Notify,
@@ -45,6 +46,7 @@ impl TestStore {
             queue_loss: AtomicUsize::new(0),
             unsupported: AtomicBool::new(false),
             hold_summary: AtomicBool::new(false),
+            hold_queue_inspection: AtomicBool::new(false),
             hold_admission: AtomicBool::new(false),
             lose_ack: AtomicBool::new(false),
             entered: Notify::new(),
@@ -190,6 +192,24 @@ impl Store for TestStore {
         result
     }
 
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        !self.unsupported.load(Ordering::SeqCst)
+            && self.inner.supports_owned_queue_preparation_inspection()
+    }
+    async fn inspect_owned_queue_preparation(
+        &self,
+        context: &crabber::core::SessionContext,
+        authority: &QueueAuthority,
+        expected_revision: crabber::core::SessionRevision,
+    ) -> Result<RetainedQueue, StoreError> {
+        if self.hold_queue_inspection.swap(false, Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        self.inner
+            .inspect_owned_queue_preparation(context, authority, expected_revision)
+            .await
+    }
     fn supports_future_queue(&self) -> bool {
         !self.unsupported.load(Ordering::SeqCst) && self.inner.supports_future_queue()
     }
