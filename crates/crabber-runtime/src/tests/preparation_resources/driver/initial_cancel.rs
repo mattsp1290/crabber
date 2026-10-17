@@ -55,6 +55,7 @@ async fn contract(store: Arc<dyn Store>, backend: &str) {
         let stages_before_ack = h.gate.initial_task_ids.lock().unwrap().clone();
         // Always release both real gates before checking the expected RED.
         h.provider.cleanup_release.notify_one();
+        let held = while_ack_held(&h, &descriptor, closed_before_ack).await;
         h.gate.preparation_hold.store(false, Ordering::SeqCst);
         h.gate.preparation_release.notify_one();
         let started = start.await.unwrap();
@@ -74,6 +75,7 @@ async fn contract(store: Arc<dyn Store>, backend: &str) {
             .runtime
             .drain_session_execution_tasks(&session, Duration::from_secs(3))
             .await;
+        let child_after = h.child_state(&descriptor).await;
         let effects = h.fake.requests().len();
         eprintln!(
             "held initial Complete ACK backend={backend} unkeyed={unkeyed} requested={requested:?} cleanup_started_before_ack={closed_before_ack} ack_pending={ack_still_pending} stages={stages_before_ack:?} effects={effects}"
@@ -87,6 +89,8 @@ async fn contract(store: Arc<dyn Store>, backend: &str) {
             cleaned,
             drained,
             effects,
+            held,
+            child_after,
         });
     }
     for observation in observations {
@@ -102,6 +106,44 @@ struct Observation {
     cleaned: Result<(), tokio::time::error::Elapsed>,
     drained: crate::ExecutionTaskDrain,
     effects: usize,
+    held: HeldAck,
+    child_after: SessionOwnerState,
+}
+struct HeldAck {
+    actual_cleanup_completed: bool,
+    join_attempted: bool,
+    child: SessionOwnerState,
+}
+async fn while_ack_held(
+    h: &Harness,
+    descriptor: &PreparationReconciliation,
+    closed: bool,
+) -> HeldAck {
+    let actual_cleanup_completed = closed
+        && tokio::time::timeout(Duration::from_secs(2), async {
+            while h.provider.cleanup_completed.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+    let join_attempted = actual_cleanup_completed
+        && tokio::time::timeout(Duration::from_millis(150), async {
+            while h.gate.owned_join_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+    let child = h.child_state(descriptor).await;
+    eprintln!(
+        "original lease while CompleteACK held actual_cleanup_completed={actual_cleanup_completed} join_attempted={join_attempted} child={child:?}"
+    );
+    HeldAck {
+        actual_cleanup_completed,
+        join_attempted,
+        child,
+    }
 }
 impl Observation {
     fn check(self, backend: &str) {
@@ -114,6 +156,8 @@ impl Observation {
             cleaned,
             drained,
             effects,
+            held,
+            child_after,
         } = self;
         assert!(cleaned.is_ok(), "{cleaned:?}");
         assert!(
@@ -131,6 +175,24 @@ impl Observation {
         assert!(
             requested.is_ok() && closed,
             "explicit initial cleanup must start before held Complete ACK returns: backend={backend} unkeyed={unkeyed} requested={requested:?} closed={closed}"
+        );
+        assert!(
+            held.actual_cleanup_completed,
+            "real cleanup must finish while original ACK remains held"
+        );
+        assert!(
+            !held.join_attempted,
+            "native child Join preceded original returned plan disposal"
+        );
+        assert_eq!(
+            held.child,
+            SessionOwnerState::Active,
+            "held original main still owns the actual returned plan lease"
+        );
+        assert_eq!(
+            child_after,
+            SessionOwnerState::Joined,
+            "child joins only after original main disposal and actual cleanup"
         );
         assert_eq!(
             effects, 0,
