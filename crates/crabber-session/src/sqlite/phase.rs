@@ -346,14 +346,38 @@ pub(super) async fn legacy_guard(
     run: &Run,
     id: &crabber_core::ToolCallId,
 ) -> Result<(), crate::StoreError> {
+    legacy_guard_with_proof(
+        tx,
+        run,
+        id,
+        &mut crate::public_session::v2::proof::Proof::legacy(),
+    )
+    .await
+}
+
+pub(super) async fn legacy_guard_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    id: &crabber_core::ToolCallId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::StoreError> {
     if crate::SQLITE_SCHEMA_VERSION >= 10
-        && super::frontend::origin(tx, run, id)
-            .await
-            .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
-            .is_some()
+        && super::frontend::origin_with_proof(
+            tx,
+            &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
+                .map_err(|_| crate::StoreError::Conflict)?,
+            id,
+            proof,
+        )
+        .await
+        .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
+        .is_some()
     {
         return Err(crate::StoreError::Conflict);
     }
+    proof
+        .charge(1)
+        .map_err(|_| crate::StoreError::Validation("legacy phase guard allowance".into()))?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM tool_phases WHERE run_id=$1 AND call_id=$2)",
     )

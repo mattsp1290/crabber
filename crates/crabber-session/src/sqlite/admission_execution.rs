@@ -171,12 +171,28 @@ fn unknown(_: StoreError) -> Error {
 }
 
 pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
+    begin_with_proof(
+        execution,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+pub(super) async fn begin_with_proof(
+    execution: &SqliteExecution,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    proof
+        .measure(&execution.fence)
+        .map_err(|_| Error::UnknownStoreFailure)?;
     let store = &execution.store;
-    let mut tx = store.begin_write().await.map_err(unknown)?;
+    let mut tx = store
+        .begin_write()
+        .await
+        .map_err(|_| Error::UnknownStoreFailure)?;
     let result = async {
-        let run = load_run(&mut tx, &execution.fence.run_id)
+        let run = super::records::load_run_with_proof(&mut tx, &execution.fence.run_id, proof)
             .await
-            .map_err(unknown)?;
+            .map_err(|_| Error::UnknownStoreFailure)?;
         if run.claim_token != execution.fence.claim_token {
             return Err(Error::StaleOwner);
         }
@@ -186,14 +202,17 @@ pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
         if run.lease_until <= store.clock.now() {
             return Err(Error::StaleOwner);
         }
-        let mut record = load_record(&mut tx, &run.id)
+        let mut record = load_record_with_proof(&mut tx, &run.id, proof)
             .await
-            .map_err(unknown)?
+            .map_err(|_| Error::UnknownStoreFailure)?
             .ok_or(Error::MissingEvidence)?;
-        validate_binding(&mut tx, &record, &run).await?;
+        validate_binding_with_proof(&mut tx, &record, &run, proof).await?;
+        super::read_proof::charge(&mut tx,
+            sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2")
+                .bind(&run.session_id.0).bind(record.key.as_str()), proof).await.map_err(|_| Error::UnknownStoreFailure)?;
         if lookup_receipt(&mut tx, &run.session_id, &record.key)
             .await
-            .map_err(unknown)?
+            .map_err(|_| Error::UnknownStoreFailure)?
             .as_ref()
             != Some(&record.receipt)
         {
@@ -205,22 +224,51 @@ pub(super) async fn begin(execution: &SqliteExecution) -> Result<(), Error> {
         if record.state != AdmissionExecutionState::Unstarted {
             return Err(Error::AlreadyStarted);
         }
-        super::admission_journal::begin(&mut tx, &record, &run)
+        let sources = super::admission_journal::begin_captured_with_proof(&mut tx, &record, &run, proof)
             .await
-            .map_err(unknown)?;
+            .map_err(|_| Error::UnknownStoreFailure)?;
         record.state = AdmissionExecutionState::Started;
         sqlx::query(
             "UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1",
         )
         .bind(&run.id.0)
-        .bind(record.encode().map_err(unknown)?)
+        .bind(record.encode().map_err(|_| Error::UnknownStoreFailure)?)
         .execute(&mut *tx)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
+        super::native_enrollment::record_raw_native(&mut tx,
+            crate::native_enrollment::caller::Caller::Raw,
+            &crate::native_enrollment::caller::Fresh::AdmissionBegin(crate::native_enrollment::caller::AdmissionBegin {
+                fence: &execution.fence, run: &run, record: &record,
+                sources: sources.as_ref().map(|(init, begin)| (init, begin)),
+            }), proof, #[cfg(test)] &store.native_raw_probe).await.map_err(|_| Error::UnknownStoreFailure)?;
         Ok(())
     }
     .await;
     super::transactions::finish(tx, result, unknown).await
+}
+
+async fn validate_binding_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    record: &AdmissionExecutionRecord,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let count = record
+        .capsule
+        .input_envelope
+        .as_ref()
+        .map_or(1, |input| input.messages().len());
+    let messages = super::execution_binding::original_messages_with_proof(
+        tx,
+        &run.session_id,
+        &run.id,
+        count,
+        proof,
+    )
+    .await
+    .map_err(|_| Error::SemanticConflict)?;
+    record.validate_messages(run, &messages)
 }
 
 #[cfg(test)]

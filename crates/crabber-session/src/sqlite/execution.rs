@@ -243,28 +243,14 @@ impl ExecutionStore for SqliteExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.store.begin_write().await?;
-        let result = async {
-            let run = self.store.fenced(&mut tx, &self.fence).await?;
-            super::phase::legacy_guard(&mut tx, &run, id).await?;
-            let row = sqlx::query("SELECT data FROM tool_calls WHERE id=$1")
-                .bind(&id.0)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-                .ok_or(StoreError::NotFound)?;
-            let mut call: ToolCallRecord = decode_row(&row, "data")?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-                return Err(StoreError::Conflict);
-            }
-            insert_event(&mut tx, &run, &running_event).await?;
-            call.status = ToolCallStatus::Running;
-            save_call(&mut tx, id, &call).await?;
-            Ok(())
-        }
-        .await;
-        finish(tx, result, std::convert::identity).await
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .await
     }
+
     async fn settle_tool_call(
         &self,
         id: &ToolCallId,

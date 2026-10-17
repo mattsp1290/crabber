@@ -142,6 +142,26 @@ pub(super) async fn begin(
     Ok(())
 }
 
+pub(super) async fn begin_captured_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    record: &AdmissionExecutionRecord,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<Option<(Init, Begin)>, ReadError<StoreError>> {
+    let Some(init) = read_with_proof(tx, record, proof).await? else {
+        return Ok(None);
+    };
+    let issuance = issuance_with_proof(tx, &run.session_id, &run.id, None, proof).await?;
+    proof
+        .measure(&(&init, &issuance))
+        .map_err(ReadError::Budget)?;
+    issuance.verify(run).map_err(|_| invalid())?;
+    let begin = Begin::new(&init, issuance)?;
+    proof.measure(&begin).map_err(ReadError::Budget)?;
+    insert(tx, Source::Begin(begin.clone())).await?;
+    Ok(Some((init, begin)))
+}
+
 #[cfg(test)]
 #[path = "admission_journal/tests.rs"]
 mod tests;

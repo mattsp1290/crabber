@@ -110,13 +110,26 @@ impl MemoryStore {
 
 impl MemoryExecution {
     pub(super) fn begin_admission(&self) -> Result<(), Error> {
+        self.begin_admission_with_proof(&mut crate::public_session::v2::proof::Proof::bounded(
+            32 << 20,
+        ))
+    }
+    pub(super) fn begin_admission_with_proof(
+        &self,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        proof
+            .measure(&self.fence)
+            .map_err(|_| Error::UnknownStoreFailure)?;
         self.store.transact(|state| {
-            super::admission_journal::verify(state, &self.fence.run_id)
+            super::admission_journal::verify_with_proof(state, &self.fence.run_id, proof)
                 .map_err(|_| Error::UnknownStoreFailure)?;
             let run = state
                 .runs
                 .get(&self.fence.run_id)
                 .ok_or(Error::MissingEvidence)?;
+            proof.measure(run).map_err(|_| Error::UnknownStoreFailure)?;
+            let run = run.clone();
             if run.claim_token != self.fence.claim_token {
                 return Err(Error::StaleOwner);
             }
@@ -142,9 +155,14 @@ impl MemoryExecution {
                     message.run_id.as_ref() == Some(&run.id) && message.session_id == run.session_id
                 })
                 .take(count)
-                .cloned()
-                .collect();
-            record.validate_messages(run, &messages)?;
+                .map(|message| {
+                    proof
+                        .measure(message)
+                        .map_err(|_| Error::UnknownStoreFailure)?;
+                    Ok(message.clone())
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            record.validate_messages(&run, &messages)?;
             if state
                 .receipts
                 .get(&(run.session_id.clone(), record.key.clone()))
@@ -155,8 +173,12 @@ impl MemoryExecution {
             if record.state != AdmissionExecutionState::Unstarted {
                 return Err(Error::AlreadyStarted);
             }
-            super::admission_journal::begin(state, &self.fence.run_id)
-                .map_err(|_| Error::UnknownStoreFailure)?;
+            let sources = super::admission_journal::begin_captured_with_proof(
+                state,
+                &self.fence.run_id,
+                proof,
+            )
+            .map_err(|_| Error::UnknownStoreFailure)?;
             let record = state
                 .admission_executions
                 .get_mut(&self.fence.run_id)
@@ -168,6 +190,25 @@ impl MemoryExecution {
                 return Err(Error::AlreadyStarted);
             }
             record.state = AdmissionExecutionState::Started;
+            super::native_enrollment::record_raw_native(
+                state,
+                crate::native_enrollment::caller::Caller::Raw,
+                &crate::native_enrollment::caller::Fresh::AdmissionBegin(
+                    crate::native_enrollment::caller::AdmissionBegin {
+                        fence: &self.fence,
+                        run: &run,
+                        record: state
+                            .admission_executions
+                            .get(&run.id)
+                            .ok_or(Error::MissingEvidence)?,
+                        sources: sources.as_ref().map(|(init, begin)| (init, begin)),
+                    },
+                ),
+                proof,
+                #[cfg(test)]
+                &self.store.native_raw_probe,
+            )
+            .map_err(|_| Error::UnknownStoreFailure)?;
             Ok(())
         })
     }

@@ -20,6 +20,7 @@ pub(super) fn verify_previous(
     state: &State,
     previous: &crate::native_parent::RunState,
     latest: Option<&RunIssuance>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     crate::native_parent::source_protocol::validate_scope(&previous.session_id, &previous.run_id)?;
     let scope = (previous.session_id.clone(), previous.run_id.clone());
@@ -44,8 +45,7 @@ pub(super) fn verify_previous(
             Ok(())
         };
     }
-    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
-    history(state, &previous.session_id, &previous.run_id, &mut proof).map_err(|_| Error)?;
+    history(state, &previous.session_id, &previous.run_id, proof).map_err(|_| Error)?;
     let head = state.native_run_source_heads.get(&scope).ok_or(Error)?;
     head.validate()?;
     let latest = latest.ok_or(Error)?;

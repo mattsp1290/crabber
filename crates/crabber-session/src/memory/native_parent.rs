@@ -264,6 +264,24 @@ pub(super) fn record_run_completed_captured(
         &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
     )
 }
+pub(super) fn record_run_completed_captured_with_proof(
+    state: &mut State,
+    previous: &Run,
+    updated: &Run,
+    source: Option<&crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<u64>, Error> {
+    proof
+        .measure(&(previous, updated, source))
+        .map_err(|_| Error)?;
+    record_run_states_captured(
+        state,
+        Some(&RunState::from_run(previous)?),
+        RunState::from_run(updated)?,
+        source.cloned(),
+        proof,
+    )
+}
 fn record_run_states_with_completion_with_proof(
     state: &mut State,
     previous: Option<&RunState>,
@@ -294,7 +312,7 @@ fn record_run_states_captured(
         .next_back()
         .map(|(_, value)| value);
     if let Some(previous) = previous {
-        source_protocol::verify_previous(state, previous, latest)?;
+        source_protocol::verify_previous(state, previous, latest, proof)?;
     }
     if completion.is_some() && latest.is_none() {
         return Err(Error);

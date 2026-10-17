@@ -24,6 +24,7 @@ mod approval;
 mod attempt;
 mod deletion;
 mod execution_binding;
+mod legacy_execution;
 #[cfg(test)]
 mod lock_order_tests;
 mod management;
@@ -687,6 +688,35 @@ impl PostgresStore {
             .ok_or(StoreError::NotFound)?;
         lock_session(&mut tx, &SessionId(session.clone())).await?;
         let run = load_run(&mut tx, id, true).await?;
+        if run.id != *id || run.session_id.0 != session {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
+        Ok((tx, run))
+    }
+    async fn run_transaction_with_proof(
+        &self,
+        id: &RunId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        read_proof::charge(
+            &mut tx,
+            sqlx::query_scalar(
+                "SELECT CAST(octet_length(session_id) AS BIGINT) FROM runs WHERE id=$1",
+            )
+            .bind(&id.0),
+            proof,
+        )
+        .await
+        .map_err(|_| StoreError::Validation("native routing proof allowance".into()))?;
+        let session: Option<String> = sqlx::query_scalar("SELECT CASE WHEN octet_length(session_id)<=512 THEN session_id END FROM runs WHERE id=$1")
+            .bind(&id.0).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+        let session =
+            session.ok_or_else(|| StoreError::Validation("invalid native routing".into()))?;
+        lock_session(&mut tx, &SessionId(session.clone())).await?;
+        let run = load_run_with_proof(&mut tx, id, proof).await?;
         if run.id != *id || run.session_id.0 != session {
             return Err(StoreError::Validation(
                 "stored run identity is invalid".into(),
@@ -2110,34 +2140,14 @@ impl ExecutionStore for PostgresExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        phase::legacy_guard(&mut tx, &run, id).await?;
-        let row = sqlx::query(
-            "SELECT snapshot_record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE",
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
         )
-        .bind(&id.0)
-        .bind(&run.id.0)
-        .fetch_optional(&mut *tx)
         .await
-        .map_err(db)?
-        .ok_or(StoreError::NotFound)?;
-        let mut call: ToolCallRecord = decode_record(&row.get::<String, _>("snapshot_record"))?;
-        if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-            return Err(StoreError::Conflict);
-        }
-        insert_event(&mut tx, &run, &running_event).await?;
-        call.status = ToolCallStatus::Running;
-        let accounting = snapshot::call_record(&call)?;
-        sqlx::query("UPDATE tool_calls SET status=$2,data=$3,snapshot_record=$4,snapshot_parts=$5,snapshot_text=$6,snapshot_bytes=$7 WHERE id=$1")
-            .bind(&id.0)
-            .bind(call_status(call.status))
-            .bind(json(&call)?)
-            .bind(&accounting.record).bind(accounting.parts).bind(accounting.text).bind(accounting.bytes)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
     }
+
     async fn settle_tool_call(
         &self,
         id: &ToolCallId,

@@ -9,7 +9,7 @@ use super::{SqliteExecution, SqliteStore};
 use crate::frontend_continuation::FrontendOriginRecord;
 use crate::{FrontendCallOrigin, FrontendStagingReceipt, ToolContinuationError as Error};
 use crabber_core::{ControlId, Run, RunId, SessionId, ToolCallId};
-pub(super) use read::declared;
+pub(super) use read::{declared, origin_with_proof};
 use sqlx::{Sqlite, Transaction};
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome

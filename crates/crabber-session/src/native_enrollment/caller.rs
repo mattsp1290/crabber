@@ -24,3 +24,11 @@ pub(crate) use probe::Probe;
 #[cfg(test)]
 #[path = "caller/contract.rs"]
 pub(crate) mod contract;
+
+#[path = "caller/legacy.rs"]
+mod legacy;
+pub(crate) use legacy::LegacyTool;
+
+#[path = "caller/admission_begin.rs"]
+mod admission_begin;
+pub(crate) use admission_begin::AdmissionBegin;

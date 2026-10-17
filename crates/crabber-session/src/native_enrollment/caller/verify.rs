@@ -19,6 +19,8 @@ pub(crate) struct Scope<'a> {
 // inventoried by this representative; no Pending caller can be constructed.
 pub(crate) enum Fresh<'a> {
     Attempt(Attempt<'a>),
+    LegacyTool(super::LegacyTool<'a>),
+    AdmissionBegin(super::AdmissionBegin<'a>),
 }
 
 pub(crate) struct Attempt<'a> {
@@ -54,6 +56,8 @@ impl<'a> Fresh<'a> {
     pub(crate) fn measure_and_verify(&self, proof: &mut Proof) -> Result<Scope<'a>, Failure> {
         match self {
             Self::Attempt(fresh) => fresh.verify(proof),
+            Self::LegacyTool(fresh) => fresh.verify(proof),
+            Self::AdmissionBegin(fresh) => fresh.verify(proof),
         }
     }
 }

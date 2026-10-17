@@ -23,6 +23,7 @@ mod execution;
 mod execution_binding;
 mod fork;
 mod frontend;
+mod legacy_execution;
 mod management;
 mod native_enrollment;
 mod native_parent;

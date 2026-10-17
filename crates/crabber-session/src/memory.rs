@@ -33,6 +33,8 @@ mod attempt;
 mod execution_binding;
 #[path = "memory/expired.rs"]
 mod expired;
+#[path = "memory/legacy_execution.rs"]
+mod legacy_execution;
 #[path = "memory/management.rs"]
 mod management;
 #[path = "memory/native_enrollment.rs"]
@@ -1712,36 +1714,11 @@ impl ExecutionStore for MemoryExecution {
         id: &ToolCallId,
         running_event: EventRecord,
     ) -> Result<(), StoreError> {
-        self.store.fenced(&self.fence, |state, run| {
-            if frontend::origin(state, run, id)
-                .map_err(|_| StoreError::Validation("frontend origin integrity failure".into()))?
-                .is_some()
-            {
-                return Err(StoreError::Conflict);
-            }
-            if state
-                .phases
-                .values()
-                .any(|p| p.snapshot.run_id == run.id && p.snapshot.target.call_id == *id)
-            {
-                return Err(StoreError::Conflict);
-            }
-            let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
-                return Err(StoreError::Conflict);
-            }
-            insert_event(state, run, running_event)?;
-            state
-                .calls
-                .get_mut(id)
-                .expect("validated call exists")
-                .status = ToolCallStatus::Running;
-            *state
-                .snapshot_revisions
-                .entry(run.session_id.clone())
-                .or_default() += 1;
-            Ok(())
-        })
+        self.claim_legacy_with_proof(
+            id,
+            &running_event,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn settle_tool_call(
