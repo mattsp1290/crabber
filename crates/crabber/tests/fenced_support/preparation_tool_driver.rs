@@ -5,3 +5,6 @@ pub use crabber::session::session_owner::preparation::{
 #[path = "../../../crabber-session/src/session_owner/preparation/tool_driver/verify.rs"]
 mod verify;
 pub(crate) use verify::*;
+
+#[path = "../../../crabber-session/src/session_owner/preparation/tool_driver/payload.rs"]
+pub(crate) mod payload;

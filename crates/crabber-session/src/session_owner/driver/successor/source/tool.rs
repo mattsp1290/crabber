@@ -7,6 +7,7 @@ use crate::session_owner::{audit::Audit, preparation::Origin};
 use crate::{ToolContinuationOutcome as Outcome, ToolContinuationReceipt as Receipt};
 use crabber_core::{EventRecord, InputFingerprint};
 
+#[derive(Clone, Copy)]
 pub(crate) struct Claim<'a> {
     pub previous: &'a RunIssuance,
     pub next: &'a RunIssuance,
@@ -15,6 +16,7 @@ pub(crate) struct Claim<'a> {
     pub event: &'a EventRecord,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Evidence<'a> {
     pub receipt: &'a Receipt,
     pub event: &'a EventRecord,
@@ -23,6 +25,7 @@ pub(crate) struct Evidence<'a> {
     pub suspension_event: &'a EventRecord,
     pub claim: &'a crate::ToolContinuationClaim,
     pub frontend: Option<&'a crate::FrontendContinuationClaim>,
+    pub answers: &'a [crate::continuation_input::Input<'a>],
     pub original: Option<Claim<'a>>,
 }
 

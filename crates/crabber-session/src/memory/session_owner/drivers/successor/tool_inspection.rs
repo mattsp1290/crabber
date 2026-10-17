@@ -18,5 +18,9 @@ fn inspect(
 ) -> Result<PreparedToolDriverMetadata, Error> {
     let selected = source::original(state, &request.request, proof, None)?;
     let receipt = selected.tool_receipt.ok_or(Error::Unsupported)?;
-    crate::session_owner::preparation::tool_driver::metadata(request, receipt)
+    crate::session_owner::preparation::tool_driver::metadata(
+        request,
+        receipt,
+        selected.tool_payload_digest.ok_or(Error::Unsupported)?,
+    )
 }

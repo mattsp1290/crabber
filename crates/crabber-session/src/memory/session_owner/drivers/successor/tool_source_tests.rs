@@ -53,6 +53,10 @@ async fn tool_original_sources_authenticate_all_four_compound_origins() {
                         Some((f.batch.continuation.clone(), f.batch.next_attempt.clone()))
                     );
                     assert_eq!(selected.revision, f.receipt.revision);
+                    assert_eq!(
+                        selected.tool_payload_digest,
+                        Some(f.native.payload_fingerprint().unwrap())
+                    );
                     let used = proof.used();
                     source::original(&state, &request, &mut Proof::bounded(used), None).unwrap();
                     assert!(

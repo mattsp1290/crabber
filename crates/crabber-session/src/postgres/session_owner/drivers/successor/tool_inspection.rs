@@ -25,5 +25,9 @@ async fn inspect(
 ) -> Result<PreparedToolDriverMetadata, Error> {
     let selected = Box::pin(source::original(tx, &request.request, proof, None)).await?;
     let receipt = selected.tool_receipt.ok_or(Error::Unsupported)?;
-    crate::session_owner::preparation::tool_driver::metadata(request, receipt)
+    crate::session_owner::preparation::tool_driver::metadata(
+        request,
+        receipt,
+        selected.tool_payload_digest.ok_or(Error::Unsupported)?,
+    )
 }

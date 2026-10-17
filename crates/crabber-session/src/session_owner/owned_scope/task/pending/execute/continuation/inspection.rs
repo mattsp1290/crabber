@@ -44,6 +44,7 @@ impl Source {
         store: &dyn Store,
         context: &SessionContext,
         request: &RegisterSuccessorExecutionDriver,
+        completion: &crate::session_owner::preparation::PreparationCompletion,
     ) -> Result<PendingSuccessorReplay, PendingSuccessorError> {
         if self.approval() {
             let inspected = store
@@ -67,7 +68,18 @@ impl Source {
                     semantic_digest: self.digest.clone(),
                 })
                 .await?;
-            if inspected.claim != request.claim {
+            let crate::session_owner::preparation::PreparationCompletion::ToolContinuation(
+                crate::ToolContinuationClaimOutcome::Applied { grant, .. },
+            ) = completion
+            else {
+                return Err(Error::SemanticConflict.into());
+            };
+            if inspected.claim != request.claim
+                || grant
+                    .payload_fingerprint()
+                    .map_err(|_| Error::SemanticConflict)?
+                    != inspected.grant_payload_digest
+            {
                 return Err(Error::SemanticConflict.into());
             }
             Ok(self.metadata(Receipt::Tool(&inspected.receipt), context)?)

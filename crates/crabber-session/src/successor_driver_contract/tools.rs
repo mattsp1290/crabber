@@ -426,6 +426,10 @@ pub(crate) async fn inspect_captured(
         .unwrap();
     assert_eq!(inspected.claim, f.captured);
     assert_eq!(inspected.receipt, f.receipt);
+    assert_eq!(
+        inspected.grant_payload_digest,
+        f.native.payload_fingerprint().unwrap()
+    );
     let mut other = original;
     other.origin = if frontend {
         Origin::ToolClaim

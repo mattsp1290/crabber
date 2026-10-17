@@ -132,7 +132,7 @@ pub(super) async fn prepare(
         let Some(_call) = control.enter_call()? else {
             return Ok(Prepared::Stopped);
         };
-        administrative(source.inspect(store, &context, &request)).await?
+        administrative(source.inspect(store, &context, &request, &captured.completion)).await?
     };
     if inspected != metadata {
         return Err(Error::SemanticConflict.into());

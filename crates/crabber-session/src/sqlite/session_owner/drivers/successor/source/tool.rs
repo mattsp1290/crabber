@@ -30,7 +30,22 @@ pub(super) async fn original(
         super::scope::Scope { session, run },
         id,
         proof,
-        |native| source::selected(request, previous, next, audits, native, binding),
+        |native, proof| {
+            let Native::Tool { evidence, .. } = &native else {
+                return Err(Error::Unsupported);
+            };
+            let evidence = *evidence;
+            let mut selected = source::selected(request, previous, next, audits, native, binding)?;
+            selected.tool_payload_digest = Some(
+                crate::session_owner::preparation::tool_driver::payload::expected(
+                    evidence.batch,
+                    evidence.answers,
+                    evidence.frontend,
+                    proof,
+                )?,
+            );
+            Ok(selected)
+        },
     ))
     .await
 }
@@ -39,7 +54,7 @@ async fn with_native<T>(
     selected_scope: super::scope::Scope<'_>,
     id: &ControlId,
     proof: &mut Proof,
-    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+    use_native: impl FnOnce(Native<'_>, &mut Proof) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let session = selected_scope.session;
     let run = selected_scope.run;
@@ -85,6 +100,7 @@ async fn with_native<T>(
         suspension_event: &suspension_event,
         claim: projected.claim.as_ref().ok_or(Error::UnknownStoreOutcome)?,
         frontend: projected.frontend.as_deref(),
+        answers: &answers,
         original: original.as_ref().map(|o| tool::Claim {
             previous: &o.previous,
             next: &o.next,
@@ -94,10 +110,13 @@ async fn with_native<T>(
         }),
     };
     let owned = super::approval::owned_input(tx, session, run, proof).await?;
-    use_native(Native::Tool {
-        evidence,
-        input: owned.as_input()?,
-    })
+    use_native(
+        Native::Tool {
+            evidence,
+            input: owned.as_input()?,
+        },
+        proof,
+    )
 }
 
 struct Original {
@@ -211,7 +230,7 @@ pub(in crate::sqlite::session_owner::drivers::successor) async fn verify_scope(
         proof,
     )
     .await?;
-    Box::pin(with_native(tx, scope, id, proof, |native| {
+    Box::pin(with_native(tx, scope, id, proof, |native, _proof| {
         if let Native::Tool { input, .. } = &native {
             input.verify(scope.session, scope.run, Some(binding))?;
         }

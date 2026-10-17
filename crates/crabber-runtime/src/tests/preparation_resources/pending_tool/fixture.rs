@@ -57,6 +57,24 @@ impl ResumableTool for Pausing {
         ))
     }
 }
+struct ProtectionCounter(Arc<SettlementGate>);
+#[async_trait]
+impl ToolPipeline for ProtectionCounter {
+    async fn prepare(&self, _: &crabber_core::ToolInfo, arguments: Value) -> Result<Value, String> {
+        Ok(arguments)
+    }
+    async fn transform_result(
+        &self,
+        _: &crabber_extension::ToolResultContext,
+        _: &crabber_core::ToolInfo,
+        result: ToolOutput,
+    ) -> Result<crabber_extension::TransformOutput, String> {
+        self.0
+            .grant_payload_protections
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(crabber_extension::TransformOutput::new(result))
+    }
+}
 fn configured_runtime(
     store: Arc<dyn Store>,
     gate: Arc<SettlementGate>,
@@ -67,6 +85,7 @@ fn configured_runtime(
     Orchestrator::builder()
         .behavior_fingerprint(options().behavior_fingerprint)
         .clock(clock)
+        .tool_pipeline(Arc::new(ProtectionCounter(gate.clone())))
         .store(Arc::new(DelayedTerminalStore { inner: store, gate }))
         .resolver(Arc::new(fake))
         .plan_provider(provider)

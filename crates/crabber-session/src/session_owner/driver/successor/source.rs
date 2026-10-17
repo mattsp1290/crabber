@@ -22,6 +22,7 @@ pub(crate) struct SelectedClaim {
     pub approval_receipt: Option<crate::ApprovalReceipt>,
     pub tool: Option<(crate::ContinuationTarget, crate::AttemptTarget)>,
     pub tool_receipt: Option<crate::ToolContinuationReceipt>,
+    pub tool_payload_digest: Option<InputFingerprint>,
 }
 pub(crate) struct ContinuationFacts {
     pub revision: crabber_core::SessionRevision,
@@ -63,6 +64,7 @@ pub(crate) fn selected(
         approval_receipt,
         tool: verified.tool,
         tool_receipt,
+        tool_payload_digest: None,
     })
 }
 

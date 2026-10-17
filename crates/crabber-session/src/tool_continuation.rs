@@ -211,6 +211,19 @@ pub struct ToolContinuationGrant {
     pub usage: Usage,
     pub turns_used: u64,
 }
+impl ToolContinuationGrant {
+    /// Canonical fingerprint of ordered public resume data, excluding opaque
+    /// capabilities and the separately verified fence. This supplies no authority.
+    /// # Errors
+    /// Rejects oversized public data before cloning or hashing it.
+    pub fn payload_fingerprint(&self) -> Result<InputFingerprint, ToolContinuationError> {
+        crate::session_owner::preparation::tool_driver::payload::actual(
+            self,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
+        .map_err(|_| ToolContinuationError::InvalidRequest)
+    }
+}
 pub enum ToolContinuationClaimOutcome {
     Applied {
         receipt: ToolContinuationReceipt,

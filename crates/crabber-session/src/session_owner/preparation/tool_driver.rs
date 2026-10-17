@@ -16,7 +16,10 @@ pub struct InspectPreparedToolDriver {
 pub struct PreparedToolDriverMetadata {
     pub claim: NativeClaimLocator,
     pub receipt: crate::ToolContinuationReceipt,
+    /// Canonical public grant data reconstructed from authenticated native sources.
+    pub grant_payload_digest: InputFingerprint,
 }
 
+pub(crate) mod payload;
 mod verify;
 pub(crate) use verify::*;

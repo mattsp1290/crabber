@@ -7,6 +7,8 @@ mod choice;
 mod faults;
 #[path = "pending_tool/fixture.rs"]
 mod fixture;
+#[path = "pending_tool/payload.rs"]
+mod payload;
 use choice::Choice;
 fn assert_task_identity(h: &Harness) {
     let ids = h.gate.initial_task_ids.lock().unwrap();

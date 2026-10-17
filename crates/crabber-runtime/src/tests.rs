@@ -1787,6 +1787,7 @@ enum InitialTaskStage {
 struct SettlementGate {
     // Diagnostics only: task identity is never execution authority.
     initial_task_diagnostics: std::sync::atomic::AtomicBool,
+    grant_payload_protections: AtomicUsize,
     queue_inspection_disabled: std::sync::atomic::AtomicBool,
     initial_task_ids: Mutex<Vec<(InitialTaskStage, Option<tokio::task::Id>)>>,
     initial_preparation_session: Mutex<Option<SessionId>>,
@@ -2093,6 +2094,48 @@ impl Store for DelayedTerminalStore {
                 *digest = crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
             } else {
                 fence.claim_token = "wrong actual completion fence".into();
+            }
+        }
+        if matches!(fault, 8 | 10 | 11 | 12) {
+            let crabber_session::session_owner::preparation::PreparationCompletion::ToolContinuation(
+                crabber_session::ToolContinuationClaimOutcome::Applied { grant, .. },
+            ) = &mut completed.completion else { panic!("actual tool completion") };
+            match fault {
+                11 => grant.turns_used += 1,
+                12 => grant.source_turn_id = Some(crabber_core::TurnId::new()),
+                _ if !grant.phases.is_empty() => {
+                    let phase = &mut grant.phases[0];
+                    if fault == 10 {
+                        phase.responses[0].value = Some(json!("changed accepted answer"));
+                    } else {
+                        phase.checkpoint = crabber_core::ToolCheckpoint::new(
+                            phase.checkpoint.schema_id(),
+                            phase.checkpoint.schema_version(),
+                            json!({"effect":"rewritten valid checkpoint"}),
+                        )
+                        .unwrap();
+                    }
+                }
+                _ => {
+                    let phase = &mut grant.frontend[0];
+                    if fault == 10 {
+                        phase
+                            .frozen
+                            .descriptor
+                            .description
+                            .push_str(" changed descriptor");
+                    } else {
+                        phase.result = crabber_core::FrontendToolResult::new(
+                            phase.result.call_id().clone(),
+                            crabber_core::FrontendResultStatus::Completed,
+                            crabber_core::ToolOutput::from_json(&json!(
+                                "rewritten valid external result"
+                            ))
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
             }
         }
         Ok(completed)

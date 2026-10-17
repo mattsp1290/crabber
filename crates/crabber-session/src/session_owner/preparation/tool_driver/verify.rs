@@ -21,6 +21,7 @@ pub(crate) fn validate(request: &InspectPreparedToolDriver) -> Result<(), Error>
 pub(crate) fn metadata(
     request: &InspectPreparedToolDriver,
     receipt: crate::ToolContinuationReceipt,
+    grant_payload_digest: InputFingerprint,
 ) -> Result<PreparedToolDriverMetadata, Error> {
     let valid = matches!(
         (&receipt.outcome, request.origin),
@@ -49,5 +50,6 @@ pub(crate) fn metadata(
     Ok(PreparedToolDriverMetadata {
         claim: request.request.claim.clone(),
         receipt,
+        grant_payload_digest,
     })
 }

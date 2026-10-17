@@ -30,7 +30,22 @@ pub(super) fn original(
         super::scope::Scope { session, run },
         id,
         proof,
-        |native| source::selected(request, previous, next, audits, native, binding),
+        |native, proof| {
+            let Native::Tool { evidence, .. } = &native else {
+                return Err(Error::Unsupported);
+            };
+            let evidence = *evidence;
+            let mut selected = source::selected(request, previous, next, audits, native, binding)?;
+            selected.tool_payload_digest = Some(
+                crate::session_owner::preparation::tool_driver::payload::expected(
+                    evidence.batch,
+                    evidence.answers,
+                    evidence.frontend,
+                    proof,
+                )?,
+            );
+            Ok(selected)
+        },
     )
 }
 fn with_native<T>(
@@ -38,7 +53,7 @@ fn with_native<T>(
     selected_scope: super::scope::Scope<'_>,
     id: &ControlId,
     proof: &mut Proof,
-    use_native: impl FnOnce(Native<'_>) -> Result<T, Error>,
+    use_native: impl FnOnce(Native<'_>, &mut Proof) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let session = selected_scope.session;
     let run = selected_scope.run;
@@ -111,6 +126,7 @@ fn with_native<T>(
         suspension_event,
         claim: record.claim.as_ref().ok_or(Error::UnknownStoreOutcome)?,
         frontend: record.frontend_claim.as_deref(),
+        answers: &answers,
         original: original
             .as_ref()
             .map(|(previous, next, audits, receipt, event)| tool::Claim {
@@ -122,7 +138,7 @@ fn with_native<T>(
             }),
     };
     let input = super::approval::input_for(state, session, run, proof)?;
-    use_native(Native::Tool { evidence, input })
+    use_native(Native::Tool { evidence, input }, proof)
 }
 
 type Original<'a> = (
@@ -192,7 +208,7 @@ pub(in crate::memory::session_owner::drivers::successor) fn verify_scope(
         &PreparationKey::ToolContinuation(id.clone()),
         proof,
     )?;
-    with_native(state, scope, id, proof, |native| {
+    with_native(state, scope, id, proof, |native, _proof| {
         if let Native::Tool { input, .. } = &native {
             input.verify(scope.session, scope.run, Some(binding))?;
         }
