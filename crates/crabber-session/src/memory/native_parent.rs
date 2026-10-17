@@ -369,3 +369,19 @@ pub(super) fn verify_run(state: &State, run: &Run) -> Result<(), Error> {
 #[cfg(test)]
 #[path = "native_parent/completion_tests.rs"]
 mod completion_tests;
+
+pub(super) fn current_issuance_with_proof<'a>(
+    state: &'a State,
+    run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<&'a RunIssuance>, Error> {
+    if !proof.active() {
+        return latest_run(state, run);
+    }
+    let current =
+        source_protocol::current(state, &run.session_id, &run.id, proof).map_err(|_| Error)?;
+    if let Some(current) = current {
+        current.verify(run)?;
+    }
+    Ok(current)
+}

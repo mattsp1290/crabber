@@ -75,6 +75,14 @@ impl Harness for crate::MemoryStore {
         };
         std::future::ready(execution.begin_admission_with_proof(proof))
     }
+    fn recover_admission_with_proof(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<Output = Result<crate::ClaimedAdmission, crate::AdmissionExecutionError>>
+    {
+        std::future::ready(self.claim_admission_with_proof(request, proof))
+    }
     fn retained(
         &self,
         session: &SessionId,
@@ -199,6 +207,18 @@ async fn raw_compatibility_original_inputs_and_atomic_rollback() {
     ));
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::compatibility(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::recoveries(
         &store, &clock,
     ))
     .await;

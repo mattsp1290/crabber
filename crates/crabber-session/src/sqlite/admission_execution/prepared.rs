@@ -11,9 +11,17 @@ pub(in crate::sqlite) async fn claim_prepared(
     proof: &VerifiedPreparation<'_>,
     read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<ClaimedAdmission, PreparationCommitError> {
+    recovery
+        .source
+        .measure_original(read_proof)
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    read_proof
+        .measure(&*recovery.binding)
+        .map_err(|_| Error::UnknownStoreFailure)?;
     recovery.validate()?;
     let source = &recovery.source;
-    super::validate_source(tx, source, store.clock.now()).await?;
+    super::inspection::validate_source_with_proof(tx, source, store.clock.now(), read_proof)
+        .await?;
     let revision: i64 = sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
         .bind(&source.request().session_id.0)
         .fetch_one(&mut **tx)

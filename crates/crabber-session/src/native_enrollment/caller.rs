@@ -44,3 +44,6 @@ pub(crate) fn measure_phase_authority(
 ) -> Result<(), Failure> {
     authority.map_or(Ok(()), |a| crate::phase::measure_native_authority(a, proof))
 }
+
+#[path = "caller/recovery.rs"]
+pub(crate) mod recovery;

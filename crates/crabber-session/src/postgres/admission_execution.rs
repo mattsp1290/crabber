@@ -1,3 +1,7 @@
+#[path = "admission_execution/recovery.rs"]
+mod recovery;
+pub(in crate::postgres) use recovery::claim_in_transaction;
+pub(super) use recovery::{claim, claim_with_proof};
 #[path = "admission_execution/prepared.rs"]
 mod prepared;
 pub(super) use prepared::claim_prepared;
@@ -5,10 +9,7 @@ pub(super) use prepared::claim_prepared;
 mod inspection;
 use super::{PostgresExecution, PostgresStore, db, decode, json, lookup_receipt};
 use crate::StoreError;
-use crate::{
-    AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState,
-    ClaimUnstartedAdmissionRequest, ClaimedAdmission,
-};
+use crate::{AdmissionExecutionError as Error, AdmissionExecutionRecord, AdmissionExecutionState};
 use crabber_core::{Run, RunFence, RunId};
 pub(super) use inspection::{inspect, validate_source};
 use sqlx::{Postgres, Row, Transaction};
@@ -79,93 +80,6 @@ async fn load_unchecked(
         }
     }
     Ok(record)
-}
-
-async fn validate_binding(
-    tx: &mut Transaction<'_, Postgres>,
-    record: &AdmissionExecutionRecord,
-    run: &Run,
-) -> Result<(), Error> {
-    let count = record
-        .capsule
-        .input_envelope
-        .as_ref()
-        .map_or(1, |input| input.messages().len());
-    let messages = super::execution_binding::original_messages(tx, &run.session_id, &run.id, count)
-        .await
-        .map_err(|_| Error::SemanticConflict)?;
-    record.validate_messages(run, &messages)
-}
-
-pub(super) async fn claim(
-    store: &PostgresStore,
-    request: ClaimUnstartedAdmissionRequest,
-) -> Result<ClaimedAdmission, Error> {
-    let (mut tx, run) = store
-        .run_transaction(&request.expected_fence.run_id)
-        .await
-        .map_err(unknown)?;
-    super::session_owner::guard_native_claim(&mut tx, &request.session_id)
-        .await
-        .map_err(|error| match error {
-            crate::session_owner::SessionOwnerError::Busy => Error::PreparationBusy,
-            _ => Error::UnknownStoreFailure,
-        })?;
-    let value = claim_in_transaction(
-        store,
-        &mut tx,
-        run,
-        request,
-        None,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-    .await?;
-    tx.commit().await.map_err(|_| Error::UnknownStoreFailure)?;
-    Ok(value)
-}
-pub(in crate::postgres) async fn claim_in_transaction(
-    store: &PostgresStore,
-    tx: &mut Transaction<'_, Postgres>,
-    mut run: Run,
-    request: ClaimUnstartedAdmissionRequest,
-    completion: Option<crate::native_parent::CompletionSource>,
-    read_proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<ClaimedAdmission, Error> {
-    let record = load_record(tx, &run.id)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::MissingEvidence)?;
-    let receipt = lookup_receipt(tx, &request.session_id, &request.key)
-        .await
-        .map_err(unknown)?;
-    if receipt.as_ref() != Some(&record.receipt) {
-        return Err(Error::SemanticConflict);
-    }
-    validate_binding(tx, &record, &run).await?;
-    record.verify_claim(&request, &run)?;
-    let now = store.clock.now();
-    if run.lease_until > now {
-        return Err(Error::LiveLease);
-    }
-    let lease = time::Duration::try_from(request.lease).map_err(|_| Error::SemanticConflict)?;
-    if lease <= time::Duration::ZERO {
-        return Err(Error::SemanticConflict);
-    }
-    run.owner = request.owner;
-    run.claim_token = uuid::Uuid::new_v4().to_string();
-    run.lease_until = now.checked_add(lease).ok_or(Error::SemanticConflict)?;
-    run.updated_at = now;
-    super::save_run_with_proof(tx, &run, completion.as_ref(), read_proof)
-        .await
-        .map_err(unknown)?;
-    Ok(ClaimedAdmission {
-        record,
-        fence: RunFence {
-            run_id: run.id.clone(),
-            claim_token: run.claim_token.clone(),
-        },
-        run,
-    })
 }
 
 fn unknown(_: StoreError) -> Error {

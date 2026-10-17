@@ -74,6 +74,13 @@ impl Harness for crate::SqliteStore {
         };
         crate::sqlite::admission_execution::begin_with_proof(&execution, proof).await
     }
+    async fn recover_admission_with_proof(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        super::super::admission_execution::claim_with_proof(self, request, proof).await
+    }
     async fn retained(
         &self,
         session: &SessionId,
@@ -165,6 +172,19 @@ async fn raw_compatibility_original_inputs_and_atomic_rollback() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::compatibility(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
+    let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::recoveries(
         &store, &clock,
     ))
     .await;

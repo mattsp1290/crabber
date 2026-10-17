@@ -21,7 +21,7 @@ impl super::super::MemoryStore {
             PreparedOperation::AdmissionRecovery(recovery) => {
                 PreparationCompletion::AdmissionRecovery(
                     crate::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(Box::new(
-                        self.claim_prepared_admission(state, &recovery, proof)?,
+                        self.claim_prepared_admission(state, &recovery, proof, read_proof)?,
                     )),
                 )
             }

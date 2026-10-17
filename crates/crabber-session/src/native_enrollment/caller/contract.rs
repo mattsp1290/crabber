@@ -35,6 +35,11 @@ pub(crate) trait Harness: Store {
         fence: crabber_core::RunFence,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), crate::AdmissionExecutionError>;
+    async fn recover_admission_with_proof(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError>;
     async fn retained(&self, session: &SessionId, run: &RunId, birth: bool) -> InputFingerprint;
 }
 
@@ -135,3 +140,7 @@ pub(crate) use phase::run as phases;
 #[path = "compat_contract.rs"]
 mod compat_contract;
 pub(crate) use compat_contract::run as compatibility;
+
+#[path = "recovery_contract.rs"]
+mod recovery_contract;
+pub(crate) use recovery_contract::run as recoveries;

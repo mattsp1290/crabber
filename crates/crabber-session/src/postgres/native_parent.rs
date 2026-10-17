@@ -165,3 +165,19 @@ pub(super) async fn current_issuance(
     value.verify(native)?;
     Ok(value)
 }
+
+pub(super) async fn current_issuance_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    native: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<crate::native_parent::RunIssuance, Error> {
+    if !proof.active() {
+        return current_issuance(tx, native).await;
+    }
+    let value = source_protocol::current(tx, &native.session_id, &native.id, proof)
+        .await
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    value.verify(native)?;
+    Ok(value)
+}

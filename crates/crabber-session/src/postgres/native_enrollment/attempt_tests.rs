@@ -74,6 +74,13 @@ impl Harness for crate::PostgresStore {
         };
         crate::postgres::admission_execution::begin_with_proof(&execution, proof).await
     }
+    async fn recover_admission_with_proof(
+        &self,
+        request: crate::ClaimUnstartedAdmissionRequest,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError> {
+        super::super::admission_execution::claim_with_proof(self, request, proof).await
+    }
     async fn retained(
         &self,
         session: &SessionId,
@@ -185,6 +192,24 @@ async fn raw_compatibility_original_inputs_and_atomic_rollback() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::compatibility(
+        &store, &clock,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn raw_admission_recovery_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::recoveries(
         &store, &clock,
     ))
     .await;
