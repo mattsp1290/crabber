@@ -1,7 +1,7 @@
 use crate::session_owner::{MutateSessionOwner, SessionOwnerCommand, SessionOwnerOutcome};
 use crate::{Store, session_owner::preparation::*};
 use crabber_core::{ManualClock, SessionContext};
-pub(super) async fn prepared(
+pub(in super::super) async fn prepared(
     store: &impl Store,
     clock: &ManualClock,
     admission: bool,

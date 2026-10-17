@@ -19,6 +19,31 @@ pub(crate) async fn fixture(
     recovery: bool,
     unkeyed: bool,
 ) -> Fixture {
+    let (context, joined, batch) =
+        Box::pin(prepared(store, clock, frontend, recovery, unkeyed)).await;
+    let (receipt, native, captured) = complete(store, joined.clone()).await;
+    Fixture {
+        context,
+        joined,
+        native,
+        receipt,
+        batch,
+        captured,
+    }
+}
+
+/// Genuine observed preparation, deliberately not completed by this fixture.
+pub(crate) async fn prepared(
+    store: &impl Store,
+    clock: &ManualClock,
+    frontend: bool,
+    recovery: bool,
+    unkeyed: bool,
+) -> (
+    SessionContext,
+    JoinedPreparation,
+    ToolContinuationSuspension,
+) {
     let (context, batch, original) = staged(store, frontend, unkeyed).await;
     let (source, operation, key, work, intent) = match &original {
         PreparedOperation::ToolClaim(claim) => (
@@ -43,8 +68,8 @@ pub(crate) async fn fixture(
         .unwrap()
         .unwrap();
     let mut joined = prepare(store, &run, source, operation, key, work, intent).await;
-    let (mut receipt, mut native, mut captured) = complete(store, joined.clone()).await;
     if recovery {
+        complete(store, joined.clone()).await;
         clock.set(clock.now() + time::Duration::seconds(31));
         let revision = store.session_revision(context.session_id()).await.unwrap();
         let (source, operation, work, intent, id) = match original {
@@ -100,16 +125,8 @@ pub(crate) async fn fixture(
             intent,
         )
         .await;
-        (receipt, native, captured) = complete(store, joined.clone()).await;
     }
-    Fixture {
-        context,
-        joined,
-        native,
-        receipt,
-        batch,
-        captured,
-    }
+    (context, joined, batch)
 }
 
 fn context_run(operation: &PreparedOperation) -> crabber_core::RunId {

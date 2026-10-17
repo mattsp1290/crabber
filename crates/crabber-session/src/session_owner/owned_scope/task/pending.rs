@@ -12,6 +12,7 @@ mod initial;
 mod retain;
 mod state;
 use super::{DriverMainContext, Error, JoinedOwnedTask, OwnedMainDisposition};
+use crate::session_owner::driver::SuccessorExecutionDriverOrigin as Origin;
 use crate::{
     Store,
     session_owner::preparation::{
@@ -37,6 +38,10 @@ pub enum PendingSuccessorReplay {
     Expired(crate::session_owner::preparation::ExpiredRunReceipt),
     ApprovalClaim(Box<crate::ApprovalReceipt>),
     ApprovalRecovery(Box<crate::ApprovalReceipt>),
+    ToolClaim(Box<crate::ToolContinuationReceipt>),
+    ToolRecovery(Box<crate::ToolContinuationReceipt>),
+    FrontendClaim(Box<crate::ToolContinuationReceipt>),
+    FrontendRecovery(Box<crate::ToolContinuationReceipt>),
 }
 /// Safe metadata from the original acknowledged completion, before registration.
 /// It contains no fence, grant or business dispatch permission.
@@ -110,10 +115,9 @@ impl<T: Send + 'static> PendingSuccessorTask<T> {
         W: Future<Output = T> + Send + 'static,
     {
         let source = execute::Source::new(&context, &original)?;
-        if matches!(
+        if !matches!(
             source.origin(),
-            crate::session_owner::driver::SuccessorExecutionDriverOrigin::ApprovalClaim
-                | crate::session_owner::driver::SuccessorExecutionDriverOrigin::ApprovalRecovery
+            Origin::AdmissionRecovery | Origin::ExpiredRun
         ) && !store.supports_pending_execution_driver_origin(source.origin())
         {
             return Err(Error::Unsupported);
@@ -173,3 +177,6 @@ mod tests;
 
 #[cfg(test)]
 mod approval_tests;
+
+#[cfg(test)]
+mod tool_tests;

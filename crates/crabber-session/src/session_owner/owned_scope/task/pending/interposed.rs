@@ -23,6 +23,9 @@ pub(crate) struct Interposed {
     pub corrupt_replay_run: std::sync::atomic::AtomicBool,
     pub corrupt_version: std::sync::atomic::AtomicBool,
     pub replacement: std::sync::Mutex<Option<PreparationCompletion>>,
+    pub tool_corruption: std::sync::atomic::AtomicU8,
+    pub pending_supported: std::sync::atomic::AtomicBool,
+    pub call_tasks: std::sync::Mutex<Vec<tokio::task::Id>>,
     pub approval_complete_calls: AtomicUsize,
     pub approval_inspect_calls: AtomicUsize,
     pub register_calls: AtomicUsize,
@@ -43,11 +46,42 @@ impl Interposed {
             corrupt_version: std::sync::atomic::AtomicBool::new(false),
             replacement: std::sync::Mutex::default(),
             wrong_permit: std::sync::Mutex::default(),
+            tool_corruption: std::sync::atomic::AtomicU8::new(0),
+            pending_supported: std::sync::atomic::AtomicBool::new(true),
+            call_tasks: std::sync::Mutex::default(),
             approval_complete_calls: AtomicUsize::new(0),
             approval_inspect_calls: AtomicUsize::new(0),
             register_calls: AtomicUsize::new(0),
             corrupt_inspection: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+    fn corrupt_tool(&self, completion: &mut PreparationCompletion) {
+        let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
+            receipt,
+            ..
+        }) = completion
+        else {
+            return;
+        };
+        match self.tool_corruption.load(Ordering::SeqCst) {
+            1 => receipt.session_id = SessionId::new(),
+            2 => receipt.run_id = RunId::new(),
+            3 => receipt.operation_id = ControlId::new(),
+            4 => receipt.semantic_digest = InputFingerprint::new("f".repeat(64)).unwrap(),
+            5 => {
+                let continuation = match &receipt.outcome {
+                    ToolContinuationOutcome::Claimed { continuation, .. }
+                    | ToolContinuationOutcome::ReclaimedUnstarted { continuation, .. }
+                    | ToolContinuationOutcome::FrontendClaimed { continuation, .. }
+                    | ToolContinuationOutcome::FrontendReclaimedUnstarted {
+                        continuation, ..
+                    } => continuation.clone(),
+                    _ => panic!("fresh claimed ACK"),
+                };
+                receipt.outcome = ToolContinuationOutcome::Suspended { continuation };
+            }
+            _ => (),
+        }
     }
     async fn pause(&self, stage: Stage) -> bool {
         if self.stage != stage {
@@ -175,6 +209,7 @@ impl Store for Interposed {
         &self,
         request: crate::session_owner::driver::RegisterSuccessorExecutionDriver,
     ) -> Result<crate::session_owner::driver::SuccessorExecutionDriverOutcome, Error> {
+        self.call_tasks.lock().unwrap().push(tokio::task::id());
         self.register_calls.fetch_add(1, Ordering::SeqCst);
         let result = self
             .inner
@@ -191,6 +226,7 @@ impl Store for Interposed {
         authority: crate::session_owner::SessionOwnerAuthority,
         parent: Option<crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
     ) -> Result<crate::session_owner::owned_scope::OwnedScopeActivationOutcome, Error> {
+        self.call_tasks.lock().unwrap().push(tokio::task::id());
         let result = self
             .inner
             .activate_owned_scope(activation, authority, parent)
@@ -217,19 +253,22 @@ impl Store for Interposed {
         &self,
         origin: crate::session_owner::driver::SuccessorExecutionDriverOrigin,
     ) -> bool {
-        self.inner.supports_pending_execution_driver_origin(origin)
+        self.pending_supported.load(Ordering::SeqCst)
+            && self.inner.supports_pending_execution_driver_origin(origin)
     }
     async fn complete_preparation_with_driver_source(
         &self,
         original: JoinedPreparation,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
+        self.call_tasks.lock().unwrap().push(tokio::task::id());
         self.approval_complete_calls.fetch_add(1, Ordering::SeqCst);
         let mut result = self
             .inner
             .complete_preparation_with_driver_source(original)
             .await;
         if let Ok(value) = &mut result {
+            self.corrupt_tool(&mut value.completion);
             if self.corrupt_version.load(Ordering::SeqCst)
                 && let Some(claim) = &mut value.claim
             {
@@ -249,10 +288,43 @@ impl Store for Interposed {
                 receipt.revision = receipt.revision.next().unwrap();
             }
         }
+        if self.corrupt_receipt.load(Ordering::SeqCst)
+            && let Ok(value) = &mut result
+            && let PreparationCompletion::ToolContinuation(ToolContinuationClaimOutcome::Applied {
+                receipt,
+                ..
+            }) = &mut value.completion
+        {
+            receipt.revision = receipt.revision.next().unwrap();
+        }
         if self.pause(Stage::Complete).await {
             return Err(Error::UnknownStoreOutcome.into());
         }
         result
+    }
+    async fn inspect_prepared_tool_driver(
+        &self,
+        request: crate::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<crate::session_owner::preparation::PreparedToolDriverMetadata, Error> {
+        self.call_tasks.lock().unwrap().push(tokio::task::id());
+        self.approval_inspect_calls.fetch_add(1, Ordering::SeqCst);
+        let mut result = self.inner.inspect_prepared_tool_driver(request).await;
+        if self.corrupt_inspection.load(Ordering::SeqCst)
+            && let Ok(metadata) = &mut result
+        {
+            metadata.receipt.revision = metadata.receipt.revision.next().unwrap();
+        }
+        if self.pause(Stage::Inspect).await {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        result
+    }
+    async fn lookup_tool_continuation(
+        &self,
+        session: &SessionId,
+        id: &ControlId,
+    ) -> Result<Option<ToolContinuationReceipt>, ToolContinuationError> {
+        self.inner.lookup_tool_continuation(session, id).await
     }
     async fn inspect_prepared_approval_driver(
         &self,

@@ -151,6 +151,12 @@ impl Metadata {
                 PendingSuccessorReplay::ApprovalClaim(receipt)
                 | PendingSuccessorReplay::ApprovalRecovery(receipt),
             ) => &receipt.run_id,
+            Self::Successor(
+                PendingSuccessorReplay::ToolClaim(receipt)
+                | PendingSuccessorReplay::ToolRecovery(receipt)
+                | PendingSuccessorReplay::FrontendClaim(receipt)
+                | PendingSuccessorReplay::FrontendRecovery(receipt),
+            ) => &receipt.run_id,
         }
     }
 }
