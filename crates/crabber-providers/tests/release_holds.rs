@@ -1,6 +1,7 @@
 //! Extra holds delay existing reference ACKs through the SAME original join.
 mod release_holds {
     mod acquisition;
+    mod creation;
     pub(super) mod fixture;
 }
 use crabber_providers::{ProviderReleaseHolds, Streamer};

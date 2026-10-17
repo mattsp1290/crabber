@@ -185,3 +185,41 @@ fn original_future_moves_between_threads_without_losing_its_frame() {
     drop(signal);
     assert!(observer.is_released());
 }
+
+#[test]
+fn thread_teardown_does_not_dispose_original_work_without_its_frame() {
+    struct Probe(Arc<AtomicUsize>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Teardown(RefCell<Option<Box<dyn FnOnce()>>>);
+    impl Drop for Teardown {
+        fn drop(&mut self) {
+            if let Some(dispose) = self.0.get_mut().take() {
+                assert!(catch_unwind(AssertUnwindSafe(dispose)).is_err());
+            }
+        }
+    }
+    thread_local! {
+        static LATE: Teardown = const { Teardown(RefCell::new(None)) };
+    }
+    let (signal, observer) = super::super::release::completion();
+    let holds = ProviderReleaseHolds::default().with_original(signal.clone());
+    let drops = Arc::new(AtomicUsize::new(0));
+    let probe = Probe(drops.clone());
+    let future = holds.scope(move || async move { drop(probe) });
+    std::thread::spawn(move || {
+        // TLS destructors run in reverse initialization order: CURRENT is gone
+        // when LATE attempts the original scoped future's actual disposal.
+        LATE.with(|late| *late.0.borrow_mut() = Some(Box::new(move || drop(future))));
+        drop(ProviderReleaseHolds::capture_current());
+    })
+    .join()
+    .unwrap();
+    drop(signal);
+    drop(holds);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert!(!observer.is_released());
+}
