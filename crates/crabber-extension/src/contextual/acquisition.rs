@@ -72,9 +72,11 @@ impl ContextualPlanProvider {
                 })
                 .filter_map(|slot| slot.state.lock().unwrap().generation.clone())
                 .collect();
-            self.inner.dependencies.track(context, generations, || {
+            let mut plan = self.inner.dependencies.track(context, generations, || {
                 self.inner.registry.try_acquire_in(context)
-            })
+            })?;
+            self.append_root_components(&mut plan);
+            Ok(plan)
         })
         .await
     }

@@ -271,32 +271,27 @@ impl ContextualPlanProvider {
         for registration in self.inner.factories.iter().filter(|f| f.scope == scope) {
             self.check_slot(slot)?;
             let (index, cleanup) = self.start_record(slot)?;
-            let generation = slot
-                .state
-                .lock()
-                .unwrap()
-                .generation
-                .clone()
-                .expect("selected generation");
-            let factory_context = FactoryContext {
-                provider_source: super::ContextualServiceBorrowSource::new(
-                    self,
-                    slot,
-                    generation.clone(),
-                    index,
-                ),
-                workspace: WorkspaceContext::from_persisted(
-                    context.workspace_id(),
-                    context.directory(),
-                ),
-                session_id: (scope == FactoryScope::Session).then(|| context.session_id().clone()),
-                cleanup: cleanup.tracker(),
-                generation,
-            };
+            let factory_context = self.factory_context(slot, scope, index, &cleanup);
             let failed = || ExtensionError::ContextInitializationFailed {
                 component: registration.identity.id.clone(),
             };
-            let extension = AssertUnwindSafe(registration.factory.create(factory_context))
+            let factory = match &registration.factory {
+                super::FactoryBody::ProductRoot(factory) => {
+                    let root = super::product::Cell::new(slot.owner.clone());
+                    {
+                        let state = slot.state.lock().unwrap();
+                        state
+                            .producer
+                            .as_ref()
+                            .expect("root family requires actual host")
+                            .record_root(index, root.clone());
+                    }
+                    super::product::create(factory, factory_context, &root).await?;
+                    continue;
+                }
+                super::FactoryBody::Extension(factory) => factory,
+            };
+            let extension = AssertUnwindSafe(factory.create(factory_context))
                 .catch_unwind()
                 .await
                 .map_err(|payload| {
@@ -360,6 +355,37 @@ impl ContextualPlanProvider {
             state.records[index].mount = Some(RecordMount::Owned(mount));
         }
         Ok(())
+    }
+    fn factory_context(
+        &self,
+        slot: &Arc<Slot>,
+        scope: FactoryScope,
+        index: usize,
+        cleanup: &RecordCleanup,
+    ) -> FactoryContext {
+        let context = slot.context.as_ref().expect("factory owner has context");
+        let generation = slot
+            .state
+            .lock()
+            .unwrap()
+            .generation
+            .clone()
+            .expect("selected generation");
+        FactoryContext {
+            provider_source: super::ContextualServiceBorrowSource::new(
+                self,
+                slot,
+                generation.clone(),
+                index,
+            ),
+            workspace: WorkspaceContext::from_persisted(
+                context.workspace_id(),
+                context.directory(),
+            ),
+            session_id: (scope == FactoryScope::Session).then(|| context.session_id().clone()),
+            cleanup: cleanup.tracker(),
+            generation,
+        }
     }
     async fn shutdown_factory(slot: &Slot, index: usize, extension: &Arc<dyn Extension>) {
         let cleanup = slot.state.lock().unwrap().records[index].cleanup.clone();

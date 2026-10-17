@@ -18,6 +18,7 @@ pub(super) struct Graph {
 }
 struct Member {
     cleanup: Arc<RecordCleanup>,
+    root: Option<Arc<crate::contextual::product::Cell>>,
     mount: Option<RecordMount>,
     mount_identity: Option<u64>,
     failed: bool,
@@ -71,6 +72,31 @@ impl ContextualGenerationObservation {
     #[must_use]
     pub fn generation(&self) -> &ServiceGenerationDescriptor {
         &self.registration.source.generation
+    }
+    /// Inspect the original entered root-only member, never a replacement.
+    /// # Errors
+    /// Refuses a non-root or not-yet-entered member.
+    /// # Panics
+    /// Panics if an internal graph lock is poisoned.
+    pub fn product_root(
+        &self,
+        member: usize,
+    ) -> Result<crate::ContextualProductRootObservation, ExtensionError> {
+        let cell = self
+            .registration
+            .graph
+            .members
+            .lock()
+            .unwrap()
+            .get(member)
+            .and_then(Option::as_ref)
+            .and_then(|member| member.root.clone())
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+        Ok(crate::ContextualProductRootObservation {
+            graph: self.clone(),
+            cell,
+            member,
+        })
     }
     /// Signal only this original generation, never a replacement in its slot.
     /// # Errors
@@ -194,6 +220,7 @@ impl Graph {
         assert!(member.is_none(), "original member entered once");
         *member = Some(Member {
             cleanup,
+            root: None,
             mount: None,
             mount_identity: None,
             failed: false,
@@ -207,6 +234,13 @@ impl Graph {
         member.mount = Some(mount);
         member.joined = None;
     }
+    pub(super) fn root(&self, index: usize, root: Arc<crate::contextual::product::Cell>) {
+        let mut members = self.members.lock().unwrap();
+        let member = members[index].as_mut().expect("entered root member");
+        assert!(member.root.is_none(), "original root cell once");
+        member.root = Some(root);
+        member.joined = None;
+    }
     pub(super) fn failed(&self, index: usize) {
         self.members.lock().unwrap()[index]
             .as_mut()
@@ -216,6 +250,9 @@ impl Graph {
     pub(super) fn signal(&self) {
         for member in self.members.lock().unwrap().iter().flatten() {
             member.cleanup.close();
+            if let Some(root) = &member.root {
+                root.close();
+            }
             if let Some(mount) = &member.mount {
                 mount.signal();
             }
@@ -236,15 +273,19 @@ impl Graph {
                         member.cleanup.clone(),
                         member.mount.clone(),
                         member.joined.clone(),
+                        member.root.clone(),
                     )
                 })
             })
             .collect();
         self.signal();
         let results = join_all(members.into_iter().rev().map(
-            |(index, cleanup, mount, joined)| async move {
+            |(index, cleanup, mount, joined, root)| async move {
                 if let Some(joined) = joined {
-                    return Ok((index, joined));
+                    if let Some(root) = &root {
+                        root.join().await?;
+                    }
+                    return Ok((index, joined, root));
                 }
                 let closing = async {
                     match mount {
@@ -252,9 +293,17 @@ impl Graph {
                         None => Ok(MemberJoin::Cleanup),
                     }
                 };
-                let (mount, cleanup) = tokio::join!(closing, cleanup.wait_drained());
+                let root_join = async {
+                    match &root {
+                        Some(root) => root.join().await,
+                        None => Ok(()),
+                    }
+                };
+                let (mount, cleanup, root_result) =
+                    tokio::join!(closing, cleanup.wait_drained(), root_join);
                 cleanup?;
-                Ok((index, mount?))
+                root_result?;
+                Ok((index, mount?, root))
             },
         ))
         .await;
@@ -263,10 +312,17 @@ impl Graph {
         let mut retired = Vec::new();
         for result in results {
             match result {
-                Ok((index, joined)) => {
+                Ok((index, joined, root)) => {
                     let member = members[index].as_mut().expect("original member");
                     // A constructor may publish a mount during early cleanup.
-                    if matches!(joined, MemberJoin::Mounted(_)) || member.mount.is_none() {
+                    let same_root = match (&root, &member.root) {
+                        (None, None) => true,
+                        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                        _ => false,
+                    };
+                    if same_root
+                        && (matches!(joined, MemberJoin::Mounted(_)) || member.mount.is_none())
+                    {
                         member.joined = Some(joined);
                         if let Some(mount) = member.mount.take() {
                             retired.push(mount);
@@ -307,3 +363,17 @@ impl std::fmt::Debug for JoinedContextualGenerationGraph {
 
 #[cfg(test)]
 mod tests;
+
+impl Drop for Graph {
+    fn drop(&mut self) {
+        if let Ok(members) = self.members.get_mut() {
+            for root in members
+                .iter()
+                .flatten()
+                .filter_map(|member| member.root.as_ref())
+            {
+                root.close();
+            }
+        }
+    }
+}

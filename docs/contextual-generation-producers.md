@@ -68,3 +68,36 @@ This aggregate proves only joins in the registered graph. Held extension/tool/
 service objects can retain resources after their invocation ingress closes.
 Neither this aggregate nor `FullySealedFactory` certifies final object disposal,
 physical generation closure, native ownership, or a whole-Run resource policy.
+
+## Non-exposing Box roots
+
+`ContextualPlanProvider::new_with_product_roots` is a distinct opt-in factory
+family for Workspace and Session roots. `ContextualProductFactory::create_root`
+returns an owned `Box<dyn ContextualProductRoot>`; this first route exposes no
+object, registration or callable projection. The frozen `root-cell-v1` component
+includes the original factory identity, configuration and scope. Existing Arc
+factories and their fingerprints keep their existing behavior.
+
+The producer installs the actual returned Box in its original retained cell
+**before disposing the original create future**. Closing an installed cell, or
+installing into an already-closing cell, synchronously retains an actual blocking
+destructor task before opening its gate. Open roots occupy no parked blocking
+threads. The destructor can run while create-future disposal is still pending;
+either task's completion substitutes for the other's join.
+
+Capture `work.observation()` during the original host call, then obtain
+`observation.product_root(member)` after that original member enters. Its
+`disposed(bound)` waits without initiating close and returns opaque
+`DisposedContextualProductRoot` only after the original registered graph and the
+original Box destructor have joined. Timeouts and dropped observation waiters
+retain those same tasks. A constructor that never returned a Box cannot produce
+this evidence, even when its registered graph joined. Destructor, panic-payload
+and create-future disposal failures remain incomplete and never repeat Drop.
+Original initializer self-close detection also covers destructor execution and
+panic-payload disposal.
+
+This evidence concerns only the returned Box's actual destructor. It does not
+certify disposal of factory objects, hidden shared references, globals, arbitrary
+background work or a complete physical generation. Existing cleanup-policy labels
+keep their registered-cleanup meaning. No native permission, Runtime ownership,
+`PhysicalClosed`, default preparation declaration or whole-Run policy is added.

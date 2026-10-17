@@ -8,6 +8,11 @@ mod instances;
 mod lifecycle;
 mod native_dependency;
 mod producer;
+mod product;
+pub use product::{
+    ContextualProductFactory, ContextualProductRoot, ContextualProductRootObservation,
+    DisposedContextualProductRoot,
+};
 mod profile;
 mod provider_service;
 pub use producer::{
@@ -101,11 +106,16 @@ pub trait ExtensionFactory: Send + Sync {
     async fn create(&self, context: FactoryContext) -> Result<Arc<dyn Extension>, ExtensionError>;
 }
 
+enum FactoryBody {
+    Extension(Arc<dyn ExtensionFactory>),
+    ProductRoot(Arc<dyn ContextualProductFactory>),
+}
 struct FactoryRegistration {
+    root_component: Option<ComponentIdentity>,
     identity: ComponentIdentity,
     config_hash: String,
     scope: FactoryScope,
-    factory: Arc<dyn ExtensionFactory>,
+    factory: FactoryBody,
 }
 
 const FACTORY_RESOURCE_CONTRACT: &str = "crabber.contextual-factory.v3";
@@ -233,7 +243,8 @@ impl ContextualPlanProvider {
                 identity,
                 config_hash,
                 scope,
-                factory,
+                factory: FactoryBody::Extension(factory),
+                root_component: None,
             });
         }
         Ok(Self {

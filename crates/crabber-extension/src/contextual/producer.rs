@@ -215,6 +215,12 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_root(&self, index: usize, root: Arc<super::product::Cell>) {
+        self.graph.root(index, root);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_failed(&self, index: usize) {
         self.graph.failed(index);
     }
