@@ -7,20 +7,20 @@ use std::{
 };
 
 #[derive(Default)]
-struct Gate {
-    entered: Notify,
-    disposing: Notify,
-    release: (Mutex<bool>, Condvar),
-    panic: bool,
+pub(super) struct Gate {
+    pub(super) entered: Notify,
+    pub(super) disposing: Notify,
+    pub(super) release: (Mutex<bool>, Condvar),
+    pub(super) panic: bool,
 }
-struct Release(Arc<Gate>);
+pub(super) struct Release(pub(super) Arc<Gate>);
 impl Drop for Release {
     fn drop(&mut self) {
         *self.0.release.0.lock().unwrap() = true;
         self.0.release.1.notify_all();
     }
 }
-struct Pending(Arc<Gate>);
+pub(super) struct Pending(pub(super) Arc<Gate>);
 impl Future for Pending {
     type Output = Result<crabber_core::ToolOutput, ExtensionError>;
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {

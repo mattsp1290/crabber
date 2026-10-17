@@ -59,6 +59,7 @@ impl Source {
             if entries.full() {
                 return Err(crate::ResourceRegistrationError::Capacity.into());
             }
+            entries.admit()?;
             mount
                 .leases
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

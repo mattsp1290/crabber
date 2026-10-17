@@ -35,6 +35,7 @@ pub(crate) struct Witness {
     unkeyed_input: Option<InputFingerprint>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SourceAudits<'a> {
     pub reserve: &'a Audit,
     pub begin: &'a Audit,
@@ -236,6 +237,30 @@ impl Witness {
             run_id: self.run_id().clone(),
             operation_id: id.clone(),
         })
+    }
+
+    pub(crate) fn verify_queue(
+        &self,
+        grant: &super::PreparationGrant,
+        session: &Session,
+        initial: &RunIssuance,
+        audits: &SourceAudits<'_>,
+    ) -> Result<(), Error> {
+        self.verify_sources(session, initial, audits)?;
+        super::proof::verify_join_audit(grant, Some(audits.join))?;
+        let original = grant.original_reservation();
+        if !matches!(original.key, PreparationKey::Queue(_))
+            || !matches!(original.purpose, PreparationPurpose::Queue { .. })
+            || self.key != original.key
+            || self.source != super::PreparationResourceLink::for_grant(grant)?
+            || grant
+                .retained_resources_authority()
+                .map(crate::session_owner::SessionOwnerAuthority::target)
+                != Some(&self.child)
+        {
+            return Err(Error::SemanticConflict);
+        }
+        Ok(())
     }
 
     pub(crate) fn verify_sources(

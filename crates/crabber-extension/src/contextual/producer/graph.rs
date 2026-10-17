@@ -16,9 +16,35 @@ pub(super) struct Graph {
     members: Mutex<Vec<Option<Member>>>,
     cleanup_gate: AsyncMutex<()>,
 }
+#[derive(Clone)]
+enum Product {
+    Root(Arc<crate::contextual::product::Cell>),
+    Tool(Arc<crate::contextual::product::tool::Node>),
+}
+impl Product {
+    fn close(&self) {
+        match self {
+            Self::Root(root) => root.close(),
+            Self::Tool(node) => node.close(),
+        }
+    }
+    async fn join(&self) -> Result<(), ExtensionError> {
+        match self {
+            Self::Root(root) => root.join().await,
+            Self::Tool(node) => node.join().await,
+        }
+    }
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Root(left), Self::Root(right)) => Arc::ptr_eq(left, right),
+            (Self::Tool(left), Self::Tool(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
 struct Member {
     cleanup: Arc<RecordCleanup>,
-    root: Option<Arc<crate::contextual::product::Cell>>,
+    root: Option<Product>,
     mount: Option<RecordMount>,
     mount_identity: Option<u64>,
     failed: bool,
@@ -90,11 +116,42 @@ impl ContextualGenerationObservation {
             .unwrap()
             .get(member)
             .and_then(Option::as_ref)
-            .and_then(|member| member.root.clone())
+            .and_then(|member| match &member.root {
+                Some(Product::Root(root)) => Some(root.clone()),
+                _ => None,
+            })
             .ok_or(ExtensionError::ContextInitializationIncomplete)?;
         Ok(crate::ContextualProductRootObservation {
             graph: self.clone(),
             cell,
+            member,
+        })
+    }
+    /// Inspect the exact original entered Box Tool node.
+    /// # Errors
+    /// Refuses a different or not-yet-entered member.
+    /// # Panics
+    /// Panics if an internal ownership lock is poisoned.
+    pub fn tool_product(
+        &self,
+        member: usize,
+    ) -> Result<crate::ContextualToolProductObservation, ExtensionError> {
+        let node = self
+            .registration
+            .graph
+            .members
+            .lock()
+            .unwrap()
+            .get(member)
+            .and_then(Option::as_ref)
+            .and_then(|member| match &member.root {
+                Some(Product::Tool(node)) => Some(node.clone()),
+                _ => None,
+            })
+            .ok_or(ExtensionError::ContextInitializationIncomplete)?;
+        Ok(crate::ContextualToolProductObservation {
+            graph: self.clone(),
+            node,
             member,
         })
     }
@@ -238,7 +295,14 @@ impl Graph {
         let mut members = self.members.lock().unwrap();
         let member = members[index].as_mut().expect("entered root member");
         assert!(member.root.is_none(), "original root cell once");
-        member.root = Some(root);
+        member.root = Some(Product::Root(root));
+        member.joined = None;
+    }
+    pub(super) fn tool(&self, index: usize, node: Arc<crate::contextual::product::tool::Node>) {
+        let mut members = self.members.lock().unwrap();
+        let member = members[index].as_mut().expect("entered tool member");
+        assert!(member.root.is_none());
+        member.root = Some(Product::Tool(node));
         member.joined = None;
     }
     pub(super) fn failed(&self, index: usize) {
@@ -317,7 +381,7 @@ impl Graph {
                     // A constructor may publish a mount during early cleanup.
                     let same_root = match (&root, &member.root) {
                         (None, None) => true,
-                        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                        (Some(left), Some(right)) => left.same(right),
                         _ => false,
                     };
                     if same_root

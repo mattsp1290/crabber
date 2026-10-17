@@ -191,3 +191,4 @@ pub(crate) mod pending_approval;
 pub use pending_approval::{
     InspectPendingApprovalPreparation, PendingApprovalPreparationMetadata, PendingApprovalSource,
 };
+pub(crate) mod queue_admission;

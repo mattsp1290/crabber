@@ -221,6 +221,12 @@ impl Registration {
             self.graph.signal();
         }
     }
+    pub(super) fn record_tool(&self, index: usize, node: Arc<super::product::tool::Node>) {
+        self.graph.tool(index, node);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
     pub(super) fn record_failed(&self, index: usize) {
         self.graph.failed(index);
     }

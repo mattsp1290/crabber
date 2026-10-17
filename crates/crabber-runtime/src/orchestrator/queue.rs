@@ -453,6 +453,18 @@ impl Orchestrator {
         if let Some(receipt) = self.replay_queue_admit(&request, &control).await? {
             return Ok(Admission::Replayed(receipt));
         }
+        if self
+            .declared_resource_contract(&SessionContext::new(
+                control.authority.session_id.clone(),
+                request.workspace_id.clone(),
+                request.directory.clone(),
+            ))?
+            .is_some()
+            && (!self.store.supports_queue_preparation_admission_inspection()
+                || !self.store.supports_execution_drivers())
+        {
+            return Err(StoreError::HostUnsupported.into());
+        }
         self.reject_pending_preparation(
             &control.authority.session_id,
             &crabber_session::session_owner::preparation::PreparationKey::Queue(control.id.clone()),
@@ -495,25 +507,40 @@ impl Orchestrator {
         let runtime = self.clone();
         let prepared_request = captured.clone();
         let prepared_control = control.clone();
-        let ((plan, bound), completed) = self
-            .finish_durable_preparation(grant, move |scope| async move {
-                let runtime = runtime.with_preparation_scope(scope);
-                let (plan, restored) = runtime
-                    .prepare_keyed_admission(&prepared_request, retained.input.admission)
-                    .await?;
-                verify_restored(&original, &restored)?;
-                let bound = runtime
-                    .prebind_owned_provider(&plan, &restored.binding.provider)
-                    .await?;
-                Ok((
-                    (plan, bound),
-                    crabber_session::session_owner::preparation::PreparedOperation::Queue {
-                        request: prepared_control.admit(),
-                        binding: Some(Box::new(restored)),
-                    },
-                ))
-            })
-            .await?;
+        let work = move |scope| async move {
+            let runtime = runtime.with_preparation_scope(scope);
+            let (plan, restored) = runtime
+                .prepare_keyed_admission(&prepared_request, retained.input.admission)
+                .await?;
+            verify_restored(&original, &restored)?;
+            let bound = runtime
+                .prebind_owned_provider(&plan, &restored.binding.provider)
+                .await?;
+            Ok((
+                (plan, bound),
+                crabber_session::session_owner::preparation::PreparedOperation::Queue {
+                    request: prepared_control.admit(),
+                    binding: Some(Box::new(restored)),
+                },
+            ))
+        };
+        if grant.retains_resources() {
+            let outcome = Box::pin(self.finish_initial_preparation(grant, captured, work)).await?;
+            return pending_admission(outcome);
+        }
+        let ((plan, bound), completed) = self.finish_durable_preparation(grant, work).await?;
+        self.queue_completed_admission(captured, (plan, bound), completed)
+    }
+    fn queue_completed_admission(
+        &self,
+        captured: Request,
+        value: (
+            crabber_extension::RunPlan,
+            Option<crabber_providers::BoundProvider>,
+        ),
+        completed: crabber_session::session_owner::preparation::PreparationCompletion,
+    ) -> Result<Admission, RuntimeError> {
+        let (plan, bound) = value;
         let crabber_session::session_owner::preparation::PreparationCompletion::Queue(outcome) =
             completed
         else {
@@ -581,4 +608,18 @@ fn verify_receipt(request: &QueueMutation, saved: &QueueReceipt) -> Result<(), R
         return Err(StoreError::AdmissionConflict.into());
     }
     Ok(())
+}
+
+fn pending_admission(
+    outcome: super::preparation::pending::PendingOutcome,
+) -> Result<Admission, RuntimeError> {
+    use super::preparation::pending::{PendingOutcome, main::Metadata};
+    match outcome {
+        PendingOutcome::Started {
+            handle,
+            metadata: Metadata::Queue(receipt),
+        } => Ok(Admission::Started { receipt, handle }),
+        PendingOutcome::Replayed(Metadata::Queue(receipt)) => Ok(Admission::Replayed(receipt)),
+        _ => Err(StoreError::AdmissionConflict.into()),
+    }
 }

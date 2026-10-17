@@ -40,3 +40,20 @@ pub(in crate::contextual) async fn create(
     }
     result
 }
+
+pub(in crate::contextual) async fn create_member(
+    slot: &Arc<crate::contextual::Slot>,
+    index: usize,
+    factory: &Arc<dyn ContextualProductFactory>,
+    context: FactoryContext,
+) -> Result<(), ExtensionError> {
+    let root = Cell::new(slot.owner.clone());
+    slot.state
+        .lock()
+        .unwrap()
+        .producer
+        .as_ref()
+        .expect("root family requires actual host")
+        .record_root(index, root.clone());
+    create(factory, context, &root).await
+}

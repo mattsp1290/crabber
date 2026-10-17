@@ -8,9 +8,10 @@ use driver::MainIngress;
 pub use pending::{
     BoundInitialControl, BoundSuccessorControl, InitialAdmissionMetadata, InitialAdmissionReplay,
     PendingDriverTasks, PendingInitialCompletion, PendingInitialControl, PendingInitialObservation,
-    PendingInitialTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
+    PendingInitialTask, PendingQueueCompletion, PendingQueueControl, PendingQueueObservation,
+    PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
-    PendingSuccessorTasks,
+    PendingSuccessorTasks, QueueAdmissionMetadata,
 };
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};

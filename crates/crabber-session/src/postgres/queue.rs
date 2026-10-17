@@ -1,6 +1,6 @@
 mod admission;
 mod inspection;
-mod protocol;
+pub(in crate::postgres) mod protocol;
 pub(super) mod public;
 pub(super) mod reads;
 use super::{PostgresStore, db};

@@ -31,7 +31,7 @@ impl PendingSuccessorControl {
     pub async fn completion(&self) -> Result<PendingSuccessorCompletion, Error> {
         match self.0.completion().await? {
             core::Notice::Successor(value) => Ok(value),
-            core::Notice::Initial(_) => Err(Error::SemanticConflict),
+            core::Notice::Initial(_) | core::Notice::Queue(_) => Err(Error::SemanticConflict),
         }
     }
     /// Original actual acknowledged grant, never reconstructed from metadata.
@@ -40,7 +40,7 @@ impl PendingSuccessorControl {
     pub async fn bound(&self) -> Result<BoundSuccessorControl, Error> {
         match self.0.bound().await? {
             core::Binding::Successor(value) => Ok(*value),
-            core::Binding::Initial(_) => Err(Error::SemanticConflict),
+            core::Binding::Initial(_) | core::Binding::Queue(_) => Err(Error::SemanticConflict),
         }
     }
     #[cfg(test)]

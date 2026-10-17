@@ -52,5 +52,7 @@ pub(crate) mod driver_completion;
 #[path = "preparation_pending_approval.rs"]
 pub(crate) mod pending_approval;
 
+#[path = "preparation_queue_admission.rs"]
+pub(crate) mod queue_admission;
 #[path = "preparation_tool_driver.rs"]
 pub(crate) mod tool_driver;

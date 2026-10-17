@@ -5,7 +5,10 @@ use crate::session_owner::preparation::{
 use crate::session_owner::preparation_contract::resources;
 use crabber_core::SessionContext;
 
-async fn prepared(store: &impl Store, keyed: bool) -> (SessionContext, JoinedPreparation) {
+pub(super) async fn prepared(
+    store: &impl Store,
+    keyed: bool,
+) -> (SessionContext, JoinedPreparation) {
     let original = if keyed {
         let (root, bound) = resources::declaration::setup(store).await;
         resources::initial_driver_observation(

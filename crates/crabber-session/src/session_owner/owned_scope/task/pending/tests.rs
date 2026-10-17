@@ -377,3 +377,6 @@ async fn completion_notice_rejects_changed_original_user_message_receipt() {
 
 #[path = "initial_tests.rs"]
 mod initial;
+
+#[path = "queue_tests.rs"]
+mod queue_tests;

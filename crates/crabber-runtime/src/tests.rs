@@ -1778,6 +1778,7 @@ async fn reclaimed_lease_cancels_pending_tool_body() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InitialTaskStage {
     CompletePreparation,
+    InspectQueue,
     RegisterDriver,
     BeginAttempt,
 }
@@ -1786,6 +1787,7 @@ enum InitialTaskStage {
 struct SettlementGate {
     // Diagnostics only: task identity is never execution authority.
     initial_task_diagnostics: std::sync::atomic::AtomicBool,
+    queue_inspection_disabled: std::sync::atomic::AtomicBool,
     initial_task_ids: Mutex<Vec<(InitialTaskStage, Option<tokio::task::Id>)>>,
     initial_preparation_session: Mutex<Option<SessionId>>,
     preparation_heartbeat: Option<Arc<preparation_resources::heartbeat::Gate>>,
@@ -2209,6 +2211,65 @@ impl Store for DelayedTerminalStore {
     }
     fn supports_execution_drivers(&self) -> bool {
         self.inner.supports_execution_drivers()
+    }
+    fn supports_queue_preparation_admission_inspection(&self) -> bool {
+        !self.gate.queue_inspection_disabled.load(Ordering::SeqCst)
+            && self.inner.supports_queue_preparation_admission_inspection()
+    }
+    async fn inspect_queue_preparation_admission(
+        &self,
+        original: &crabber_session::session_owner::preparation::JoinedPreparation,
+    ) -> Result<
+        Option<crabber_session::QueueReceipt>,
+        crabber_session::session_owner::preparation::PreparationCommitError,
+    > {
+        self.gate
+            .record_initial_task(InitialTaskStage::InspectQueue);
+        self.inner
+            .inspect_queue_preparation_admission(original)
+            .await
+    }
+    fn supports_owned_queue_preparation_inspection(&self) -> bool {
+        self.inner.supports_owned_queue_preparation_inspection()
+    }
+    async fn inspect_owned_queue_preparation(
+        &self,
+        context: &crabber_core::SessionContext,
+        authority: &crabber_session::QueueAuthority,
+        revision: crabber_core::SessionRevision,
+    ) -> Result<crabber_session::RetainedQueue, StoreError> {
+        self.inner
+            .inspect_owned_queue_preparation(context, authority, revision)
+            .await
+    }
+    fn supports_future_queue(&self) -> bool {
+        self.inner.supports_future_queue()
+    }
+    async fn queue_preparation_snapshot(
+        &self,
+        id: &SessionId,
+    ) -> Result<crabber_session::SessionSummary, StoreError> {
+        self.inner.queue_preparation_snapshot(id).await
+    }
+    async fn mutate_queue(
+        &self,
+        request: crabber_session::QueueMutation,
+    ) -> Result<crabber_session::QueueOutcome, StoreError> {
+        self.inner.mutate_queue(request).await
+    }
+    async fn lookup_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::QueueReceipt>, StoreError> {
+        self.inner.lookup_queue(session, id).await
+    }
+    async fn retained_queue(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::QueueId,
+    ) -> Result<crabber_session::RetainedQueue, StoreError> {
+        self.inner.retained_queue(session, id).await
     }
     fn supports_initial_preparation_admission_inspection(&self) -> bool {
         self.inner

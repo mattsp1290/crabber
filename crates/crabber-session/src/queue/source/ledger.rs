@@ -13,6 +13,18 @@ pub(crate) struct Ledger {
     members: BTreeMap<(Scope, u64), ControlId>,
 }
 impl Ledger {
+    pub(crate) fn contains_operation(
+        &self,
+        session: &SessionId,
+        operation: &ControlId,
+        proof: &mut Proof,
+    ) -> Result<bool> {
+        let source = self.sources.get(&(session.clone(), operation.clone()));
+        proof
+            .measure(&(session, operation, source))
+            .map_err(ReadError::Budget)?;
+        Ok(source.is_some())
+    }
     pub(crate) fn protocol(&self, scope: &Scope, proof: &mut Proof) -> Result<bool> {
         let protected = self.protocols.contains(scope);
         proof
@@ -78,6 +90,52 @@ impl Ledger {
             source.follows(previous)?;
         }
         Ok(Some(source))
+    }
+    /// Authenticate only the immutable prefix ending at the selected operation.
+    pub(crate) fn prefix<'a>(
+        &self,
+        selected: &Audit,
+        proof: &mut Proof,
+        mut audit: impl FnMut(&ControlId, &mut Proof) -> Result<&'a Audit>,
+    ) -> Result<Vec<&'a Audit>> {
+        let last = self
+            .selected(selected, proof)?
+            .ok_or(crate::StoreError::HostUnsupported)?;
+        let mut result = Vec::new();
+        let mut previous: Option<&Source> = None;
+        for sequence in 1..=last.sequence {
+            let operation = self
+                .members
+                .get(&(last.scope.clone(), sequence))
+                .ok_or_else(corrupt)?;
+            proof
+                .measure(&(sequence, operation))
+                .map_err(ReadError::Budget)?;
+            let source = self
+                .sources
+                .get(&(last.scope.session.clone(), operation.clone()))
+                .ok_or_else(corrupt)?;
+            proof.measure(source).map_err(ReadError::Budget)?;
+            let original = audit(operation, proof)?;
+            source.verify(original)?;
+            if source.scope != last.scope
+                || source.sequence != sequence
+                || source.operation != *operation
+            {
+                return Err(corrupt().into());
+            }
+            if let Some(previous) = previous {
+                source.follows(previous)?;
+            } else if self.origins.get(&last.scope) != Some(source) {
+                return Err(corrupt().into());
+            }
+            result.push(original);
+            previous = Some(source);
+        }
+        if previous != Some(last) {
+            return Err(corrupt().into());
+        }
+        Ok(result)
     }
     pub(crate) fn original_receipt(
         &self,

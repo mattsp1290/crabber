@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use crabber_core::{RunId, SessionContext, SessionId, ToolCallId, ToolInfo};
 use crabber_providers::ProviderAdapter;
 use futures::FutureExt;
-pub(crate) use owned::InvocationSource;
 pub(crate) use owned::current_callback_invocations;
 pub use owned::{CallbackInvocationCapability, CallbackInvocationOwner, with_callback_invocations};
+pub(crate) use owned::{InvocationSource, OriginalRoster};
 pub use owned::{OwnedMountHandle, OwnedMountJoin};
 pub(crate) use profile::RegistrationSnapshot;
 use serde::Serialize;
@@ -123,6 +123,7 @@ type Cleanup = Box<dyn FnOnce() + Send>;
 pub struct Registrar {
     services: HostServices,
     tools: Vec<Arc<ToolDefinition>>,
+    product_tools: std::collections::BTreeMap<usize, Arc<crate::contextual::product::tool::Node>>,
     prompts: Vec<Arc<PromptSection>>,
     guards: Vec<Arc<dyn ToolGuard>>,
     restrictions: Vec<Vec<String>>,
@@ -136,6 +137,7 @@ impl Registrar {
         Self {
             services: HostServices::default(),
             tools: vec![],
+            product_tools: std::collections::BTreeMap::new(),
             prompts: vec![],
             guards: vec![],
             restrictions: vec![],
@@ -149,6 +151,15 @@ impl Registrar {
     /// behavior/configuration is versioned by the extension's declared metadata.
     pub fn host_services(&mut self, services: HostServices) {
         self.services = std::mem::take(&mut self.services).overlay(services);
+    }
+    pub(crate) fn product_tool(
+        &mut self,
+        node: Arc<crate::contextual::product::tool::Node>,
+    ) -> Result<(), ExtensionError> {
+        let index = self.tools.len();
+        self.tools.push(node.template()?);
+        self.product_tools.insert(index, node);
+        Ok(())
     }
     pub fn tool(&mut self, tool: Arc<ToolDefinition>) {
         self.tools.push(tool);
@@ -720,6 +731,9 @@ impl Registry {
             #[cfg(test)]
             drain_hook: Mutex::new(None),
         });
+        for node in mount.registrar.lock().unwrap().product_tools.values() {
+            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        }
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })
     }
@@ -798,7 +812,7 @@ impl Registry {
         if inner.closed {
             return Err(ExtensionError::RegistryClosed);
         }
-        Ok(self.plan_for(&inner, session, None))
+        self.plan_for(&inner, session, None)
     }
     /// Acquire shared registrations filtered by the supplied authoritative context.
     /// Scope filtering does not instantiate or isolate mutable extension state.
@@ -807,7 +821,7 @@ impl Registry {
         if inner.closed {
             return Err(ExtensionError::RegistryClosed);
         }
-        Ok(self.plan_for(&inner, context.session_id(), Some(context)))
+        self.plan_for(&inner, context.session_id(), Some(context))
     }
     /// `try_acquire` unwrapped.
     ///
@@ -825,7 +839,7 @@ impl Registry {
         inner: &RegistryInner,
         session: &SessionId,
         context: Option<&SessionContext>,
-    ) -> RunPlan {
+    ) -> Result<RunPlan, ExtensionError> {
         let mut mounts = Vec::new();
         for mount in &inner.mounts {
             let active = mount.active.lock().unwrap();
@@ -839,6 +853,7 @@ impl Registry {
             }
         }
         mounts.sort_by_key(|m| (m.scope.rank(), m.seq));
+        let lease = ProjectionLease(mounts);
         let mut tools = vec![];
         let mut prompts = vec![];
         let mut contributors = vec![];
@@ -849,15 +864,19 @@ impl Registry {
         let mut providers = vec![];
         let mut components = vec![];
         let mut services = HostServices::default();
-        for (index, mount) in mounts.iter().enumerate() {
+        for (index, mount) in lease.0.iter().enumerate() {
             // Only mounts actually in this plan affect order identity. A new
             // instance in another workspace/session cannot change recovery hashes.
             let plan_sequence = u64::try_from(index).expect("plan index fits u64") + 1;
             let r = mount.registrar.lock().unwrap();
             if let Some(captured) = &mount.registration {
-                tools.extend(r.tools.iter().zip(&captured.tools).map(|(tool, metadata)| {
-                    owned::tools::project(tool, metadata, InvocationSource::new(mount))
-                }));
+                for (index, (tool, metadata)) in r.tools.iter().zip(&captured.tools).enumerate() {
+                    let source = InvocationSource::new(mount);
+                    tools.push(match r.product_tools.get(&index) {
+                        Some(node) => node.project(source)?,
+                        None => owned::tools::project(tool, metadata, source),
+                    });
+                }
             } else {
                 tools.extend(r.tools.iter().cloned());
             }
@@ -902,7 +921,8 @@ impl Registry {
         prompts.sort_by(|a, b| (a.order, &a.name).cmp(&(b.order, &b.name)));
         finish_contributors(&mut contributors, &mut components);
         let fingerprint = compute_fingerprint(&components);
-        RunPlan::from_registry(
+        let release = Mutex::new(Some(lease));
+        Ok(RunPlan::from_registry(
             fingerprint,
             tools,
             prompts,
@@ -914,13 +934,19 @@ impl Registry {
             components,
             services,
             move || {
-                for mount in &mounts {
-                    if mount.leases.fetch_sub(1, Ordering::SeqCst) == 1 {
-                        mount.released.notify_waiters();
-                    }
-                }
+                release.lock().unwrap().take();
             },
-        )
+        ))
+    }
+}
+struct ProjectionLease(Vec<Arc<Mount>>);
+impl Drop for ProjectionLease {
+    fn drop(&mut self) {
+        for mount in &self.0 {
+            if mount.leases.fetch_sub(1, Ordering::SeqCst) == 1 {
+                mount.released.notify_waiters();
+            }
+        }
     }
 }
 fn append_mount_components(

@@ -87,3 +87,9 @@ pub use service_dependencies::{
     SessionServiceDependencyControl, SessionServiceDependencyError, SessionServiceDependencyHandle,
     SessionServiceDependencyTask, SessionServiceRegistrar,
 };
+
+// Distinct ordinary Box-tool product family; no physical/native policy credit.
+pub use contextual::product::tool::{
+    ContextualToolProduct, ContextualToolProductFactory, ContextualToolProductObservation,
+    DisposedContextualToolProduct,
+};

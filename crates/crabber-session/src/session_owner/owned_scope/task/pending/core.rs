@@ -22,16 +22,19 @@ use tokio::sync::{OwnedSemaphorePermit, oneshot};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Family {
     Initial,
+    Queue,
     Successor,
 }
 pub(super) enum Source {
     Initial(super::initial::source::Source),
+    Queue(super::queue::source::Source),
     Successor(super::execute::Source),
 }
 impl Source {
     fn family(&self) -> Family {
         match self {
             Self::Initial(_) => Family::Initial,
+            Self::Queue(_) => Family::Queue,
             Self::Successor(_) => Family::Successor,
         }
     }
@@ -39,30 +42,32 @@ impl Source {
 #[derive(Clone)]
 pub(super) enum Binding {
     Initial(Box<BoundInitialControl>),
+    Queue(Box<BoundInitialControl>),
     Successor(Box<BoundSuccessorControl>),
 }
 impl Binding {
     pub(super) fn family(&self) -> Family {
         match self {
             Self::Initial(_) => Family::Initial,
+            Self::Queue(_) => Family::Queue,
             Self::Successor(_) => Family::Successor,
         }
     }
     pub(super) fn activation(&self) -> &OwnedScopeActivation {
         match self {
-            Self::Initial(value) => value.activation(),
+            Self::Initial(value) | Self::Queue(value) => value.activation(),
             Self::Successor(value) => value.activation(),
         }
     }
     fn authority(&self) -> &SessionOwnerAuthority {
         match self {
-            Self::Initial(value) => value.grant().authority(),
+            Self::Initial(value) | Self::Queue(value) => value.grant().authority(),
             Self::Successor(value) => value.grant().authority(),
         }
     }
     fn parent(&self) -> OwnedScopeParentAuthority {
         match self {
-            Self::Initial(value) => {
+            Self::Initial(value) | Self::Queue(value) => {
                 OwnedScopeParentAuthority::ExecutionDriver(Box::new(value.grant().clone()))
             }
             Self::Successor(value) => {
@@ -74,18 +79,21 @@ impl Binding {
 #[derive(Clone)]
 pub(super) enum Notice {
     Initial(PendingInitialCompletion),
+    Queue(super::queue::PendingQueueCompletion),
     Successor(PendingSuccessorCompletion),
 }
 impl Notice {
     pub(super) fn family(&self) -> Family {
         match self {
             Self::Initial(_) => Family::Initial,
+            Self::Queue(_) => Family::Queue,
             Self::Successor(_) => Family::Successor,
         }
     }
 }
 pub(super) enum Replay {
     Initial(InitialAdmissionReplay),
+    Queue(Box<crate::QueueReceipt>),
     Successor(PendingSuccessorReplay),
 }
 impl Replay {
@@ -94,6 +102,9 @@ impl Replay {
             Self::Initial(value) => {
                 Notice::Initial(PendingInitialCompletion::Replayed(value.clone()))
             }
+            Self::Queue(value) => Notice::Queue(super::queue::PendingQueueCompletion::Replayed(
+                *value.clone(),
+            )),
             Self::Successor(value) => {
                 Notice::Successor(PendingSuccessorCompletion::Replayed(value.clone()))
             }
@@ -102,6 +113,7 @@ impl Replay {
     fn family(&self) -> Family {
         match self {
             Self::Initial(_) => Family::Initial,
+            Self::Queue(_) => Family::Queue,
             Self::Successor(_) => Family::Successor,
         }
     }

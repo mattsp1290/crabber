@@ -5,6 +5,8 @@ mod inspection;
 mod native;
 #[path = "preparation/queue.rs"]
 mod queue;
+#[path = "preparation/queue_inspection.rs"]
+mod queue_inspection;
 #[path = "preparation/replay.rs"]
 mod replay;
 use super::{MemoryStore, revision};
@@ -87,9 +89,12 @@ impl MemoryStore {
                         crate::session_owner::preparation::driver_completion::replayed(outcome),
                     );
                 }
-                if require_input_birth {
-                    verify_continuation_birth(state, joined, &mut read_proof.borrow_mut())?;
-                }
+                ensure_input_birth(
+                    state,
+                    joined,
+                    require_input_birth,
+                    &mut read_proof.borrow_mut(),
+                )?;
                 let before = revision(state, &session);
                 let mut proof = state
                     .session_owners
@@ -123,18 +128,21 @@ impl MemoryStore {
         Ok(outcome)
     }
 }
-fn verify_continuation_birth(
+fn ensure_input_birth(
     state: &super::super::State,
     joined: &JoinedPreparation,
+    required: bool,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
-    let scope = crate::session_owner::preparation::driver_completion::protected_scope(joined)?;
-    if !state
-        .continuation_inputs
-        .protocol(&scope, proof)
-        .map_err(|_| crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?
-    {
-        return Err(crate::session_owner::SessionOwnerError::Unsupported.into());
+    if required {
+        let scope = crate::session_owner::preparation::driver_completion::protected_scope(joined)?;
+        if !state
+            .continuation_inputs
+            .protocol(&scope, proof)
+            .map_err(|_| crate::session_owner::SessionOwnerError::UnknownStoreOutcome)?
+        {
+            return Err(crate::session_owner::SessionOwnerError::Unsupported.into());
+        }
     }
     Ok(())
 }
