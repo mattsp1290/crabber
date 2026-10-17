@@ -33,9 +33,9 @@ impl PostgresExecution {
                 return Err(StoreError::AdmissionRecoveryRequired);
             }
             super::phase::legacy_guard_with_proof(&mut tx, &run, id, proof).await?;
-            super::read_proof::charge(&mut tx, sqlx::query_scalar(CALL_COST).bind(&id.0), proof)
+            super::read_proof::charge(&mut tx, sqlx::query_scalar(CALL_COST).bind(&id.0).bind(&run.id.0), proof)
                 .await.map_err(invalid)?;
-            let row = sqlx::query(CALL).bind(&id.0).fetch_optional(&mut *tx)
+            let row = sqlx::query(CALL).bind(&id.0).bind(&run.id.0).fetch_optional(&mut *tx)
                 .await.map_err(db)?.ok_or(StoreError::NotFound)?;
             let text = row.try_get::<Option<String>, _>("record").map_err(db)?
                 .ok_or_else(|| invalid("oversized call"))?;
@@ -75,6 +75,5 @@ impl PostgresExecution {
         committed
     }
 }
-const CALL_COST: &str =
-    "SELECT CAST(octet_length(snapshot_record) AS BIGINT) FROM tool_calls WHERE id=$1";
-const CALL: &str = "SELECT CASE WHEN octet_length(snapshot_record)<=33554432 THEN snapshot_record END AS record FROM tool_calls WHERE id=$1 FOR UPDATE";
+const CALL_COST: &str = "SELECT CAST(octet_length(snapshot_record) AS BIGINT) FROM tool_calls WHERE id=$1 AND run_id=$2";
+const CALL: &str = "SELECT CASE WHEN octet_length(snapshot_record)<=33554432 THEN snapshot_record END AS record FROM tool_calls WHERE id=$1 AND run_id=$2 FOR UPDATE";

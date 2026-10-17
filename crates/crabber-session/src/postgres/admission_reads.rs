@@ -122,7 +122,7 @@ pub(super) async fn session(
             .try_get::<Option<String>, _>("data")
             .map_err(db)?
             .ok_or(StoreError::Conflict)?;
-        let session: Session = serde_json::from_str(&text).map_err(|_| StoreError::Conflict)?;
+        let session: Session = super::decode_record(&text)?;
         Ok((session, row.try_get("public_revision").map_err(db)?))
     })
     .transpose()

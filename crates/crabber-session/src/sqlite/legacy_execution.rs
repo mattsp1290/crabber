@@ -35,11 +35,16 @@ impl SqliteExecution {
                 return Err(StoreError::AdmissionRecoveryRequired);
             }
             super::phase::legacy_guard_with_proof(&mut tx, &run, id, proof).await?;
-            super::read_proof::charge(&mut tx, sqlx::query_scalar(CALL_COST).bind(&id.0), proof)
-                .await
-                .map_err(invalid)?;
+            super::read_proof::charge(
+                &mut tx,
+                sqlx::query_scalar(CALL_COST).bind(&id.0).bind(&run.id.0),
+                proof,
+            )
+            .await
+            .map_err(invalid)?;
             let row = sqlx::query(CALL)
                 .bind(&id.0)
+                .bind(&run.id.0)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)?
@@ -89,5 +94,5 @@ impl SqliteExecution {
     }
 }
 const CALL_COST: &str =
-    "SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM tool_calls WHERE id=$1";
-const CALL: &str = "SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS record FROM tool_calls WHERE id=$1";
+    "SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM tool_calls WHERE id=$1 AND run_id=$2";
+const CALL: &str = "SELECT CASE WHEN length(CAST(data AS BLOB))<=33554432 THEN data END AS record FROM tool_calls WHERE id=$1 AND run_id=$2";

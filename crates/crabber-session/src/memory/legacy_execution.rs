@@ -47,9 +47,13 @@ impl MemoryExecution {
             {
                 return Err(StoreError::Conflict);
             }
-            let call = state.calls.get(id).ok_or(StoreError::NotFound)?;
+            let call = state
+                .calls
+                .get(id)
+                .filter(|call| call.run_id == run.id)
+                .ok_or(StoreError::NotFound)?;
             proof.measure(call).map_err(invalid)?;
-            if call.run_id != run.id || call.status != ToolCallStatus::Pending {
+            if call.status != ToolCallStatus::Pending {
                 return Err(StoreError::Conflict);
             }
             // The original accepted event is charged before the publisher owns its copy.

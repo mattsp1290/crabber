@@ -17,6 +17,7 @@ pub(crate) struct Budget {
     pub cap: usize,
     pub used: usize,
     limit: PublicSessionLimit,
+    exhausted: bool,
 }
 impl Budget {
     pub fn new(cap: usize, limit: PublicSessionLimit) -> Self {
@@ -24,29 +25,48 @@ impl Budget {
             cap,
             used: 0,
             limit,
+            exhausted: false,
         }
+    }
+    // A failed bounded serializer supplies a refusal marker, not an exact byte
+    // count. Keep it sticky even when cap+1 cannot be represented.
+    fn exhaust(&mut self) -> Failure {
+        self.exhausted = true;
+        self.used = self.used.max(self.cap.saturating_add(1));
+        Failure::Limited(self.limit)
     }
     pub fn remaining(&self) -> usize {
         self.cap.saturating_sub(self.used)
     }
     pub fn charge(&mut self, bytes: usize) -> Result<(), Failure> {
-        self.used = self
-            .used
-            .checked_add(bytes)
-            .ok_or(Failure::Limited(self.limit))?;
-        if self.used > self.cap {
+        if self.exhausted {
             return Err(Failure::Limited(self.limit));
+        }
+        let Some(used) = self.used.checked_add(bytes) else {
+            return Err(self.exhaust());
+        };
+        self.used = used;
+        if self.used > self.cap {
+            return Err(self.exhaust());
         }
         Ok(())
     }
     pub fn measure<T: Serialize>(&mut self, value: &T) -> Result<(), Failure> {
-        let bytes = crate::snapshot::encoded_bytes(value, self.remaining())
-            .ok_or(Failure::Limited(self.limit))?;
+        if self.exhausted {
+            return Err(Failure::Limited(self.limit));
+        }
+        let Some(bytes) = crate::snapshot::encoded_bytes(value, self.remaining()) else {
+            return Err(self.exhaust());
+        };
         self.charge(bytes)
     }
     pub fn finish<T: Serialize>(&mut self, value: &T) -> Result<(), Failure> {
-        let bytes =
-            crate::snapshot::encoded_bytes(value, self.cap).ok_or(Failure::Limited(self.limit))?;
+        if self.exhausted {
+            return Err(Failure::Limited(self.limit));
+        }
+        let Some(bytes) = crate::snapshot::encoded_bytes(value, self.cap) else {
+            return Err(self.exhaust());
+        };
         self.used = self.used.max(bytes);
         Ok(())
     }
@@ -198,4 +218,36 @@ pub(crate) fn validate_request(
         return Err(PublicSessionError::InvalidRequest);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializer_refusal_permanently_exhausts_the_same_budget() {
+        let mut budget = Budget::new(8, PublicSessionLimit::ProofBytes);
+        budget.charge(7).unwrap();
+        assert!(matches!(budget.measure(&"x"), Err(Failure::Limited(_))));
+        assert!(budget.used > budget.cap);
+        assert!(matches!(budget.charge(0), Err(Failure::Limited(_))));
+        assert!(matches!(budget.measure(&0), Err(Failure::Limited(_))));
+        assert!(matches!(budget.finish(&0), Err(Failure::Limited(_))));
+
+        let mut exact = Budget::new(3, PublicSessionLimit::ProofBytes);
+        exact.measure(&"x").unwrap();
+        assert_eq!(exact.used, 3);
+        exact.charge(0).unwrap();
+        exact.finish(&"x").unwrap();
+    }
+
+    #[test]
+    fn arithmetic_overflow_cannot_reopen_a_maximum_sized_budget() {
+        let mut budget = Budget::new(usize::MAX, PublicSessionLimit::ProofBytes);
+        budget.charge(usize::MAX).unwrap();
+        assert!(matches!(budget.charge(1), Err(Failure::Limited(_))));
+        assert_eq!(budget.used, usize::MAX);
+        assert!(matches!(budget.charge(0), Err(Failure::Limited(_))));
+        assert!(matches!(budget.finish(&0), Err(Failure::Limited(_))));
+    }
 }
