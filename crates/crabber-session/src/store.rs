@@ -1220,8 +1220,12 @@ pub trait Store: Send + Sync {
     ) -> Result<crabber_core::AbandonOutcome, crabber_core::AbandonError> {
         Err(crabber_core::AbandonError::Unsupported)
     }
+    /// Acquire a Raw execution adapter. Bundled stores authenticate native origin;
+    /// an owned task does not promote this public route into enrolled authority.
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, StoreError>;
+    /// Return full Raw Run credentials after native-origin authentication.
+    /// Prefer the public Run projection when execution credentials are unnecessary.
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError>;
     /// Bounded all-history snapshot, in message append order then tool creation
     /// order. Includes hidden epochs and pending/settled tool records unchanged.
@@ -1263,6 +1267,9 @@ pub trait Store: Send + Sync {
         after: Option<EventCursor>,
         limit: usize,
     ) -> Result<Vec<EventRecord>, StoreError>;
+    /// Return Raw credentials for the complete captured unfinished set, or refuse
+    /// the whole list. Bundled stores share a 32MiB materialization/proof allowance
+    /// across that set; this is not a bound on storage scanning.
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError>;
     async fn list_unfinished_tool_calls(
         &self,

@@ -2,6 +2,8 @@
 //! connecting only verifies a current-version Crabber database already using WAL.
 #[path = "sqlite/admission_reads.rs"]
 mod admission_reads;
+#[path = "sqlite/credential_access.rs"]
+mod credential_access;
 #[path = "sqlite/expired.rs"]
 mod expired;
 #[path = "sqlite/read_proof.rs"]

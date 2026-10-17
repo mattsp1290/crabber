@@ -6,6 +6,8 @@ mod approval;
 mod continuation_handoff;
 #[path = "memory/continuation_input.rs"]
 mod continuation_input;
+#[path = "memory/credential_access.rs"]
+mod credential_access;
 #[path = "memory/deletion.rs"]
 mod deletion;
 #[path = "memory/events.rs"]
@@ -1380,7 +1382,7 @@ impl Store for MemoryStore {
     }
 
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        self.ownership_fenced(&fence, |_, _| Ok(()))?;
+        self.raw_execution_access(&fence)?;
         Ok(Box::new(MemoryExecution {
             store: self.clone(),
             fence,
@@ -1398,13 +1400,7 @@ impl Store for MemoryStore {
     }
 
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .runs
-            .get(id)
-            .cloned())
+        self.raw_run(id)
     }
 
     async fn snapshot(
@@ -1451,15 +1447,7 @@ impl Store for MemoryStore {
     }
 
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("memory store poisoned")
-            .runs
-            .values()
-            .filter(|run| !run.status.is_terminal())
-            .cloned()
-            .collect())
+        self.raw_unfinished_runs()
     }
 
     async fn list_unfinished_tool_calls(

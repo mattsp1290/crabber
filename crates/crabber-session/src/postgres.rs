@@ -11,6 +11,8 @@ mod admission_reads;
 mod continuation_handoff;
 #[path = "postgres/continuation_input.rs"]
 mod continuation_input;
+#[path = "postgres/credential_access.rs"]
+mod credential_access;
 #[path = "postgres/expired.rs"]
 mod expired;
 #[path = "postgres/read_proof.rs"]
@@ -1839,8 +1841,7 @@ impl Store for PostgresStore {
         abandon::abandon(self, request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        let (tx, _) = self.ownership_fenced(&fence).await?;
-        tx.rollback().await.map_err(db)?;
+        self.raw_execution_access(&fence).await?;
         Ok(Box::new(PostgresExecution {
             store: self.clone(),
             fence,
@@ -1856,13 +1857,7 @@ impl Store for PostgresStore {
             .transpose()
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        sqlx::query("SELECT data FROM runs WHERE id=$1")
-            .bind(&id.0)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db)?
-            .map(|row| decode(row.get("data")))
-            .transpose()
+        self.raw_run(id).await
     }
     async fn list_messages(
         &self,
@@ -1907,15 +1902,7 @@ impl Store for PostgresStore {
             .collect()
     }
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        sqlx::query(
-            "SELECT data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|row| decode(row.get("data")))
-        .collect()
+        self.raw_unfinished_runs().await
     }
     async fn list_unfinished_tool_calls(
         &self,

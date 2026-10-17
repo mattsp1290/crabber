@@ -4,3 +4,6 @@ mod origin;
 pub(crate) use origin::{Origin, Status, Unclassified};
 #[path = "native_raw_caller.rs"]
 pub(crate) mod caller;
+
+#[path = "../../../crabber-session/src/native_enrollment/access.rs"]
+pub(crate) mod access;

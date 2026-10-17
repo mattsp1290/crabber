@@ -839,9 +839,7 @@ impl Store for SqliteStore {
         abandon::abandon(self, request).await
     }
     async fn execution(&self, fence: RunFence) -> Result<Box<dyn ExecutionStore>, StoreError> {
-        let mut tx = self.readers.begin().await.map_err(db)?;
-        let result = self.ownership_fenced(&mut tx, &fence).await;
-        finish(tx, result, std::convert::identity).await?;
+        self.raw_execution_access(&fence).await?;
         Ok(Box::new(SqliteExecution {
             store: self.clone(),
             fence,
@@ -857,13 +855,7 @@ impl Store for SqliteStore {
             .transpose()
     }
     async fn get_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
-        sqlx::query("SELECT data FROM runs WHERE id=$1")
-            .bind(&id.0)
-            .fetch_optional(&self.readers)
-            .await
-            .map_err(db)?
-            .map(|row| decode_row(&row, "data"))
-            .transpose()
+        self.raw_run(id).await
     }
     async fn list_messages(
         &self,
@@ -908,15 +900,7 @@ impl Store for SqliteStore {
             .collect()
     }
     async fn list_unfinished_runs(&self) -> Result<Vec<Run>, StoreError> {
-        sqlx::query(
-            "SELECT data FROM runs WHERE status IN ('pending','running','paused') ORDER BY seq",
-        )
-        .fetch_all(&self.readers)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|row| decode_row(&row, "data"))
-        .collect()
+        self.raw_unfinished_runs().await
     }
     async fn list_unfinished_tool_calls(
         &self,

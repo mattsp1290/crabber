@@ -6,3 +6,6 @@ pub(crate) use origin::SOURCE_BYTES;
 pub(crate) use origin::{Origin, Status, Unclassified};
 #[path = "native_enrollment/caller.rs"]
 pub(crate) mod caller;
+
+#[path = "native_enrollment/access.rs"]
+pub(crate) mod access;
