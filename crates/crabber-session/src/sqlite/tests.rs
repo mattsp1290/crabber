@@ -341,3 +341,6 @@ async fn sqlite_typed_admission_contract() {
 
 #[path = "tests/begin_cancellation.rs"]
 mod begin_cancellation;
+
+#[path = "tests/commit_worker.rs"]
+mod commit_worker;
