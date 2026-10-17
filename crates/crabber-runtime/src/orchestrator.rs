@@ -2,6 +2,7 @@ mod driver;
 mod heartbeat;
 mod model_callbacks;
 mod notifications;
+mod worker;
 use heartbeat::HeartbeatGuard;
 mod host_callbacks;
 #[path = "orchestrator/observation_lifetime.rs"]
@@ -537,6 +538,7 @@ pub struct Orchestrator {
     session_services: crate::session_services::SessionServices,
     preparation_scope: Option<preparation::scope::PlanScope>,
     retained_preparations: preparation::retained::RetainedPreparations,
+    pending_successors: crabber_session::session_owner::owned_scope::PendingSuccessorTasks,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
     observation_lifetime: Arc<ObservationLifetime>,
     tool_resumes: Arc<
@@ -840,6 +842,8 @@ impl OrchestratorBuilder {
             session_services: crate::session_services::SessionServices::default(),
             preparation_scope: None,
             retained_preparations: preparation::retained::RetainedPreparations::default(),
+            pending_successors:
+                crabber_session::session_owner::owned_scope::PendingSuccessorTasks::default(),
             owned_attempt: None,
             observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
@@ -2626,91 +2630,37 @@ impl Orchestrator {
         F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
         W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
     {
-        let (sender, done) = oneshot::channel();
-        let (completion_sender, completion) = watch::channel(false);
-        let cancellation = CancellationToken::new();
-        let mut runtime = self.clone();
-        let resources = self
-            .execution_tasks
-            .worker_resources(session_id.clone(), run_id.clone());
-        runtime.worker_resources = Some(resources.clone());
-        let handle_resources = Arc::new(resources.clone());
-        let (event_observer, events) = crate::execution_events::ExecutionEventObserver::channel(
-            runtime.observer.clone(),
-            session_id.clone(),
-            run_id.clone(),
-            completion.clone(),
-        );
-        runtime.observer = event_observer.clone();
-        let cancellation_for_work = cancellation.clone();
-        let complete = driver::WorkerCompletion::new(sender, completion_sender);
-        let failed = complete.clone();
+        let worker::WorkerLaunch {
+            handle,
+            business,
+            resources,
+            complete,
+        } = self.worker_launch(session_id.clone(), run_id.clone());
         let store = self.store.clone();
-        let native_cancel = cancellation.clone();
-        let worker = move || async move {
-            let guard = event_observer.guard();
-            let callbacks = runtime
-                .worker_resources
-                .as_ref()
-                .expect("worker resources installed before dispatch")
-                .background_resources(crate::WorkerResourceKind::ExtensionCallbackInvocations);
-            let callback_guard = callbacks.guard();
-            let result =
-                match crabber_extension::CallbackInvocationOwner::attach(callbacks.resources()) {
-                    Ok(owner) => {
-                        let capability = owner.capability();
-                        runtime.worker_callbacks = Some(capability.clone());
-                        crabber_extension::with_callback_invocations(capability, async move {
-                            Box::pin(work(runtime, cancellation_for_work)).await
-                        })
-                        .await
-                    }
-                    Err(_) => Err(RuntimeError::PreparationRecoveryRequired),
-                };
-            drop(callback_guard);
-            drop(guard);
-            complete.publish(result);
-            drop(event_observer);
-        };
-        let task = self.execution_tasks.spawn_reporting(
-            session_id.clone(),
-            Some(run_id.clone()),
-            async move {
+        let cancellation = handle.cancellation.clone();
+        let task = self
+            .execution_tasks
+            .spawn_reporting(session_id, Some(run_id), async move {
                 if let Some(request) = driver {
                     if let Err(error) = driver::run(
                         store,
                         resources,
                         request,
-                        native_cancel,
-                        failed.clone(),
-                        worker,
+                        cancellation,
+                        complete.clone(),
+                        move || business.run(work),
                     )
                     .await
                     {
-                        failed.publish(Err(error));
+                        complete.publish(Err(error));
                     }
                 } else {
-                    worker().await;
-                    // Resource failures remain visible in the separate drain;
-                    // they are not a panic of this actual returned worker.
+                    business.run(work).await;
                     let _ = resources.finish_background().await;
                 }
-                failed.termination()
-            },
-        );
-        RunHandle {
-            session_id,
-            run_id,
-            store: Arc::clone(&self.store),
-            clock: Arc::clone(&self.clock),
-            done,
-            task,
-            tasks: self.execution_tasks.clone(),
-            worker_resources: handle_resources,
-            completion,
-            cancellation,
-            events: Some(events),
-        }
+                complete.termination()
+            });
+        handle.finish(task)
     }
 
     async fn run(

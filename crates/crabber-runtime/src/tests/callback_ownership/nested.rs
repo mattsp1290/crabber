@@ -109,3 +109,44 @@ async fn returned_outer_hook_cannot_hide_recorded_pending_nested_callback() {
     ));
     registry.close_all().await.unwrap();
 }
+
+/// Shared genuine nested callback fixture for the first-two pending task bridge.
+pub(in crate::tests) struct NestedFixture {
+    pub registry: Arc<Registry>,
+    gate: Arc<Gate>,
+    release: Option<Release>,
+    escaped: Arc<Mutex<Option<Waiter>>>,
+}
+impl NestedFixture {
+    pub async fn new() -> Self {
+        let registry = Arc::new(Registry::new());
+        let gate = Arc::new(Gate::default());
+        let dispatcher = Arc::new(Mutex::new(None));
+        let escaped = Arc::new(Mutex::new(None));
+        registry
+            .mount_owned(
+                Arc::new(Nested {
+                    dispatcher: dispatcher.clone(),
+                    escaped: escaped.clone(),
+                    gate: gate.clone(),
+                }),
+                Scope::Global,
+            )
+            .await
+            .unwrap();
+        *dispatcher.lock().unwrap() = Some(registry.acquire(&SessionId::new()).dispatcher.clone());
+        Self {
+            registry,
+            release: Some(Release(gate.clone())),
+            gate,
+            escaped,
+        }
+    }
+    pub async fn wait_disposing(&self) {
+        signal(&self.gate.disposing).await;
+    }
+    pub fn release(&mut self) {
+        drop(self.escaped.lock().unwrap().take());
+        drop(self.release.take());
+    }
+}

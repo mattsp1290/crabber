@@ -202,6 +202,9 @@ impl Harness {
             .state
     }
     async fn finish_cleanup(&self, descriptor: &PreparationReconciliation) {
+        self.finish_cleanup_state(descriptor, false).await;
+    }
+    async fn finish_cleanup_state(&self, descriptor: &PreparationReconciliation, uncertain: bool) {
         tokio::time::timeout(
             Duration::from_secs(2),
             self.provider.cleanup_started.notified(),
@@ -229,6 +232,19 @@ impl Harness {
             self.provider.cleanup_completed.load(Ordering::SeqCst),
             calls
         );
+        if uncertain {
+            let statuses = self
+                .runtime
+                .retained_preparation_status(&descriptor.session_id);
+            assert!(
+                statuses
+                    .iter()
+                    .any(|status| status.preparation == *descriptor
+                        && status.status == crate::RetainedPreparationStatus::CleanupUncertain),
+                "expected retained uncertainty: {statuses:?}"
+            );
+            return;
+        }
         tokio::time::timeout(Duration::from_secs(2), async {
             while !self
                 .runtime

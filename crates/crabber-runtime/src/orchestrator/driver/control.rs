@@ -68,7 +68,7 @@ pub(super) async fn poll(
 }
 
 /// Stop before starting another poll; an already started Store call must finish.
-pub(super) async fn supervise(
+pub(in crate::orchestrator) async fn supervise(
     store: &dyn Store,
     authority: &SessionOwnerAuthority,
     cancellation: &CancellationToken,

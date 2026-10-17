@@ -1,5 +1,7 @@
 use super::super::{Error, JoinedOwnedTask, OwnedMainDisposition};
-use super::{PendingSuccessorControl, PendingSuccessorError, PendingSuccessorObservation};
+use super::{
+    PendingSuccessorControl, PendingSuccessorError, PendingSuccessorObservation, TaskOutput,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -67,7 +69,7 @@ impl PendingSuccessorTasks {
     }
     pub(super) fn retain<T: Send + 'static>(
         &self,
-        task: JoinHandle<Result<Option<T>, PendingSuccessorError>>,
+        task: JoinHandle<Result<TaskOutput<T>, PendingSuccessorError>>,
         control: PendingSuccessorControl,
         send: oneshot::Sender<PendingSuccessorObservation<T>>,
         capacity: OwnedSemaphorePermit,
@@ -76,17 +78,22 @@ impl PendingSuccessorTasks {
         let registry = self.inner.clone();
         // The original task is parked; it cannot finish before insertion below.
         let supervisor = tokio::spawn(async move {
-            let (disposition, value, error) = match task.await {
-                Ok(Ok(Some(value))) => (OwnedMainDisposition::Returned, Some(value), None),
-                Ok(Ok(None)) => (OwnedMainDisposition::NoDispatch, None, None),
-                Ok(Err(error)) => (OwnedMainDisposition::NoDispatch, None, Some(error)),
+            let (disposition, value, error, replay) = match task.await {
+                Ok(Ok(TaskOutput::Business(value))) => {
+                    (OwnedMainDisposition::Returned, Some(value), None, None)
+                }
+                Ok(Ok(TaskOutput::Stopped)) => (OwnedMainDisposition::NoDispatch, None, None, None),
+                Ok(Ok(TaskOutput::Replayed(replay))) => {
+                    (OwnedMainDisposition::NoDispatch, None, None, Some(replay))
+                }
+                Ok(Err(error)) => (OwnedMainDisposition::NoDispatch, None, Some(error), None),
                 Err(error) if error.is_panic() => {
                     // Persist failure before safely disposing an untrusted payload.
                     control.finish(OwnedMainDisposition::Panicked);
                     super::super::discard_panic(error);
-                    (OwnedMainDisposition::Panicked, None, None)
+                    (OwnedMainDisposition::Panicked, None, None, None)
                 }
-                Err(_) => (OwnedMainDisposition::Aborted, None, None),
+                Err(_) => (OwnedMainDisposition::Aborted, None, None, None),
             };
             let main = control.binding().map(|bound| JoinedOwnedTask {
                 activation: bound.activation,
@@ -97,6 +104,7 @@ impl PendingSuccessorTasks {
                 main,
                 disposition,
                 error,
+                replay,
                 _capacity: capacity,
             };
             control.finish(disposition);

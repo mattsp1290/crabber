@@ -17,7 +17,7 @@ pub(in crate::orchestrator) enum Request {
     Initial(RegisterExecutionDriver),
     Successor(RegisterSuccessorExecutionDriver),
 }
-pub(super) enum Grant {
+pub(in crate::orchestrator) enum Grant {
     Initial(Box<ExecutionDriverGrant>),
     Successor(Box<SuccessorExecutionDriverGrant>),
 }

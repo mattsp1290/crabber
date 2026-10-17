@@ -1820,6 +1820,10 @@ struct SettlementGate {
     driver_poll_release: Notify,
     driver_poll_completed: AtomicUsize,
     preparation_fault: AtomicUsize,
+    preparation_hold: std::sync::atomic::AtomicBool,
+    preparation_entered: Notify,
+    preparation_release: Notify,
+    preparation_calls: AtomicUsize,
     unsupported_recovery_inspection: std::sync::atomic::AtomicBool,
     activation_fault: AtomicUsize,
     owned_join_fault: AtomicUsize,
@@ -1967,6 +1971,7 @@ impl Store for DelayedTerminalStore {
         crabber_session::session_owner::preparation::PreparationCompletion,
         crabber_session::session_owner::preparation::PreparationCommitError,
     > {
+        self.gate.preparation_calls.fetch_add(1, Ordering::SeqCst);
         let preparation_fault = self.gate.preparation_fault.swap(0, Ordering::SeqCst);
         if preparation_fault == 1 {
             return Err(
@@ -1980,6 +1985,26 @@ impl Store for DelayedTerminalStore {
             self.gate.approval_recovery_release.notified().await;
         }
         let completed = self.inner.complete_preparation(joined).await?;
+        if self.gate.preparation_hold.load(Ordering::SeqCst) {
+            self.gate.preparation_entered.notify_one();
+            self.gate.preparation_release.notified().await;
+        }
+        if preparation_fault == 3 {
+            use crabber_session::session_owner::preparation::{
+                AdmissionRecoveryOutcome, ExpiredRunOutcome, PreparationCompletion,
+            };
+            return Ok(match completed {
+                PreparationCompletion::AdmissionRecovery(AdmissionRecoveryOutcome::Claimed(
+                    value,
+                )) => PreparationCompletion::AdmissionRecovery(AdmissionRecoveryOutcome::Replayed(
+                    value.record.receipt.clone(),
+                )),
+                PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed {
+                    receipt, ..
+                }) => PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Replayed(receipt)),
+                _ => panic!("replay adapter is first-two only"),
+            });
+        }
         if preparation_fault == 2 {
             return Err(
                 crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome.into(),

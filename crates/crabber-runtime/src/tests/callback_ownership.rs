@@ -3,7 +3,7 @@ use super::*;
 #[path = "callback_ownership/failure.rs"]
 mod failure;
 #[path = "callback_ownership/nested.rs"]
-mod nested;
+pub(in crate::tests) mod nested;
 use crabber_extension::{Extension, Point, Registrar, Registry, Scope};
 use std::{
     future::Future,

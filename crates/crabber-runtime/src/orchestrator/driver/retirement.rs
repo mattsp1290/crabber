@@ -9,7 +9,7 @@ use crabber_session::{
 };
 use std::time::Duration;
 
-pub(super) async fn join(
+pub(in crate::orchestrator) async fn join(
     store: &dyn Store,
     grant: &super::registration::Grant,
     proof: JoinedOwnedScope,

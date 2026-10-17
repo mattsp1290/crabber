@@ -72,15 +72,17 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
             assert_eq!(h.child_state(&descriptor).await, SessionOwnerState::Active);
             assert_eq!(h.provider.calls.load(Ordering::SeqCst), 2);
             assert_eq!(h.fake.requests().len(), 0);
-            let progress = h
-                .runtime
-                .retry_preparation_completion(&descriptor)
-                .await
-                .unwrap();
-            assert_eq!(progress.replayed, point == 2);
+            let calls = h.gate.preparation_calls.load(Ordering::SeqCst);
+            assert!(
+                h.runtime
+                    .retry_preparation_completion(&descriptor)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(h.gate.preparation_calls.load(Ordering::SeqCst), calls);
             descriptor
         };
-        h.finish_cleanup(&descriptor).await;
+        h.finish_cleanup_state(&descriptor, point != 0).await;
         assert_eq!(h.provider.calls.load(Ordering::SeqCst), 2);
         assert_eq!(h.fake.requests().len(), usize::from(point == 0));
         assert!(

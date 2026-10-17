@@ -231,7 +231,11 @@ async fn genuine_wrong_permit_and_original_completion_replay_do_not_dispatch() {
         .unwrap();
     task.start().unwrap();
     let actual = task.join().await.unwrap();
-    assert!(actual.error().is_some());
+    assert!(matches!(
+        actual.replayed(),
+        Some(super::PendingSuccessorReplay::Admission(_))
+    ));
+    assert!(actual.error().is_none());
     assert!(actual.bound_main().is_none());
 }
 
@@ -348,4 +352,25 @@ async fn actual_panic_is_sticky_while_hostile_payload_disposal_is_blocked() {
     drop(task);
     owner.wait_for_supervision().await;
     assert_eq!(owner.available_capacity(), 64);
+}
+
+#[tokio::test]
+async fn completion_notice_rejects_changed_original_user_message_receipt() {
+    let owner = PendingSuccessorTasks::default();
+    let (store, clock) = store();
+    let (context, joined) = fixture::prepared(store.as_ref(), &clock, true).await;
+    let adapter = Interposed::new(store, Stage::Complete, false);
+    adapter.corrupt_receipt.store(true, Ordering::SeqCst);
+    adapter.release.notify_one();
+    let mut task = PendingSuccessorTask::register(&owner, adapter, context, joined, |_, _| async {
+        panic!("changed original receipt must not dispatch")
+    })
+    .unwrap();
+    let control = task.control();
+    task.start().unwrap();
+    let observation = task.join().await.unwrap();
+    assert!(observation.error().is_some());
+    assert!(observation.bound_main().is_none());
+    assert!(control.completion().await.is_err());
+    assert!(control.bound().await.is_err());
 }

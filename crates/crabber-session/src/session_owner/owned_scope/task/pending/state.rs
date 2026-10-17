@@ -1,4 +1,5 @@
 use super::super::{Error, OwnedMainDisposition, OwnedScopeActivation};
+use super::PendingSuccessorCompletion;
 use crate::session_owner::driver::SuccessorExecutionDriverGrant;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -31,6 +32,7 @@ struct State {
     stopped: bool,
     phase: Phase,
     bound: Option<BoundSuccessorControl>,
+    completion: Option<PendingSuccessorCompletion>,
 }
 /// Signals/observes this original task. It cannot create a task, context or permit.
 #[derive(Clone)]
@@ -45,6 +47,7 @@ impl PendingSuccessorControl {
                 stopped: false,
                 phase: Phase::Ready,
                 bound: None,
+                completion: None,
             })),
             changed: watch::channel(()).0,
         }
@@ -58,6 +61,43 @@ impl PendingSuccessorControl {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .stopped = true;
         self.changed.send_replace(());
+    }
+    /// Metadata from the same original task's validated completion ACK.
+    /// # Errors
+    /// The task ended without an acknowledged completion. No replacement IO runs.
+    pub async fn completion(&self) -> Result<PendingSuccessorCompletion, Error> {
+        let mut changed = self.changed.subscribe();
+        loop {
+            {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(completion) = &state.completion {
+                    return Ok(completion.clone());
+                }
+                if matches!(state.phase, Phase::Finished(_)) {
+                    return Err(Error::UnknownStoreOutcome);
+                }
+            }
+            changed
+                .changed()
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
+    }
+    pub(super) fn completed(&self, completion: PendingSuccessorCompletion) -> Result<(), Error> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.completion.is_some() {
+            return Err(Error::InvalidTransition);
+        }
+        state.completion = Some(completion);
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
     }
     /// Observe a genuine once-binding; unbound termination returns an error.
     /// # Errors

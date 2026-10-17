@@ -43,6 +43,13 @@ impl Orchestrator {
             binding.request.workspace_id.clone(),
             binding.request.directory.clone(),
         );
+        if crabber_session::session_owner::preparation::resource_contract(
+            &binding.runtime_semantics,
+        )?
+        .is_some()
+        {
+            return Box::pin(self.spawn_pending_expired(run, validated, binding, context)).await;
+        }
         let (prepared, claim) = self.prepare_expired_resources(&run, binding).await?;
         let request = RegisterSuccessorExecutionDriver {
             context,
@@ -64,6 +71,91 @@ impl Orchestrator {
                 .await
             },
         ))
+    }
+    async fn spawn_pending_expired(
+        &self,
+        run: Run,
+        validated: (RunSession, Option<Request>),
+        binding: ExecutionBindingCapsule,
+        context: crabber_core::SessionContext,
+    ) -> Result<RunHandle, RuntimeError> {
+        let source = self.inspect_expired_resources(&run, &binding).await?;
+        let mut request = Request::from_binding(&binding);
+        let key = PreparationKey::ExpiredRun {
+            run_id: run.id.clone(),
+            issuance: source.expected_issuance(),
+        };
+        self.reject_pending_preparation(&run.session_id, &key)
+            .await?;
+        let spec = PreparationSpec {
+            key,
+            purpose: PreparationPurpose::ExistingRun {
+                run_id: run.id.clone(),
+                work: ExistingWorkTarget::ExpiredRun(Box::new(source.target().clone())),
+            },
+            revision: Some(source.expected_revision()),
+            options: None,
+            intent: Some(source.fingerprint()?),
+            source: Some(PreparationSource::ExpiredRun(source.clone())),
+        };
+        let grant = self
+            .begin_control_preparation(&mut request, &run.session_id, spec)
+            .await?;
+        let native_unstarted = !matches!(source.target().origin, ExpiredRunOrigin::Suspended(_));
+        let runtime = self.clone();
+        let original = run.clone();
+        let outcome = Box::pin(self.finish_existing_preparation(
+            grant,
+            context,
+            move |scope| async move {
+                let value = runtime
+                    .with_preparation_scope(scope)
+                    .restore_resume_resources(&original, &binding)
+                    .await?;
+                Ok((
+                    value,
+                    PreparedOperation::ExpiredRunResume(Box::new(PreparedExpiredRunResume {
+                        source,
+                        binding: Box::new(binding),
+                    })),
+                ))
+            },
+            move |(plan, bound), runtime, cancellation, completed| async move {
+                let PreparationCompletion::ExpiredRun(ExpiredRunOutcome::Claimed { fence, .. }) =
+                    completed
+                else {
+                    return Err(RuntimeError::PreparationRecoveryRequired);
+                };
+                let prepared = ExpiredResume {
+                    plan,
+                    bound,
+                    authority: ResumeAuthority {
+                        fence,
+                        native_unstarted,
+                        granted: None,
+                        approved: None,
+                        tool_phases: Vec::new(),
+                        frontend_phases: Vec::new(),
+                    },
+                };
+                Box::pin(runtime.resume_loaded_inner(
+                    run,
+                    validated,
+                    cancellation,
+                    None,
+                    Some(prepared),
+                ))
+                .await
+            },
+        ))
+        .await?;
+        match outcome {
+            super::pending::ExistingOutcome::Started {
+                handle,
+                receipt: None,
+            } => Ok(handle),
+            _ => Err(RuntimeError::PreparationRecoveryRequired),
+        }
     }
     async fn prepare_expired_resources(
         &self,

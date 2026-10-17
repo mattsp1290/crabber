@@ -5,7 +5,7 @@ use crabber_session::session_owner::owned_scope::{
 };
 use std::time::Duration;
 
-pub(super) async fn observe(
+pub(in crate::orchestrator::preparation) async fn observe(
     owned: &mut OwnedEntry,
 ) -> Result<JoinedOwnedScope, Option<OwnedCleanupFailure>> {
     if let Some(proof) = &owned.joined {

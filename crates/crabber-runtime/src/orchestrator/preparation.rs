@@ -342,6 +342,8 @@ pub(super) struct DurablePreparation {
 pub(super) mod expired_resume;
 #[path = "preparation/finish.rs"]
 mod finish;
+#[path = "preparation/pending.rs"]
+pub(super) mod pending;
 #[path = "preparation/progress.rs"]
 mod progress;
 #[path = "preparation/resume.rs"]

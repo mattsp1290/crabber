@@ -160,7 +160,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn register_owned_preparation<T, F, W>(
+    pub(super) async fn register_owned_preparation<T, F, W>(
         &self,
         entry: &SharedEntry,
         grant: &PreparationGrant,

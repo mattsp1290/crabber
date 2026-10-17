@@ -1,8 +1,8 @@
 //! Actual worker completion precedes native ownership retirement.
-mod control;
+pub(super) mod control;
 pub(super) mod registration;
-mod resources;
-mod retirement;
+pub(super) mod resources;
+pub(super) mod retirement;
 use super::{RunResult, RuntimeError};
 use crate::execution_tasks::WorkerResources;
 use crabber_session::{
@@ -35,12 +35,18 @@ impl WorkerCompletion {
             main_termination: Arc::default(),
         }
     }
-    fn observe_main(
+    pub(super) fn observe_main(
         &self,
         main: &crabber_session::session_owner::owned_scope::JoinedOwnedTask<()>,
     ) {
+        self.observe_disposition(main.disposition());
+    }
+    pub(super) fn observe_disposition(
+        &self,
+        disposition: crabber_session::session_owner::owned_scope::OwnedMainDisposition,
+    ) {
         use crabber_session::session_owner::owned_scope::OwnedMainDisposition;
-        *self.main_termination.lock().unwrap() = Some(match main.disposition() {
+        *self.main_termination.lock().unwrap() = Some(match disposition {
             OwnedMainDisposition::Panicked => crate::TaskTermination::Panicked,
             OwnedMainDisposition::Aborted => crate::TaskTermination::Cancelled,
             OwnedMainDisposition::Returned | OwnedMainDisposition::NoDispatch => {

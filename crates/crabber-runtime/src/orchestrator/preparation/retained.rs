@@ -35,6 +35,7 @@ pub(super) struct Entry {
     pub value: Option<RetainedValue>,
     pub owned: Option<OwnedEntry>,
     pub committed: bool,
+    pub pending: Option<Arc<super::pending::PendingExisting>>,
     pub disposing: bool,
     pub heartbeat_stop: CancellationToken,
     pub heartbeat: heartbeat::RetainedTask,
@@ -86,6 +87,7 @@ impl RetainedPreparations {
             value: None,
             owned: None,
             committed: false,
+            pending: None,
             disposing: false,
             heartbeat_stop: CancellationToken::new(),
             heartbeat: heartbeat::RetainedTask::default(),
@@ -131,7 +133,13 @@ impl RetainedPreparations {
                 let status = entry
                     .try_lock()
                     .map_or(Status::ObservationInProgress, |current| {
-                        if current.heartbeat.failed() || current.cleanup_supervisor.is_finished() {
+                        if current
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.failed())
+                            || current.heartbeat.failed()
+                            || current.cleanup_supervisor.is_finished()
+                        {
                             Status::CleanupUncertain
                         } else if current.disposing {
                             Status::CleanupRequested

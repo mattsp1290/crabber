@@ -14,6 +14,7 @@ pub(super) struct Interposed {
     pub arrived: Notify,
     pub release: Notify,
     pub fault: bool,
+    pub corrupt_receipt: std::sync::atomic::AtomicBool,
     pub wrong_permit: std::sync::Mutex<Option<OwnedDispatchPermit>>,
 }
 impl Interposed {
@@ -24,6 +25,7 @@ impl Interposed {
             arrived: Notify::new(),
             release: Notify::new(),
             fault,
+            corrupt_receipt: std::sync::atomic::AtomicBool::new(false),
             wrong_permit: std::sync::Mutex::default(),
         })
     }
@@ -38,12 +40,29 @@ impl Interposed {
 }
 #[async_trait::async_trait]
 impl Store for Interposed {
+    async fn lookup_admission(
+        &self,
+        session: &SessionId,
+        key: &AdmissionKey,
+    ) -> Result<Option<AdmissionReceipt>, StoreError> {
+        self.inner.lookup_admission(session, key).await
+    }
+
     async fn complete_preparation(
         &self,
         original: JoinedPreparation,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        let result = self.inner.complete_preparation(original).await;
+        let mut result = self.inner.complete_preparation(original).await;
+        if self
+            .corrupt_receipt
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(PreparationCompletion::AdmissionRecovery(
+                crate::session_owner::preparation::AdmissionRecoveryOutcome::Claimed(value),
+            )) = &mut result
+        {
+            value.record.receipt.user_message_id = MessageId::new();
+        }
         if self.pause(Stage::Complete).await {
             return Err(Error::UnknownStoreOutcome.into());
         }

@@ -140,7 +140,7 @@ pub(crate) async fn lost_admission_ack(
     atomic(store, source, binding).await;
     assert_eq!(effects.load(Ordering::SeqCst), 1);
 }
-#[cfg(test)]
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 pub(crate) async fn pending(store: &impl Store, clock: &ManualClock) -> super::Pending {
     let (source, binding) = source(store, clock).await;
     let joined = prepare(store, &source, binding).await;

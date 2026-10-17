@@ -6,8 +6,9 @@ mod pending;
 pub use driver::DriverMainContext;
 use driver::MainIngress;
 pub use pending::{
-    BoundSuccessorControl, PendingSuccessorControl, PendingSuccessorError,
-    PendingSuccessorObservation, PendingSuccessorTask, PendingSuccessorTasks,
+    BoundSuccessorControl, PendingSuccessorCompletion, PendingSuccessorControl,
+    PendingSuccessorError, PendingSuccessorObservation, PendingSuccessorReplay,
+    PendingSuccessorTask, PendingSuccessorTasks,
 };
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};

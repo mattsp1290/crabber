@@ -4,7 +4,7 @@ use crabber_session::session_owner::owned_scope::OwnedCleanupFailure;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-pub(super) async fn finish(
+pub(in crate::orchestrator) async fn finish(
     resources: WorkerResources,
     mut main: oneshot::Receiver<()>,
 ) -> Result<(), OwnedCleanupFailure> {

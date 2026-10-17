@@ -10,7 +10,7 @@ use std::sync::Arc;
 #[path = "cleanup/failure.rs"]
 mod failure;
 #[path = "cleanup/observation.rs"]
-mod observation;
+pub(in crate::orchestrator::preparation) mod observation;
 
 pub(in crate::orchestrator::preparation) async fn start(
     registry: RetainedPreparations,
@@ -95,22 +95,20 @@ async fn joined_resources(entry: &SharedEntry, store: &dyn Store) -> Result<(), 
     // The renewal/cancellation observer is retained service work too. Stop and
     // observe its actual join before publishing the resource owner's Join.
     super::heartbeat::stop(&mut current).await?;
-    publish_join(&current, store, proof).await
+    publish_join(&current.grant, store, proof).await
 }
 
-async fn publish_join(
-    current: &super::Entry,
+pub(in crate::orchestrator::preparation) async fn publish_join(
+    grant: &crabber_session::session_owner::preparation::PreparationGrant,
     store: &dyn Store,
     proof: crabber_session::session_owner::owned_scope::JoinedOwnedScope,
 ) -> Result<(), ()> {
     let request = proof.request().map_err(|_| ())?;
     let digest = proof.fingerprint().map_err(|_| ())?;
     let binding =
-        crabber_session::session_owner::preparation::PreparationResourceLink::reservation(
-            &current.grant,
-        )
-        .map_err(|_| ())?
-        .binding;
+        crabber_session::session_owner::preparation::PreparationResourceLink::reservation(grant)
+            .map_err(|_| ())?
+            .binding;
     // Reconcile the original receipt before any current-state check. A lost or
     // malformed ACK cannot turn successful physical cleanup into uncertainty.
     if let Some(receipt) = store
@@ -127,11 +125,7 @@ async fn publish_join(
         .then_some(())
         .ok_or(());
     }
-    let authority = current
-        .grant
-        .retained_resources_authority()
-        .cloned()
-        .ok_or(())?;
+    let authority = grant.retained_resources_authority().cloned().ok_or(())?;
     let outcome = store
         .join_owned_scope(proof, authority)
         .await

@@ -40,6 +40,8 @@ impl Orchestrator {
     }
     /// Retry only the actual joined task's exact original native commit. No
     /// factory, resolver, plan restoration or business work is invoked here.
+    /// First-two pending mains only expose their same-task completion notice;
+    /// this method never retries their native completion call.
     /// On success, retained output disposal requests cleanup; actual scope joins
     /// and their durable acknowledgement remain independently supervised.
     /// # Errors
@@ -56,6 +58,17 @@ impl Orchestrator {
         let mut held = entry.try_lock().map_err(|_| RuntimeError::SessionBusy)?;
         if held.descriptor != *descriptor || held.disposing {
             return Err(RuntimeError::PreparationRecoveryRequired);
+        }
+        if let Some(pending) = held.pending.clone() {
+            let operation = held
+                .joined
+                .as_ref()
+                .ok_or(RuntimeError::PreparationRecoveryRequired)?
+                .operation_kind();
+            drop(held);
+            return pending
+                .retry_progress(operation)
+                .map_err(|error| super::incomplete(descriptor.clone(), error));
         }
         let proof = held
             .joined
@@ -117,6 +130,15 @@ impl Orchestrator {
             .lookup(descriptor)
             .ok_or(RuntimeError::PreparationRecoveryRequired)?;
         let mut held = entry.try_lock().map_err(|_| RuntimeError::SessionBusy)?;
+        if held.descriptor != *descriptor {
+            return Err(RuntimeError::PreparationRecoveryRequired);
+        }
+        if let Some(pending) = held.pending.clone() {
+            held.disposing = true;
+            drop(held);
+            super::pending::cleanup_request(self.clone(), &pending, entry);
+            return Ok(());
+        }
         if held.descriptor != *descriptor || held.owned.is_none() {
             return Err(RuntimeError::PreparationRecoveryRequired);
         }

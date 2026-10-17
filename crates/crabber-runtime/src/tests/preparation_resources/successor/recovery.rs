@@ -29,13 +29,16 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
             assert_eq!(h.provider.calls.load(Ordering::SeqCst), 2);
             assert_eq!(h.fake.requests().len(), 0);
             assert!(h.gate.successor_request.lock().unwrap().is_none());
-            let progress = h
-                .runtime
-                .retry_preparation_completion(&descriptor)
-                .await
-                .unwrap();
-            assert_eq!(progress.replayed, point == 2);
-            h.finish_cleanup(&descriptor).await;
+            // The original task observed Unknown, so a public retry cannot
+            // issue another completion or reconstruct the lost fresh grant.
+            assert!(
+                h.runtime
+                    .retry_preparation_completion(&descriptor)
+                    .await
+                    .is_err()
+            );
+            assert!(h.gate.successor_request.lock().unwrap().is_none());
+            h.finish_cleanup_state(&descriptor, true).await;
             assert_eq!(h.fake.requests().len(), 0);
             clock.set(clock.now() + time::Duration::seconds(31));
             let gate = Arc::new(SettlementGate::default());
@@ -47,12 +50,35 @@ pub(super) async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
             let mut cold =
                 Harness::on_store_with_clock(wrapped, store.clone(), gate, Some(clock.clone()));
             cold.input = h.input.clone();
+            if point == 1 {
+                // No original completion ACK or native claim exists. A cold
+                // caller cannot upgrade the incomplete original root to a new
+                // source merely because the in-memory main has stopped.
+                let result = if expired {
+                    cold.runtime
+                        .resume_execution(&receipt.run_id)
+                        .await
+                        .map(|_| ())
+                } else {
+                    cold.runtime
+                        .recover_admission(cold.input.clone(), options())
+                        .await
+                        .map(|_| ())
+                };
+                assert!(result.is_err());
+                assert!(cold.gate.successor_request.lock().unwrap().is_none());
+                assert_eq!(cold.fake.requests().len(), 0);
+                continue;
+            }
             let handle = start(&cold, &receipt, expired).await;
             tokio::time::timeout(Duration::from_secs(5), handle.done())
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(captured(&cold).claim.issuance, 3);
+            assert_eq!(
+                captured(&cold).claim.issuance,
+                if point == 1 { 2 } else { 3 }
+            );
             cleanup(&cold, expired).await;
             assert_eq!(cold.fake.requests().len(), 1);
             assert_eq!(cold.provider.calls.load(Ordering::SeqCst), 1);

@@ -6,8 +6,9 @@ pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTa
 pub(crate) mod join_verify;
 pub use task::{
     BoundSuccessorControl, DriverMainContext, JoinedOwnedTask, OwnedTaskRegistration,
-    PendingSuccessorControl, PendingSuccessorError, PendingSuccessorObservation,
-    PendingSuccessorTask, PendingSuccessorTasks,
+    PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
+    PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
+    PendingSuccessorTasks,
 };
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};

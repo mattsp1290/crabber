@@ -15,6 +15,26 @@ pub use state::{BoundSuccessorControl, PendingSuccessorControl};
 use std::{future::Future, sync::Arc};
 use tokio::sync::oneshot;
 
+/// Exact metadata returned by replay in the same original task. It carries no
+/// fence, activation permit or replacement native capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSuccessorReplay {
+    Admission(crabber_core::AdmissionReceipt),
+    Expired(crate::session_owner::preparation::ExpiredRunReceipt),
+}
+/// Safe metadata from the original acknowledged completion, before registration.
+/// It contains no fence, grant or business dispatch permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSuccessorCompletion {
+    Fresh(PendingSuccessorReplay),
+    Replayed(PendingSuccessorReplay),
+}
+pub(super) enum TaskOutput<T> {
+    Business(T),
+    Replayed(PendingSuccessorReplay),
+    Stopped,
+}
+
 /// Administrative failure retained separately from actual physical disposition.
 #[derive(Debug, thiserror::Error)]
 pub enum PendingSuccessorError {
@@ -30,6 +50,7 @@ pub struct PendingSuccessorObservation<T> {
     main: Option<JoinedOwnedTask<T>>,
     disposition: OwnedMainDisposition,
     error: Option<PendingSuccessorError>,
+    replay: Option<PendingSuccessorReplay>,
     _capacity: tokio::sync::OwnedSemaphorePermit,
 }
 impl<T> PendingSuccessorObservation<T> {
@@ -40,6 +61,10 @@ impl<T> PendingSuccessorObservation<T> {
     #[must_use]
     pub fn disposition(&self) -> OwnedMainDisposition {
         self.disposition
+    }
+    #[must_use]
+    pub fn replayed(&self) -> Option<&PendingSuccessorReplay> {
+        self.replay.as_ref()
     }
     #[must_use]
     pub fn error(&self) -> Option<&PendingSuccessorError> {
@@ -97,7 +122,7 @@ impl<T: Send + 'static> PendingSuccessorTask<T> {
         let task = tokio::spawn(async move {
             let _seal = seal;
             if ready.await.is_err() || current.stopped() {
-                return Ok(None);
+                return Ok(TaskOutput::Stopped);
             }
             execute::run(
                 store, context, original, source, &current, ingress, business,
@@ -125,6 +150,19 @@ impl<T: Send + 'static> PendingSuccessorTask<T> {
             .ok_or(Error::InvalidTransition)?
             .send(())
             .map_err(|()| Error::UnknownStoreOutcome)
+    }
+    /// Move the original administrative error exactly once after actual observation.
+    /// This returns no source, grant or dispatch capability.
+    /// # Errors
+    /// Reports the same supervision errors as join.
+    pub async fn take_error(&mut self) -> Result<Option<PendingSuccessorError>, Error> {
+        self.join().await?;
+        Ok(self
+            .observed
+            .as_mut()
+            .ok_or(Error::UnknownStoreOutcome)?
+            .error
+            .take())
     }
     /// Observe the actual original task without dropping it on caller cancellation.
     /// # Errors

@@ -3,7 +3,8 @@ use super::*;
 async fn all(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
     contract(store.clone(), clock.clone()).await;
     retention::contract(store.clone(), clock.clone()).await;
-    recovery::contract(store, clock).await;
+    recovery::contract(store.clone(), clock.clone()).await;
+    pending::contract(store, clock).await;
 }
 #[cfg(feature = "sqlite")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]

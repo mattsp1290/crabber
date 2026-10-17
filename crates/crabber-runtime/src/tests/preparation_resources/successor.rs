@@ -1,5 +1,9 @@
 //! Actual preparation completion feeds only the corresponding successor gate.
 use super::*;
+#[path = "successor/callbacks.rs"]
+mod callbacks;
+#[path = "successor/pending.rs"]
+mod pending;
 #[cfg(feature = "sqlite")]
 #[path = "successor/process.rs"]
 mod process;
@@ -90,6 +94,9 @@ async fn state(h: &Harness) -> SessionOwnerState {
         .state
 }
 async fn cleanup(h: &Harness, expired: bool) {
+    cleanup_state(h, expired, false).await;
+}
+async fn cleanup_state(h: &Harness, expired: bool, uncertain: bool) {
     let request = captured(h);
     let key = if expired {
         PreparationKey::ExpiredRun {
@@ -109,7 +116,7 @@ async fn cleanup(h: &Harness, expired: bool) {
         .unwrap()
         .unwrap();
     assert_eq!(descriptor.join_id, request.claim.root_join_id);
-    h.finish_cleanup(&descriptor).await;
+    h.finish_cleanup_state(&descriptor, uncertain).await;
 }
 async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
     for expired in [false, true] {
@@ -166,7 +173,7 @@ async fn contract(store: Arc<dyn Store>, clock: Arc<ManualClock>) {
             if stage == 3 {
                 assert!(h.gate.driver_join_calls.load(Ordering::SeqCst) >= 2);
             }
-            cleanup(&h, expired).await;
+            cleanup_state(&h, expired, stage == 1).await;
             let effects = h.fake.requests().len();
             let _ = h.memory.register_successor_execution_driver(request).await;
             assert_eq!(h.fake.requests().len(), effects);

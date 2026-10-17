@@ -32,40 +32,71 @@ impl Orchestrator {
         captured
             .input_envelope
             .clone_from(&retained.binding.input_envelope);
-        let spec = PreparationSpec {
-            purpose: PreparationPurpose::ExistingRun {
-                run_id: retained.run.id.clone(),
-                work: ExistingWorkTarget::AdmissionRecovery {
-                    key: source.request().key.clone(),
-                    issuance: source.expected_issuance(),
-                },
-            },
-            key,
-            revision: Some(source.expected_revision()),
-            options: None,
-            intent: Some(source.fingerprint()?),
-            source: Some(PreparationSource::AdmissionRecovery(source.clone())),
-        };
+        let spec = Self::initial_recovery_spec(key, &retained.run.id, &source)?;
         let grant = self
             .begin_control_preparation(&mut captured, &session, spec)
             .await?;
-        let locator = crabber_session::session_owner::driver::NativeClaimLocator {
-            issuance: source
-                .expected_issuance()
-                .checked_add(1)
-                .ok_or(StoreError::AdmissionConflict)?,
-            root_join_id: grant.grant.reconciliation()?.join_id,
-        };
+        let locator = Self::initial_recovery_locator(&source, &grant)?;
+        let owned = crabber_session::session_owner::preparation::resource_contract(
+            &retained.binding.runtime_semantics,
+        )?
+        .is_some();
         let runtime = self.clone();
         let original_binding = retained.binding;
-        let ((plan, bound), completed) = self
-            .finish_durable_preparation(grant, move |scope| async move {
-                runtime
-                    .with_preparation_scope(scope)
-                    .restore_initial_recovery(captured, options, original_binding, source)
+        let restore = move |scope| async move {
+            runtime
+                .with_preparation_scope(scope)
+                .restore_initial_recovery(captured, options, original_binding, source)
+                .await
+        };
+        if owned {
+            let work_session = super::super::RunSession::from(&retained.session);
+            let worker_context = crabber_core::SessionContext::new(
+                retained.session.id.clone(),
+                retained.session.workspace_id.clone(),
+                retained.session.directory.clone(),
+            );
+            let outcome = Box::pin(self.with_context(context).finish_existing_preparation(
+                grant,
+                worker_context,
+                restore,
+                move |(plan, bound), runtime, cancellation, completed| async move {
+                    let PreparationCompletion::AdmissionRecovery(
+                        AdmissionRecoveryOutcome::Claimed(claimed),
+                    ) = completed
+                    else {
+                        return Err(StoreError::AdmissionConflict.into());
+                    };
+                    let request = Request::from_execution(&claimed.record.capsule);
+                    Box::pin(runtime.run(
+                        claimed.fence,
+                        work_session,
+                        super::super::InitialRequest {
+                            request,
+                            entry: InitialEntry::RecoveredKeyed(Some(locator)),
+                            bound: Some(bound),
+                        },
+                        plan,
+                        cancellation,
+                    ))
                     .await
-            })
+                },
+            ))
             .await?;
+            return match outcome {
+                super::pending::ExistingOutcome::Started {
+                    handle,
+                    receipt: Some(receipt),
+                } => Ok(Admission::Started { receipt, handle }),
+                super::pending::ExistingOutcome::Replayed(
+                    crabber_session::session_owner::owned_scope::PendingSuccessorReplay::Admission(
+                        receipt,
+                    ),
+                ) => Ok(Admission::Replayed(receipt)),
+                _ => Err(StoreError::AdmissionConflict.into()),
+            };
+        }
+        let ((plan, bound), completed) = self.finish_durable_preparation(grant, restore).await?;
         let PreparationCompletion::AdmissionRecovery(outcome) = completed else {
             return Err(StoreError::AdmissionConflict.into());
         };
@@ -82,6 +113,38 @@ impl Orchestrator {
                     Some(bound),
                 ),
             },
+        })
+    }
+    fn initial_recovery_locator(
+        source: &AdmissionRecoveryPreparation,
+        grant: &super::DurablePreparation,
+    ) -> Result<crabber_session::session_owner::driver::NativeClaimLocator, RuntimeError> {
+        Ok(crabber_session::session_owner::driver::NativeClaimLocator {
+            issuance: source
+                .expected_issuance()
+                .checked_add(1)
+                .ok_or(StoreError::AdmissionConflict)?,
+            root_join_id: grant.grant.reconciliation()?.join_id,
+        })
+    }
+    fn initial_recovery_spec(
+        key: PreparationKey,
+        run: &crabber_core::RunId,
+        source: &AdmissionRecoveryPreparation,
+    ) -> Result<PreparationSpec, RuntimeError> {
+        Ok(PreparationSpec {
+            purpose: PreparationPurpose::ExistingRun {
+                run_id: run.clone(),
+                work: ExistingWorkTarget::AdmissionRecovery {
+                    key: source.request().key.clone(),
+                    issuance: source.expected_issuance(),
+                },
+            },
+            key,
+            revision: Some(source.expected_revision()),
+            options: None,
+            intent: Some(source.fingerprint()?),
+            source: Some(PreparationSource::AdmissionRecovery(source.clone())),
         })
     }
     pub(in crate::orchestrator) fn require_successor_driver(
