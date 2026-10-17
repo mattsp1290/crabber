@@ -179,7 +179,7 @@ pub(crate) async fn run(store: &impl Store, clock: &ManualClock) {
         Origin::FrontendRecovery,
     ] {
         assert!(store.supports_successor_execution_driver_origin(origin));
-        assert!(!store.supports_pending_execution_driver_origin(origin));
+        assert!(store.supports_pending_execution_driver_origin(origin));
     }
     for (recovery, unkeyed) in [(false, false), (true, false), (false, true), (true, true)] {
         let f = fixture_input(store, clock, recovery, unkeyed).await;
