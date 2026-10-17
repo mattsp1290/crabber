@@ -270,3 +270,6 @@ pub(super) async fn verify_begin(
     }
     Ok(())
 }
+
+#[path = "expired/legacy.rs"]
+mod legacy;

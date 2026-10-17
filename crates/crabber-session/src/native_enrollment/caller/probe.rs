@@ -22,6 +22,7 @@ enum Identity {
     AdmissionBegin(RunId),
     AdmissionRecovery(RunId),
     ExpiredRecovery(RunId),
+    LegacyExpired(RunId),
 }
 impl Identity {
     fn matches(&self, fresh: &Fresh<'_>) -> bool {
@@ -32,6 +33,7 @@ impl Identity {
             (Self::AdmissionBegin(run), Fresh::AdmissionBegin(a)) => *run == a.run.id,
             (Self::AdmissionRecovery(run), Fresh::AdmissionRecovery(a)) => *run == a.previous.id,
             (Self::ExpiredRecovery(run), Fresh::ExpiredRecovery(a)) => *run == a.previous.id,
+            (Self::LegacyExpired(run), Fresh::LegacyExpired(a)) => *run == a.previous.id,
             (Self::LegacyTool(run, id), Fresh::LegacyTool(a)) => *run == a.run.id && id == a.id,
             _ => false,
         }
@@ -98,6 +100,18 @@ impl Probe {
             hits: Vec::new(),
         });
     }
+    pub(crate) fn arm_legacy_expired(&self, session: &SessionId, run: &RunId, refuse: bool) {
+        *self.0.lock().unwrap() = Some(Selection {
+            session: session.clone(),
+            operation: Identity::LegacyExpired(run.clone()),
+            refuse,
+            lose_ack: false,
+            hits: Vec::new(),
+        });
+    }
+    pub(crate) fn after_legacy_expired(&self, run: &RunId) -> bool {
+        self.after_commit(&Identity::LegacyExpired(run.clone()))
+    }
     pub(crate) fn after_admission_recovery(&self, run: &RunId) -> bool {
         self.after_commit(&Identity::AdmissionRecovery(run.clone()))
     }
@@ -144,6 +158,18 @@ impl Probe {
                 &i.result.prior_history,
             )),
 
+            Fresh::LegacyExpired(a) => {
+                crate::native_enrollment::caller::contract::snapshot_digest(&(
+                    "crabber.native.raw-legacy-expired.test.v1",
+                    a.id,
+                    a.owner,
+                    a.previous,
+                    a.updated,
+                    a.fence,
+                    &a.publication.issuer,
+                    &a.publication.source,
+                ))
+            }
             Fresh::ExpiredRecovery(a) => {
                 crate::native_enrollment::caller::contract::snapshot_digest(&(
                     "crabber.native.raw-expired-recovery.test.v1",

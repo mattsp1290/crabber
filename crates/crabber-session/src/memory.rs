@@ -1463,52 +1463,11 @@ impl Store for MemoryStore {
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        self.transact(|state| {
-            let scope = &state.runs.get(id).ok_or(StoreError::NotFound)?.session_id;
-            if state.session_owners.has_preparation(scope) {
-                return Err(StoreError::AdmissionRecoveryRequired);
-            }
-
-            let now = self.clock.now();
-            admission_journal::verify(state, id)?;
-            if state
-                .admission_executions
-                .get(id)
-                .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-            {
-                return Err(StoreError::AdmissionRecoveryRequired);
-            }
-            let scoped = state.runs.get(id).ok_or(StoreError::NotFound)?;
-            if tool_continuation::pending_in_session(state, &scoped.session_id)
-                .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
-            {
-                return Err(StoreError::Busy);
-            }
-            let previous = crate::native_parent::RunState::from_run(
-                state.runs.get(id).ok_or(StoreError::NotFound)?,
-            )
-            .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))?;
-            let run = state.runs.get_mut(id).ok_or(StoreError::NotFound)?;
-            if run.status.is_terminal() || run.lease_until > now {
-                return Err(StoreError::Conflict);
-            }
-            owner.clone_into(&mut run.owner);
-            run.claim_token = uuid::Uuid::new_v4().to_string();
-            run.lease_until = now + time::Duration::seconds(30);
-            run.updated_at = now;
-            crate::ensure_storable(run)?;
-            let fence = RunFence {
-                run_id: id.clone(),
-                claim_token: run.claim_token.clone(),
-            };
-            let updated = crate::native_parent::RunState::from_run(run).map_err(|_| {
-                StoreError::Validation("native run fence evidence unavailable".into())
-            })?;
-            native_parent::record_run_states(state, Some(&previous), updated).map_err(|_| {
-                StoreError::Validation("native run fence evidence unavailable".into())
-            })?;
-            Ok(fence)
-        })
+        self.claim_legacy_expired_with_proof(
+            id,
+            owner,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        )
     }
 
     async fn get_extension_state(

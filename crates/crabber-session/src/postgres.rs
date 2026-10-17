@@ -1885,42 +1885,14 @@ impl Store for PostgresStore {
     }
 
     async fn claim_expired_run(&self, id: &RunId, owner: &str) -> Result<RunFence, StoreError> {
-        let (mut tx, mut run) = self.run_transaction(id).await?;
-        session_owner::guard_native_claim(&mut tx, &run.session_id)
-            .await
-            .map_err(|error| match error {
-                crate::session_owner::SessionOwnerError::Busy => {
-                    StoreError::AdmissionRecoveryRequired
-                }
-                _ => StoreError::Validation("preparation evidence unavailable".into()),
-            })?;
-        if admission_execution::load_record(&mut tx, id)
-            .await?
-            .is_some_and(|r| r.state == crate::AdmissionExecutionState::Unstarted)
-        {
-            return Err(StoreError::AdmissionRecoveryRequired);
-        }
-        if tool_continuation::pending_in_session(&mut tx, &run.session_id)
-            .await
-            .map_err(|_| StoreError::Validation("invalid tool continuation evidence".into()))?
-        {
-            return Err(StoreError::AdmissionRecoveryRequired);
-        }
-        let now = self.clock.now();
-        if run.status.is_terminal() || run.lease_until > now {
-            return Err(StoreError::Conflict);
-        }
-        run.owner = owner.into();
-        run.claim_token = uuid::Uuid::new_v4().to_string();
-        run.lease_until = now + time::Duration::seconds(30);
-        run.updated_at = now;
-        save_run(&mut tx, &run).await?;
-        tx.commit().await.map_err(db)?;
-        Ok(RunFence {
-            run_id: id.clone(),
-            claim_token: run.claim_token,
-        })
+        Box::pin(self.claim_legacy_expired_with_proof(
+            id,
+            owner,
+            &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+        ))
+        .await
     }
+
     async fn get_extension_state(
         &self,
         extension_id: &str,

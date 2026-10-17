@@ -50,6 +50,12 @@ pub(crate) trait Harness: Store {
         request: crate::ClaimUnstartedAdmissionRequest,
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::ClaimedAdmission, crate::AdmissionExecutionError>;
+    async fn legacy_expired_with_proof(
+        &self,
+        id: &RunId,
+        owner: &str,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crabber_core::RunFence, crate::StoreError>;
     async fn retained(&self, session: &SessionId, run: &RunId, birth: bool) -> InputFingerprint;
 }
 
@@ -161,3 +167,6 @@ pub(crate) use initial::run as initials;
 #[path = "prepared_recovery_contract.rs"]
 mod prepared_recovery_contract;
 pub(crate) use prepared_recovery_contract::run as prepared_recoveries;
+#[path = "recovery/legacy_contract.rs"]
+mod legacy_expired;
+pub(crate) use legacy_expired::run as legacy_expired_claims;

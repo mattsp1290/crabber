@@ -18,6 +18,14 @@ impl Harness for crate::MemoryStore {
         self.queue_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    fn legacy_expired_with_proof(
+        &self,
+        id: &RunId,
+        owner: &str,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> impl std::future::Future<Output = Result<crabber_core::RunFence, crate::StoreError>> {
+        std::future::ready(self.claim_legacy_expired_with_proof(id, owner, proof))
+    }
     fn complete_with_proof(
         &self,
         joined: crate::session_owner::preparation::JoinedPreparation,
@@ -376,4 +384,14 @@ async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
     ));
     let store = crate::MemoryStore::with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
+}
+
+#[tokio::test]
+async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = crate::MemoryStore::with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
+        .await;
 }

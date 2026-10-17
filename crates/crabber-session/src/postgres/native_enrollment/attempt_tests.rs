@@ -19,6 +19,14 @@ impl Harness for crate::PostgresStore {
         self.queue_fault
             .store(stage, std::sync::atomic::Ordering::SeqCst);
     }
+    async fn legacy_expired_with_proof(
+        &self,
+        id: &RunId,
+        owner: &str,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<crabber_core::RunFence, crate::StoreError> {
+        Box::pin(self.claim_legacy_expired_with_proof(id, owner, proof)).await
+    }
     async fn complete_with_proof(
         &self,
         joined: crate::session_owner::preparation::JoinedPreparation,
@@ -313,4 +321,20 @@ async fn raw_prepared_recovery_original_sources_and_atomic_rollback() {
     ));
     let store = store.with_clock(clock.clone());
     Box::pin(crate::native_enrollment::caller::contract::prepared_recoveries(&store, &clock)).await;
+}
+
+#[tokio::test]
+async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+    let store = store.with_clock(clock.clone());
+    Box::pin(crate::native_enrollment::caller::contract::legacy_expired_claims(&store, &clock))
+        .await;
 }

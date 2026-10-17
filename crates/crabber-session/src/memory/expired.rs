@@ -242,3 +242,6 @@ mod recovery;
 #[cfg(test)]
 #[path = "expired/tests.rs"]
 mod tests;
+
+#[path = "expired/legacy.rs"]
+mod legacy;

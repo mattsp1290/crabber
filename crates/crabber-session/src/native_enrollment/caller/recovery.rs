@@ -190,3 +190,7 @@ fn replacement(
     }
     Ok(())
 }
+
+#[path = "recovery/legacy.rs"]
+mod legacy;
+pub(crate) use legacy::LegacyExpired;
