@@ -4,6 +4,8 @@ use crabber_extension::{Extension, Registrar, Registry, Scope};
 use std::time::Duration;
 #[path = "owned_tool_invocations/cancellation.rs"]
 mod cancellation;
+#[path = "owned_tool_invocations/guards.rs"]
+mod guards;
 #[path = "owned_tool_invocations/services.rs"]
 mod services;
 
@@ -140,6 +142,7 @@ async fn journey(store: Arc<dyn Store>) {
 }
 async fn contract(store: Arc<dyn Store>) {
     journey(store.clone()).await;
+    guards::contract(store.clone()).await;
     services::contract(store.clone()).await;
     cancellation::contract(store).await;
 }
