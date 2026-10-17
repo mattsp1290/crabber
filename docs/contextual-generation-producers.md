@@ -45,3 +45,23 @@ Host future construction, polling and disposal, and the actual constructor body
 retain the original initializer's owner context. A host or factory trying to
 close its own initialization receives `SelfClose` before mutating that owner;
 close from another caller still signals and observes the retained tasks.
+
+`work.observation()` retains that exact generation independently of acquisition
+waiters and the scheduling carrier. `request_close()` signals only the original
+slot; it refuses a replacement generation and detects initializer/mount
+self-close. `registered_graph_join(bound)` waits for the original initializer,
+host and constructor task observations, original factory cleanup, and actual owned
+mount joins. It does not initiate close. A timeout leaves those original joins
+retained for another observation.
+
+The opaque `JoinedContextualGenerationGraph` preserves the frozen constructor
+roster. Its dispositions distinguish members never entered from entered members
+whose cleanup joined, including mounted members with an actual owned mount join.
+A published initializer result, discarded operational record, or a subsequent
+successful generation cannot replace the original task evidence. Shutdown and
+cleanup still run concurrently to support nested dependencies.
+
+This aggregate proves only joins in the registered graph. Held extension/tool/
+service objects can retain resources after their invocation ingress closes.
+Neither this aggregate nor `FullySealedFactory` certifies final object disposal,
+physical generation closure, native ownership, or a whole-Run resource policy.

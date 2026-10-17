@@ -31,6 +31,7 @@ struct Host {
     entered: Notify,
     release: Arc<Semaphore>,
     generations: Mutex<Vec<ServiceGenerationDescriptor>>,
+    observations: Mutex<Vec<ContextualGenerationObservation>>,
 }
 impl Host {
     fn new(mode: Mode, held: bool) -> Arc<Self> {
@@ -40,6 +41,7 @@ impl Host {
             entered: Notify::new(),
             release: Arc::new(Semaphore::new(usize::from(!held))),
             generations: Mutex::new(vec![]),
+            observations: Mutex::new(vec![]),
         })
     }
 }
@@ -49,6 +51,7 @@ impl ContextualGenerationHost for Host {
         work: ContextualGenerationWork,
     ) -> BoxFuture<'static, ContextualGenerationAdmission> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.observations.lock().unwrap().push(work.observation());
         assert_eq!(work.members().len(), 1);
         assert_eq!(work.members()[0].identity().id, "local-producer-fixture");
         self.generations
@@ -112,7 +115,7 @@ struct Seen {
     cleanup_release: Semaphore,
     held_create: bool,
     held_cleanup: bool,
-    panic_create: bool,
+    panic_create: std::sync::atomic::AtomicBool,
     fail_cleanup: std::sync::atomic::AtomicBool,
 }
 impl Seen {
@@ -127,7 +130,7 @@ impl Seen {
             cleanup_release: Semaphore::new(0),
             held_create,
             held_cleanup,
-            panic_create,
+            panic_create: std::sync::atomic::AtomicBool::new(panic_create),
             fail_cleanup: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -175,7 +178,7 @@ impl ExtensionFactory for Factory {
             self.seen.create_release.acquire().await.unwrap().forget();
         }
         assert!(
-            !self.seen.panic_create,
+            !self.seen.panic_create.load(Ordering::SeqCst),
             "constructor panic after real cleanup registration"
         );
         Ok(Arc::new(Instance(self.seen.clone())))
@@ -451,3 +454,6 @@ mod self_close;
 
 #[path = "contextual_generation_producer/retry.rs"]
 mod retry;
+
+#[path = "contextual_generation_producer/graph.rs"]
+mod graph;

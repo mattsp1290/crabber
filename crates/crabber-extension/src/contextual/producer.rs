@@ -3,7 +3,12 @@ use super::{ContextualPlanProvider, FactoryScope, Owner, ServiceGenerationDescri
 use crate::{ComponentIdentity, ExtensionError};
 use crabber_core::InputFingerprint;
 use futures::future::BoxFuture;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+mod graph;
+pub use graph::{
+    ContextualGenerationMemberDisposition, ContextualGenerationObservation,
+    JoinedContextualGenerationGraph,
+};
 use tokio::{sync::Mutex as AsyncMutex, sync::oneshot, task::JoinHandle};
 
 const MAX_MEMBERS: usize = 64;
@@ -28,6 +33,7 @@ struct Source {
     generation: ServiceGenerationDescriptor,
     members: Vec<ContextualGenerationMember>,
     closing: tokio_util::sync::CancellationToken,
+    registration: Mutex<Weak<Registration>>,
 }
 
 /// Move-only local scheduling carrier. Only the producer can construct it. Its
@@ -38,6 +44,24 @@ pub struct ContextualGenerationWork {
     source: Arc<Source>,
 }
 impl ContextualGenerationWork {
+    /// Retain the original registered graph independently of this scheduling carrier.
+    /// This supplies no native authority or physical-object disposal proof.
+    /// # Panics
+    /// Panics if an internal registration lock is poisoned or the producer
+    /// violates its invariant of retaining the original work before host entry.
+    #[must_use]
+    pub fn observation(&self) -> ContextualGenerationObservation {
+        ContextualGenerationObservation {
+            registration: self
+                .source
+                .registration
+                .lock()
+                .unwrap()
+                .upgrade()
+                .expect("original registration retained before host call"),
+        }
+    }
+
     #[must_use]
     pub fn generation(&self) -> &ServiceGenerationDescriptor {
         &self.source.generation
@@ -94,6 +118,7 @@ struct Main {
 /// Both actual handles remain in the slot, outside the untrusted host future.
 pub(super) struct Registration {
     source: Arc<Source>,
+    graph: graph::Graph,
     gate: Mutex<Option<oneshot::Sender<()>>>,
     host: AsyncMutex<Option<JoinHandle<ContextualGenerationAdmission>>>,
     decision: Mutex<Option<Decision>>,
@@ -129,10 +154,12 @@ impl Registration {
                 })
             })
             .collect::<Result<Vec<_>, ExtensionError>>()?;
+        let graph = graph::Graph::new(&slot, members.len())?;
         let source = Arc::new(Source {
             generation,
             members,
             closing: tokio_util::sync::CancellationToken::default(),
+            registration: Mutex::new(Weak::new()),
         });
         let (gate, ready) = oneshot::channel();
         let original = source.clone();
@@ -150,6 +177,7 @@ impl Registration {
         }));
         let registration = Arc::new(Self {
             source: source.clone(),
+            graph,
             gate: Mutex::new(Some(gate)),
             host: AsyncMutex::new(None),
             decision: Mutex::new(None),
@@ -158,6 +186,7 @@ impl Registration {
                 observed: None,
             }),
         });
+        *source.registration.lock().unwrap() = Arc::downgrade(&registration);
         // A separate release gate prevents even future construction before both
         // actual handles are retained in their original registration.
         let (release, retained) = oneshot::channel();
@@ -173,6 +202,24 @@ impl Registration {
         *registration.host.try_lock().expect("unpublished host call") = Some(call);
         // The caller publishes Registration under the slot lock before release.
         Ok((registration, release))
+    }
+    pub(super) fn record_started(&self, index: usize, cleanup: Arc<super::cleanup::RecordCleanup>) {
+        self.graph.entered(index, cleanup);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
+    pub(super) fn record_mounted(&self, index: usize, mount: super::cleanup::RecordMount) {
+        self.graph.mounted(index, mount);
+        if self.source.closing.is_cancelled() {
+            self.graph.signal();
+        }
+    }
+    pub(super) fn record_failed(&self, index: usize) {
+        self.graph.failed(index);
+    }
+    pub(super) async fn clean_members(&self) -> Result<(), ExtensionError> {
+        self.graph.clean().await
     }
     pub(super) fn close(&self) {
         self.source.closing.cancel();

@@ -222,6 +222,9 @@ impl ContextualPlanProvider {
             mount: None,
             failed_cleanup: false,
         });
+        if let Some(producer) = &state.producer {
+            producer.record_started(index, cleanup.clone());
+        }
         Ok((index, cleanup))
     }
 
@@ -339,14 +342,22 @@ impl ContextualPlanProvider {
                 Ok(mount) => mount,
                 Err(error) => {
                     if matches!(error, ExtensionError::MountCleanupIncomplete { .. }) {
-                        slot.state.lock().unwrap().records[index].failed_cleanup = true;
+                        let mut state = slot.state.lock().unwrap();
+                        state.records[index].failed_cleanup = true;
+                        if let Some(producer) = &state.producer {
+                            producer.record_failed(index);
+                        }
                     }
                     Self::signal_records(slot);
                     Self::shutdown_factory(slot, index, &extension).await;
                     return Err(failed());
                 }
             };
-            slot.state.lock().unwrap().records[index].mount = Some(RecordMount::Owned(mount));
+            let mut state = slot.state.lock().unwrap();
+            if let Some(producer) = &state.producer {
+                producer.record_mounted(index, RecordMount::Owned(mount.clone()));
+            }
+            state.records[index].mount = Some(RecordMount::Owned(mount));
         }
         Ok(())
     }
@@ -358,10 +369,18 @@ impl ContextualPlanProvider {
         );
         if let Err(payload) = shutdown {
             crate::dispatch::discard_panic_payload(payload);
-            slot.state.lock().unwrap().records[index].failed_cleanup = true;
+            let mut state = slot.state.lock().unwrap();
+            state.records[index].failed_cleanup = true;
+            if let Some(producer) = &state.producer {
+                producer.record_failed(index);
+            }
         }
         if joined.is_err() {
-            slot.state.lock().unwrap().records[index].failed_cleanup = true;
+            let mut state = slot.state.lock().unwrap();
+            state.records[index].failed_cleanup = true;
+            if let Some(producer) = &state.producer {
+                producer.record_failed(index);
+            }
         }
     }
 }

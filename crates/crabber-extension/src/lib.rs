@@ -4,10 +4,11 @@ mod contextual;
 mod dispatch;
 pub use contextual::{
     ContextualGenerationAdmission, ContextualGenerationHost, ContextualGenerationMember,
+    ContextualGenerationMemberDisposition, ContextualGenerationObservation,
     ContextualGenerationWork, ContextualPlanProvider, ContextualServiceBorrowLease,
     ContextualServiceBorrowSource, ExtensionFactory, FactoryContext, FactoryScope,
-    ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
-    ServiceGenerationScope,
+    JoinedContextualGenerationGraph, ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor,
+    ServiceGenerationId, ServiceGenerationScope,
 };
 mod model_middleware;
 pub use model_middleware::*;

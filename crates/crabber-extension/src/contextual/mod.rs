@@ -12,7 +12,8 @@ mod profile;
 mod provider_service;
 pub use producer::{
     ContextualGenerationAdmission, ContextualGenerationHost, ContextualGenerationMember,
-    ContextualGenerationWork,
+    ContextualGenerationMemberDisposition, ContextualGenerationObservation,
+    ContextualGenerationWork, JoinedContextualGenerationGraph,
 };
 pub use provider_service::{ContextualServiceBorrowLease, ContextualServiceBorrowSource};
 mod selection;
@@ -148,6 +149,8 @@ struct SlotState {
 }
 #[derive(Default)]
 struct Initialization {
+    #[cfg(test)]
+    tail: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     result: Mutex<Option<Result<(), ExtensionError>>>,
     task: AsyncMutex<initialization::Task>,
 }

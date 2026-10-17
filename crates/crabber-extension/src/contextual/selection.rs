@@ -67,6 +67,13 @@ impl ContextualPlanProvider {
                     })
                     .await;
                 *ticket.result.lock().unwrap() = Some(result);
+                #[cfg(test)]
+                {
+                    let tail = ticket.tail.lock().unwrap().take();
+                    if let Some(tail) = tail {
+                        let _ = tail.await;
+                    }
+                }
             });
             initialization.retain(task);
             Some(initialization)

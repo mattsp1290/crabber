@@ -204,6 +204,13 @@ impl ContextualPlanProvider {
     }
 
     pub(super) async fn clean_records(&self, slot: &Slot) -> Result<(), ExtensionError> {
+        let producer = slot.state.lock().unwrap().producer.clone();
+        if let Some(producer) = producer {
+            producer.clean_members().await?;
+            producer.cleanup().await?;
+            slot.state.lock().unwrap().records.clear();
+            return Ok(());
+        }
         let records: Vec<_> = slot
             .state
             .lock()

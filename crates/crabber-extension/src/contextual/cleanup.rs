@@ -93,6 +93,12 @@ impl RecordMount {
             Self::Owned(mount) => mount.signal_close(),
         }
     }
+    pub(super) async fn join_owned(&self) -> Result<crate::OwnedMountJoin, ExtensionError> {
+        match self {
+            Self::Owned(mount) => mount.close_registered().await,
+            Self::Legacy(_) => Err(ExtensionError::ContextCleanupIncomplete),
+        }
+    }
     pub(super) async fn close(&self) -> Result<(), ExtensionError> {
         match self {
             Self::Legacy(mount) => mount.close().await,
