@@ -44,10 +44,10 @@ async fn replay_without_factory(
 async fn restart(h: &mut Harness, choice: &Choice, clock: Arc<ManualClock>) -> Orchestrator {
     let cold = fixture::runtime(h, clock);
     let warm = std::mem::replace(&mut h.runtime, cold);
-    assert!(
+    assert_eq!(
         h.runtime
-            .retained_preparation_status(&choice.original().session_id)
-            .is_empty()
+            .retained_preparation_status(&choice.original().session_id),
+        vec![]
     );
     replay_without_factory(h, choice).await;
     assert_eq!(h.fake.requests().len(), 1);
