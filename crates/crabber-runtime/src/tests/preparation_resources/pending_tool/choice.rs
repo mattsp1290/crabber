@@ -22,6 +22,16 @@ impl Choice {
             _ => &self.original().id,
         }
     }
+    pub(super) fn changed(&self) -> Self {
+        let mut changed = self.clone();
+        match &mut changed {
+            Self::Tool(v) => v.expected_revision = v.expected_revision.next().unwrap(),
+            Self::Frontend(v) => v.resolver.authority_claim.push_str(" changed"),
+            Self::RecoverTool(v) => v.expected_revision = v.expected_revision.next().unwrap(),
+            Self::RecoverFrontend(v) => v.original.resolver.authority_claim.push_str(" changed"),
+        }
+        changed
+    }
     pub(super) async fn invoke(
         &self,
         runtime: &Orchestrator,

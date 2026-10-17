@@ -25,6 +25,19 @@ async fn replay_without_factory(
     else {
         panic!("metadata only")
     };
+    let revision = h
+        .memory
+        .session_revision(&choice.original().session_id)
+        .await
+        .unwrap();
+    assert!(choice.changed().invoke(&h.runtime).await.is_err());
+    assert_eq!(
+        h.memory
+            .session_revision(&choice.original().session_id)
+            .await
+            .unwrap(),
+        revision
+    );
     assert_eq!(h.provider.calls.load(Ordering::SeqCst), count);
     receipt
 }
