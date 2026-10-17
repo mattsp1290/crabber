@@ -8,6 +8,7 @@ use crate::{ComponentIdentity, ExtensionError, FactoryContext, FactoryScope, Wor
 use futures::future::BoxFuture;
 pub(in crate::contextual) use install::install;
 pub(crate) use node::Node;
+pub(in crate::contextual) use registration::capture;
 use std::sync::Arc;
 /// Move-only original filesystem. Its implementation is never exposed directly.
 /// Projected facades retain explicit references; reads require an actual ambient

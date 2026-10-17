@@ -7,6 +7,7 @@ mod facade;
 mod registration;
 use crate::{ComponentIdentity, ExtensionError, FactoryContext, FactoryScope, ToolExecutor};
 pub(crate) use cell::Node;
+pub(in crate::contextual) use registration::capture;
 
 use crabber_core::ToolInfo;
 use futures::future::BoxFuture;

@@ -9,6 +9,7 @@ use crate::{ComponentIdentity, ExtensionError, FactoryContext, FactoryScope};
 use futures::future::BoxFuture;
 pub(in crate::contextual) use install::install;
 pub(crate) use node::Node;
+pub(in crate::contextual) use registration::capture;
 use std::sync::Arc;
 /// Unique original resolver producer. Each returned reader is installed before
 /// disposing the literal resolve future; original Arc-returning resolvers remain

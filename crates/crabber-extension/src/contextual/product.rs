@@ -1,9 +1,12 @@
 //! Non-exposing actual Box roots. Disposal is a component, not physical policy.
 mod cell;
 mod construction;
+mod mixed;
+pub use mixed::ContextualOwnedProductFactory;
 pub(crate) mod provider;
 mod reference;
 mod registration;
+pub(in crate::contextual) use registration::capture;
 pub(crate) mod subprocess;
 pub(crate) mod tool;
 pub(crate) mod tool_guard;

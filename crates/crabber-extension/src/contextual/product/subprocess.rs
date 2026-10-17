@@ -8,6 +8,7 @@ use crate::{ComponentIdentity, ExtensionError, FactoryContext, FactoryScope, Sub
 use futures::future::BoxFuture;
 pub(in crate::contextual) use install::install;
 pub(crate) use node::Node;
+pub(in crate::contextual) use registration::capture;
 use std::sync::Arc;
 /// Move-only original subprocess. Its implementation is never exposed directly.
 /// Projected facades retain explicit references; calls require an actual ambient

@@ -9,6 +9,7 @@ pub(crate) use cell::Node;
 use futures::future::BoxFuture;
 pub(in crate::contextual) use install::install;
 pub(in crate::contextual) use registration::ToolGuardRegistration;
+pub(in crate::contextual) use registration::capture;
 use std::sync::Arc;
 /// Move-only original `ToolGuard`. Its implementation is never exposed directly.
 /// Projected facades retain explicit references; checks require an actual ambient

@@ -4,6 +4,7 @@ mod install;
 mod node;
 pub(super) mod original;
 mod registration;
+pub(in crate::contextual) use registration::capture;
 mod stream;
 mod value;
 use crate::{ComponentIdentity, ExtensionError, FactoryContext, FactoryScope};
