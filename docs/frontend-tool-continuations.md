@@ -10,6 +10,8 @@ A fresh claim reserves a new native attempt and result-processing phases. The ru
 
 Use a stable operation ID for retries. Identical retries return a metadata receipt, including after the Agent closes its extensions; they never return execution authority. Changed results or resolver assertions under the same ID conflict. After a lost acknowledgement, look up or replay the original operation before choosing another action. `RecoverFrontend` can rotate an expired reservation only when result processing is positively unstarted. Started or uncertain work requires explicit host reconciliation and is never automatically repeated.
 
+For a frozen plan with a preparation resource contract, the runtime checks the complete original result set, resolver assertion and protected native source before acquiring resources. The same retained task completes the native claim or recovery, verifies its acknowledgement, activates a distinct successor driver and processes the results. An unknown or mismatched acknowledgement permits only metadata reconciliation or an eligible unstarted recovery; actual acquired-resource cleanup remains independently retained. This does not qualify whole-Run resource ownership.
+
 Reconciliation authenticates the original suspended plan without reading the mutable Run or current checkpoint. When a resumed model turn needs native approval, the protected handoff records the latest frontend claim or recovery receipt and its complete-result digest as its predecessor.
 
 Durable cancellation of a waiting batch publishes interrupted logical results without inventing external answers. Historical suspended native phases remain suspended and complete. Store reads and keyed replay remain usable without initializing extensions.

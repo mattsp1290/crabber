@@ -157,6 +157,14 @@ impl Orchestrator {
         validated: (super::RunSession, Option<super::Request>),
         control: ToolResumeControl,
     ) -> Result<ToolContinuation, RuntimeError> {
+        let binding = self.stored_binding(&run.session_id, &run.id).await?;
+        if crabber_session::session_owner::preparation::resource_contract(
+            &binding.runtime_semantics,
+        )?
+        .is_some()
+        {
+            return Box::pin(self.spawn_pending_tool(run, validated, binding, control)).await;
+        }
         let (sender, receiver) = oneshot::channel();
         let (dummy, _) = oneshot::channel();
         let control = ApprovalResume {
@@ -235,51 +243,58 @@ impl Orchestrator {
                 Ok(None)
             }
             ToolContinuationClaimOutcome::Applied { receipt, grant } => {
-                let (ToolContinuationOutcome::Claimed { attempt, .. }
-                | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
-                | ToolContinuationOutcome::FrontendClaimed { attempt, .. }
-                | ToolContinuationOutcome::FrontendReclaimedUnstarted { attempt, .. }) =
-                    &receipt.outcome
-                else {
-                    return Err(Error::UnknownStoreOutcome.into());
-                };
-                if grant.fence.run_id != run.id
-                    || grant.usage != run.usage
-                    || grant
-                        .phases
-                        .iter()
-                        .any(|phase| phase.target.attempt != attempt.target)
-                    || grant
-                        .calls
-                        .iter()
-                        .any(|call| call.target.attempt != attempt.target)
-                    || grant
-                        .frontend
-                        .iter()
-                        .any(|phase| phase.target.attempt != attempt.target)
-                {
-                    return Err(Error::UnknownStoreOutcome.into());
-                }
-                let authority = ResumeAuthority {
-                    fence: grant.fence,
-                    native_unstarted: false,
-                    granted: Some(super::attempt::OwnedAttempt {
-                        target: attempt.target.clone(),
-                        authority: grant.authority,
-                    }),
-                    approved: Some(ApprovedCalls {
-                        calls: grant.calls,
-                        turn: grant.source_turn_id,
-                        usage: grant.usage,
-                        turns_used: usize::try_from(grant.turns_used)
-                            .map_err(|_| Error::UnknownStoreOutcome)?,
-                    }),
-                    tool_phases: grant.phases,
-                    frontend_phases: grant.frontend,
-                };
+                let authority = prepared_tool_authority(run, &receipt, *grant)?;
                 let _ = sender.send(ToolClaimed::Fresh(receipt));
                 Ok(Some(authority))
             }
         }
     }
+}
+
+pub(super) fn prepared_tool_authority(
+    run: &Run,
+    receipt: &ToolContinuationReceipt,
+    grant: crabber_session::ToolContinuationGrant,
+) -> Result<ResumeAuthority, RuntimeError> {
+    let (ToolContinuationOutcome::Claimed { attempt, .. }
+    | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
+    | ToolContinuationOutcome::FrontendClaimed { attempt, .. }
+    | ToolContinuationOutcome::FrontendReclaimedUnstarted { attempt, .. }) = &receipt.outcome
+    else {
+        return Err(Error::UnknownStoreOutcome.into());
+    };
+    if grant.fence.run_id != run.id
+        || grant.usage != run.usage
+        || grant
+            .phases
+            .iter()
+            .any(|phase| phase.target.attempt != attempt.target)
+        || grant
+            .calls
+            .iter()
+            .any(|call| call.target.attempt != attempt.target)
+        || grant
+            .frontend
+            .iter()
+            .any(|phase| phase.target.attempt != attempt.target)
+    {
+        return Err(Error::UnknownStoreOutcome.into());
+    }
+    Ok(ResumeAuthority {
+        fence: grant.fence,
+        native_unstarted: false,
+        granted: Some(super::attempt::OwnedAttempt {
+            target: attempt.target.clone(),
+            authority: grant.authority,
+        }),
+        approved: Some(ApprovedCalls {
+            calls: grant.calls,
+            turn: grant.source_turn_id,
+            usage: grant.usage,
+            turns_used: usize::try_from(grant.turns_used)
+                .map_err(|_| Error::UnknownStoreOutcome)?,
+        }),
+        tool_phases: grant.phases,
+        frontend_phases: grant.frontend,
+    })
 }

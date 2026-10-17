@@ -9,6 +9,8 @@ mod faults;
 pub(super) mod heartbeat;
 #[path = "preparation_resources/pending_approval.rs"]
 mod pending_approval;
+#[path = "preparation_resources/pending_tool.rs"]
+mod pending_tool;
 #[path = "preparation_resources/provider_binding.rs"]
 mod provider_binding;
 #[path = "preparation_resources/recovery.rs"]

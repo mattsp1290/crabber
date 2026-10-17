@@ -2014,6 +2014,31 @@ impl Store for DelayedTerminalStore {
         }
         Ok(metadata)
     }
+    async fn inspect_pending_tool_preparation(
+        &self,
+        request: crabber_session::session_owner::preparation::InspectPendingToolPreparation,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PendingToolPreparationMetadata,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        if self.gate.preparation_fault.load(Ordering::SeqCst) == 6 {
+            return Err(crabber_session::session_owner::SessionOwnerError::Unsupported);
+        }
+        let mut metadata = self.inner.inspect_pending_tool_preparation(request).await?;
+        if self.gate.preparation_fault.load(Ordering::SeqCst) == 5 {
+            metadata.source_digest = crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
+        }
+        Ok(metadata)
+    }
+    async fn inspect_prepared_tool_driver(
+        &self,
+        request: crabber_session::session_owner::preparation::InspectPreparedToolDriver,
+    ) -> Result<
+        crabber_session::session_owner::preparation::PreparedToolDriverMetadata,
+        crabber_session::session_owner::SessionOwnerError,
+    > {
+        self.inner.inspect_prepared_tool_driver(request).await
+    }
     async fn inspect_prepared_approval_driver(
         &self,
         request: crabber_session::session_owner::preparation::InspectPreparedApprovalDriver,
@@ -2053,17 +2078,21 @@ impl Store for DelayedTerminalStore {
             );
         }
         if matches!(fault, 4 | 7) {
-            let crabber_session::session_owner::preparation::PreparationCompletion::Approval(
-                crabber_session::ApprovalClaimOutcome::Applied { receipt, grant },
-            ) = &mut completed.completion
-            else {
-                panic!("actual approval completion")
+            use crabber_session::session_owner::preparation::PreparationCompletion as Completed;
+            let (digest, fence) = match &mut completed.completion {
+                Completed::Approval(crabber_session::ApprovalClaimOutcome::Applied {
+                    receipt,
+                    grant,
+                }) => (&mut receipt.semantic_digest, &mut grant.fence),
+                Completed::ToolContinuation(
+                    crabber_session::ToolContinuationClaimOutcome::Applied { receipt, grant },
+                ) => (&mut receipt.semantic_digest, &mut grant.fence),
+                _ => panic!("actual continuation completion"),
             };
             if fault == 4 {
-                receipt.semantic_digest =
-                    crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
+                *digest = crabber_core::InputFingerprint::new("f".repeat(64)).unwrap();
             } else {
-                grant.fence.claim_token = "wrong actual completion fence".into();
+                fence.claim_token = "wrong actual completion fence".into();
             }
         }
         Ok(completed)
@@ -2699,6 +2728,42 @@ impl Store for DelayedTerminalStore {
         self.inner.get_session_owner(session, id).await
     }
 
+    fn supports_frontend_tools(&self) -> bool {
+        self.inner.supports_frontend_tools()
+    }
+    async fn frontend_call_origin(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        call: &ToolCallId,
+    ) -> Result<Option<crabber_session::FrontendCallOrigin>, crabber_session::ToolContinuationError>
+    {
+        self.inner.frontend_call_origin(session, run, call).await
+    }
+    async fn lookup_frontend_staging(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<
+        Option<crabber_session::FrontendStagingReceipt>,
+        crabber_session::ToolContinuationError,
+    > {
+        self.inner.lookup_frontend_staging(session, id).await
+    }
+    async fn claim_frontend_continuation(
+        &self,
+        claim: crabber_session::FrontendContinuationClaim,
+    ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
+    {
+        self.inner.claim_frontend_continuation(claim).await
+    }
+    async fn recover_frontend_continuation(
+        &self,
+        request: crabber_session::FrontendContinuationRecovery,
+    ) -> Result<crabber_session::ToolContinuationClaimOutcome, crabber_session::ToolContinuationError>
+    {
+        self.inner.recover_frontend_continuation(request).await
+    }
     fn supports_tool_continuations(&self) -> bool {
         true
     }
@@ -3085,6 +3150,14 @@ impl ExecutionStore for DelayedTerminalExecution {
         result
     }
 
+    async fn stage_frontend_call(
+        &self,
+        request: crabber_session::FrontendCallStaging,
+        authority: crabber_session::AttemptAuthority,
+    ) -> Result<crabber_session::FrontendStagingReceipt, crabber_session::ToolContinuationError>
+    {
+        self.inner.stage_frontend_call(request, authority).await
+    }
     async fn suspend_tool_continuation(
         &self,
         request: crabber_session::ToolContinuationSuspension,

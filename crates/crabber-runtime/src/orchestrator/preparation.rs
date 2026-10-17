@@ -387,3 +387,6 @@ impl DurablePreparation {
 
 #[path = "preparation/pending_approval.rs"]
 pub(in crate::orchestrator) mod pending_approval;
+
+#[path = "preparation/pending_tool.rs"]
+pub(in crate::orchestrator) mod pending_tool;
