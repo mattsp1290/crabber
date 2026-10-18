@@ -286,6 +286,13 @@ impl Ledger {
     pub(crate) fn origin(&self, key: &SourceKey) -> Option<&Origin> {
         self.inner.origins.get(key).map(AsRef::as_ref)
     }
+    /// Complete original rows with both stored and embedded routing retained.
+    pub(crate) fn origin_entries(&self) -> impl Iterator<Item = (&SourceKey, &Origin)> {
+        self.inner
+            .origins
+            .iter()
+            .map(|(key, origin)| (key, origin.as_ref()))
+    }
     pub(crate) fn keys(&self) -> impl Iterator<Item = &SourceKey> {
         self.inner
             .origins
@@ -463,5 +470,17 @@ impl Ledger {
                 .get(key)
                 .is_some_and(|r| Arc::ptr_eq(value, r))
         })
+    }
+}
+
+#[cfg(test)]
+impl Ledger {
+    pub(crate) fn test_erase_consumer_origin(&mut self, key: &SourceKey) {
+        Arc::make_mut(&mut self.inner).origins.remove(key);
+    }
+    pub(crate) fn test_replace_consumer_origin(&mut self, key: &SourceKey, actual: &Origin) {
+        Arc::make_mut(&mut self.inner)
+            .origins
+            .insert(key.clone(), Arc::new(actual.clone()));
     }
 }

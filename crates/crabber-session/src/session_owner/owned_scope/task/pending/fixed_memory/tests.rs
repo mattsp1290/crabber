@@ -72,7 +72,9 @@ async fn fixed_host_runs_both_admission_kinds_and_shared_root_sessions() {
             revision
         );
         task.start().unwrap();
-        let observed = tokio::time::timeout(Duration::from_secs(5), task.join())
+        // Bound the whole 11/12-call journey by its 30s preparation lease;
+        // each native call keeps its independent production 5s bound.
+        let observed = tokio::time::timeout(Duration::from_secs(30), task.join())
             .await
             .unwrap()
             .unwrap();
@@ -105,27 +107,27 @@ async fn fixed_host_runs_both_admission_kinds_and_shared_root_sessions() {
             crate::deletion::history::Fact::Authenticated
         );
         assert!(report.complete());
-        let revision = host.store().session_revision(&session).await.unwrap();
-        assert!(matches!(
-            host.store()
-                .delete_session(crate::DeleteSession {
-                    id: ControlId::new(),
-                    session_id: session.clone(),
-                    expected_revision: revision,
-                })
-                .await
-                .unwrap(),
-            crate::DeletionOutcome::Blocked(crate::DeletionBlocker::OwnershipUnknown)
-        ));
-        assert_eq!(
-            host.store().session_revision(&session).await.unwrap(),
-            revision
-        );
         let messages = host.store().list_all_messages(&session).await.unwrap();
         assert!(
             messages
                 .iter()
                 .any(|message| message.role == crabber_core::Role::Assistant)
+        );
+        let revision = host.store().session_revision(&session).await.unwrap();
+        let request = crate::DeleteSession {
+            id: ControlId::new(),
+            session_id: session.clone(),
+            expected_revision: revision,
+        };
+        let outcome = host.store().delete_session(request.clone()).await.unwrap();
+        let crate::DeletionOutcome::Applied(receipt) = outcome else {
+            panic!("completed fixed source must delete");
+        };
+        assert_eq!(receipt.final_revision, revision.next().unwrap());
+        assert!(host.store().get_session(&session).await.unwrap().is_none());
+        assert_eq!(
+            host.store().delete_session(request).await.unwrap(),
+            crate::DeletionOutcome::Replayed(receipt)
         );
     }
 }

@@ -1,10 +1,12 @@
 //! Actual fixed original and child retirement on the enclosing State/Proof.
+use super::FixedClosedSource;
 use crate::memory::{MemoryStore, State};
 use crate::native_enrollment::initial_consumer::{
     self as domain, OriginalPolicy, PolicyTerminal, Selection,
 };
 use crate::native_enrollment::pending_initial::Correlation;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
+use crate::session_owner::coverage::FixedInitialOwnerRole;
 use crate::session_owner::{
     SessionOwnerAuthority, SessionOwnerError as Error,
     audit::Audit,
@@ -246,21 +248,29 @@ fn verify_join(state: &State, saved: &Audit, proof: &mut Proof) -> Result<(), Fa
     Ok(())
 }
 impl MemoryStore {
+    #[cfg(test)]
     pub(in crate::memory) fn classify_initial_resource_policy(
         state: &State,
         run: &crabber_core::Run,
         proof: &mut Proof,
     ) -> Result<bool, Failure> {
-        let result = read_resource_policy(state, run, proof);
+        Self::fixed_closed_initial_source(state, run, proof).map(|source| source.is_some())
+    }
+    pub(in crate::memory) fn fixed_closed_initial_source<'state>(
+        state: &'state State,
+        run: &'state crabber_core::Run,
+        proof: &mut Proof,
+    ) -> Result<Option<FixedClosedSource<'state>>, Failure> {
+        let result = read_fixed_source(state, run, proof);
         proof.charge(0)?;
         result
     }
 }
-fn read_resource_policy(
-    state: &State,
-    run: &crabber_core::Run,
+fn read_fixed_source<'state>(
+    state: &'state State,
+    run: &'state crabber_core::Run,
     proof: &mut Proof,
-) -> Result<bool, Failure> {
+) -> Result<Option<FixedClosedSource<'state>>, Failure> {
     let assignment = state
         .pending_initial
         .assignment_for_run(&run.session_id, &run.id, proof)?
@@ -270,7 +280,7 @@ fn read_resource_policy(
     // State. A small independent original comparison lets generic sources
     // remain Unknown without loading their full private results again.
     if fixed_original(state, expected, proof)?.is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     let view = super::selected(state, expected, proof)?;
     let birth = state
@@ -281,10 +291,10 @@ fn read_resource_policy(
     if domain::classify_closed(&view, birth, run, proof)?
         != domain::InitialConsumption::CompletedSource
     {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(original) = view.origin.and_then(domain::Origin::original_policy) else {
-        return Ok(false);
+        return Ok(None);
     };
     let binding =
         crate::memory::execution_binding::read_with_proof(state, &run.session_id, &run.id, proof)
@@ -292,7 +302,7 @@ fn read_resource_policy(
             .ok_or_else(|| unknown("fixed policy original binding"))?;
     // Recompute the original identity from the authentic root/child sources,
     // not the policy's digest or current mutable projection.
-    let (_, _, _, audits) =
+    let (_, _, witness, audits) =
         crate::memory::session_owner::drivers::sources_read(state, &run.id, proof)
             .map_err(ReadError::public)?;
     let preparation = audits
@@ -319,7 +329,91 @@ fn read_resource_policy(
         return Err(unknown("fixed policy original source key"));
     }
     verify_retained(state, &view, proof)?;
-    Ok(true)
+    // The root is retired by the real Complete publisher. Child and Driver
+    // retirement cannot imply that its current projection still matches Join.
+    verify_join(state, audits.join, proof)?;
+    let roles = fixed_roles(state, &view, &audits, proof)?;
+    Ok(Some(FixedClosedSource {
+        run,
+        birth,
+        consumer: view,
+        witness,
+        roles,
+    }))
+}
+
+fn fixed_roles<'state>(
+    state: &'state State,
+    view: &Selection<'state>,
+    audits: &crate::session_owner::preparation::admission::SourceAudits<'state>,
+    proof: &mut Proof,
+) -> Result<[FixedInitialOwnerRole<'state>; 3], Failure> {
+    let policy = view
+        .origin
+        .and_then(domain::Origin::original_policy)
+        .ok_or_else(|| unknown("fixed source policy original"))?;
+    let activation = &policy.preparation_activation;
+    let actual = |id| {
+        state
+            .session_owners
+            .source_audit(activation.session_id(), id)
+            .ok_or_else(|| unknown("fixed source role original"))
+    };
+    let child_activation = actual(&activation.id)?;
+    let saved_child = view
+        .close
+        .and_then(|c| c.policy_terminal.as_ref())
+        .ok_or_else(|| unknown("fixed source child terminal"))?
+        .preparation_join
+        .as_ref();
+    let child_join = actual(&saved_child.receipt.operation_id)?;
+    let registered = view
+        .results
+        .iter()
+        .copied()
+        .find_map(|r| match &r.original {
+            domain::Original::Register(value) => Some(value.as_ref()),
+            _ => None,
+        })
+        .ok_or_else(|| unknown("fixed source Driver Register"))?;
+    let activated = view
+        .results
+        .iter()
+        .copied()
+        .find_map(|r| match &r.original {
+            domain::Original::Activate(value) => Some(value.as_ref()),
+            _ => None,
+        })
+        .ok_or_else(|| unknown("fixed source Driver Activate"))?;
+    let saved_driver = view
+        .close
+        .and_then(|c| c.retirement.audit())
+        .ok_or_else(|| unknown("fixed source Driver Join"))?;
+    let driver_join = actual(&saved_driver.receipt.operation_id)?;
+    // New stack metadata has no owned payload. All actual leaves were measured
+    // by selected/native verification, and the defining Ledger reauthenticates
+    // them under this same Proof before using the borrowed roles.
+    proof.measure(child_activation)?;
+    Ok([
+        FixedInitialOwnerRole {
+            reserve: audits.reserve,
+            begin: audits.begin,
+            activation: None,
+            joined: audits.join,
+        },
+        FixedInitialOwnerRole {
+            reserve: audits.child_reserve,
+            begin: audits.child_begin,
+            activation: Some(child_activation),
+            joined: child_join,
+        },
+        FixedInitialOwnerRole {
+            reserve: &registered.reserve,
+            begin: &registered.begin,
+            activation: Some(&activated.audit),
+            joined: driver_join,
+        },
+    ])
 }
 
 pub(in crate::memory) fn verify_unopened_retirement(

@@ -10,6 +10,8 @@ native_pending_initial_items! {
     #[path="ledger/initial_retirement.rs"]
     mod initial_retirement;
 }
+#[path = "ledger/fixed_initial_coverage.rs"]
+mod fixed_initial_coverage;
 #[path = "ledger/public.rs"]
 mod public;
 #[path = "ledger/publications.rs"]

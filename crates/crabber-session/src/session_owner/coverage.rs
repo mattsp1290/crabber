@@ -6,8 +6,18 @@ use crate::session_owner::{SessionOwnerKind, SessionOwnerState, owned_scope, rec
 #[path = "coverage/contract.rs"]
 pub(crate) mod contract;
 
+/// Borrowed historical metadata from one fully checked fixed source. This does
+/// not grant authority; the defining `Ledger` independently selects every source.
+pub(crate) struct FixedInitialOwnerRole<'a> {
+    pub reserve: &'a crate::session_owner::audit::Audit,
+    pub begin: &'a crate::session_owner::audit::Audit,
+    pub activation: Option<&'a crate::session_owner::audit::Audit>,
+    pub joined: &'a crate::session_owner::audit::Audit,
+}
+
 pub(crate) struct CheckedOwners {
     pub live: Vec<PublicRegisteredOwner>,
+    #[cfg(any(feature = "postgres", feature = "sqlite", test))]
     pub unclassified: bool,
 }
 

@@ -2,10 +2,13 @@
 use super::State;
 #[path = "initial_consumer/classification.rs"]
 mod classification;
+#[path = "initial_consumer/fixed_source.rs"]
+mod fixed_source;
 use crate::native_enrollment::initial_consumer::{Correlation, RecordDelta, Selection};
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
-pub(in crate::memory) use classification::{classify_run, resource_policy};
+pub(in crate::memory) use classification::classify_run;
 use crabber_core::SessionId;
+pub(in crate::memory) use fixed_source::FixedClosedSource;
 
 pub(super) fn routes(
     state: &State,
@@ -185,6 +188,12 @@ pub(super) fn refuse_raw_activation(
     Ok(())
 }
 native_pending_initial_items! {
+    #[cfg(test)]
+    #[path="initial_consumer/fixed_pending_history_tests.rs"]
+    mod fixed_pending_history_tests;
+    #[cfg(test)]
+    #[path="initial_consumer/fixed_owner_history_tests.rs"]
+    mod fixed_owner_history_tests;
     #[cfg(test)]
     #[path="initial_consumer/policy_budget_tests.rs"]
     mod policy_budget_tests;

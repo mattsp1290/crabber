@@ -8,6 +8,13 @@ use crate::public_session::{
 };
 use crate::{DeletionBlocker as Blocker, DeletionError as Error, PublicSessionLimit};
 use crabber_core::{SessionId, SessionRevision};
+#[path = "readiness/fixed.rs"]
+mod fixed;
+native_pending_initial_items! {
+    #[cfg(test)]
+    #[path = "readiness/fixed_initial_readiness.rs"]
+    pub(super) mod fixed_initial_readiness;
+}
 
 pub(super) fn read(
     state: &State,
@@ -48,11 +55,10 @@ fn verify(
     {
         return Err(unknown("coverage scope/revision"));
     }
-    let pending_initial_retained = super::super::pending_initial::routes(state, session, proof)?;
+    super::super::pending_initial::routes(state, session, proof)?;
     let legacy_native_scope = !state.native_session_protocols.contains(session);
     proof.measure(&legacy_native_scope)?;
     super::super::native_parent::source_protocol::routes(state, session, proof)?;
-    let mut has_runs = false;
     for (id, run) in &state.runs {
         if &run.session_id != session {
             continue;
@@ -64,11 +70,10 @@ fn verify(
         if !run.status.is_terminal() {
             return Ok(Some(Blocker::Runtime));
         }
-        has_runs = true;
         super::super::native_parent::source_protocol::retained_current(state, session, id, proof)?;
     }
     super::owned::verify(state, session, proof)?;
-    let unproven_run_sources = super::run_history::verify(state, session, proof)?;
+    let checked = super::run_history::checked(state, session, proof)?;
     if native_attempts(state, session, proof)? {
         return Ok(Some(Blocker::Attempt));
     }
@@ -113,17 +118,11 @@ fn verify(
         return Ok(Some(Blocker::SessionOwner));
     }
     super::imported::verify(state, session, proof)?;
-    // A creation/fork marker does not cover later bare native admissions or
-    // generic Joined owner history. Sealed native preparation associations and
-    // typed positive resource/dispatch join proofs are still required.
+    let uncovered_fixed = fixed::uncovered(state, session, &checked, proof)?;
+    // Old owner classifiers do not exempt unrelated history from the exact
+    // fixed inventory. The separate defining fold checks every generation.
     Ok(
-        if legacy_native_scope
-            || pending_initial_retained
-            || has_runs
-            || unproven_run_sources
-            || unproven_queue
-            || owners.unclassified
-        {
+        if legacy_native_scope || checked.unproven() || unproven_queue || uncovered_fixed {
             Some(Blocker::OwnershipUnknown)
         } else {
             None
@@ -268,4 +267,22 @@ fn unproven_queue(state: &State, session: &SessionId, proof: &mut Proof) -> Resu
             .map_err(crate::public_session::v2::proof::ReadError::public)?;
     }
     Ok(unproven_queue)
+}
+
+#[cfg(test)]
+impl super::super::MemoryStore {
+    pub(crate) fn fixed_initial_readiness_with_proof(
+        &self,
+        session: &SessionId,
+        proof: &mut Proof,
+    ) -> Result<Option<Blocker>, Error> {
+        let state = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
+        match super::coverage(&state, session)? {
+            crate::deletion::coverage::CoverageRead::Verified(coverage) => {
+                read(&state, &coverage, proof)
+            }
+            crate::deletion::coverage::CoverageRead::Unknown => Ok(Some(Blocker::OwnershipUnknown)),
+            crate::deletion::coverage::CoverageRead::Limited => Ok(Some(Blocker::ProofLimit)),
+        }
+    }
 }

@@ -13,22 +13,81 @@ use crate::deletion::history::RunHistoryReport;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError, unknown};
 use crabber_core::{EventKind, Run, SessionId};
 
-/// True means at least one initial/terminal source package is unproven.
-/// Even false supplies no physical resource or noninitial claim coverage.
+/// Private read result: the views borrow only the still-held original State.
+pub(super) struct CheckedRuns<'state> {
+    unproven: bool,
+    uncovered_runs: bool,
+    sources: Vec<crate::memory::initial_consumer::FixedClosedSource<'state>>,
+}
+impl<'state> CheckedRuns<'state> {
+    pub(super) fn unproven(&self) -> bool {
+        self.unproven
+    }
+    pub(super) fn uncovered_runs(&self) -> bool {
+        self.uncovered_runs
+    }
+    pub(super) fn sources(&self) -> &[crate::memory::initial_consumer::FixedClosedSource<'state>] {
+        &self.sources
+    }
+}
+struct CheckedReport<'state> {
+    report: RunHistoryReport,
+    fixed: Option<crate::memory::initial_consumer::FixedClosedSource<'state>>,
+}
+/// Complete reports and exact original packages are produced in one fold.
+pub(super) fn checked<'state>(
+    state: &'state State,
+    session: &SessionId,
+    proof: &mut Proof,
+) -> Result<CheckedRuns<'state>, Failure> {
+    let count = state
+        .runs
+        .values()
+        .filter(|run| &run.session_id == session)
+        .try_fold(0usize, |count, _| {
+            count.checked_add(1).ok_or_else(source_limit)
+        })?;
+    let bytes = count
+        .checked_mul(std::mem::size_of::<
+            crate::memory::initial_consumer::FixedClosedSource<'_>,
+        >())
+        .ok_or_else(source_limit)?;
+    proof.charge(bytes)?;
+    let mut result = CheckedRuns {
+        unproven: false,
+        uncovered_runs: false,
+        sources: Vec::with_capacity(count),
+    };
+    for run in state.runs.values().filter(|run| &run.session_id == session) {
+        let checked = checked_report(state, run, proof)?;
+        result.unproven |= !checked.report.complete();
+        result.uncovered_runs |= checked.fixed.is_none();
+        if let Some(source) = checked.fixed {
+            result.sources.push(source);
+        }
+    }
+    Ok(result)
+}
+#[cfg(test)]
 pub(super) fn verify(
     state: &State,
     session: &SessionId,
     proof: &mut Proof,
 ) -> Result<bool, Failure> {
-    // owned::verify has authenticated all witness/Init/Begin membership before
-    // these validators canonicalize the retained original input.
-    let mut unproven = false;
-    for run in state.runs.values().filter(|run| &run.session_id == session) {
-        unproven |= !report(state, run, proof)?.complete();
-    }
-    Ok(unproven)
+    checked(state, session, proof).map(|runs| runs.unproven())
 }
+fn source_limit() -> Failure {
+    Failure::Limited(crate::PublicSessionLimitV2::ProofBytes)
+}
+#[cfg(test)]
 fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
+    checked_report(state, run, proof).map(|checked| checked.report)
+}
+fn checked_report<'state>(
+    state: &'state State,
+    run: &'state Run,
+    proof: &mut Proof,
+) -> Result<CheckedReport<'state>, Failure> {
     let protected = super::super::native_parent::source_protocol::history(
         state,
         &run.session_id,
@@ -52,8 +111,31 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
         state, run, proof,
     )?)
     .with_closed_initial_native_main();
-    let policy = crate::memory::initial_consumer::resource_policy(state, run, report, proof)?;
-    Ok(report.with_fixed_memory_resource_policy(policy))
+    let fixed = if has_fixed_prerequisites(report) {
+        super::super::MemoryStore::fixed_closed_initial_source(state, run, proof)?
+    } else {
+        None
+    };
+    proof.charge(0)?;
+    let report = report.with_fixed_memory_resource_policy(fixed.is_some());
+    Ok(CheckedReport {
+        report,
+        fixed: if report.complete() { fixed } else { None },
+    })
+}
+fn has_fixed_prerequisites(report: RunHistoryReport) -> bool {
+    use crate::deletion::history::Fact;
+    report.initial_consumption
+        == crate::native_enrollment::initial_consumer::InitialConsumption::CompletedSource
+        && [
+            report.initial_source,
+            report.every_noninitial_claim,
+            report.retained_noninitial_sources,
+            report.terminal_source,
+            report.main_join,
+        ]
+        .into_iter()
+        .all(|fact| fact == Fact::Authenticated)
 }
 
 fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {

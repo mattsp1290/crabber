@@ -11,7 +11,7 @@ use crabber_core::{
 };
 const MAX: usize = 32 << 20;
 
-async fn completed(keyed: bool) -> (FixedMemoryInitialHost, SessionId) {
+pub(super) async fn completed(keyed: bool) -> (FixedMemoryInitialHost, SessionId) {
     let host = FixedMemoryInitialHost::new();
     let session = SessionId::new();
     let receipt = host
@@ -270,4 +270,47 @@ async fn real_fixed_terminal_cannot_be_swapped_between_original_sources() {
     let mut wrong_close = foreign_view.close.unwrap().clone();
     wrong_close.version = 2;
     assert!(!wrong_close.valid_policy_version(foreign));
+}
+
+#[tokio::test]
+async fn fixed_initial_readiness_requires_the_actual_cleared_root_join_current() {
+    for keyed in [false, true] {
+        let (host, session) = completed(keyed).await;
+        let store = host.store();
+        let genuine = store.state.lock().unwrap().clone();
+        let run = genuine
+            .runs
+            .values()
+            .find(|run| run.session_id == session)
+            .unwrap();
+        let package = crate::memory::MemoryStore::fixed_closed_initial_source(
+            &genuine,
+            run,
+            &mut Proof::bounded(MAX),
+        )
+        .unwrap()
+        .unwrap();
+        let root = package.owner_roles()[0].joined;
+        assert_eq!(root.record.token, "");
+        assert_eq!(
+            root.record.snapshot.state,
+            crate::session_owner::SessionOwnerState::Joined
+        );
+        let root_target = root.record.snapshot.target.id.clone();
+        drop(package);
+        let mut changed = genuine.clone();
+        changed
+            .session_owners
+            .corrupt_retirement_current_token_for_test(&session, &root_target);
+        *store.state.lock().unwrap() = changed;
+        let refused = store.fixed_initial_fixture_report(&session);
+        *store.state.lock().unwrap() = genuine;
+        assert!(
+            refused.is_err(),
+            "actual root current must match the retained authentic Join"
+        );
+        let restored = store.fixed_initial_fixture_report(&session).unwrap();
+        assert!(restored.complete());
+        assert_eq!(restored.resource_policy, Fact::Authenticated);
+    }
 }

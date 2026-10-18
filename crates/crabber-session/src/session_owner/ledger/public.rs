@@ -32,6 +32,7 @@ impl Ledger {
         self.validate_publications(session, proof)?;
         self.validate_owner_membership(session).map_err(unknown)?;
         let mut result = Vec::new();
+        #[cfg(any(feature = "postgres", feature = "sqlite", test))]
         let mut unclassified = false;
         for ((scope, id), record) in &self.records {
             if scope != session {
@@ -39,7 +40,16 @@ impl Ledger {
             }
             let checked = self.checked_for_read(session, id, record, proof)?;
             if checked.snapshot.state == SessionOwnerState::Joined {
-                unclassified |= !classified(checked, proof)?;
+                #[cfg(any(feature = "postgres", feature = "sqlite", test))]
+                {
+                    unclassified |= !classified(checked, proof)?;
+                }
+                #[cfg(not(any(feature = "postgres", feature = "sqlite", test)))]
+                {
+                    // Keep the real native validators and their errors even
+                    // when this build uses the independent inventory fold.
+                    classified(checked, proof)?;
+                }
                 continue;
             }
             // The sentinel is authenticated too. Invalid source evidence must
@@ -56,6 +66,7 @@ impl Ledger {
         }
         Ok(crate::session_owner::coverage::CheckedOwners {
             live: result,
+            #[cfg(any(feature = "postgres", feature = "sqlite", test))]
             unclassified,
         })
     }

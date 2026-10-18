@@ -259,6 +259,10 @@ impl Ledger {
             .get(key)
             .and_then(|slot| self.epochs.get(&slot.epoch))
     }
+    /// Complete borrowed originals, including nonwinning/misindexed Epoch rows.
+    pub(crate) fn epoch_entries(&self) -> impl Iterator<Item = (&ControlId, &Epoch)> {
+        self.epochs.iter()
+    }
     pub(crate) fn keys(&self) -> impl Iterator<Item = &SourceKey> {
         self.slots
             .keys()
@@ -358,5 +362,25 @@ impl Ledger {
             self.heads.remove(&id);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Ledger {
+    pub(crate) fn test_add_nonwinning_epoch(&mut self, key: &SourceKey) {
+        let slot = self.slots.get(key).unwrap();
+        let mut extra = self.epochs.get(&slot.epoch).unwrap().clone();
+        let id = ControlId::new();
+        extra.correlation.identity.epoch = id.clone();
+        self.epochs.insert(id, extra);
+    }
+    pub(crate) fn test_misindex_winning_epoch(&mut self, key: &SourceKey) {
+        let id = &self.slots.get(key).unwrap().epoch;
+        let epoch = self.epochs.remove(id).unwrap();
+        self.epochs.insert(ControlId::new(), epoch);
+    }
+    pub(crate) fn test_foreign_winning_epoch_session(&mut self, key: &SourceKey) {
+        let id = &self.slots.get(key).unwrap().epoch;
+        self.epochs.get_mut(id).unwrap().correlation.key.session_id = SessionId::new();
     }
 }

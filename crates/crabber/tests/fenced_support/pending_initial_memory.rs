@@ -13,13 +13,15 @@ impl crate::memory::MemoryStore {
             "native historical Initial source unavailable in fixture",
         ))
     }
-    pub(crate) fn classify_initial_resource_policy(
+    // No native factory exists in this embedded fixture. A generic negative
+    // result avoids exposing Memory's private State or constructing a package.
+    pub(crate) fn fixed_closed_initial_source<T>(
         _state: &impl Sized,
         _run: &crabber::core::Run,
         _proof: &mut crate::public_session::v2::proof::Proof,
-    ) -> Result<bool, crate::public_session::v2::proof::Failure> {
+    ) -> Result<Option<T>, crate::public_session::v2::proof::Failure> {
         Err(crate::public_session::v2::proof::unknown(
-            "native fixed policy unavailable in fixture",
+            "native fixed source unavailable in fixture",
         ))
     }
     // Match the real backend's private receiver-shaped ingress without touching
