@@ -353,11 +353,14 @@ provider/model identifiers are persisted host preferences. `Agent::prompt_sessio
 default-selected variants resolve stored preferences with configured fallbacks;
 explicit execution contexts retain their immutable admitted selection. `ForkSession` creates nonexecuting
 imported history at a verified closed boundary. V2 aggregate snapshots compose
-that history with bounded authenticated control metadata. `delete_session` is
-restricted to positively verified quiet managed/fork sessions; retained runs and
-unclassified resource history remain blocked with `OwnershipUnknown`. See the
-[public host guide](../../docs/server-host.md) for the bounded controls and
-[offline probe](../../examples/server-host-probe/README.md) for executable use.
+that history with bounded authenticated control metadata. `delete_session` requires
+positively verified creation and complete native readiness. Quiet managed/fork
+sessions remain supported. Memory also supports managed sessions whose retained
+runs and owner history are entirely covered by completed `FixedMemoryInitialHost`
+scripted tasks. Extra generic/Raw runs, incomplete sources or uncovered owners
+remain blocked with `OwnershipUnknown`; active work keeps its specific blocker.
+See the [fixed Memory workflow](../../docs/server-host.md#fixed-memory-scripted-sessions)
+and [offline probe](../../examples/server-host-probe/README.md).
 
 PostgreSQL schema 9 adds session metadata and session-only audit records, sharing
 ControlId uniqueness with all other controls. Management audit never fabricates

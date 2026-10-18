@@ -509,18 +509,159 @@ capabilities, pending questions, native effects or execution authority. The
 original operation key and source/target identity must be retained for exact
 replay. An exact replay remains metadata after later source changes.
 
-`crabber::session::DeleteSession` requires an exact revision (including revision
-zero), stable operation ID and positively verified creation coverage. The current
-positive subset is quiet managed or fork-created sessions with full native
-readiness. Every retained run, legacy origin or unclassified owner remains
-blocked with `OwnershipUnknown`; active states retain their specific Busy reasons.
-Deletion commits a minimal permanent tombstone and receipt with physical purge
-atomically under the session gate. Retry the original request after response loss
-before choosing a new key. A changed key/choice conflicts; replay is checked before
-current CAS. This is minimal logical erasure, not cryptographic erasure of backups
-or proof that all arbitrary native resource types are joined.
+### Fixed Memory scripted sessions
 
-Current bundled storage versions are PostgreSQL 18 and SQLite 14. PostgreSQL uses
+`crabber::session::session_owner::owned_scope::FixedMemoryInitialHost` runs a
+finite scripted response using its own MemoryStore, SystemClock and cleanup
+supervision. Keep one host for multiple sessions; cloned hosts share that same
+store and supervisor. `host.store()` exposes the real store for session management
+and reads. This path takes a pristine `LibraryScriptedSource` built from owned
+route/response values. It accepts no replacement Store, clock, factory or
+already-prepared execution.
+
+Create a managed session first, then supply its exact workspace, directory and
+current revision. Registration returns a parked task: call `start()` explicitly
+and await `join()` to observe execution and cleanup. The optional admission key
+identifies the original input; it does not turn a retry into another execution.
+
+Keep the host in application-owned state. Create the managed session separately
+with a stable caller-owned `ManageSession` request; retain that original request
+across a creation error or canceled await. Use its acknowledged current revision
+and exact session context below. The management workflow above covers creation.
+Call this synchronous helper inside an existing Tokio runtime. It borrows the
+host and returns the original parked task without starting or replacing an
+execution:
+
+```rust,no_run
+use crabber::{
+    AdmissionKey, Selection, SessionContext,
+    core::{InputEnvelope, SessionRevision},
+    extension::LibraryScriptedSource,
+    session::session_owner::owned_scope::{
+        FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialTask,
+    },
+};
+
+fn register_fixed(
+    host: &FixedMemoryInitialHost,
+    context: SessionContext,
+    revision: SessionRevision,
+) -> Result<FixedMemoryInitialTask, Box<dyn std::error::Error + Send + Sync>> {
+    let source = LibraryScriptedSource::new(
+        Selection { provider_id: "library".into(), model_id: "text".into() },
+        vec!["A finite library-owned response.".into()],
+    )?;
+    Ok(host.register_scripted(FixedMemoryInitialInput {
+        context,
+        title: "scripted session".into(),
+        input: InputEnvelope::text("hello", revision)?,
+        key: Some(AdmissionKey::new("first-input")?), // None selects unkeyed admission.
+    }, source)?)
+}
+```
+
+Retain that host and task in the caller, together with an initially empty
+`Option<LocallyJoinedInitialSeal>`. Call `task.start()` once. The observation helper
+borrows the task and retry slot, so an error or canceled await leaves both with
+the caller. It saves any original cleanup retry before reporting an unresolved
+outcome:
+
+```rust,no_run
+use crabber::session::session_owner::owned_scope::{
+    FixedMemoryInitialTask, LocallyJoinedInitialSeal, PendingInitialProducerStatus,
+};
+
+async fn observe_fixed(
+    task: &mut FixedMemoryInitialTask,
+    seal: &mut Option<LocallyJoinedInitialSeal>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let observed = task.join().await?;
+    if seal.is_none() {
+        *seal = observed.take_retry();
+    }
+    if observed.error().is_some()
+        || observed.observation_failed()
+        || observed.status() != Some(&PendingInitialProducerStatus::ClosedAssignment)
+    {
+        return Err("execution or cleanup needs reconciliation; retain the original state".into());
+    }
+    Ok(())
+}
+
+async fn retry_fixed_cleanup(
+    seal: &mut Option<LocallyJoinedInitialSeal>,
+) -> Result<PendingInitialProducerStatus, Box<dyn std::error::Error + Send + Sync>> {
+    let original = seal.as_mut().ok_or("no original cleanup retry is available")?;
+    Ok(original.retry().await?)
+}
+```
+
+Retry cleanup explicitly on that same retained handle. A retry error or canceled
+await leaves the handle in the slot. Its returned status reconciles cleanup only;
+it does not acknowledge a previously unknown business call or resume execution.
+Do not rerun registration or `start()` to resolve an unknown outcome. A missing
+retry handle does not prove cleanup succeeded. These local handles cannot be
+recovered from stored IDs after process restart.
+
+Use `task.control().request_stop()` for an explicit stop and still observe the
+original task's join. Dropping the task also signals stop; the host retains its
+original cleanup work. A caller timeout or an empty event/task list does not prove
+that cleanup finished. Keep the same host alive and await its retained
+`wait_for_supervision()` after resolving the original observation. Caller-owned
+retry state remains separate from that wait.
+
+After successful completion and cleanup, create a `DeleteSession` with a new
+operation ID and the current `host.store().session_revision(&session)`. Retain that
+exact request in caller-owned state before sending it. This helper borrows it:
+
+```rust,no_run
+use crabber::session::{
+    DeleteSession, DeletionError, DeletionOutcome, Store,
+    session_owner::owned_scope::FixedMemoryInitialHost,
+};
+
+async fn delete_fixed(
+    host: &FixedMemoryInitialHost,
+    original: &DeleteSession,
+) -> Result<DeletionOutcome, DeletionError> {
+    host.store().delete_session(original.clone()).await
+}
+```
+
+On a transport error or canceled await, retain and retry the same request before
+choosing another ID or revision. `Applied(receipt)` and exact `Replayed(receipt)`
+identify the same deletion. A blocked result leaves the session intact; inspect
+the blocker rather than assuming the task's completion guarantees deletion.
+
+This is a one-turn text-only path. It accepts no caller-supplied tools, prompts,
+extension factories or host callbacks, and runs without a heartbeat. Generic
+`Agent`/injected Store paths and SQL backends do not acquire this fixed resource
+policy. Successful completed fixed sessions
+may contain several completed fixed tasks and can become eligible for guarded
+deletion once all their retained execution and owner history is covered. The full
+readiness-and-purge operation shares one 32 MiB proof allowance: even completely
+covered history can return `ProofLimit` when the whole operation does not fit.
+That refusal preserves the session and records no deletion receipt. Extra
+Raw/generic runs, owners or incomplete sources keep deletion blocked. Stopping
+before Open, closing without a published Run, or joining a partial preparation
+does not make that history eligible for deletion.
+
+`crabber::session::DeleteSession` requires an exact revision (including revision
+zero), stable operation ID and positively verified creation coverage. Quiet
+managed or fork-created sessions still require full native readiness. Memory
+also accepts managed sessions whose entire retained history consists of completed
+fixed Memory scripted tasks and their joined owners. Extra generic/Raw runs,
+incomplete sources, legacy history and uncovered owners remain blocked with
+`OwnershipUnknown`; active work retains its specific blocker. Generic Store and
+SQL execution do not gain this additional positive path.
+
+Deletion commits a minimal permanent tombstone and receipt with physical purge
+atomically under the session gate. After response loss, retry the original
+request before choosing another key. Changed semantics conflict; exact replay
+precedes current CAS. This is logical erasure, not cryptographic erasure of backups
+or proof that arbitrary native resource types have joined.
+
+Current bundled storage versions are PostgreSQL 24 and SQLite 20. PostgreSQL uses
 its versioned migration roster; SQLite accepts fresh current files and rejects
 older schemas rather than silently upgrading. Always run explicit migration
 before read-only `connect`; see [SQLite storage](sqlite-store.md).
