@@ -31,8 +31,9 @@ impl PostgresExecution {
             .approval_transaction(&scope, &self.fence.run_id)
             .await?;
         let result = async {
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
             super::super::credential_access::check(&mut tx, &run,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20))
+                &mut proof)
                 .await.map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? { return Ok((saved, false)); }
@@ -62,6 +63,8 @@ impl PostgresExecution {
             let receipt = write::publish_handoff(&mut tx, &run, batch.id.clone(), digest,
                 crate::ApprovalOutcome::Suspended { continuation: batch.continuation.clone() }, now, record.handoff.as_deref()).await?;
             super::super::continuation_input::accept(&mut tx, crate::continuation_input::Input::ApprovalSuspension(&batch), crate::continuation_input::Receipt::Approval(&receipt)).await.map_err(|_| Error::UnknownStoreOutcome)?;
+            let waiting = batch.waiting_event(&receipt)?;
+            super::super::public_continuation_source::append_waiting(&mut tx, &waiting, &mut proof).await.map_err(|_| Error::UnknownStoreOutcome)?;
             sql::before_commit(fault)?;
             Ok((receipt, true))
         }.await;

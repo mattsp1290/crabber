@@ -132,6 +132,7 @@ impl Orchestrator {
                     authority: ResumeAuthority {
                         fence,
                         native_unstarted,
+                        continuation: None,
                         granted: None,
                         approved: None,
                         tool_phases: Vec::new(),
@@ -229,6 +230,7 @@ impl Orchestrator {
                 authority: ResumeAuthority {
                     fence,
                     native_unstarted,
+                    continuation: None,
                     granted: None,
                     approved: None,
                     tool_phases: Vec::new(),

@@ -13,17 +13,14 @@ impl MemoryExecution {
     ) -> Result<ToolContinuationReceipt, Error> {
         let fault = fault(&self.store);
         let result = self.store.transact(|state| {
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
             let run = state
                 .runs
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
-            super::super::credential_access::check(
-                state,
-                &run,
-                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-            )
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+            super::super::credential_access::check(state, &run, &mut proof)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = replay(state, &run.session_id, &run.id, &batch.id, &digest)? {
                 return Ok((saved, false));
@@ -100,12 +97,7 @@ impl MemoryExecution {
                 now,
                 handoff.as_deref(),
             )?;
-            super::super::continuation_input::accept(
-                state,
-                crate::continuation_input::Input::ToolSuspension(batch),
-                crate::continuation_input::Receipt::Tool(&receipt),
-            )
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+            publish_waiting(state, batch, &receipt, &mut proof)?;
             before(fault)?;
             Ok((receipt, true))
         });
@@ -281,5 +273,36 @@ fn suspend_phases(
             .or_default() += 1;
     }
 
+    Ok(())
+}
+
+// Publish acceptance and its safe presentation under the same original State
+// lock and Proof, before the existing fault/commit boundary.
+fn publish_waiting(
+    state: &mut super::super::State,
+    batch: &ToolContinuationSuspension,
+    receipt: &ToolContinuationReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    super::super::continuation_input::accept(
+        state,
+        crate::continuation_input::Input::ToolSuspension(batch),
+        crate::continuation_input::Receipt::Tool(receipt),
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut waiting = batch.waiting_event(receipt)?;
+    waiting.cursor = Some(
+        state
+            .events
+            .next_cursor()
+            .map_err(|_| Error::UnknownStoreOutcome)?,
+    );
+    proof
+        .measure(&waiting)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state
+        .events
+        .append(waiting)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     Ok(())
 }

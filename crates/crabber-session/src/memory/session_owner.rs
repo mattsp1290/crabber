@@ -3,6 +3,8 @@
 mod cancellation;
 #[path = "session_owner/drivers.rs"]
 pub(in crate::memory) mod drivers;
+#[path = "session_owner/invocation.rs"]
+pub(in crate::memory) mod invocation;
 pub(in crate::memory) use drivers::classified as classify_driver_join;
 #[path = "session_owner/owned_scope.rs"]
 mod owned_scope;
@@ -103,7 +105,8 @@ impl MemoryStore {
                     }
                 }
                 let now = self.clock.now();
-                let parent = parent_proof(state, request, parent, now)?;
+                let parent =
+                    parent_proof(state, request, parent, now, &mut read_proof.borrow_mut())?;
                 let revision = revision(state, &request.binding.session_id);
                 if let Some(preparation) = preparation {
                     validate_preparation(
@@ -154,6 +157,9 @@ impl MemoryStore {
                     if public_change && state.sessions.contains_key(&request.session_id) {
                         bump_public_revision(state, &request.session_id)
                             .map_err(|_| Error::UnknownStoreOutcome)?;
+                    }
+                    if let SessionOwnerOutcome::Applied { receipt, .. } = &outcome {
+                        append_invocation(state, receipt)?;
                     }
                     before(fault)?;
                 }
@@ -285,6 +291,7 @@ fn parent_proof(
     request: &ReserveSessionOwner,
     authority: Option<&SessionOwnerParentAuthority>,
     now: OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<crate::native_parent::Witness>, Error> {
     let Some(parent) = &request.binding.parent else {
         return if authority.is_none() {
@@ -293,6 +300,20 @@ fn parent_proof(
             Err(Error::InvalidRequest)
         };
     };
+    if parent.invocation.is_some() {
+        let Some(SessionOwnerParentAuthority::Invocation(authority)) = authority else {
+            return Err(Error::StaleOwner);
+        };
+        let original = state
+            .session_owners
+            .public_source_record(authority, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        invocation::verify(state, original, proof)?;
+        let witness = crate::session_owner::invocation_parent::fresh(
+            request, original, authority, now, proof,
+        )?;
+        return Ok(Some(witness.clone()));
+    }
     let run = state
         .runs
         .get(&parent.run_id)
@@ -363,16 +384,7 @@ fn parent_proof(
         }
         _ => return Err(Error::StaleOwner),
     };
-    attempt.validate().map_err(|_| Error::UnknownStoreOutcome)?;
-    if attempt.snapshot.session_id != run.session_id
-        || attempt.snapshot.run_id != run.id
-        || attempt.snapshot.state != AttemptState::Started
-        || attempt.snapshot.cleanup != AttemptCleanup::Pending
-        || attempt.run_token != run.claim_token
-        || attempt.lease_until <= now
-    {
-        return Err(Error::StaleOwner);
-    }
+    verify_live_parent_attempt(run, attempt, now)?;
     let witness = if let Some(witness) = phase_witness {
         witness
     } else {
@@ -544,3 +556,45 @@ fn validate_preparation_source_with_proof(
 }
 
 pub(in crate::memory) use preparation::{VerifiedTool, verify_tool};
+
+pub(in crate::memory) fn append_invocation(
+    state: &mut State,
+    receipt: &crate::session_owner::SessionOwnerReceipt,
+) -> Result<(), Error> {
+    let audit = state
+        .session_owners
+        .source_audit(&receipt.session_id, &receipt.operation_id)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    let Some(mut event) =
+        crate::session_owner::public_invocation::event(audit, audit.record.snapshot.updated_at)?
+    else {
+        return Ok(());
+    };
+    let cursor = state
+        .events
+        .next_cursor()
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    event.cursor = Some(cursor);
+    state
+        .events
+        .append(event)
+        .map_err(|_| Error::UnknownStoreOutcome)
+}
+
+fn verify_live_parent_attempt(
+    run: &crabber_core::Run,
+    attempt: &crate::attempt::AttemptRecord,
+    now: OffsetDateTime,
+) -> Result<(), Error> {
+    attempt.validate().map_err(|_| Error::UnknownStoreOutcome)?;
+    if attempt.snapshot.session_id != run.session_id
+        || attempt.snapshot.run_id != run.id
+        || attempt.snapshot.state != AttemptState::Started
+        || attempt.snapshot.cleanup != AttemptCleanup::Pending
+        || attempt.run_token != run.claim_token
+        || attempt.lease_until <= now
+    {
+        return Err(Error::StaleOwner);
+    }
+    Ok(())
+}

@@ -1119,6 +1119,45 @@ pub trait Store: Send + Sync {
     ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
         Err(crate::PublicStateError::Unsupported)
     }
+    /// Independent invocation writes stay fenced after the parent run ends.
+    /// Mutate public presentation using an actual native bound credential.
+    /// # Errors
+    /// Refuses unsupported stores, stale credentials, invalid payloads or unknown writes.
+    async fn mutate_bound_public_source(
+        &self,
+        _mutation: crate::PublicSourceMutation,
+        _authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+    /// The native detached owner selects immutable parent attribution.
+    async fn mutate_invocation_public_source(
+        &self,
+        _mutation: crate::PublicSourceMutation,
+        _authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+    /// Read safe pending call presentation and UI state coherently under the
+    /// actual current Started attempt. This read grants no execution authority.
+    async fn public_continuation_source(
+        &self,
+        _fence: &RunFence,
+        _authority: &crate::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+    /// Read the exact committed source event pair under one native snapshot.
+    /// Missing metadata never disproves an unresolved operation can commit later.
+    /// # Errors
+    /// Refuses unsupported adapters, malformed originals or exhausted read bounds.
+    async fn lookup_public_source_publication(
+        &self,
+        _session: &SessionId,
+        _id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicSourcePublication>, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
     /// Metadata-only reconciliation, without granting execution authority.
     /// Absence does not prove an in-flight operation cannot subsequently commit.
     async fn lookup_public_state_mutation(
@@ -1420,6 +1459,15 @@ pub trait ExecutionStore: Send + Sync {
     async fn mutate_public_state(
         &self,
         _mutation: crate::PublicStateMutation,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        Err(crate::PublicStateError::Unsupported)
+    }
+    /// Commit payload-only public changes under actual native attempt or phase
+    /// ownership. Attribution is selected by storage, never supplied by tools.
+    async fn mutate_public_source(
+        &self,
+        _mutation: crate::PublicSourceMutation,
+        _authority: crate::PublicSourceAuthority,
     ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
         Err(crate::PublicStateError::Unsupported)
     }

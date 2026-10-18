@@ -1,3 +1,4 @@
+mod source;
 use super::{PostgresExecution, PostgresStore, admission_execution, bump_public_revision, db};
 use crate::postgres::transaction::Transaction;
 use crate::{
@@ -36,38 +37,66 @@ async fn receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<PublicStateReceipt>, Error> {
-    sqlx::query(RECEIPT)
+    receipt_with_proof(
+        tx,
+        session,
+        id,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<PublicStateReceipt>, Error> {
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(octet_length(r.data_json)+octet_length(r.semantic_digest)+COALESCE(octet_length(e.data::text),0)+64 AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.seq=r.event_seq AND e.session_id=r.session_id WHERE r.session_id=$1 AND r.operation_id=$2").bind(&session.0).bind(&id.0),proof).await.map_err(|_|Error::UnknownStoreOutcome)?;
+    let row = sqlx::query(RECEIPT)
         .bind(&session.0)
         .bind(&id.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)
-        .map_err(public_state::unknown)?
-        .map(|row| {
-            let kind: String = row.get("kind");
-            if kind != "public_state" {
-                return Err(Error::SemanticConflict);
-            }
-            let receipt = public_state::receipt(
-                session,
-                id,
-                &kind,
-                &row.get::<String, _>("semantic_digest"),
-                row.get("event_seq"),
-                row.get("data_json"),
-            )?;
-            let event = crate::public_state::decode_event(
-                row.get::<Option<sqlx::types::Json<serde_json::Value>>, _>("event_data")
-                    .ok_or(Error::UnknownStoreOutcome)?,
-            )
-            .map_err(public_state::unknown)?;
-            if row.get::<Option<String>, _>("event_run_id").as_deref() != Some(&receipt.run_id.0) {
-                return Err(Error::UnknownStoreOutcome);
-            }
+        .map_err(public_state::unknown)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    {
+        let kind: String = row.get("kind");
+        if kind != "public_state" {
+            return Err(Error::SemanticConflict);
+        }
+        let receipt = public_state::receipt(
+            session,
+            id,
+            &kind,
+            &row.get::<String, _>("semantic_digest"),
+            row.get("event_seq"),
+            row.get("data_json"),
+            proof,
+        )?;
+        let event = crate::public_state::decode_source_event(
+            row.get::<Option<sqlx::types::Json<serde_json::Value>>, _>("event_data")
+                .ok_or(Error::UnknownStoreOutcome)?,
+            proof,
+        )?;
+        if row.get::<Option<String>, _>("event_run_id").as_deref() != Some(&receipt.run_id.0) {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if event
+            .payload
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            public_state::verify_source_event_with_proof(&receipt, &event, proof)?;
+        } else {
             public_state::verify_receipt_event(&receipt, &event)?;
-            Ok(receipt)
-        })
-        .transpose()
+        }
+        source::verify_before(tx, &event, proof).await?;
+        Ok(Some(receipt))
+    }
 }
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
@@ -390,6 +419,43 @@ mod tests {
         super::PostgresStore::migrate(&url).await.unwrap();
         let store = super::PostgresStore::connect(&url).await.unwrap();
         crate::public_state_contract::run_fault_contract(&store, |point| {
+            store
+                .public_state_fault
+                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+    }
+    #[tokio::test]
+    async fn native_public_source_contract() {
+        let Some(url) = crate::postgres::tests::test_url() else {
+            return;
+        };
+        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = super::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock);
+        crate::public_state_contract::source::run(&store).await;
+    }
+    #[tokio::test]
+    async fn native_public_source_fault_contract() {
+        let Some(url) = crate::postgres::tests::test_url() else {
+            return;
+        };
+        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        super::PostgresStore::migrate(&url).await.unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let store = super::PostgresStore::connect(&url)
+            .await
+            .unwrap()
+            .with_clock(clock);
+        crate::public_state_contract::source::faults(&store, |point| {
             store
                 .public_state_fault
                 .store(point as u8, std::sync::atomic::Ordering::SeqCst);

@@ -11,7 +11,7 @@ use crabber_extension::{
     SessionInvocationAdmission as Admission, SessionInvocationError as Error,
     SessionInvocationRequest as Request, SessionInvocationSpawner, SessionInvocationTask,
 };
-use crabber_session::{PhaseAuthority, PhaseTarget, Store};
+use crabber_session::{PhaseTarget, Store};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -86,7 +86,8 @@ pub(crate) struct Parent {
     pub workspace: String,
     pub directory: String,
     pub phase: PhaseTarget,
-    pub authority: PhaseAuthority,
+    pub authority: crabber_session::session_owner::SessionOwnerParentAuthority,
+    pub invocation: Option<crabber_session::session_owner::SessionOwnerTarget>,
 }
 struct BoundSpawner {
     owners: SessionInvocations,
@@ -258,12 +259,13 @@ impl SessionInvocationSpawner for BoundSpawner {
                 let store = self.store.clone();
                 let parent = self.parent.clone();
                 let original = invocation.clone();
+                let manager = self.owners.clone();
                 *invocation
                     .join
                     .try_lock()
                     .expect("new invocation join lock") =
                     Some(tokio::spawn(close::scope(original, async move {
-                        worker::run(store, parent, retained, task, sender).await;
+                        worker::run(store, parent, manager, retained, task, sender).await;
                     })));
                 owners.insert(key, invocation);
                 false
@@ -296,6 +298,22 @@ async fn store_call<T>(
                 std::mem::forget(nested);
             }
             Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome)
+        }
+    }
+}
+
+impl Parent {
+    fn nested(&self, authority: &crabber_session::session_owner::SessionOwnerAuthority) -> Self {
+        Self {
+            session: self.session.clone(),
+            run: self.run.clone(),
+            workspace: self.workspace.clone(),
+            directory: self.directory.clone(),
+            phase: self.phase.clone(),
+            authority: crabber_session::session_owner::SessionOwnerParentAuthority::Invocation(
+                authority.clone(),
+            ),
+            invocation: Some(authority.target().clone()),
         }
     }
 }

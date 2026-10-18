@@ -35,7 +35,10 @@ impl SqliteExecution {
         let fault = fault(&self.store);
 
         let result = Box::pin(async {
-            require_raw_execution(&mut tx, &run).await?;
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+            super::super::credential_access::check(&mut tx, &run, &mut proof)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
 
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? {
@@ -129,9 +132,7 @@ impl SqliteExecution {
             )
             .await?;
 
-            super::super::continuation_input::accept_tool_suspension(&mut tx, &batch, &receipt)
-                .await
-                .map_err(|_| Error::UnknownStoreOutcome)?;
+            publish_waiting(&mut tx, &batch, &receipt, &mut proof).await?;
             before(fault)?;
             Ok((receipt, true))
         })
@@ -140,15 +141,6 @@ impl SqliteExecution {
         after(finish(tx, result).await, fault)
     }
 }
-async fn require_raw_execution(
-    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
-    run: &crabber_core::Run,
-) -> Result<(), Error> {
-    super::super::credential_access::check_bounded(tx, run)
-        .await
-        .map_err(|_| Error::UnknownStoreOutcome)
-}
-
 async fn frontend_replay(
     execution: &SqliteExecution,
     scope: &SessionId,
@@ -265,4 +257,21 @@ async fn parent(
     }
 
     Ok(parent)
+}
+
+// Acceptance and presentation remain in the caller's exact native transaction.
+async fn publish_waiting(
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
+    batch: &ToolContinuationSuspension,
+    receipt: &ToolContinuationReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    super::super::continuation_input::accept_tool_suspension(tx, batch, receipt)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let waiting = batch.waiting_event(receipt)?;
+    super::super::public_continuation_source::append_waiting(tx, &waiting, proof)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    Ok(())
 }

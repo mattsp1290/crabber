@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 pub(super) async fn run(
     store: Arc<dyn Store>,
     parent: Parent,
+    manager: super::SessionInvocations,
     invocation: Arc<Invocation>,
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
@@ -40,35 +41,47 @@ pub(super) async fn run(
         }
     };
     if started.scoped {
-        super::scoped::run(store, parent, invocation, task, sender, started).await;
+        super::scoped::run(store, parent, manager, invocation, task, sender, started).await;
         return;
     }
     run_legacy(
         store,
         parent,
+        manager,
         invocation,
         task,
         sender,
-        started.authority,
-        started.original,
+        (started.authority, started.original),
     )
     .await;
 }
 async fn run_legacy(
     store: Arc<dyn Store>,
     parent: Parent,
+    manager: super::SessionInvocations,
     invocation: Arc<Invocation>,
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
-    authority: SessionOwnerAuthority,
-    original: crabber_session::session_owner::SessionOwnerSnapshot,
+    started: (
+        SessionOwnerAuthority,
+        crabber_session::session_owner::SessionOwnerSnapshot,
+    ),
 ) {
+    let (authority, original) = started;
     invocation.status(SessionInvocationStatus::Active);
     super::cancellation::poll(&*store, &invocation, &authority).await;
     let resources = invocation.resources.clone();
     let context = crabber_extension::SessionInvocationContext {
+        invocations: manager.bind(store.clone(), parent.nested(&authority)),
         cancel: invocation.cancel.clone(),
         cleanup: resources.cleanup_tracker(),
+        public_source: crate::public_source::bind(
+            store.clone(),
+            parent.session.clone(),
+            crabber_session::PublicSourceAuthority::Invocation(authority.clone()),
+            None,
+            None,
+        ),
     };
     // Calling the factory may itself panic. It runs inside the actual joined
     // task, only after both acknowledged fresh commits above.
@@ -77,7 +90,8 @@ async fn run_legacy(
         if context.cancel.is_cancelled() {
             Ok(())
         } else {
-            task(context).await
+            let source = context.public_source.clone();
+            crabber_extension::with_public_source(source, task(context)).await
         }
     }));
     let _ = sender.send(Ok(Admission::Started));

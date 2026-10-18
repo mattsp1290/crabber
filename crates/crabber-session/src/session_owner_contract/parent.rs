@@ -35,6 +35,7 @@ pub(crate) async fn fixture(
     request.binding.kind = SessionOwnerKind::DetachedInvocation;
     let mut attempt_request = request.clone();
     attempt_request.binding.parent = Some(SessionOwnerParent {
+        invocation: None,
         run_id: admitted.run.id.clone(),
         call_id: None,
         phase: None,
@@ -52,6 +53,7 @@ pub(crate) async fn fixture(
     request.binding.id = SessionOwnerId::new();
 
     request.binding.parent = Some(SessionOwnerParent {
+        invocation: None,
         run_id: admitted.run.id.clone(),
         call_id: Some(receipt.phase.target.call_id.clone()),
         phase: Some(receipt.phase.target.clone()),

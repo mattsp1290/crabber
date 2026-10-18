@@ -4,8 +4,8 @@ use crabber_session::Store;
 use crabber_session::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerBinding,
     SessionOwnerCommand as Command, SessionOwnerError, SessionOwnerKind, SessionOwnerOperation,
-    SessionOwnerOutcome as Outcome, SessionOwnerParent, SessionOwnerParentAuthority,
-    SessionOwnerReceipt, SessionOwnerState, SessionOwnerTermination,
+    SessionOwnerOutcome as Outcome, SessionOwnerParent, SessionOwnerReceipt, SessionOwnerState,
+    SessionOwnerTermination,
 };
 use sha2::{Digest, Sha256};
 pub(super) struct Started {
@@ -68,6 +68,7 @@ fn reserve(parent: &Parent, request: &Request, scoped: bool) -> Result<ReserveSe
                 .transpose()
                 .map_err(|_| Error::Rejected)?,
             parent: Some(SessionOwnerParent {
+                invocation:parent.invocation.clone(),
                 run_id: parent.run.clone(),
                 call_id: Some(parent.phase.call_id.clone()),
                 phase: Some(parent.phase.clone()),
@@ -143,10 +144,7 @@ pub(super) async fn start(
         .map_err(|_| Error::Rejected)?;
     }
     let outcome = store
-        .reserve_session_owner(
-            request.clone(),
-            Some(SessionOwnerParentAuthority::Phase(parent.authority.clone())),
-        )
+        .reserve_session_owner(request.clone(), Some(parent.authority.clone()))
         .await
         .map_err(classify)?;
     let (authority, reserved) = match outcome {

@@ -42,14 +42,6 @@ pub(super) async fn check_current(
     }
 }
 
-/// Legacy writer guard; its API has no enclosing operation Proof.
-pub(super) async fn check_bounded(
-    tx: &mut Transaction<'_, Postgres>,
-    run: &Run,
-) -> Result<(), StoreError> {
-    check(tx, run, &mut Proof::bounded(32 << 20)).await
-}
-
 pub(super) async fn check_origin(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,

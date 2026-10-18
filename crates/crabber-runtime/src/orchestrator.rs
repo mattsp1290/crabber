@@ -36,6 +36,7 @@ pub use approval_recovery::RecoverApproval;
 mod attempt_control;
 #[path = "orchestrator/continuation.rs"]
 mod continuation;
+mod continuation_source;
 mod management;
 #[path = "orchestrator/queue.rs"]
 mod queue;
@@ -540,6 +541,7 @@ pub struct Orchestrator {
     retained_preparations: preparation::retained::RetainedPreparations,
     pending_drivers: crabber_session::session_owner::owned_scope::PendingDriverTasks,
     owned_attempt: Option<Arc<attempt::OwnedAttempt>>,
+    source_delivery: Option<Arc<crate::public_source::SourceDelivery>>,
     observation_lifetime: Arc<ObservationLifetime>,
     tool_resumes: Arc<
         std::sync::Mutex<std::collections::BTreeMap<ToolCallId, crabber_session::ToolPhaseResume>>,
@@ -861,6 +863,7 @@ impl OrchestratorBuilder {
             pending_drivers:
                 crabber_session::session_owner::owned_scope::PendingDriverTasks::default(),
             owned_attempt: None,
+            source_delivery: None,
             observation_lifetime: Arc::default(),
             tool_resumes: Arc::default(),
             frontend_resumes: Arc::default(),
@@ -1494,6 +1497,7 @@ impl Orchestrator {
         let continuation::ResumeAuthority {
             fence,
             native_unstarted,
+            continuation: resumed_continuation,
             granted,
             approved,
             tool_phases,
@@ -1535,6 +1539,7 @@ impl Orchestrator {
                     .await?
             }
         }));
+        worker.source_delivery = Some(worker.new_source_delivery(&run.session_id, run_id)?);
         worker.tool_resumes = Arc::new(std::sync::Mutex::new(
             tool_phases
                 .into_iter()
@@ -1592,8 +1597,18 @@ impl Orchestrator {
             return Err(crabber_session::ApprovalError::UnknownStoreOutcome.into());
         }
         let was_approval = approved.is_some();
+        let public_source = self_.public_source_for_attempt(&run.session_id);
+        let source_fence = fence.clone();
         let resumed_work = async move {
-            let resumed = self.event(&run.session_id, run_id, EventKind::RunResumed);
+            let resumed = self_
+                .committed_resume_event(
+                    &source_fence,
+                    &run.session_id,
+                    native_unstarted && run.checkpoint.is_none(),
+                    resumed_turn.clone(),
+                    resumed_continuation,
+                )
+                .await?;
             execution.append_event(resumed.clone()).await?;
             self.observer.emit(&resumed);
             if native_unstarted && run.checkpoint.is_none() {
@@ -1840,7 +1855,10 @@ impl Orchestrator {
                 usage: run.usage,
             })
         };
-        let resumed_work = crabber_extension::with_state_sink(state_sink, resumed_work);
+        let resumed_work = crabber_extension::with_public_source(
+            public_source,
+            crabber_extension::with_state_sink(state_sink, resumed_work),
+        );
         tokio::pin!(resumed_work);
         let result = tokio::select! {
             biased;
@@ -2853,6 +2871,7 @@ impl Orchestrator {
             self.begin_owned_attempt(execution.as_ref(), &session_id, &fence.run_id, false)
                 .await?,
         ));
+        worker.source_delivery = Some(worker.new_source_delivery(&session_id, &fence.run_id)?);
         let self_ = &worker;
         execution
             .renew_lease(self.clock.now() + time::Duration::seconds(30))
@@ -2880,6 +2899,7 @@ impl Orchestrator {
             lost: Arc::clone(&lost),
         });
         let current_turn = std::sync::Mutex::new(None);
+        let public_source = self_.public_source_for_attempt(&session_id);
         let outcome = {
             let run_future = crabber_extension::with_state_sink(state_sink, async {
                 let bound = if let Some(bound) = prebound {
@@ -2907,6 +2927,7 @@ impl Orchestrator {
                     )
                     .await
             });
+            let run_future = crabber_extension::with_public_source(public_source, run_future);
             tokio::pin!(run_future);
             loop {
                 tokio::select! {
@@ -4796,3 +4817,49 @@ mod recovery_contract_tests {
 }
 
 mod session_defaults;
+
+impl Orchestrator {
+    fn public_source_for_attempt(
+        &self,
+        session: &SessionId,
+    ) -> crabber_extension::PublicSourceWriter {
+        self.owned_attempt.as_ref().map_or_else(
+            crabber_extension::PublicSourceWriter::default,
+            |attempt| {
+                crate::public_source::bind(
+                    self.store.clone(),
+                    session.clone(),
+                    crabber_session::PublicSourceAuthority::Attempt(attempt.authority.clone()),
+                    self.source_delivery.clone(),
+                    None,
+                )
+            },
+        )
+    }
+}
+
+impl Orchestrator {
+    fn new_source_delivery(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+    ) -> Result<Arc<crate::public_source::SourceDelivery>, RuntimeError> {
+        let attempt = self
+            .owned_attempt
+            .as_ref()
+            .ok_or(crabber_session::AttemptError::UnknownStoreOutcome)?;
+        let cursor = attempt
+            .begin_cursor
+            .ok_or(crabber_session::AttemptError::UnknownStoreOutcome)?;
+        Ok(crate::public_source::SourceDelivery::new(
+            session.clone(),
+            run.clone(),
+            crabber_core::PublicAttemptIdentity {
+                id: attempt.target.id.clone(),
+                generation: attempt.target.generation,
+            },
+            cursor,
+            self.observer.clone(),
+        ))
+    }
+}

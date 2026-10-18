@@ -61,6 +61,9 @@ pub struct SessionOwnerTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionOwnerParent {
+    /// Original independently owned parent. Absence preserves legacy encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<SessionOwnerTarget>,
     pub run_id: RunId,
     pub call_id: Option<ToolCallId>,
     pub phase: Option<crate::PhaseTarget>,
@@ -255,6 +258,12 @@ impl SessionOwnerBinding {
             return Err(SessionOwnerError::InvalidRequest);
         }
         if let Some(parent) = &self.parent {
+            if let Some(invocation) = &parent.invocation {
+                identifier(&invocation.id.0, 128, false)?;
+                if self.kind != SessionOwnerKind::DetachedInvocation || parent.phase.is_none() {
+                    return Err(SessionOwnerError::InvalidRequest);
+                }
+            }
             identifier(&parent.run_id.0, 128, false)?;
             if let Some(call) = &parent.call_id {
                 identifier(&call.0, 512, false)?;
@@ -342,6 +351,7 @@ pub(crate) use ledger::Ledger;
 /// Session-only preparation/service reservations have no execution parent.
 #[derive(Clone, Debug)]
 pub enum SessionOwnerParentAuthority {
+    Invocation(SessionOwnerAuthority),
     Attempt(crate::AttemptAuthority),
     Phase(crate::PhaseAuthority),
 }
@@ -364,3 +374,7 @@ pub(crate) mod cancellation_contract;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod publication;
+
+pub(crate) mod public_invocation;
+
+pub(crate) mod invocation_parent;

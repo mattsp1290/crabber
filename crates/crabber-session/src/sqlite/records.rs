@@ -265,9 +265,18 @@ pub(super) async fn insert_event_captured(
         event.kind,
         crabber_core::EventKind::RunControlChanged
             | crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::PublicStateDelta
+            | crabber_core::EventKind::ActivitySnapshot
+            | crabber_core::EventKind::ActivityDelta
+            | crabber_core::EventKind::PublicPresentation
+            | crabber_core::EventKind::InvocationStarted
+            | crabber_core::EventKind::InvocationFinished
+            | crabber_core::EventKind::InvocationError
+            | crabber_core::EventKind::ToolProgress
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
+            | crabber_core::EventKind::ContinuationWaiting
             | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(

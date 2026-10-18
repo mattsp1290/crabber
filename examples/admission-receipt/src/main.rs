@@ -110,22 +110,33 @@ async fn recover_initial(
     text: &str,
     options: &AdmissionOptions,
 ) -> Result<(Agent, crabber::AdmissionReceipt, crabber::RunHandle), Box<dyn Error>> {
+    let transport = Arc::new(response_loss::LostAdmissionReply {
+        inner: store.clone(),
+        committed: std::sync::atomic::AtomicUsize::new(0),
+    });
     let original = Agent::builder()
         .behavior_fingerprint(options.behavior_fingerprint.clone())
-        .store(Arc::new(response_loss::LostAdmissionReply {
-            inner: store.clone(),
-        }))
+        .store(transport.clone())
         .provider(provider.clone())
         .config(AgentConfig::new(Selection {
             provider_id: "fake".into(),
             model_id: "scripted".into(),
         }))
         .build()?;
-    assert!(
-        original
-            .prompt_keyed(session.clone(), text, options.clone())
-            .await
-            .is_err()
+    let Err(error) = original
+        .prompt_keyed(session.clone(), text, options.clone())
+        .await
+    else {
+        return Err("expected actual committed admission reply loss".into());
+    };
+    assert!(matches!(error.operation_error(),
+        crabber::RuntimeError::Store(crabber::session::StoreError::Validation(message))
+            if message == response_loss::LOST_REPLY));
+    assert_eq!(
+        transport
+            .committed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
     );
     assert_eq!(provider.requests().len(), 0);
     // A restarted host restores exactly the same semantic configuration.

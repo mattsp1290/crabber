@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn record(kind: EventKind, payload: Value) -> EventRecord {
+    let correlation = (kind == EventKind::ContinuationWaiting)
+        .then(|| payload["operation_id"].as_str().unwrap().to_owned());
+    let live_only = kind != EventKind::ContinuationWaiting;
     EventRecord {
         session_id: SessionId::from("session"),
         run_id: RunId::from("source"),
@@ -14,8 +17,8 @@ fn record(kind: EventKind, payload: Value) -> EventRecord {
         cursor: None,
         kind,
         payload,
-        correlation: None,
-        live_only: true,
+        correlation,
+        live_only,
         created_at: time::OffsetDateTime::UNIX_EPOCH,
     }
 }
@@ -71,6 +74,56 @@ fn types(events: &[Event]) -> Vec<String> {
         .iter()
         .map(|e| e["type"].as_str().unwrap().into())
         .collect()
+}
+
+fn human_wait(p: &mut Projector) {
+    message(p);
+    p.push(&record(
+        EventKind::ToolCallStarted,
+        json!({"message_id":"assistant","call_id":"human-call","name":"question"}),
+    ))
+    .unwrap();
+    p.push(&record(
+        EventKind::ToolCallArgsCompleted,
+        json!({"message_id":"assistant","call_id":"human-call"}),
+    ))
+    .unwrap();
+    end(p, "completed");
+    commit(p);
+    let source = crabber_core::continuation_source::WaitingSource {
+        version: 1,
+        session_id: SessionId::from("session"),
+        run_id: RunId::from("source"),
+        attempt: crabber_core::continuation_source::AttemptIdentity {
+            id: crabber_core::AttemptId::from("attempt"),
+            generation: crabber_core::AttemptGeneration::INITIAL,
+        },
+        current_turn: None,
+        continuation: crabber_core::continuation_source::ContinuationIdentity {
+            id: crabber_core::ContinuationId::from("continuation"),
+            generation: crabber_core::ContinuationGeneration::INITIAL,
+        },
+        operation_id: crabber_core::ControlId::from("wait"),
+        semantic_digest: crabber_core::InputFingerprint::new("a".repeat(64)).unwrap(),
+        revision: crabber_core::SessionRevision::new(1).unwrap(),
+        source_event_cursor: crabber_core::EventCursor(1),
+        frontend_pending: vec![],
+        backend_pending: vec![crabber_core::ToolCallId::from("human-call")],
+        interrupts: vec![crabber_core::continuation_source::HumanInterrupt {
+            interaction_id: crabber_core::InteractionId::from("actual-question"),
+            call_id: crabber_core::ToolCallId::from("human-call"),
+            kind: crabber_core::InteractionKind::UserInput,
+            name: "question".into(),
+            prompt: "Declared public question".into(),
+            response_schema: json!({"type":"string"}),
+        }],
+    };
+    p.push(&record(
+        EventKind::ContinuationWaiting,
+        serde_json::to_value(source).unwrap(),
+    ))
+    .unwrap();
+    p.push(&record(EventKind::RunPaused, Value::Null)).unwrap();
 }
 
 #[test]
@@ -131,7 +184,7 @@ fn terminals_require_source_truth_and_task_failure_wins() {
                 .unwrap();
         }
         if completion == Completion::Paused {
-            p.push(&record(EventKind::RunPaused, Value::Null)).unwrap();
+            human_wait(&mut p);
         }
         let events = wire(&p.finish(completion).unwrap());
         if expected == "error" {
@@ -159,7 +212,7 @@ fn failed_public_attempt_blocks_retry_but_filtered_attempt_can_retry() {
         let events = p
             .push(&record(
                 EventKind::ReasoningDelta,
-                json!({"message_id":"assistant", "text":"private"}),
+                json!({"message_id":"assistant", "item_id":"summary", "provenance":"public_summary", "text":"public summary"}),
             ))
             .unwrap();
         assert_eq!(!events.is_empty(), public);
@@ -247,10 +300,13 @@ fn tool_before_text_multiple_calls_and_private_result_filtering() {
         let events = p.push(&record(EventKind::ToolCallSettled, json!({"call_id":id,"message_id":format!("result-{id}"),"is_error":true,
             "content":[{"type":"text","text":"redacted"},{"type":"provider_state","codec_id":"secret","payload":"SECRET"},
             {"type":"tool_result","call_id":"nested","is_error":false,"content":[{"type":"provider_state","codec_id":"secret","payload":"SECRET"}]}]}))).unwrap();
-        let content: Value =
-            serde_json::from_str(wire(&events)[0]["content"].as_str().unwrap()).unwrap();
-        assert_eq!(content["is_error"], true);
-        assert!(!content.to_string().contains("SECRET"));
+        let result = &wire(&events)[0];
+        assert_eq!(result["metadata"]["crabber"]["isError"], true);
+        assert_eq!(
+            result["content"],
+            json!([{"type":"text","text":"redacted"}])
+        );
+        assert!(!result.to_string().contains("SECRET"));
     }
     p.push(&record(
         EventKind::RunSettled,

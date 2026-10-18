@@ -1,6 +1,30 @@
 //! Coherent bounded public owner projection with charged source evidence.
 use super::{Ledger, SessionId, SessionOwnerState};
 impl Ledger {
+    pub(crate) fn public_source_record(
+        &self,
+        authority: &crate::session_owner::SessionOwnerAuthority,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<&crate::session_owner::record::Record, crate::public_session::v2::proof::Failure>
+    {
+        self.public_source_record_at(authority.session_id(), &authority.target().id, proof)
+    }
+    pub(crate) fn public_source_record_at(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::SessionOwnerId,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<&crate::session_owner::record::Record, crate::public_session::v2::proof::Failure>
+    {
+        use crate::public_session::v2::proof::unknown;
+        self.validate_publications(session, proof)?;
+        self.validate_owner_membership(session).map_err(unknown)?;
+        let record = self
+            .records
+            .get(&(session.clone(), id.clone()))
+            .ok_or_else(|| unknown("public source owner"))?;
+        self.checked_for_read(session, id, record, proof)
+    }
     /// Authenticate independent membership before excluding Joined owners. The
     /// scan borrows historical entries and never builds an unbounded identity map.
     pub(crate) fn public_registered(

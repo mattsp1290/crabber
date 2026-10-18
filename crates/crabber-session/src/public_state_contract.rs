@@ -336,3 +336,9 @@ pub(crate) async fn exhausted(store: &impl Store, admitted: AdmitOutcome) {
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 #[path = "public_state_contract/process.rs"]
 pub(crate) mod process;
+
+native_pending_initial_items! {
+    #[cfg(test)]
+    #[path = "public_state_contract/source.rs"]
+    pub(crate) mod source;
+}

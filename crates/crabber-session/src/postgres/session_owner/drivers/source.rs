@@ -52,7 +52,7 @@ pub(super) async fn original(
     run: &RunId,
     budget: &mut Proof,
 ) -> Result<Original, Error> {
-    original_read(tx, session, run, budget)
+    Box::pin(original_read(tx, session, run, budget))
         .await
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }

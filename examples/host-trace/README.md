@@ -62,10 +62,11 @@ fresh current attempt. Use `recover_with_context(|run| current_context_for(run))
 for a per-run selection; the callback is invoked only for runs whose lease appears
 expired, and actual claim can still lose a race. The existing `resume`/`recover`
 methods deliberately select no context, so old context-free records stay usable.
-Paused calls resume persisted input. Expired pending calls run only when retry-safe;
-expired running calls are interrupted to avoid repeating ambiguous side effects.
-The execution identity, retained receipt and session remain unchanged; the lease
-claim token changes and stale owners remain fenced.
+Eligible paused calls resume persisted input. A native Started attempt or phase
+remains non-replayable after lease expiry or process death; explicit host outcome
+and cleanup reconciliation is required. Expiry alone cannot assert Interrupted
+or joined resources. Eligible fresh resume preserves the execution identity,
+retained receipt and session, rotates the lease claim, and fences stale owners.
 
 Build a new current identity with `current.linked_to(&prior)?`. This rejects the
 same numeric trace, including a 64-bit trace and its zero-padded 128-bit alias.
@@ -176,7 +177,7 @@ policy; an absent predecessor cannot be claimed visible in Datadog.
 | Invalid context before mutation and keyed replay | `malformed_transport_context_is_rejected_before_admission`, `replay_ignores_replacement_context_without_receipt_or_execution_mutation` |
 | Durable API handoff, fresh worker, retained session data | `postgres_fresh_workers_preserve_receipts_sessions_and_cursors` with `CRABBER_REQUIRE_POSTGRES=1` |
 | Paused recovery with native predecessor link | `durable_memory_paused_resume_and_duplicate_delivery` and required PostgreSQL fresh-worker test compare link IDs with actual prior captured roots |
-| Process loss and valid lineage without reopening | `killed_worker_recovery_links_to_an_already_captured_closed_anchor` checks prior model/anchor presence, fresh trace/link, fencing and interrupted outcome |
+| Process loss without invented recovery | `killed_started_worker_refuses_replay_and_preserves_closed_anchor` checks actual kill+wait and expiry, explicit Busy, no callbacks/model/tool effects, unresolved native state and unchanged prior model/closed-anchor export; it creates no replacement execution trace |
 | Prompt, output, argument, path and credential sentinel redaction | Real journey's mock HTTP decoder checks every signal; `all_intake_and_transport_diagnostics_hide_response_and_endpoint_secrets` checks all intake diagnostics and transport Display/Debug |
 | Bounded queue, overflow, split and retry, flush/shutdown | `cargo test -p crabber-obs`; accepted chunks are retained across retries, failed shutdown remains retryable |
 | External public adoption and required feature coverage | `cargo xtask check`, independent `testdata/external-consumer/check.sh`, CI PostgreSQL feature gate |

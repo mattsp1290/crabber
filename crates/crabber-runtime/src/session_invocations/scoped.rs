@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 pub(super) async fn run(
     store: Arc<dyn Store>,
     parent: Parent,
+    manager: super::SessionInvocations,
     invocation: Arc<Invocation>,
     task: SessionInvocationTask,
     sender: oneshot::Sender<Result<Admission, Error>>,
@@ -25,8 +26,16 @@ pub(super) async fn run(
     let authority = started.authority;
     let original = started.original;
     let context = crabber_extension::SessionInvocationContext {
+        invocations: manager.bind(store.clone(), parent.nested(&authority)),
         cancel: invocation.cancel.clone(),
         cleanup: invocation.resources.cleanup_tracker(),
+        public_source: crate::public_source::bind(
+            store.clone(),
+            parent.session.clone(),
+            crabber_session::PublicSourceAuthority::Invocation(authority.clone()),
+            None,
+            None,
+        ),
     };
     let original_owner = invocation.clone();
     let registration = OwnedTaskRegistration::register(started.source, move || {
@@ -34,7 +43,8 @@ pub(super) async fn run(
             if context.cancel.is_cancelled() {
                 Ok(())
             } else {
-                task(context).await
+                let source = context.public_source.clone();
+                crabber_extension::with_public_source(source, task(context)).await
             }
         })
     });
@@ -50,11 +60,7 @@ pub(super) async fn run(
             .activate_owned_scope(
                 registration.activation().clone(),
                 authority.clone(),
-                Some(OwnedScopeParentAuthority::Native(
-                    crabber_session::session_owner::SessionOwnerParentAuthority::Phase(
-                        parent.authority,
-                    ),
-                )),
+                Some(OwnedScopeParentAuthority::Native(parent.authority)),
             )
             .await
     })

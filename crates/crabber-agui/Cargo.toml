@@ -16,7 +16,9 @@ thiserror = "2"
 workspace = true
 
 [dev-dependencies]
+async-trait = "0.1"
+ag-ui-client = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }
 crabber = { path = "../crabber" }
 crabber-session = { path = "../crabber-session" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 time = "0.3"

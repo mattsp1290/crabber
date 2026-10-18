@@ -431,16 +431,20 @@ async fn birth_cohort_survives_erased_tool_record_barrier_and_event_projection()
         let mut state = store.state.lock().unwrap();
         state.tool_continuations.remove(&batch.continuation.id);
         state.tool_barriers.remove(&f.request.session_id);
-        let events: Vec<_> = state
+        let next = state.events.next_cursor().unwrap();
+        let origins: Vec<_> = state
             .events
             .iter()
-            .filter(|event| !crate::memory::tool_continuation::scan::origin(event))
-            .cloned()
+            .filter(|event| crate::memory::tool_continuation::scan::origin(event))
+            .map(|event| event.cursor.unwrap())
             .collect();
-        state.events = crate::memory::events::EventLog::default();
-        for event in events {
-            state.events.append(event).unwrap();
+        assert_eq!(origins.len(), 1);
+        for cursor in origins {
+            state.events.remove_for_test(cursor).unwrap();
         }
+        // Later Waiting facts retain their real cursors, and erasing the origin
+        // cannot recycle its allocated position or renumber surviving receipts.
+        assert_eq!(state.events.next_cursor().unwrap(), next);
     }
     assert!(store.public_control_header_v2(request).await.is_err());
 }

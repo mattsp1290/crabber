@@ -8,13 +8,20 @@ pub use interaction::{
     AuthorityRequirement, InteractionDescription, InteractionKind, InteractionState,
 };
 mod continuation;
+pub mod continuation_source;
 pub use continuation::{
     AcceptedToolResponse, MAX_TOOL_CHECKPOINT_BYTES, ResumableToolIdentity, ToolCheckpoint,
     ToolPhaseOutcome, ToolSuspension,
 };
 
+mod public_source;
 mod public_state;
 mod reasoning;
+pub use public_source::{
+    PublicAttemptIdentity, PublicInvocationEvent, PublicInvocationIdentity, PublicInvocationStatus,
+    PublicPatchOperation, PublicPresentationChange, PublicSourceChange, PublicSourceEvent,
+    PublicSourceIdentity, PublicSourceMessage, apply_public_patch,
+};
 pub use public_state::{
     MAX_ACTIVITY_BYTES, MAX_PUBLIC_CONTENTS_BYTES, MAX_PUBLIC_STATE_BYTES, PublicActivity,
     PublicStateContents,
@@ -351,9 +358,19 @@ pub enum EventKind {
     RunControlChanged,
     InteractionChanged,
     ContinuationChanged,
+    /// Safe pending presentation committed with the actual continuation freeze.
+    ContinuationWaiting,
     ExecutionAttemptChanged,
     ToolPhaseChanged,
     PublicStateSnapshot,
+    PublicStateDelta,
+    PublicPresentation,
+    ActivitySnapshot,
+    ActivityDelta,
+    InvocationStarted,
+    InvocationFinished,
+    InvocationError,
+    ToolProgress,
     RunAdmitted,
     RunStarted,
     TurnStarted,
@@ -377,7 +394,9 @@ pub enum EventKind {
     ContextEpochStarted,
     ContextEpochFinished,
     ExtensionNotice,
-    Custom { name: String },
+    Custom {
+        name: String,
+    },
 }
 impl EventKind {
     #[must_use]

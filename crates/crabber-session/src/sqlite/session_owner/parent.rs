@@ -9,6 +9,7 @@ pub(super) async fn proof(
     request: &ReserveSessionOwner,
     authority: Option<&SessionOwnerParentAuthority>,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<crate::native_parent::Witness>, Error> {
     let Some(parent) = &request.binding.parent else {
         return if authority.is_none() {
@@ -17,6 +18,23 @@ pub(super) async fn proof(
             Err(Error::InvalidRequest)
         };
     };
+    if parent.invocation.is_some() {
+        let Some(SessionOwnerParentAuthority::Invocation(authority)) = authority else {
+            return Err(Error::StaleOwner);
+        };
+        let original = super::current_owner_with_proof(
+            tx,
+            &request.binding.session_id,
+            &authority.target().id,
+            proof,
+        )
+        .await?;
+        super::invocation::verify(tx, &original, proof).await?;
+        let witness = crate::session_owner::invocation_parent::fresh(
+            request, &original, authority, now, proof,
+        )?;
+        return Ok(Some(witness.clone()));
+    }
     let run = super::run::load(tx, &request.binding.session_id, &parent.run_id).await?;
     if run.session_id != request.binding.session_id || run.id != parent.run_id {
         return Err(Error::NotFound);
@@ -77,6 +95,21 @@ pub(super) async fn proof(
         }
         _ => return Err(Error::StaleOwner),
     };
+    verify_live_attempt(&run, &attempt, now)?;
+    let witness = if let Some(phase) = phase {
+        super::super::native_parent::verify_phase(tx, &run, &attempt, &phase).await
+    } else {
+        super::super::native_parent::verify_attempt(tx, &run, &attempt).await
+    }
+    .map_err(unknown)?;
+    Ok(Some(witness))
+}
+
+fn verify_live_attempt(
+    run: &crabber_core::Run,
+    attempt: &crate::attempt::AttemptRecord,
+    now: time::OffsetDateTime,
+) -> Result<(), Error> {
     attempt.validate().map_err(unknown)?;
     if attempt.snapshot.session_id != run.session_id
         || attempt.snapshot.run_id != run.id
@@ -87,11 +120,5 @@ pub(super) async fn proof(
     {
         return Err(Error::StaleOwner);
     }
-    let witness = if let Some(phase) = phase {
-        super::super::native_parent::verify_phase(tx, &run, &attempt, &phase).await
-    } else {
-        super::super::native_parent::verify_attempt(tx, &run, &attempt).await
-    }
-    .map_err(unknown)?;
-    Ok(Some(witness))
+    Ok(())
 }

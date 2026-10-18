@@ -16,12 +16,16 @@ pub(crate) use faults::run as run_fault_contract;
 use std::sync::Arc;
 use time::OffsetDateTime;
 #[cfg(test)]
-#[allow(clippy::too_many_lines)] // One complete paused, claimed, and recovered authority journey.
 pub(crate) async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S) {
     let clock = Arc::new(ManualClock::new(OffsetDateTime::UNIX_EPOCH));
     let store = factory(clock.clone());
-    race::run(&store).await;
-    let f = fixture::fixture(&store).await;
+    Box::pin(journey(&store, &clock)).await;
+}
+#[cfg(test)]
+#[allow(clippy::too_many_lines)] // One complete paused, claimed, and recovered authority journey.
+async fn journey(store: &impl Store, clock: &ManualClock) {
+    race::run(store).await;
+    let f = fixture::fixture(store).await;
     let staged = f
         .execution
         .stage_frontend_call(f.request.clone(), f.authority.clone())
@@ -69,7 +73,7 @@ pub(crate) async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>
             .unwrap_err(),
         PhaseError::InvalidTransition
     );
-    let batch = fixture::suspension(&store, &f.request).await;
+    let batch = fixture::suspension(store, &f.request).await;
     let mut collision = batch.clone();
     collision.id = ControlId::new();
     collision
@@ -257,5 +261,5 @@ pub(crate) async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>
             .unwrap_err(),
         ToolContinuationError::SemanticConflict
     );
-    crate::session_owner::preparation_contract::frontend::run(&store, &clock).await;
+    crate::session_owner::preparation_contract::frontend::run(store, clock).await;
 }

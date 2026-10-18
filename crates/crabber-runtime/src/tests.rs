@@ -31,6 +31,8 @@ mod approval_order;
 mod approval_recovery;
 #[path = "tests/callback_ownership.rs"]
 mod callback_ownership;
+#[path = "tests/continuation_source.rs"]
+mod continuation_source;
 #[path = "tests/continuations.rs"]
 mod continuations;
 #[path = "tests/frontend_replay.rs"]
@@ -1791,6 +1793,16 @@ enum InitialTaskStage {
 
 #[derive(Default)]
 struct SettlementGate {
+    continuation_source_fault: AtomicUsize,
+    source_ack_lost: std::sync::atomic::AtomicBool,
+    source_worker_hold: std::sync::atomic::AtomicBool,
+    source_hold_absent_lookup: std::sync::atomic::AtomicBool,
+    source_absent_lookup_entered: Notify,
+    source_absent_lookup_release: Notify,
+    source_worker_entered: Notify,
+    source_worker_release: Notify,
+    source_workers:
+        Mutex<Vec<tokio::task::JoinHandle<Result<(), crabber_session::PublicStateError>>>>,
     // Diagnostics only: task identity is never execution authority.
     initial_task_diagnostics: std::sync::atomic::AtomicBool,
     grant_payload_protections: AtomicUsize,
@@ -1980,6 +1992,72 @@ struct DelayedTerminalExecution {
 
 #[async_trait]
 impl Store for DelayedTerminalStore {
+    async fn public_state(
+        &self,
+        session: &SessionId,
+    ) -> Result<crabber_session::PublicStateSnapshot, crabber_session::PublicStateError> {
+        self.inner.public_state(session).await
+    }
+    async fn lookup_public_state_mutation(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::PublicStateReceipt>, crabber_session::PublicStateError>
+    {
+        let selected = self.inner.lookup_public_state_mutation(session, id).await?;
+        if selected.is_none()
+            && self
+                .gate
+                .source_hold_absent_lookup
+                .swap(false, Ordering::SeqCst)
+        {
+            self.gate.source_absent_lookup_entered.notify_one();
+            self.gate.source_absent_lookup_release.notified().await;
+        }
+        Ok(selected)
+    }
+    async fn lookup_public_source_publication(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crabber_session::PublicSourcePublication>, crabber_session::PublicStateError>
+    {
+        self.inner
+            .lookup_public_source_publication(session, id)
+            .await
+    }
+    async fn mutate_bound_public_source(
+        &self,
+        request: crabber_session::PublicSourceMutation,
+        authority: crabber_session::PublicSourceAuthority,
+    ) -> Result<crabber_session::PublicStateReceipt, crabber_session::PublicStateError> {
+        if self.gate.source_worker_hold.swap(false, Ordering::SeqCst) {
+            let inner = self.inner.clone();
+            let gate = self.gate.clone();
+            let (sender, receiver) = oneshot::channel();
+            let worker = tokio::spawn(async move {
+                gate.source_worker_entered.notify_one();
+                gate.source_worker_release.notified().await;
+                let result = inner.mutate_bound_public_source(request, authority).await;
+                let observed = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                let _ = sender.send(result);
+                observed
+            });
+            self.gate.source_workers.lock().unwrap().push(worker);
+            return receiver
+                .await
+                .map_err(|_| crabber_session::PublicStateError::UnknownStoreOutcome)?;
+        }
+        let receipt = self
+            .inner
+            .mutate_bound_public_source(request, authority)
+            .await?;
+        if self.gate.source_ack_lost.swap(false, Ordering::SeqCst) {
+            return Err(crabber_session::PublicStateError::UnknownStoreOutcome);
+        }
+        Ok(receipt)
+    }
+
     fn supports_run_controls(&self) -> bool {
         self.gate.observation.is_some() || self.gate.terminal_controls
     }
@@ -2776,6 +2854,28 @@ impl Store for DelayedTerminalStore {
 
     fn supports_frontend_tools(&self) -> bool {
         self.inner.supports_frontend_tools()
+    }
+    async fn public_continuation_source(
+        &self,
+        fence: &crabber_core::RunFence,
+        authority: &crabber_session::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crabber_session::PublicStateError>
+    {
+        use crabber_session::PublicStateError;
+        match self.gate.continuation_source_fault.load(Ordering::SeqCst) {
+            1 => Err(PublicStateError::Unsupported),
+            2 => Err(PublicStateError::UnknownStoreOutcome),
+            fault => {
+                let mut source = self
+                    .inner
+                    .public_continuation_source(fence, authority)
+                    .await?;
+                if fault == 3 {
+                    source.attempt.id = crabber_core::AttemptId::new();
+                }
+                Ok(source)
+            }
+        }
     }
     async fn frontend_call_origin(
         &self,

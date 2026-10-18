@@ -106,6 +106,7 @@ pub struct ToolContext {
     progress: ProgressSink,
     resources: crate::ToolResources,
     session_invocations: crate::SessionInvocations,
+    public_source: crate::PublicSourceWriter,
 }
 impl ToolContext {
     #[must_use]
@@ -128,6 +129,7 @@ impl ToolContext {
             progress,
             resources: crate::ToolResources::default(),
             session_invocations: crate::SessionInvocations::default(),
+            public_source: crate::PublicSourceWriter::default(),
         }
     }
     /// Attach a host-owned task scope; standalone contexts reject registration.
@@ -149,6 +151,17 @@ impl ToolContext {
     #[must_use]
     pub fn session_invocations(&self) -> &crate::SessionInvocations {
         &self.session_invocations
+    }
+    /// Attach the trusted runtime's original native source; standalone contexts
+    /// retain the unavailable default.
+    #[must_use]
+    pub fn with_public_source(mut self, source: crate::PublicSourceWriter) -> Self {
+        self.public_source = source;
+        self
+    }
+    #[must_use]
+    pub fn public_source(&self) -> &crate::PublicSourceWriter {
+        &self.public_source
     }
     /// Authoritative workspace identity of this call's session. Read-only.
     #[must_use]

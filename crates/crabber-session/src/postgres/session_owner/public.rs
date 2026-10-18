@@ -9,7 +9,7 @@ use crate::session_owner::SessionOwnerState;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
 use sqlx::{Postgres, Row};
 #[path = "public/deletion.rs"]
-mod deletion;
+pub(in crate::postgres) mod deletion;
 #[cfg(test)]
 #[path = "public/deletion_tests.rs"]
 mod deletion_tests;

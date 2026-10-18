@@ -55,6 +55,7 @@ pub(super) struct ApprovedCalls {
 pub(super) struct ResumeAuthority {
     pub fence: RunFence,
     pub native_unstarted: bool,
+    pub continuation: Option<crabber_core::continuation_source::ContinuationIdentity>,
     pub granted: Option<super::attempt::OwnedAttempt>,
     pub approved: Option<ApprovedCalls>,
     pub tool_phases: Vec<crabber_session::ToolPhaseResume>,
@@ -295,6 +296,7 @@ impl Orchestrator {
         Ok(Some(ResumeAuthority {
             fence,
             native_unstarted,
+            continuation: None,
             granted: None,
             approved: None,
             tool_phases: Vec::new(),
@@ -326,8 +328,15 @@ fn resume_authority(
     receipt: &ApprovalReceipt,
     grant: ApprovalGrant,
 ) -> Result<ResumeAuthority, RuntimeError> {
-    let (ApprovalOutcome::Claimed { attempt, .. }
-    | ApprovalOutcome::ReclaimedUnstarted { attempt, .. }) = &receipt.outcome
+    let (ApprovalOutcome::Claimed {
+        attempt,
+        continuation,
+    }
+    | ApprovalOutcome::ReclaimedUnstarted {
+        attempt,
+        continuation,
+        ..
+    }) = &receipt.outcome
     else {
         return Err(ApprovalError::UnknownStoreOutcome.into());
     };
@@ -344,9 +353,14 @@ fn resume_authority(
     Ok(ResumeAuthority {
         fence: grant.fence,
         native_unstarted: false,
+        continuation: Some(crabber_core::continuation_source::ContinuationIdentity {
+            id: continuation.id.clone(),
+            generation: continuation.generation,
+        }),
         granted: Some(super::attempt::OwnedAttempt {
             target: attempt.target.clone(),
             authority: grant.authority,
+            begin_cursor: None,
         }),
         tool_phases: Vec::new(),
         frontend_phases: Vec::new(),

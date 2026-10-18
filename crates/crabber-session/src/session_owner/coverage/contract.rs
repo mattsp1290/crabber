@@ -170,6 +170,7 @@ pub(crate) async fn native_parent(
     request.binding.directory = admitted.session.directory;
     request.binding.kind = SessionOwnerKind::DetachedInvocation;
     request.binding.parent = Some(SessionOwnerParent {
+        invocation: None,
         run_id: admitted.run.id,
         call_id: Some(receipt.phase.target.call_id.clone()),
         phase: Some(receipt.phase.target),

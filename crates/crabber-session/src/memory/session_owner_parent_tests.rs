@@ -33,6 +33,7 @@ async fn detached_session_owner_requires_actual_parent_begin_source() {
         .clone_from(&admitted.session.directory);
     request.binding.kind = SessionOwnerKind::DetachedInvocation;
     request.binding.parent = Some(SessionOwnerParent {
+        invocation: None,
         run_id: admitted.run.id.clone(),
         call_id: Some(receipt.phase.target.call_id.clone()),
         phase: Some(receipt.phase.target.clone()),
@@ -209,6 +210,7 @@ async fn detached_owner_refuses_restored_parent_after_real_run_only_takeover() {
     request.binding.directory = admitted.session.directory;
     request.binding.kind = SessionOwnerKind::DetachedInvocation;
     request.binding.parent = Some(SessionOwnerParent {
+        invocation: None,
         run_id: original.id,
         call_id: None,
         phase: None,

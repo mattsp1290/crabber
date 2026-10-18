@@ -31,7 +31,8 @@ impl MemoryStore {
             if record.parent.is_some() && !state.sessions.contains_key(request.session_id()) {
                 return Err(Error::UnknownStoreOutcome);
             }
-            scope_context(state, &record, parent, self.clock.now())?;
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+            scope_context(state, &record, parent, self.clock.now(), &mut proof)?;
             let current = revision(state, request.session_id());
             let receipt = state.session_owners.activate_scope(
                 record,
@@ -188,6 +189,7 @@ impl MemoryStore {
                 bump_public_revision(state, &request.session_id)
                     .map_err(|_| Error::UnknownStoreOutcome)?;
             }
+            super::append_invocation(state, &receipt)?;
             before(fault(self))?;
             Ok(crate::session_owner::SessionOwnerOutcome::Applied {
                 receipt,
@@ -210,6 +212,7 @@ fn scope_context(
     record: &crate::session_owner::record::Record,
     authority: Option<&crate::session_owner::owned_scope::OwnedScopeParentAuthority>,
     now: time::OffsetDateTime,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
     use crate::session_owner::owned_scope::OwnedScopeParentAuthority;
     if record.driver.is_some() {
@@ -253,7 +256,7 @@ fn scope_context(
         owner: record.owner.clone(),
         lease_ms: 1,
     };
-    if super::parent_proof(state, &request, native, now)? != record.parent {
+    if super::parent_proof(state, &request, native, now, proof)? != record.parent {
         return Err(Error::StaleOwner);
     }
     Ok(())

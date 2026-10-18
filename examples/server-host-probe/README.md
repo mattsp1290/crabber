@@ -44,6 +44,11 @@ The assertions verify actual behavior:
   component through `shared_wasm_extension`, executes it, and checks the exact
   stored result and next model request before closing extensions. `cargo xtask
   check` builds the fixture and runs this test explicitly.
+- A real native tool uses `ToolContext::public_source()` for a public state
+  snapshot, RFC6902 delta and activity snapshot/delta. Exact retries retain their
+  original receipts, including after the call closes; a fresh late write refuses.
+  The probe checks native attribution, public Store state and unchanged model
+  conversation, using the actual backend through the forwarding adapter.
 - After close, pure controls fork verified closed history, read imported calls
   across coherent V2 pages, and atomically delete the quiet fork. The original
   generic executed session remains blocked: its scoped cleanup does not certify

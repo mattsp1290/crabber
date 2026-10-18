@@ -149,7 +149,10 @@ Result/completion signals and event EOF never replace these checks.
 The live `ApprovalFacade::request` and `UserPrompter::ask` APIs have been removed.
 Ordinary `ToolContext::request_interaction` returns the finite
 `DurableInteractionUnsupported` error synchronously. It invokes no host callback
-and does not create an awaiting question. Explicit typed tool suspension remains under implementation. The runtime's
+and does not create an awaiting question. An explicit `ResumableTool` can instead
+return a bounded typed checkpoint and declared questions. Native suspension commits
+the frozen batch and pause together; host answers and a fresh continuation claim
+resume that exact workflow without capturing a live callback. The runtime's
 durable pre-effect approval gate persists the complete prepared batch before
 dispatch; host answers and continuation claims use separate atomic controls.
 `terminate_approval` can cancel or expire a fully joined waiting batch without
@@ -314,8 +317,30 @@ revision from one store snapshot. `ExecutionStore::mutate_public_state` replaces
 the complete state/activity set at an expected revision, atomically recording a
 `PublicStateSnapshot` event and operation receipt. Null, scalar and array state,
 embedded NUL and finite JSON numbers retain their meaning in all bundled stores.
-Activities never become model conversation input. These operations are not yet
-wired into runtime tools or the protocol projector.
+State and activities remain separate from model conversation input.
+
+A native tool receives its bound display writer through `ToolContext::public_source()`.
+Call `snapshot()` for the current public view, then retain the original operation ID,
+expected revision and `PublicSourceChange` before `publish()`. The writer supports
+state snapshots, RFC6902 state deltas, activity snapshots and activity deltas. A failed
+patch changes no state, event, receipt or revision. Attribution comes from the actual
+native attempt/tool phase or detached invocation; a payload cannot choose another
+session, run or call. The committed source records feed the protocol projector.
+Ordinary legacy state writes do not manufacture that source association.
+
+Retained exact retries reconcile their original receipt even after revision or
+ownership advances. They grant no fresh writer: a new write after its source closes
+refuses stale ownership. Retain unknown operations; absence from a lookup does not
+prove an in-flight write rolled back. Custom adapters must forward or implement the
+atomic source methods; their defaults remain `Unsupported`.
+
+The current bounds are 256 KiB for state, 64 KiB per activity, 128 activities,
+1 MiB for the combined view and 256 operations per patch. Bound source mutations
+and canonical source-publication reads use bounded proof accounting. Ordinary
+`public_state()` snapshots retain their separate codec limits. These are ceilings,
+not a promise that every combination fits. State/activity updates do not append
+model messages or tool results; a tool returns its separate typed result through
+the normal execution boundary.
 
 Retain the original `PublicStateMutation` and its operation ID before writing.
 After `UnknownStoreOutcome`, use `Store::lookup_public_state_mutation` to reconcile
@@ -366,10 +391,10 @@ A legacy pause without native suspended-attempt evidence cannot activate this pa
 Record complete cleanup only after the owner has proved its resources stopped.
 The stores additionally block it for running calls or unquiesced phase records.
 These primitives record that proof's result; metadata, a lease or a returned task
-alone does not establish quiescence. Runtime task ownership and continuation
-barriers remain under implementation. Custom stores default to
-`Unsupported` and can run `attempt_contract::run_contract` and its commit-fault
-conformance suite.
+alone does not establish quiescence. Runtime retains actual task joins and commits
+native continuation barriers; these do not certify generic or custom resources
+without authenticated coverage. Custom stores default to `Unsupported` and can run
+`attempt_contract::run_contract` and its commit-fault conformance suite.
 
 `ExecutionStore::conclude_attempt` commits a known terminal or suspended logical
 run together with its owned attempt's outcome, complete-cleanup assertion, source

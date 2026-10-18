@@ -320,6 +320,18 @@ pub(super) async fn publish_captured_with_proof(
     if let Some(birth) = &birth {
         super::scope_origin::record_absent(tx, audit, birth).await?;
     }
+    if let Some(event) =
+        crate::session_owner::public_invocation::event(audit, record.snapshot.updated_at)?
+    {
+        proof.measure(&event).map_err(|_| Error::Capacity)?;
+        sqlx::query("INSERT INTO events(session_id,run_id,data) VALUES($1,$2,$3)")
+            .bind(&event.session_id.0)
+            .bind(&event.run_id.0)
+            .bind(serde_json::to_string(&event).map_err(unknown)?)
+            .execute(&mut **tx)
+            .await
+            .map_err(unknown)?;
+    }
     Ok(prepared)
 }
 

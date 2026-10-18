@@ -133,6 +133,10 @@ delegate! {
         fn execution_attempt(_run: &RunId, _id: &c::AttemptId, ) -> Result<s::VersionedAttempt, s::AttemptError>;
         fn latest_execution_attempt(_run: &RunId, ) -> Result<Option<s::VersionedAttempt>, s::AttemptError>;
         fn lookup_attempt_mutation(_session: &SessionId, _id: &c::ControlId, ) -> Result<Option<s::AttemptReceipt>, s::AttemptError>;
+        fn public_continuation_source(fence: &RunFence, authority: &s::AttemptAuthority, ) -> Result<c::continuation_source::ResumeSnapshot, s::PublicStateError>;
+        fn lookup_public_source_publication(session: &SessionId, id: &c::ControlId, ) -> Result<Option<s::PublicSourcePublication>, s::PublicStateError>;
+        fn mutate_bound_public_source(mutation: s::PublicSourceMutation, authority: s::PublicSourceAuthority, ) -> Result<s::PublicStateReceipt, s::PublicStateError>;
+        fn mutate_invocation_public_source(mutation: s::PublicSourceMutation, authority: s::session_owner::SessionOwnerAuthority, ) -> Result<s::PublicStateReceipt, s::PublicStateError>;
         fn public_state(_session: &SessionId, ) -> Result<s::PublicStateSnapshot, s::PublicStateError>;
         fn lookup_public_state_mutation(_session: &SessionId, _id: &c::ControlId, ) -> Result<Option<s::PublicStateReceipt>, s::PublicStateError>;
         fn session_revision(_session: &SessionId, ) -> Result<c::SessionRevision, StoreError>;

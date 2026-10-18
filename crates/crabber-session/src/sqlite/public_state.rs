@@ -1,3 +1,4 @@
+mod source;
 use super::records::{bump_public_revision, decode_row};
 use super::{SqliteExecution, SqliteStore, admission_execution, db};
 use crate::transaction::Transaction;
@@ -37,38 +38,69 @@ async fn receipt(
     session: &SessionId,
     id: &ControlId,
 ) -> Result<Option<PublicStateReceipt>, Error> {
-    sqlx::query(RECEIPT)
+    receipt_with_proof(
+        tx,
+        session,
+        id,
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .await
+}
+async fn receipt_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &ControlId,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Option<PublicStateReceipt>, Error> {
+    super::read_proof::charge(tx,sqlx::query_scalar("SELECT CAST(length(CAST(r.data_json AS BLOB))+length(CAST(r.semantic_digest AS BLOB))+COALESCE(length(CAST(e.data AS BLOB)),0)+64 AS BIGINT) FROM operation_receipts r LEFT JOIN events e ON e.seq=r.event_seq AND e.session_id=r.session_id WHERE r.session_id=$1 AND r.operation_id=$2").bind(&session.0).bind(&id.0),proof).await.map_err(|_|Error::UnknownStoreOutcome)?;
+    let row = sqlx::query(RECEIPT)
         .bind(&session.0)
         .bind(&id.0)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db)
-        .map_err(public_state::unknown)?
-        .map(|row| {
-            let kind: String = row.get("kind");
-            if kind != "public_state" {
-                return Err(Error::SemanticConflict);
-            }
-            let receipt = public_state::receipt(
-                session,
-                id,
-                &kind,
-                &row.get::<String, _>("semantic_digest"),
-                row.get("event_seq"),
-                row.get("data_json"),
-            )?;
-            let event = serde_json::from_str::<crabber_core::EventRecord>(
-                &row.get::<Option<String>, _>("event_data")
-                    .ok_or(Error::UnknownStoreOutcome)?,
-            )
+        .map_err(public_state::unknown)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    {
+        let kind: String = row.get("kind");
+        if kind != "public_state" {
+            return Err(Error::SemanticConflict);
+        }
+        let receipt = public_state::receipt(
+            session,
+            id,
+            &kind,
+            &row.get::<String, _>("semantic_digest"),
+            row.get("event_seq"),
+            row.get("data_json"),
+            proof,
+        )?;
+        let raw = row
+            .get::<Option<&str>, _>("event_data")
+            .ok_or(Error::UnknownStoreOutcome)?;
+        proof
+            .charge(raw.len())
             .map_err(|_| Error::UnknownStoreOutcome)?;
-            if row.get::<Option<String>, _>("event_run_id").as_deref() != Some(&receipt.run_id.0) {
-                return Err(Error::UnknownStoreOutcome);
-            }
+        let event: crabber_core::EventRecord =
+            serde_json::from_str(raw).map_err(|_| Error::UnknownStoreOutcome)?;
+        if row.get::<Option<String>, _>("event_run_id").as_deref() != Some(&receipt.run_id.0) {
+            return Err(Error::UnknownStoreOutcome);
+        }
+        if event
+            .payload
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            public_state::verify_source_event_with_proof(&receipt, &event, proof)?;
+        } else {
             public_state::verify_receipt_event(&receipt, &event)?;
-            Ok(receipt)
-        })
-        .transpose()
+        }
+        source::verify_before(tx, &event, proof).await?;
+        Ok(Some(receipt))
+    }
 }
 async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Result<T, Error> {
     super::transactions::finish(tx, result, public_state::unknown).await
@@ -350,6 +382,39 @@ mod tests {
     async fn public_state_fault_contract() {
         let (store, _path, _directory) = crate::sqlite::tests::temp_store().await;
         crate::public_state_contract::run_fault_contract(&store, |point| {
+            store
+                .public_state_fault
+                .store(point as u8, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+    }
+    #[tokio::test]
+    async fn native_public_source_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let path = directory.path().join("source.db");
+        super::SqliteStore::migrate(&path).await.unwrap();
+        let store = super::SqliteStore::connect(&path)
+            .await
+            .unwrap()
+            .with_clock(clock);
+        crate::public_state_contract::source::run(&store).await;
+    }
+    #[tokio::test]
+    async fn native_public_source_fault_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
+        let path = directory.path().join("source.db");
+        super::SqliteStore::migrate(&path).await.unwrap();
+        let store = super::SqliteStore::connect(&path)
+            .await
+            .unwrap()
+            .with_clock(clock);
+        crate::public_state_contract::source::faults(&store, |point| {
             store
                 .public_state_fault
                 .store(point as u8, std::sync::atomic::Ordering::SeqCst);

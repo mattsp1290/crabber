@@ -4,6 +4,13 @@ use crate::{
     public_state,
 };
 use crabber_core::{ControlId, SessionId, SessionRevision};
+native_pending_initial_items! {
+    #[path="public_state/source.rs"]
+    mod source;
+    #[cfg(test)]
+    #[path="public_state/source_tests.rs"]
+    mod source_tests;
+}
 
 impl MemoryStore {
     pub(super) fn read_public_state(
@@ -58,13 +65,18 @@ impl MemoryStore {
     }
 }
 fn verify(state: &State, receipt: &PublicStateReceipt) -> Result<(), Error> {
-    public_state::verify_receipt_event(
-        receipt,
-        state
-            .events
-            .get(receipt.event_cursor)
-            .ok_or(Error::UnknownStoreOutcome)?,
-    )
+    let event = state
+        .events
+        .get(receipt.event_cursor)
+        .ok_or(Error::UnknownStoreOutcome)?;
+    public_state::verify_receipt_event(receipt, event)?;
+    if let Some(cursor) = public_state::before_event(event)? {
+        public_state::verify_before_event(
+            event,
+            state.events.get(cursor).ok_or(Error::UnknownStoreOutcome)?,
+        )?;
+    }
+    Ok(())
 }
 fn revision(state: &State, session: &SessionId) -> SessionRevision {
     state

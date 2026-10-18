@@ -9,7 +9,7 @@ use crate::transaction::Transaction;
 use crate::{PublicRegisteredOwner, PublicSessionLimitV2};
 use sqlx::{Row, Sqlite};
 #[path = "public/deletion.rs"]
-mod deletion;
+pub(in crate::sqlite) mod deletion;
 #[cfg(test)]
 #[path = "public/deletion_tests.rs"]
 mod deletion_tests;

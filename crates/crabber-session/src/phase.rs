@@ -239,6 +239,9 @@ impl std::fmt::Debug for PhaseAuthority {
     }
 }
 impl PhaseAuthority {
+    pub(crate) fn public_source_scope(&self) -> (&PhaseSnapshot, &AttemptAuthority) {
+        (&self.snapshot, &self.attempt)
+    }
     /// Construct only after a trusted Store adapter commits a fresh phase claim.
     /// # Errors
     /// Rejects invalid opaque-token representation.

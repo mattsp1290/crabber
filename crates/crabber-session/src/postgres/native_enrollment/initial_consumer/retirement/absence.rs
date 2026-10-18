@@ -31,17 +31,19 @@ pub(in super::super) async fn verify_route(
         let Some(driver) = record.driver.as_deref() else {
             continue;
         };
-        let original = Box::pin(
-            crate::postgres::session_owner::drivers::source::original_read(
-                tx,
-                &expected.key.session_id,
-                driver.run_id(),
-                proof,
-            ),
-        )
-        .await
-        .map_err(crate::public_session::v2::proof::ReadError::public)?;
-        original.verify_link(driver).map_err(unknown)?;
+        {
+            let original = Box::pin(
+                crate::postgres::session_owner::drivers::source::original_read(
+                    tx,
+                    &expected.key.session_id,
+                    driver.run_id(),
+                    proof,
+                ),
+            )
+            .await
+            .map_err(crate::public_session::v2::proof::ReadError::public)?;
+            original.verify_link(driver).map_err(unknown)?;
+        }
         let status = Box::pin(crate::postgres::native_enrollment::original(
             tx,
             &expected.key.session_id,

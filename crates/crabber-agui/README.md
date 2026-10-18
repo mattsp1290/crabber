@@ -38,7 +38,7 @@ without credentials. SSE encoding uses the SDK encoder and producer normalizatio
 `[DONE]` marker. Reasoning display defaults off.
 
 Hosts can use `Projector::push_with_delivery` to reserve and send an entire batch
-atomically without cloning prior identities. A rejected delivery rolls back
+atomically with bounded presentation metadata rollback. A rejected delivery rolls back
 presentation boundaries and permanently faults the stream. `frame_budget` performs
 an allocation-free conservative precheck, including SSE framing, before the SDK
 allocates a normalized event. The limit covers the whole frame. Queue accounting

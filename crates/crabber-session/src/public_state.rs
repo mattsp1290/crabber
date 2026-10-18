@@ -76,3 +76,18 @@ impl PublicStateMutation {
 }
 mod records;
 pub(crate) use records::*;
+mod source;
+pub use source::{PublicSourceAuthority, PublicSourceMutation};
+pub(crate) use source::{attach_before, before_event, verify_before_event};
+pub(crate) use source::{source_event, source_matches, verify_source_event};
+
+pub(crate) use source::{verify_before_event_with_proof, verify_source_event_with_proof};
+
+/// Canonical immutable projection records for one committed source mutation.
+/// This is metadata for delivery/reconciliation and grants no writer authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublicSourcePublication {
+    pub receipt: PublicStateReceipt,
+    /// Actual pre-state snapshot (for deltas), followed by the actual final fact.
+    pub events: Vec<crabber_core::EventRecord>,
+}

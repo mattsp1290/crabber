@@ -220,13 +220,25 @@ fn rewrite_memory(store: &MemoryStore, case: &crate::continuation_input::tests::
         }
     }
     let events: Vec<_> = state.events.iter().cloned().collect();
+    let cursor: crabber_core::EventCursor =
+        serde_json::from_value(receipt["event_cursor"].clone()).unwrap();
+    let mut rewritten = 0;
     state.events = crate::memory::events::EventLog::default();
     for mut event in events {
-        if event.correlation.as_deref() == Some(&case.operation.0) {
+        // Waiting presentation deliberately shares this operation correlation.
+        // Rewrite the receipt's actual native audit, just as the SQL fixture
+        // selects its exact receipt cursor, rather than rewriting presentation.
+        if event.cursor == Some(cursor) {
+            assert_eq!(
+                event.correlation.as_deref(),
+                Some(case.operation.0.as_str())
+            );
             crate::continuation_input::tests::event(case, &receipt, &mut event);
+            rewritten += 1;
         }
         state.events.append(event).unwrap();
     }
+    assert_eq!(rewritten, 1);
     let saved = match domain {
         Domain::Approval => {
             crate::memory::OperationReceipt::Approval(serde_json::from_value(receipt).unwrap())

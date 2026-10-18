@@ -130,14 +130,18 @@ pub(crate) fn receipt(
     kind: &str,
     digest: &str,
     event_seq: i64,
-    data: Option<String>,
+    data: Option<&str>,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<PublicStateReceipt, PublicStateError> {
     if kind != "public_state" {
         return Err(PublicStateError::SemanticConflict);
     }
+    let raw = data.ok_or(PublicStateError::UnknownStoreOutcome)?;
+    proof
+        .charge(raw.len())
+        .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
     let receipt: PublicStateReceipt =
-        serde_json::from_str(&data.ok_or(PublicStateError::UnknownStoreOutcome)?)
-            .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+        serde_json::from_str(raw).map_err(|_| PublicStateError::UnknownStoreOutcome)?;
     if receipt.session_id != *session
         || receipt.operation_id != *id
         || receipt.semantic_digest.as_str() != digest
@@ -175,6 +179,14 @@ pub(crate) fn verify_receipt_event(
     receipt: &PublicStateReceipt,
     event: &EventRecord,
 ) -> Result<(), PublicStateError> {
+    if event
+        .payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        return super::verify_source_event(receipt, event);
+    }
     if event.kind != EventKind::PublicStateSnapshot
         || event.live_only
         || event.session_id != receipt.session_id
@@ -264,5 +276,63 @@ mod tests {
                 Err(PublicStateError::UnknownStoreOutcome)
             );
         }
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[derive(serde::Serialize)]
+struct Encoded<'a> {
+    encoding: &'static str,
+    record: &'a str,
+}
+/// New source publication meters the text carrier and JSON wrapper separately.
+#[cfg(feature = "postgres")]
+pub(crate) fn encode_source_event(
+    event: &EventRecord,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<sqlx::types::Json<serde_json::Value>, PublicStateError> {
+    proof
+        .measure(event)
+        .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+    let text = serde_json::to_string(event).map_err(|_| PublicStateError::InvalidRequest)?;
+    let wire = Encoded {
+        encoding: "crabber.event.json-text.v1",
+        record: &text,
+    };
+    proof
+        .measure(&wire)
+        .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+    let value = serde_json::to_value(wire).map_err(|_| PublicStateError::InvalidRequest)?;
+    // The final database wire encoding is independent of its retained Value.
+    proof
+        .measure(&value)
+        .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+    Ok(sqlx::types::Json(value))
+}
+#[cfg(feature = "postgres")]
+pub(crate) fn decode_source_event(
+    value: sqlx::types::Json<serde_json::Value>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<EventRecord, PublicStateError> {
+    if value.0.get("encoding").is_some() {
+        if value.0.get("encoding").and_then(serde_json::Value::as_str)
+            != Some("crabber.event.json-text.v1")
+        {
+            return Err(PublicStateError::UnknownStoreOutcome);
+        }
+        let raw = value
+            .0
+            .get("record")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(PublicStateError::UnknownStoreOutcome)?;
+        proof
+            .charge(raw.len())
+            .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+        serde_json::from_str(raw).map_err(|_| PublicStateError::UnknownStoreOutcome)
+    } else {
+        proof
+            .measure(&value.0)
+            .map_err(|_| PublicStateError::UnknownStoreOutcome)?;
+        serde_json::from_value(value.0).map_err(|_| PublicStateError::UnknownStoreOutcome)
     }
 }

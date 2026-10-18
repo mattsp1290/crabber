@@ -202,3 +202,9 @@ async fn stream_eof_without_completed_fails_without_assistant_commit() {
         ]
     );
 }
+
+#[path = "public_state/source_writer.rs"]
+mod source_writer;
+
+#[path = "public_state/source_nested.rs"]
+mod source_nested;

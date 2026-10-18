@@ -115,7 +115,12 @@ async fn public_responses_loop_sends_protected_mixed_tool_output() {
         .unwrap()
         .unwrap();
     let session = handle.session_id().clone();
-    timeout(BOUND, handle.done()).await.unwrap().unwrap();
+    timeout(
+        BOUND,
+        super::projection::run(handle, &*store, &ToolCallId::from("wire-call"), false),
+    )
+    .await
+    .unwrap();
     let bodies = server.await.unwrap().unwrap();
     assert_eq!(bodies.len(), 2);
     let result = bodies[1]["input"]

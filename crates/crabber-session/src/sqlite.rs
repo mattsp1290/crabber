@@ -35,6 +35,7 @@ mod native_enrollment;
 mod native_parent;
 mod ownership_origin;
 mod phase;
+mod public_continuation_source;
 mod public_header;
 mod public_run;
 mod public_state;

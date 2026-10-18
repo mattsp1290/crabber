@@ -48,6 +48,9 @@ pub enum SessionInvocationError {
 pub struct SessionInvocationContext {
     pub cancel: CancellationToken,
     pub cleanup: crate::CleanupTracker,
+    pub public_source: crate::PublicSourceWriter,
+    /// Bound nested creation under this actual independently active invocation.
+    pub invocations: SessionInvocations,
 }
 pub type SessionInvocationTask = Box<
     dyn FnOnce(SessionInvocationContext) -> BoxFuture<'static, Result<(), crate::ResourceFailure>>

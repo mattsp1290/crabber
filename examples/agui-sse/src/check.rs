@@ -7,7 +7,10 @@ use crabber::{
     extension::{Extension, Registrar, Scope, TransformOutput},
     session::{MemoryStore, Store},
 };
-use crabber_agui::ag_ui_core::{event::Event, types::Message};
+use crabber_agui::ag_ui_core::{
+    event::Event,
+    types::{ContentPart, Message, MessageContent},
+};
 use serde_json::{Value, json};
 use std::{error::Error, sync::Arc};
 use tokio::{net::TcpListener, task::JoinHandle};
@@ -100,9 +103,16 @@ pub fn builder(
     store: Arc<MemoryStore>,
     provider: Arc<dyn crabber::providers::Resolver>,
 ) -> crabber::AgentBuilder {
+    let mut config = AgentConfig::new(Selection {
+        provider_id: "fake".into(),
+        model_id: "scripted".into(),
+    });
+    config.workspace_id = crate::thread_store::WORKSPACE.into();
+    config.directory = crate::thread_store::DIRECTORY.into();
+    config.title = crate::thread_store::TITLE.into();
     Agent::builder()
         .behavior_version("example-host.v1").store(Arc::new(crate::thread_store::ThreadStore(store))).provider(provider)
-        .config(AgentConfig::new(Selection { provider_id: "fake".into(), model_id: "scripted".into() }))
+        .config(config)
         .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .execution_mode(crabber::runtime::ExecutionMode::Parallel { max: 2 })
         .shared_tool(Arc::new(ToolDefinition { info: ToolInfo { name:"echo".into(), description:"Echo public input".into(),
@@ -373,14 +383,32 @@ async fn unicode() -> CheckResult {
             .iter()
             .find_map(|e| match e {
                 Event::ToolCallResult(e) if e.message_id.to_string() == message.id.to_string() => {
-                    e.content.as_text()
+                    Some(e)
                 }
                 _ => None,
             })
             .ok_or("missing result")?;
+        let expected = content
+            .iter()
+            .map(|part| match part {
+                ContentBlock::Text { text } => Ok(ContentPart::Text {
+                    text: text.clone(),
+                    id: None,
+                    metadata: None,
+                }),
+                _ => Err("expected text-only echo result"),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(projected.content, MessageContent::Parts(expected));
         assert_eq!(
-            serde_json::from_str::<Value>(projected)?,
-            crabber_agui::public_tool_content(content, *is_error, false)
+            projected
+                .base
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("crabber"))
+                .and_then(|metadata| metadata.get("isError"))
+                .and_then(Value::as_bool),
+            Some(*is_error)
         );
     }
     server.stop().await?;

@@ -71,7 +71,7 @@ impl crate::postgres::PostgresStore {
             owner: record.owner.clone(),
             lease_ms: 1,
         };
-        if parent::proof(tx, &request, native, self.clock.now()).await? != record.parent {
+        if parent::proof(tx, &request, native, self.clock.now(), proof).await? != record.parent {
             return Err(Error::StaleOwner);
         }
         Ok(())

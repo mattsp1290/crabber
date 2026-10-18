@@ -39,6 +39,7 @@ mod native_enrollment;
 mod native_parent;
 mod ownership_origin;
 mod phase;
+mod public_continuation_source;
 mod public_header;
 mod public_run;
 mod public_state;
@@ -371,9 +372,18 @@ async fn insert_event_captured(
         event.kind,
         crabber_core::EventKind::RunControlChanged
             | crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::PublicStateDelta
+            | crabber_core::EventKind::ActivitySnapshot
+            | crabber_core::EventKind::ActivityDelta
+            | crabber_core::EventKind::PublicPresentation
+            | crabber_core::EventKind::InvocationStarted
+            | crabber_core::EventKind::InvocationFinished
+            | crabber_core::EventKind::InvocationError
+            | crabber_core::EventKind::ToolProgress
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
+            | crabber_core::EventKind::ContinuationWaiting
             | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(
@@ -1746,11 +1756,44 @@ impl Store for PostgresStore {
         self.attempt_receipt(session, id).await
     }
 
+    async fn public_continuation_source(
+        &self,
+        fence: &RunFence,
+        authority: &crate::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crate::PublicStateError> {
+        self.read_continuation_source(fence, authority).await
+    }
     async fn public_state(
         &self,
         session: &SessionId,
     ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
         self.read_public_state(session).await
+    }
+    async fn lookup_public_source_publication(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicSourcePublication>, crate::PublicStateError> {
+        self.read_public_source_publication(session, id).await
+    }
+    async fn mutate_bound_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(mutation, authority, None).await
+    }
+    async fn mutate_invocation_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(
+            mutation,
+            crate::PublicSourceAuthority::Invocation(authority),
+            None,
+        )
+        .await
     }
     async fn lookup_public_state_mutation(
         &self,
@@ -2110,6 +2153,18 @@ impl ExecutionStore for PostgresExecution {
         self.change_attempt(request, authority).await
     }
 
+    async fn mutate_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        if matches!(&authority, crate::PublicSourceAuthority::Invocation(_)) {
+            return Err(crate::PublicStateError::Unsupported);
+        }
+        self.store
+            .write_public_source(mutation, authority, Some(&self.fence))
+            .await
+    }
     async fn mutate_public_state(
         &self,
         mutation: crate::PublicStateMutation,

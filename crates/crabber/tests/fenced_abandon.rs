@@ -112,9 +112,15 @@ mod session_owner_audit;
 #[path = "../../crabber-session/src/session_owner/coverage.rs"]
 #[allow(dead_code)]
 mod session_owner_coverage;
+#[path = "fenced_support/invocation_parent.rs"]
+#[allow(dead_code)]
+mod session_owner_invocation_parent;
 #[path = "../../crabber-session/src/session_owner/ledger.rs"]
 #[allow(dead_code)]
 mod session_owner_ledger;
+#[path = "fenced_support/invocation_public.rs"]
+#[allow(dead_code)]
+mod session_owner_public_invocation;
 #[path = "../../crabber-session/src/session_owner/record.rs"]
 #[allow(dead_code)]
 mod session_owner_record;
@@ -143,7 +149,9 @@ mod session_owner {
     pub(crate) use crate::session_owner_cancellation as cancellation;
     pub(crate) use crate::session_owner_cancellation_contract as cancellation_contract;
     pub(crate) use crate::session_owner_coverage as coverage;
+    pub(crate) use crate::session_owner_invocation_parent as invocation_parent;
     pub(crate) use crate::session_owner_ledger::Ledger;
+    pub(crate) use crate::session_owner_public_invocation as public_invocation;
     pub(crate) use crate::session_owner_record as record;
     pub(crate) use crate::session_owner_validation as validation;
     pub(crate) use crate::session_owner_validation::{digest, identifier, resolver};
@@ -409,11 +417,12 @@ pub use crabber::session::{
     PhaseAuthority, PhaseCommand, PhaseError, PhaseMutation, PhaseMutationOutcome, PhaseOperation,
     PhaseQuiescence, PhaseQuiescenceResult, PhaseReceipt, PhaseResolution, PhaseResolutionOutcome,
     PhaseResolverClaim, PhaseSettlement, PhaseSettlementRecords, PhaseSnapshot, PhaseStart,
-    PhaseState, PhaseTarget, PhaseWriteAuthority, PublicStateError, PublicStateMutation,
-    PublicStateReceipt, PublicStateSnapshot, RetainedExecutionBinding, RunBoundary,
-    SnapshotContinuation, SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage,
-    SnapshotRequest, SnapshotUsage, StoreError, UncertainPhaseChoice, VersionedAttempt,
-    VersionedPhase, admission_config_hash, ensure_storable, ensure_storable_text,
+    PhaseState, PhaseTarget, PhaseWriteAuthority, PublicSourceAuthority, PublicSourceMutation,
+    PublicSourcePublication, PublicStateError, PublicStateMutation, PublicStateReceipt,
+    PublicStateSnapshot, RetainedExecutionBinding, RunBoundary, SnapshotContinuation,
+    SnapshotLimit, SnapshotLimits, SnapshotOutcome, SnapshotPage, SnapshotRequest, SnapshotUsage,
+    StoreError, UncertainPhaseChoice, VersionedAttempt, VersionedPhase, admission_config_hash,
+    ensure_storable, ensure_storable_text,
 };
 #[path = "../../crabber-session/src/abandonment.rs"]
 #[allow(dead_code)]
@@ -512,7 +521,14 @@ mod phase {
 mod phase_contract;
 #[path = "../../crabber-session/src/public_state/records.rs"]
 #[allow(dead_code)]
-mod public_state;
+mod public_state_records;
+mod public_state {
+    pub(crate) use crate::public_source_fixture::{before_event, verify_before_event};
+    pub(crate) use crate::public_state_records::*;
+}
+#[path = "fenced_support/public_source.rs"]
+mod public_source_fixture;
+pub(crate) use public_source_fixture::verify_source_event;
 #[path = "../../crabber-session/src/public_state_contract.rs"]
 #[allow(dead_code)]
 mod public_state_contract;

@@ -97,6 +97,18 @@ fn every_projector_event_kind_survives_sdk_normalization_and_encoding() {
         json!({"type":"REASONING_MESSAGE_CONTENT", "messageId":"reasoning", "delta":"summary"}),
         json!({"type":"REASONING_MESSAGE_END", "messageId":"reasoning"}),
         json!({"type":"REASONING_END", "messageId":"reasoning"}),
+        json!({"type":"ACTIVITY_SNAPSHOT", "messageId":"attempt", "activityType":"crabber.execution_attempt", "content":{"state":"Started"}, "replace":true}),
+        json!({"type":"ACTIVITY_DELTA", "messageId":"activity", "activityType":"progress", "patch":[{"op":"add","path":"/done","value":true}]}),
+        json!({"type":"STATE_SNAPSHOT", "snapshot":null}),
+        json!({"type":"STATE_DELTA", "delta":[{"op":"remove","path":"/old","value":null}]}),
+        json!({"type":"STEP_STARTED", "stepName":"turn:actual"}),
+        json!({"type":"STEP_FINISHED", "stepName":"turn:actual"}),
+        json!({"type":"MESSAGES_SNAPSHOT", "messages":[]}),
+        json!({"type":"SUBAGENT_STARTED", "subagentRunId":"child", "name":"crabber.invocation"}),
+        json!({"type":"SUBAGENT_FINISHED", "subagentRunId":"child", "outcome":{"type":"success"}}),
+        json!({"type":"SUBAGENT_ERROR", "subagentRunId":"child", "message":"Presentation closed", "code":"crabber_projection_scope_closed"}),
+        json!({"type":"RAW", "source":"declared", "event":{"null":null}}),
+        json!({"type":"CUSTOM", "name":"declared", "value":[null,true]}),
     ];
     for value in variants {
         let event = event(value);

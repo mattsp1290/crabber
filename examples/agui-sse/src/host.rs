@@ -231,20 +231,34 @@ async fn serve_owned(
     let Ok(agent) = (host.factory)() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "startup_failed");
     };
+    let preparation_stop = CancellationToken::new();
     let result = {
-        let admission = agent.prompt(Some(SessionId::from(input.thread_id.to_string())), text);
+        let admission = async {
+            let session = SessionId::from(input.thread_id.to_string());
+            crate::thread_store::ensure_thread(&agent, &session).await?;
+            if preparation_stop.is_cancelled()
+                || host.shutdown.is_cancelled()
+                || tokio::time::Instant::now() >= expires
+            {
+                return Err(RuntimeError::HostClosed);
+            }
+            agent.prompt(Some(session), text).await
+        };
         tokio::pin!(admission);
         tokio::select! {
             result = &mut admission => result,
             () = host.shutdown.cancelled() => {
+                preparation_stop.cancel();
                 respond(reply, error(StatusCode::SERVICE_UNAVAILABLE, "host_shutdown"));
                 late_admission(host, admission.as_mut()).await
             },
             () = tokio::time::sleep_until(expires) => {
+                preparation_stop.cancel();
                 respond(reply, error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
                 late_admission(host, admission.as_mut()).await
             },
             () = reply.as_mut().expect("response pending").closed() => {
+                preparation_stop.cancel();
                 reply.take();
                 late_admission(host, admission.as_mut()).await
             },

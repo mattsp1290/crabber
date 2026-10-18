@@ -9,9 +9,10 @@ impl Orchestrator {
         scope: &Batch<'_>,
         mut batch: ToolContinuationSuspension,
         authority: ToolSuspensionAuthority,
-    ) -> Result<crabber_core::EventRecord, RuntimeError> {
+    ) -> Result<(crabber_core::EventRecord, crabber_core::EventRecord), RuntimeError> {
         // The caller has joined every phase/run resource and this path either
         // returns a genuine pause or a typed boundary error, never more effects.
+        let _source_terminal = self.seal_public_source(scope.run).await?;
         let _observation = self.observation_lifetime.quiescent_commit();
         for retry in 0..3 {
             let Ok(Some(stored)) = self.store.get_run(scope.run).await else {
@@ -58,7 +59,8 @@ impl Orchestrator {
             {
                 return Err(unknown());
             }
-            return Ok(pause);
+            let waiting = batch.waiting_event(&receipt)?;
+            return Ok((pause, waiting));
         }
         unreachable!("bounded retry returns on its final iteration")
     }

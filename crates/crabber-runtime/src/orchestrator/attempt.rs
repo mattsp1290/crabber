@@ -13,6 +13,7 @@ pub(super) const DRIVER_VERSION: &str = "8:resource-join-bound-ms=1000:pre-effec
 pub(super) struct OwnedAttempt {
     pub target: AttemptTarget,
     pub authority: AttemptAuthority,
+    pub begin_cursor: Option<crabber_core::EventCursor>,
 }
 
 impl Orchestrator {
@@ -58,33 +59,40 @@ impl Orchestrator {
             .await?;
         let authority = authority.ok_or(AttemptError::UnknownStoreOutcome)?;
         let target = receipt.attempt.target;
-        self.apply_attempt(
-            execution,
-            session,
-            AttemptCommand::Begin {
-                target: target.clone(),
-            },
-            Some(authority.clone()),
-        )
-        .await?;
-        Ok(OwnedAttempt { target, authority })
+        let (begun, _) = self
+            .apply_attempt(
+                execution,
+                session,
+                AttemptCommand::Begin {
+                    target: target.clone(),
+                },
+                Some(authority.clone()),
+            )
+            .await?;
+        Ok(OwnedAttempt {
+            target,
+            authority,
+            begin_cursor: Some(begun.event_cursor),
+        })
     }
 
     pub(super) async fn begin_granted_attempt(
         &self,
         execution: &dyn ExecutionStore,
         session: &SessionId,
-        owner: OwnedAttempt,
+        mut owner: OwnedAttempt,
     ) -> Result<OwnedAttempt, RuntimeError> {
-        self.apply_attempt(
-            execution,
-            session,
-            AttemptCommand::Begin {
-                target: owner.target.clone(),
-            },
-            Some(owner.authority.clone()),
-        )
-        .await?;
+        let (begun, _) = self
+            .apply_attempt(
+                execution,
+                session,
+                AttemptCommand::Begin {
+                    target: owner.target.clone(),
+                },
+                Some(owner.authority.clone()),
+            )
+            .await?;
+        owner.begin_cursor = Some(begun.event_cursor);
         Ok(owner)
     }
     async fn apply_attempt(
@@ -138,6 +146,7 @@ impl Orchestrator {
                 run_id: run_id.clone(),
             });
         }
+        let mut source_terminal = self.seal_public_source(run_id).await?;
         // Terminal Completed may roll back with PendingInput and resume effects;
         // only final suspension paths can close the observation lifetime.
         let _observation = matches!(boundary, crabber_session::RunBoundary::Suspended { .. })
@@ -181,7 +190,12 @@ impl Orchestrator {
             {
                 Ok(AttemptMutationOutcome::Applied { .. }) => return Ok(event),
                 Err(AttemptError::RevisionConflict) => (),
-                Err(AttemptError::PendingInput) => return Err(AttemptError::PendingInput.into()),
+                Err(AttemptError::PendingInput) => {
+                    if let Some(terminal) = &mut source_terminal {
+                        terminal.definite_pending_input();
+                    }
+                    return Err(AttemptError::PendingInput.into());
+                }
                 Ok(AttemptMutationOutcome::Replayed(_)) => {
                     return Err(RuntimeError::AttemptBoundaryUnknown {
                         run_id: run_id.clone(),
@@ -197,5 +211,24 @@ impl Orchestrator {
             }
         }
         Err(AttemptError::RevisionConflict.into())
+    }
+}
+
+impl Orchestrator {
+    pub(super) async fn seal_public_source(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<crate::public_source::TerminalDelivery<'_>>, RuntimeError> {
+        match &self.source_delivery {
+            Some(delivery) => delivery
+                .terminal(&*self.store)
+                .await
+                .map(Some)
+                .map_err(|_| RuntimeError::AttemptBoundaryUnknown {
+                    run_id: run.clone(),
+                    reason: AttemptError::UnknownStoreOutcome,
+                }),
+            None => Ok(None),
+        }
     }
 }

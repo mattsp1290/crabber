@@ -308,7 +308,7 @@ async fn admit_expired_retry_safe_run(
     admitted.run.id
 }
 
-async fn fresh_agent_recovers_expired_running_run(
+async fn fresh_agent_refuses_raw_pending_recovery(
     store: Arc<dyn Store>,
     resume_store: Arc<dyn Store>,
     clock: Arc<ManualClock>,
@@ -322,6 +322,9 @@ async fn fresh_agent_recovers_expired_running_run(
             StreamDelta::Completed,
         ]])))
         .config(config())
+        // Recovery must retain the same callback inventory as the original;
+        // an explicit policy is distinct from the runtime default.
+        .policy(Arc::new(StaticPolicy::new(PermissionDecision::Allow)))
         .shared_extension(
             Arc::new(NativeResumeExtension(Arc::clone(&calls))),
             Scope::Global,
@@ -364,11 +367,30 @@ async fn fresh_agent_recovers_expired_running_run(
         .shared_wasm_extension(fixture("echo-tool"))
         .build()
         .unwrap();
-    let recovered = second.recover().await.unwrap().recovered;
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].run_id, run_id);
-    assert_eq!(recovered[0].status, RunStatus::Interrupted);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let pending = resume_store
+        .list_unfinished_tool_calls(&run_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].status, ToolCallStatus::Pending);
+    // A raw retry-safe row is not an acknowledged native suspension. The
+    // fresh-agent paused-run tests above cover the legal native+WASM resume.
+    let report = second.recover().await.unwrap();
+    assert_eq!(report.recovered, Vec::<crabber::runtime::RunResult>::new());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].run_id, run_id);
+    assert_eq!(
+        report.skipped[0].reason,
+        crabber::RecoverySkipReason::Attempt(crabber::session::AttemptError::InvalidTransition)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        resume_store
+            .list_unfinished_tool_calls(&run_id)
+            .await
+            .unwrap(),
+        pending
+    );
     assert_eq!(
         resume_store
             .get_run(&run_id)
@@ -381,12 +403,12 @@ async fn fresh_agent_recovers_expired_running_run(
 }
 
 #[tokio::test]
-async fn fresh_agent_recovers_native_and_wasm_plan() {
+async fn fresh_agent_refuses_raw_pending_native_and_wasm_recovery() {
     let clock = Arc::new(ManualClock::new(
         SystemClock.now() - Duration::from_hours(24),
     ));
     let store: Arc<dyn Store> = Arc::new(MemoryStore::with_clock(clock.clone()));
-    fresh_agent_recovers_expired_running_run(Arc::clone(&store), store, clock).await;
+    fresh_agent_refuses_raw_pending_recovery(Arc::clone(&store), store, clock).await;
 }
 
 #[tokio::test]

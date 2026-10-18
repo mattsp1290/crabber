@@ -497,8 +497,10 @@ dependencies = [
 name = "crabber-agui"
 version = "0.1.0"
 dependencies = [
+ "ag-ui-client",
  "ag-ui-core",
  "ag-ui-encoder",
+ "async-trait",
  "crabber",
  "crabber-core",
  "crabber-session",
@@ -533,6 +535,7 @@ name = "crabber-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "json-patch",
  "serde",
  "serde_json",
  "sha2",

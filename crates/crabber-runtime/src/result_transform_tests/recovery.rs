@@ -2,10 +2,11 @@
 
 use super::*;
 use crate::{INTERRUPTED_RESULT_TEXT, RuntimeError};
-use crabber_core::{ManualClock, RunStatus, ToolResultStatus};
+use crabber_core::{ManualClock, MessageId, Part, PartId, PartKind, RunStatus, ToolResultStatus};
 use crabber_extension::{
     InputUnavailable, ToolInput, ToolOutcomeClass, TransformOutput, TransformPhase,
 };
+use crabber_session::ExecutionStore;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy)]
@@ -170,17 +171,7 @@ impl Fixture {
         let session = admitted.session.id;
         let run = admitted.run.id;
         let execution = harness.store.execution(admitted.fence).await.unwrap();
-        let event = |kind| EventRecord {
-            cursor: None,
-            session_id: session.clone(),
-            run_id: run.clone(),
-            turn_id: None,
-            kind,
-            payload: Value::Null,
-            correlation: None,
-            live_only: false,
-            created_at: now,
-        };
+        let event = |kind| stored_event(&session, &run, kind, now);
         let mut call = ToolCallRecord {
             id: ToolCallId::new(),
             run_id: run.clone(),
@@ -190,6 +181,7 @@ impl Fixture {
             retry_safe,
             result: None,
         };
+        persisted_parent(execution.as_ref(), &session, &run, &call, now).await;
         execution
             .create_tool_call(call.clone(), event(EventKind::ToolCallPending))
             .await
@@ -659,5 +651,59 @@ async fn old_contract_fingerprint_is_refused_without_mutation() {
             assert_eq!(fixture.pipeline.prepares.load(Ordering::SeqCst), 0);
             assert_eq!(fixture.harness.fake.requests(), [] as [ModelRequest; 0]);
         }
+    }
+}
+
+// Model the actual assistant message persisted before the crash. Its declared
+// provider input is independent of the normalized business record under test;
+// replay must still derive its execution class and input only from that record.
+async fn persisted_parent(
+    execution: &dyn ExecutionStore,
+    session: &SessionId,
+    run: &RunId,
+    call: &ToolCallRecord,
+    now: time::OffsetDateTime,
+) {
+    let id = MessageId::new();
+    execution
+        .append_message(Message {
+            id: id.clone(),
+            session_id: session.clone(),
+            run_id: Some(run.clone()),
+            role: Role::Assistant,
+            parent_id: None,
+            created_at: now,
+            parts: vec![Part {
+                id: PartId::new(),
+                message_id: id,
+                ordinal: 0,
+                kind: PartKind::FunctionToolCall,
+                content: ContentBlock::ToolCall {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: json!({"text":"original provider presentation"}),
+                },
+            }],
+        })
+        .await
+        .unwrap();
+}
+
+fn stored_event(
+    session: &SessionId,
+    run: &RunId,
+    kind: EventKind,
+    now: time::OffsetDateTime,
+) -> EventRecord {
+    EventRecord {
+        cursor: None,
+        session_id: session.clone(),
+        run_id: run.clone(),
+        turn_id: None,
+        kind,
+        payload: Value::Null,
+        correlation: None,
+        live_only: false,
+        created_at: now,
     }
 }

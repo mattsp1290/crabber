@@ -45,6 +45,7 @@ impl DriverLink {
                 ))?,
                 resource_contract: Some(super::resource_contract()?),
                 parent: Some(crate::session_owner::SessionOwnerParent {
+                    invocation: None,
                     run_id: self.run_id.clone(),
                     call_id: None,
                     phase: None,

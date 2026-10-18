@@ -275,10 +275,24 @@ pub(super) fn prepared_tool_authority(
     grant: crabber_session::ToolContinuationGrant,
 ) -> Result<ResumeAuthority, RuntimeError> {
     grant.verify_native_ack(receipt)?;
-    let (ToolContinuationOutcome::Claimed { attempt, .. }
-    | ToolContinuationOutcome::ReclaimedUnstarted { attempt, .. }
-    | ToolContinuationOutcome::FrontendClaimed { attempt, .. }
-    | ToolContinuationOutcome::FrontendReclaimedUnstarted { attempt, .. }) = &receipt.outcome
+    let (ToolContinuationOutcome::Claimed {
+        attempt,
+        continuation,
+    }
+    | ToolContinuationOutcome::ReclaimedUnstarted {
+        attempt,
+        continuation,
+        ..
+    }
+    | ToolContinuationOutcome::FrontendClaimed {
+        attempt,
+        continuation,
+    }
+    | ToolContinuationOutcome::FrontendReclaimedUnstarted {
+        attempt,
+        continuation,
+        ..
+    }) = &receipt.outcome
     else {
         return Err(Error::UnknownStoreOutcome.into());
     };
@@ -302,9 +316,14 @@ pub(super) fn prepared_tool_authority(
     Ok(ResumeAuthority {
         fence: grant.fence,
         native_unstarted: false,
+        continuation: Some(crabber_core::continuation_source::ContinuationIdentity {
+            id: continuation.id.clone(),
+            generation: continuation.generation,
+        }),
         granted: Some(super::attempt::OwnedAttempt {
             target: attempt.target.clone(),
             authority: grant.authority,
+            begin_cursor: None,
         }),
         approved: Some(ApprovedCalls {
             calls: grant.calls,

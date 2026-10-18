@@ -5,6 +5,7 @@ mod fixed_memory;
 mod frontend;
 mod interactive;
 mod ordinary;
+mod public_source;
 mod shared_services;
 pub mod store;
 mod unsupported_store;
@@ -28,6 +29,7 @@ pub struct Report {
     pub frontend_resumes: usize,
     pub fixed_sessions: usize,
     pub shared_service_reads: usize,
+    pub public_source_writes: usize,
 }
 
 /// Execute public host flows against an injected Store. The Store alone remains
@@ -44,6 +46,7 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
         interactive::run(store.clone()).await?;
     let frontend_resumes = frontend::run(store.clone()).await?;
     let shared_service_reads = shared_services::run(store.clone()).await?;
+    let public_source_writes = public_source::run(store.clone()).await?;
     controls::run(store, source).await?;
     let fixed_sessions = fixed_memory::run().await?;
     assert_eq!(std::env::current_dir()?, cwd);
@@ -57,6 +60,7 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
         frontend_resumes,
         fixed_sessions,
         shared_service_reads,
+        public_source_writes,
     })
 }
 async fn unsupported(inner: Arc<dyn Store>) -> Result<(), Error> {

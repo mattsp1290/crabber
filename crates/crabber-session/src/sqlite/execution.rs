@@ -91,6 +91,18 @@ impl ExecutionStore for SqliteExecution {
         self.change_attempt(request, authority).await
     }
 
+    async fn mutate_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        if matches!(&authority, crate::PublicSourceAuthority::Invocation(_)) {
+            return Err(crate::PublicStateError::Unsupported);
+        }
+        self.store
+            .write_public_source(mutation, authority, Some(&self.fence))
+            .await
+    }
     async fn mutate_public_state(
         &self,
         mutation: crate::PublicStateMutation,

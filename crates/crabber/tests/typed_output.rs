@@ -15,6 +15,9 @@ use crabber::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+#[path = "typed_output/projection.rs"]
+mod projection;
+
 fn content(caption: &str) -> Vec<MessageContent> {
     vec![
         MessageContent::Text {
@@ -158,7 +161,7 @@ async fn run_mixed_output(store: Arc<dyn Store>, declared_error: bool, transform
         .unwrap();
     let handle = agent.prompt(None, "show image").await.unwrap();
     let session = handle.session_id().clone();
-    handle.done().await.unwrap();
+    projection::run(handle, &*store, &call, declared_error || transform_error).await;
     assert_output(
         &*store,
         &session,
@@ -325,7 +328,7 @@ async fn public_wasm_mixed_completion_uses_the_same_typed_path() {
         .unwrap();
     let handle = agent.prompt(None, "show image").await.unwrap();
     let session = handle.session_id().clone();
-    handle.done().await.unwrap();
+    projection::run(handle, &*store, &call, false).await;
     assert_output(&*store, &session, &call, &provider, false).await;
 }
 

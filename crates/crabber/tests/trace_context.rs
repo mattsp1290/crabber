@@ -592,7 +592,7 @@ mod durable_process {
     }
     #[cfg(all(feature = "datadog", feature = "postgres"))]
     #[tokio::test]
-    async fn killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
+    async fn killed_started_worker_refuses_replay_and_preserves_closed_anchor() {
         let Some(journey) = journey_store().await else {
             return;
         };
@@ -601,7 +601,7 @@ mod durable_process {
 
     #[cfg(all(feature = "datadog", feature = "sqlite"))]
     #[tokio::test]
-    async fn sqlite_killed_worker_recovery_links_to_an_already_captured_closed_anchor() {
+    async fn sqlite_killed_started_worker_refuses_replay_and_preserves_closed_anchor() {
         let journey = sqlite_journey_store().await;
         killed_worker_recovery(&journey).await;
     }
@@ -637,12 +637,26 @@ mod durable_process {
         assert_eq!(before.status, crabber::core::RunStatus::Running);
         child.0.kill().unwrap();
         child.0.wait().unwrap();
-        // Real lease expiry, without SQL mutation or bypassing execution authority.
+        let effect_entries = std::fs::read(dir.join("effect-entries")).unwrap();
+        assert_eq!(effect_entries.as_slice(), b"effect-entered\n");
+        let exports = std::fs::read(dir.join("loss-exports.json")).unwrap();
+        let journal = std::fs::read(dir.join("attempt.json")).unwrap();
+        // Real expiry after actual kill+wait does not authorize replay of a
+        // native Started attempt/effect or assert that external cleanup joined.
         tokio::time::sleep(std::time::Duration::from_secs(31)).await;
         spawn(journey, &path, "recover").await;
         let after = store.get_run(&receipt.run_id).await.unwrap().unwrap();
-        assert_ne!(after.claim_token, before.claim_token);
-        assert_eq!(after.status, crabber::core::RunStatus::Interrupted);
+        assert_eq!(after.status, crabber::core::RunStatus::Running);
+        assert_eq!(
+            std::fs::read(dir.join("effect-entries")).unwrap(),
+            effect_entries
+        );
+        assert_eq!(
+            std::fs::read(dir.join("loss-exports.json")).unwrap(),
+            exports
+        );
+        assert_eq!(std::fs::read(dir.join("attempt.json")).unwrap(), journal);
+        assert!(!dir.join("recover-exports.json").exists());
         assert_eq!(
             store
                 .lookup_admission(&envelope.session, &envelope.key)

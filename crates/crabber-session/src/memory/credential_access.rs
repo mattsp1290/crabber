@@ -16,10 +16,6 @@ pub(super) fn check(state: &State, run: &Run, proof: &mut Proof) -> Result<(), S
     check_origin(state, &run.session_id, &run.id, proof)
 }
 
-/// Legacy writer guards; these APIs have no enclosing operation Proof.
-pub(super) fn check_bounded(state: &State, run: &Run) -> Result<(), StoreError> {
-    check(state, run, &mut Proof::bounded(32 << 20))
-}
 pub(super) fn check_origin_bounded(
     state: &State,
     session: &crabber_core::SessionId,

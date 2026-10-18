@@ -694,6 +694,7 @@ pub(crate) struct CallbackTaskContext {
     next: Option<u64>,
     initialization: crate::contextual::InitializationContext,
     state: Option<Arc<dyn crate::StateSink>>,
+    public_source: Option<crate::PublicSourceWriter>,
     callbacks: Option<crate::CallbackInvocationCapability>,
 }
 impl CallbackTaskContext {
@@ -708,10 +709,14 @@ impl CallbackTaskContext {
             next: ACTIVE_NEXT.try_with(|next| *next).ok(),
             initialization: crate::contextual::InitializationContext::capture(),
             state: crate::current_state_sink(),
+            public_source: crate::current_public_source(),
             callbacks: crate::registry::current_callback_invocations(),
         }
     }
     pub(crate) async fn scope<T>(self, future: impl Future<Output = T>) -> T {
+        // Retain the same unpolled original once. Propagating every task-local
+        // around its inline body multiplies large debug construction frames.
+        let future = Box::pin(future);
         ACTIVE_MOUNTS
             .scope(
                 self.mounts,
@@ -728,9 +733,17 @@ impl CallbackTaskContext {
                             None => next.await,
                         }
                     };
+                    let public = async move {
+                        match self.public_source {
+                            Some(source) => crate::with_public_source(source, state).await,
+                            None => state.await,
+                        }
+                    };
                     match self.callbacks {
-                        Some(callbacks) => crate::with_callback_invocations(callbacks, state).await,
-                        None => state.await,
+                        Some(callbacks) => {
+                            crate::with_callback_invocations(callbacks, public).await
+                        }
+                        None => public.await,
                     }
                 }),
             )

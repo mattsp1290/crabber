@@ -121,7 +121,7 @@ impl Orchestrator {
             });
         }
         let (batch, authority) = self.freeze_tool_suspensions(scope, approvals).await?;
-        let pause = self
+        let (pause, waiting) = self
             .persist_tool_suspension(scope, batch, authority)
             .await?;
         self.observer.emit(&pause);
@@ -130,6 +130,14 @@ impl Orchestrator {
             .dispatcher
             .notify::<crabber_extension::EventPublished>(
                 serde_json::to_value(&pause).unwrap_or(serde_json::Value::Null),
+            )
+            .await;
+        self.observer.emit(&waiting);
+        scope
+            .plan
+            .dispatcher
+            .notify::<crabber_extension::EventPublished>(
+                serde_json::to_value(&waiting).unwrap_or(serde_json::Value::Null),
             )
             .await;
         Err(RuntimeError::Paused)

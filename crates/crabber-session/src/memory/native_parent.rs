@@ -460,3 +460,72 @@ pub(super) fn current_issuance_with_proof<'a>(
     }
     Ok(current)
 }
+
+/// Authenticate selected native Begin originals using only the caller's Proof.
+pub(super) fn verify_public_source(
+    state: &State,
+    run: &Run,
+    attempt: &crate::attempt::AttemptRecord,
+    phase: Option<&crate::phase::PhaseRecord>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let issuance = source_protocol::current(state, &run.session_id, &run.id, proof)
+        .map_err(|_| Error)?
+        .ok_or(Error)?;
+    issuance.verify(run)?;
+    let (event, receipt, witness) =
+        public_source_carriers(state, run, &EventKind::ExecutionAttemptChanged, None, proof)?;
+    let OperationReceipt::Attempt(receipt) = receipt else {
+        return Err(Error);
+    };
+    witness.verify_attempt(run, attempt, receipt, event, issuance)?;
+    if let Some(phase) = phase {
+        let (event, receipt, witness) = public_source_carriers(
+            state,
+            run,
+            &EventKind::ToolPhaseChanged,
+            Some(&phase.snapshot.target.call_id),
+            proof,
+        )?;
+        let OperationReceipt::Phase(receipt) = receipt else {
+            return Err(Error);
+        };
+        witness.verify_phase(run, attempt, phase, receipt, event, issuance)?;
+    }
+    Ok(())
+}
+fn public_source_carriers<'a>(
+    state: &'a State,
+    run: &Run,
+    kind: &EventKind,
+    call: Option<&crabber_core::ToolCallId>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(&'a EventRecord, &'a OperationReceipt, &'a Witness), Error> {
+    let event = state
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.session_id == run.session_id
+                && event.run_id == run.id
+                && event.kind == *kind
+                && call.is_none_or(|call| {
+                    event
+                        .payload
+                        .pointer("/phase/target/call_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(call.0.as_str())
+                })
+        })
+        .ok_or(Error)?;
+    proof.measure(event).map_err(|_| Error)?;
+    let key = source_key(event)?;
+    let receipt = state.operation_receipts.get(&key).ok_or(Error)?;
+    proof.measure(receipt).map_err(|_| Error)?;
+    let witness = state
+        .native_parent_witnesses
+        .get(&event.cursor.ok_or(Error)?)
+        .ok_or(Error)?;
+    proof.measure(witness).map_err(|_| Error)?;
+    Ok((event, receipt, witness))
+}

@@ -1,26 +1,41 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ag_ui_core::event::{
-    BaseEvent, Event, ReasoningEndEvent, ReasoningMessageContentEvent, ReasoningMessageEndEvent,
-    ReasoningMessageStartEvent, ReasoningStartEvent, RunErrorEvent, RunFinishedEvent,
-    RunStartedEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageStartEvent,
+    ActivitySnapshotEvent, BaseEvent, Event, ReasoningEndEvent, ReasoningMessageContentEvent,
+    ReasoningMessageEndEvent, ReasoningMessageStartEvent, ReasoningStartEvent, StepFinishedEvent,
+    StepStartedEvent, TextMessageContentEvent, TextMessageEndEvent, TextMessageStartEvent,
     ToolCallArgsEvent, ToolCallEndEvent, ToolCallResultEvent, ToolCallStartEvent,
 };
-use ag_ui_core::types::{Interrupt, Role, RunFinishedOutcome};
+use ag_ui_core::types::Role;
 use crabber_core::event_payload::{
     CallDelta, CallIdentity, CallSettled, CallStarted, MessageCommitted, MessageDelta,
     MessageEnded, MessageIdentity, StreamOutcome,
 };
-use crabber_core::{ContentBlock, EventKind, EventRecord, MessageId, RunId, SessionId, ToolCallId};
+use crabber_core::{
+    ContentBlock, EventKind, EventRecord, MessageId, ReasoningProvenance, RunId, SessionId,
+    ToolCallId,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::sse::{frame_budget, json_bytes};
 
+mod content;
+mod continuation;
+mod invocations;
+mod native;
+mod presentation;
+mod sources;
+mod terminal;
+
 /// All limits are independently reducible from these defaults. No transcript is retained.
 #[derive(Debug, Clone)]
 pub struct ProjectionConfig {
     pub reasoning: bool,
+    /// Explicit trusted host hook sources; empty by default.
+    pub raw_sources: BTreeSet<String>,
+    /// Explicit trusted host CUSTOM names; legacy custom records never pass through.
+    pub custom_events: BTreeSet<String>,
     pub max_event_bytes: usize,
     pub max_text_bytes: usize,
     pub max_argument_bytes: usize,
@@ -32,6 +47,8 @@ impl Default for ProjectionConfig {
     fn default() -> Self {
         Self {
             reasoning: false,
+            raw_sources: BTreeSet::new(),
+            custom_events: BTreeSet::new(),
             max_event_bytes: 1_048_576,
             max_text_bytes: 1_048_576,
             max_argument_bytes: 1_048_576,
@@ -101,7 +118,8 @@ enum MessagePhase {
 #[derive(Default, Clone)]
 struct MessageState {
     text_open: bool,
-    reasoning_open: bool,
+    reasoning_items: BTreeSet<String>,
+    reasoning_public: bool,
     public: bool,
     phase: MessagePhase,
     text_bytes: usize,
@@ -115,6 +133,43 @@ struct CallState {
     bytes: usize,
 }
 
+// Wire lifecycle is distinct from whether the native source actually started.
+#[derive(Clone, Default)]
+struct WireLifecycle {
+    wire_open: bool,
+    source_started: bool,
+    terminal: bool,
+}
+
+// Explicit child selection and its actual lifecycle are one source binding.
+#[derive(Clone, Default)]
+struct SourceBinding {
+    source: Option<crabber_core::PublicSourceIdentity>,
+    explicit: bool,
+    child_started: bool,
+    child_terminal: Option<Completion>,
+}
+
+#[derive(Clone, Default)]
+struct ResumeProjection {
+    ready: bool,
+    seen: bool,
+    attempt: Option<crabber_core::continuation_source::AttemptIdentity>,
+    waiting: Option<std::sync::Arc<crabber_core::continuation_source::WaitingSource>>,
+}
+
+// One current public view, not an accumulated event or message transcript.
+#[derive(Clone, Default)]
+struct PublicStateProjection {
+    revision: Option<u64>,
+    cursor: Option<crabber_core::EventCursor>,
+    snapshot: bool,
+    seen: bool,
+    contents: Option<std::sync::Arc<crabber_core::PublicStateContents>>,
+    activities: BTreeMap<String, String>,
+    activity_metadata: BTreeMap<String, serde_json::Map<String, Value>>,
+}
+
 /// Projects exactly one source run. `finish` is required after drainage and task completion.
 #[derive(Clone)]
 pub struct Projector {
@@ -123,8 +178,10 @@ pub struct Projector {
     thread_alias: String,
     run_alias: String,
     config: ProjectionConfig,
-    started: bool,
-    terminal: bool,
+    lifecycle: WireLifecycle,
+    binding: SourceBinding,
+    resume: ResumeProjection,
+    public_state: PublicStateProjection,
     fault: Option<ProjectionError>,
     active: Option<MessageId>,
     messages: BTreeMap<MessageId, MessageState>,
@@ -132,6 +189,12 @@ pub struct Projector {
     result_ids: BTreeSet<MessageId>,
     paused: bool,
     settled: Option<Completion>,
+    activities: BTreeSet<String>,
+    native_activities: BTreeMap<String, ActivitySnapshotEvent>,
+    step: Option<String>,
+    ui_messages: BTreeMap<MessageId, presentation::UiMessage>,
+    ui_active: BTreeMap<String, MessageId>,
+    invocations: BTreeMap<String, invocations::Invocation>,
 }
 
 fn base(record: Option<&EventRecord>) -> BaseEvent {
@@ -152,8 +215,17 @@ fn base(record: Option<&EventRecord>) -> BaseEvent {
 pub fn public_tool_content(content: &[ContentBlock], is_error: bool, reasoning: bool) -> Value {
     fn public(block: &ContentBlock, reasoning: bool) -> Option<Value> {
         match block {
-            ContentBlock::Reasoning { text, .. } if reasoning => {
-                Some(json!({"type":"reasoning", "text":text}))
+            ContentBlock::Reasoning {
+                text,
+                provenance: ReasoningProvenance::PublicSummary,
+                item_id: Some(item_id),
+                ..
+            } if reasoning
+                && !item_id.is_empty()
+                && item_id.len() <= 1024
+                && !item_id.chars().any(char::is_control) =>
+            {
+                Some(json!({"type":"reasoning", "text":text, "item_id":item_id}))
             }
             ContentBlock::ProviderState { .. } | ContentBlock::Reasoning { .. } => None,
             ContentBlock::ToolResult {
@@ -181,6 +253,15 @@ impl Projector {
         config: ProjectionConfig,
     ) -> Result<Self, ProjectionError> {
         let defaults = ProjectionConfig::default();
+        for names in [&config.raw_sources, &config.custom_events] {
+            if names.len() > 64
+                || names.iter().any(|name| {
+                    name.is_empty() || name.len() > 128 || name.chars().any(char::is_control)
+                })
+            {
+                return Err(ProjectionError::Configuration);
+            }
+        }
         for (value, ceiling) in [
             (config.max_event_bytes, defaults.max_event_bytes),
             (config.max_text_bytes, defaults.max_text_bytes),
@@ -210,8 +291,10 @@ impl Projector {
             thread_alias,
             run_alias,
             config,
-            started: false,
-            terminal: false,
+            lifecycle: WireLifecycle::default(),
+            binding: SourceBinding::default(),
+            resume: ResumeProjection::default(),
+            public_state: PublicStateProjection::default(),
             fault: None,
             active: None,
             messages: BTreeMap::new(),
@@ -219,6 +302,12 @@ impl Projector {
             result_ids: BTreeSet::new(),
             paused: false,
             settled: None,
+            activities: BTreeSet::new(),
+            native_activities: BTreeMap::new(),
+            step: None,
+            ui_messages: BTreeMap::new(),
+            ui_active: BTreeMap::new(),
+            invocations: BTreeMap::new(),
         };
         // Guarantee the configured start and every finite terminal fit, even on startup failure.
         frame_budget(
@@ -227,7 +316,7 @@ impl Projector {
         )
         .map_err(|_| ProjectionError::Configuration)?;
         frame_budget(
-            &projector.finished_event(Completion::Paused),
+            &projector.finished_event(Completion::Cancelled),
             projector.config.max_event_bytes,
         )
         .map_err(|_| ProjectionError::Configuration)?;
@@ -241,56 +330,26 @@ impl Projector {
 
     /// Permanently fail a stream after lag or a transport fault, preserving the first fault.
     pub fn fail(&mut self, error: ProjectionError) {
-        if !self.terminal {
+        if !self.lifecycle.terminal {
             self.fault.get_or_insert(error);
         }
     }
 
-    fn start_event(&self, base: BaseEvent) -> Event {
-        Event::RunStarted(Box::new(RunStartedEvent {
-            base,
-            thread_id: self.thread_alias.clone().into(),
-            run_id: self.run_alias.clone().into(),
-            protocol_version: Some("1.0".into()),
-            parent_run_id: None,
-            input: None,
-        }))
-    }
-    fn error_event(code: &str) -> Event {
-        Event::RunError(RunErrorEvent {
-            base: base(None),
-            message: "The live run could not be projected.".into(),
-            code: Some(code.into()),
-            usage: None,
-        })
-    }
-    fn finished_event(&self, completion: Completion) -> Event {
-        let outcome = match completion {
-            Completion::Cancelled => RunFinishedOutcome::Cancelled,
-            Completion::Paused => RunFinishedOutcome::Interrupt {
-                interrupts: vec![Interrupt {
-                    id: format!("{}:pause", self.run_alias),
-                    reason: "crabber_paused".into(),
-                    message: None,
-                    tool_call_id: None,
-                    response_schema: None,
-                    expires_at: None,
-                    metadata: None,
-                    subagent_run_id: None,
-                }],
-            },
-            _ => RunFinishedOutcome::Success {
-                pending_tool_call_ids: None,
-            },
-        };
-        Event::RunFinished(RunFinishedEvent {
-            base: base(None),
-            thread_id: self.thread_alias.clone().into(),
-            run_id: self.run_alias.clone().into(),
-            result: None,
-            outcome: Some(outcome),
-            usage: None,
-        })
+    /// Bind the trusted source scope before observing this exchange. This is
+    /// identity validation only; source metadata never grants execution rights.
+    /// # Errors
+    /// Rejects invalid/mismatched scope or rebinding after wire startup.
+    pub fn bind_source(
+        mut self,
+        source: crabber_core::PublicSourceIdentity,
+    ) -> Result<Self, ProjectionError> {
+        if self.lifecycle.wire_open {
+            return Err(ProjectionError::Order);
+        }
+        self.check_public_source(&source)?;
+        self.binding.source = Some(source);
+        self.binding.explicit = true;
+        Ok(self)
     }
 
     /// Validate and project a record. Any error permanently faults this stream.
@@ -301,7 +360,7 @@ impl Projector {
         self.push_with_delivery(record, |_| Ok(()))
     }
 
-    /// Project and atomically deliver a batch without copying historical identities.
+    /// Project and atomically deliver a batch with bounded presentation rollback.
     /// The callback must reserve the entire batch before sending any event. On
     /// rejection presentation boundaries roll back and the stream permanently faults.
     ///
@@ -312,15 +371,45 @@ impl Projector {
         record: &EventRecord,
         deliver: impl FnOnce(&[Event]) -> Result<(), ProjectionError>,
     ) -> Result<Vec<Event>, ProjectionError> {
-        if self.terminal {
+        if self.lifecycle.terminal {
             return Err(ProjectionError::Terminal);
         }
         if let Some(error) = self.fault {
             return Err(error);
         }
+        if record.session_id != self.session || record.run_id != self.run {
+            self.fail(ProjectionError::Identity);
+            return Err(ProjectionError::Identity);
+        }
         // Save only the presentation state this record can change. On rejection,
         // finish must never close a boundary whose start was not returned to the host.
-        let started = self.started;
+        let started = self.lifecycle.wire_open;
+        let source_started = self.lifecycle.source_started;
+        let child_started = self.binding.child_started;
+        let child_terminal = self.binding.child_terminal;
+        let settled = self.settled;
+        let paused = self.paused;
+        let step = self.step.clone();
+        let public_undo = self
+            .public_undo(record)
+            .inspect_err(|error| self.fail(*error))?;
+        let presentation_undo = self
+            .presentation_undo(record)
+            .inspect_err(|error| self.fail(*error))?;
+        let invocation_undo = self
+            .invocation_undo(record)
+            .inspect_err(|error| self.fail(*error))?;
+        let continuation_undo = self
+            .continuation_undo(record)
+            .inspect_err(|error| self.fail(*error))?;
+        let activity_id = native::activity_id(record);
+        let activity_present = activity_id
+            .as_ref()
+            .is_some_and(|id| self.activities.contains(id));
+        let activity_before = activity_id
+            .as_ref()
+            .and_then(|id| self.native_activities.get(id))
+            .cloned();
         let active = self.active.clone();
         let message = active
             .as_ref()
@@ -339,7 +428,27 @@ impl Projector {
             Ok(events)
         });
         if let Err(error) = &result {
-            self.started = started;
+            self.lifecycle.wire_open = started;
+            self.lifecycle.source_started = source_started;
+            self.binding.child_started = child_started;
+            self.binding.child_terminal = child_terminal;
+            self.settled = settled;
+            self.paused = paused;
+            self.step = step;
+            self.restore_public(public_undo);
+            self.restore_presentation(presentation_undo);
+            self.restore_invocation(invocation_undo);
+            self.restore_continuation(continuation_undo);
+            if let Some(id) = activity_id {
+                if !activity_present {
+                    self.activities.remove(&id);
+                }
+                if let Some(before) = activity_before {
+                    self.native_activities.insert(id, before);
+                } else {
+                    self.native_activities.remove(&id);
+                }
+            }
             self.active.clone_from(&active);
             if let (Some(id), Some(message)) = (active, message) {
                 self.messages.insert(id, message);
@@ -412,9 +521,7 @@ impl Projector {
                     message_id: id.to_string().into(),
                 }));
             }
-            if message.reasoning_open {
-                message.reasoning_open = false;
-                let reasoning_id = format!("{id}:reasoning");
+            for reasoning_id in std::mem::take(&mut message.reasoning_items) {
                 output.push(Event::ReasoningMessageEnd(ReasoningMessageEndEvent {
                     base: base.clone(),
                     message_id: reasoning_id.clone().into(),
@@ -435,27 +542,116 @@ impl Projector {
         }
         let base = base(Some(record));
         let mut output = Vec::new();
+        if self.child_exchange()
+            && !matches!(
+                record.kind,
+                EventKind::InvocationStarted
+                    | EventKind::InvocationFinished
+                    | EventKind::InvocationError
+                    | EventKind::PublicStateSnapshot
+                    | EventKind::PublicStateDelta
+                    | EventKind::ActivitySnapshot
+                    | EventKind::ActivityDelta
+                    | EventKind::PublicPresentation
+            )
+        {
+            return Err(ProjectionError::Identity);
+        }
+        if let Some(events) = self.project_invocation(record)? {
+            return Ok(events);
+        }
+        if let Some(events) = self.project_public(record)? {
+            return Ok(events);
+        }
         if record.kind == EventKind::RunStarted {
-            if self.started {
+            if self.lifecycle.source_started || self.resume.ready {
                 return Err(ProjectionError::Order);
             }
-            self.started = true;
-            output.push(self.start_event(base));
+            self.lifecycle.source_started = true;
+            self.open_exchange(&base, &mut output);
             return Ok(output);
         }
         if record.kind == EventKind::RunAdmitted {
             return Ok(output);
         }
-        if !self.started {
+        if matches!(
+            record.kind,
+            EventKind::ExecutionAttemptChanged
+                | EventKind::ToolPhaseChanged
+                | EventKind::RunControlChanged
+                | EventKind::InteractionChanged
+                | EventKind::ContinuationChanged
+        ) {
+            json_bytes(&record.payload, self.config.max_event_bytes)?;
+            let activity = native::project(record)?;
+            let id = MessageId::from(activity.message_id.as_str());
+            if !self.activities.contains(&activity.message_id)
+                && (self.messages.contains_key(&id)
+                    || self.ui_messages.contains_key(&id)
+                    || self.result_ids.contains(&id)
+                    || self
+                        .public_state
+                        .activities
+                        .contains_key(&activity.message_id))
+            {
+                return Err(ProjectionError::Identity);
+            }
+            if !self.activities.contains(&activity.message_id)
+                && self.activities.len() + self.public_state.activities.len()
+                    >= self.config.max_messages
+            {
+                return Err(ProjectionError::Limit);
+            }
+            self.open_exchange(&base, &mut output);
+            self.activities.insert(activity.message_id.clone());
+            let snapshot = ActivitySnapshotEvent {
+                base,
+                message_id: activity.message_id.clone().into(),
+                activity_type: activity.activity_type.into(),
+                content: activity.content,
+                replace: Some(true),
+            };
+            self.native_activities
+                .insert(activity.message_id, snapshot.clone());
+            output.push(Event::ActivitySnapshot(snapshot));
+            return Ok(output);
+        }
+        if record.kind == EventKind::RunResumed {
+            return self.project_resume(record, base);
+        }
+        if record.kind == EventKind::ContinuationWaiting {
+            return self.project_waiting(record, &base);
+        }
+        if record.kind == EventKind::RunSettled {
+            json_bytes(&record.payload, self.config.max_event_bytes)?;
+            self.settled = Some(match record.payload.get("status").and_then(Value::as_str) {
+                Some("completed") => Completion::Completed,
+                Some("interrupted") => Completion::Cancelled,
+                Some("failed") => Completion::Failed,
+                _ => return Err(ProjectionError::Malformed),
+            });
+            return Ok(output);
+        }
+        if !self.lifecycle.source_started && !self.resume.ready {
             return Err(ProjectionError::Order);
         }
         match record.kind {
+            EventKind::ToolProgress => return self.local_progress(record, base),
             EventKind::MessageStarted => {
                 let payload: MessageIdentity = self.payload(record)?;
-                if self.active.is_some() || self.messages.contains_key(&payload.message_id) {
+                if self.active.is_some()
+                    || self.messages.contains_key(&payload.message_id)
+                    || self.activities.contains(&payload.message_id.0)
+                    || self
+                        .public_state
+                        .activities
+                        .contains_key(&payload.message_id.0)
+                    || self.result_ids.contains(&payload.message_id)
+                    || self.ui_messages.contains_key(&payload.message_id)
+                {
                     return Err(ProjectionError::Order);
                 }
-                if self.messages.len() >= self.config.max_messages {
+                if self.messages.len() + self.ui_messages.len() >= self.config.max_messages {
                     return Err(ProjectionError::Limit);
                 }
                 self.active = Some(payload.message_id.clone());
@@ -473,9 +669,58 @@ impl Projector {
                 if text.len() > self.config.max_text_bytes {
                     return Err(ProjectionError::Limit);
                 }
-                let payload: MessageDelta = self.payload(record)?;
+                let (payload, item_id) = if reasoning {
+                    json_bytes(&record.payload, self.config.max_event_bytes)?;
+                    let message_id = record
+                        .payload
+                        .get("message_id")
+                        .and_then(Value::as_str)
+                        .filter(|id| {
+                            !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
+                        })
+                        .ok_or(ProjectionError::Malformed)?;
+                    match record.payload.get("provenance").and_then(Value::as_str) {
+                        Some("public_summary") => {
+                            let public: crabber_core::event_payload::ReasoningDelta =
+                                self.payload(record)?;
+                            if public.provenance != ReasoningProvenance::PublicSummary
+                                || public.item_id.is_empty()
+                                || public.item_id.len() > 1024
+                                || public.item_id.chars().any(char::is_control)
+                            {
+                                return Err(ProjectionError::Malformed);
+                            }
+                            (
+                                MessageDelta {
+                                    message_id: public.message_id,
+                                    text: public.text,
+                                },
+                                Some(public.item_id),
+                            )
+                        }
+                        None | Some("private" | "unspecified") => {
+                            let limit = self.config.max_text_bytes;
+                            let message = self.active_message(&MessageId::from(message_id))?;
+                            message.reasoning_bytes = message
+                                .reasoning_bytes
+                                .checked_add(text.len())
+                                .filter(|bytes| *bytes <= limit)
+                                .ok_or(ProjectionError::Limit)?;
+                            return Ok(output);
+                        }
+                        Some(_) => return Err(ProjectionError::Malformed),
+                    }
+                } else {
+                    (self.payload::<MessageDelta>(record)?, None)
+                };
                 let limit = self.config.max_text_bytes;
                 let show_reasoning = self.config.reasoning;
+                let reasoning_limit = self.config.max_messages.saturating_sub(
+                    self.messages
+                        .values()
+                        .map(|message| message.reasoning_items.len())
+                        .sum(),
+                );
                 let message = self.active_message(&payload.message_id)?;
                 let bytes = if reasoning {
                     &mut message.reasoning_bytes
@@ -490,9 +735,18 @@ impl Projector {
                     return Ok(output);
                 }
                 if reasoning {
-                    let id = format!("{}:reasoning", payload.message_id);
-                    if !message.reasoning_open {
-                        message.reasoning_open = true;
+                    let item_id = item_id.ok_or(ProjectionError::Malformed)?;
+                    let id = format!(
+                        "crabber:reasoning:{}:{}:{item_id}",
+                        payload.message_id.0.len(),
+                        payload.message_id
+                    );
+                    if !message.reasoning_items.contains(&id) {
+                        if reasoning_limit == 0 {
+                            return Err(ProjectionError::Limit);
+                        }
+                        message.reasoning_items.insert(id.clone());
+                        message.reasoning_public = true;
                         message.public = true;
                         output.push(Event::ReasoningStart(ReasoningStartEvent {
                             base: base.clone(),
@@ -646,114 +900,88 @@ impl Projector {
                     return Err(ProjectionError::Order);
                 }
                 if self.messages.contains_key(&payload.message_id)
+                    || self.activities.contains(&payload.message_id.0)
+                    || self
+                        .public_state
+                        .activities
+                        .contains_key(&payload.message_id.0)
+                    || self.ui_messages.contains_key(&payload.message_id)
                     || !self.result_ids.insert(payload.message_id.clone())
                 {
                     return Err(ProjectionError::Order);
                 }
                 call.settled = true;
-                let content =
-                    public_tool_content(&payload.content, payload.is_error, self.config.reasoning);
-                json_bytes(&content, self.config.max_event_bytes)?;
+                let content = content::tool_content(&payload.content, self.config.reasoning)?;
+                let mut base = base;
+                base.metadata = Some(serde_json::Map::from_iter([(
+                    "crabber".into(),
+                    json!({"isError":payload.is_error}),
+                )]));
                 output.push(Event::ToolCallResult(ToolCallResultEvent {
                     base,
                     message_id: payload.message_id.to_string().into(),
                     tool_call_id: payload.call_id.to_string().into(),
-                    content: serde_json::to_string(&content)
-                        .map_err(|_| ProjectionError::Malformed)?
-                        .into(),
+                    content,
                     role: Some(Role::Tool),
                 }));
             }
             EventKind::RunPaused => self.paused = true,
-            EventKind::RunSettled => {
-                self.settled = Some(match record.payload.get("status").and_then(Value::as_str) {
-                    Some("completed") => Completion::Completed,
-                    Some("interrupted") => Completion::Cancelled,
-                    Some("failed") => Completion::Failed,
-                    _ => return Err(ProjectionError::Malformed),
-                });
+            EventKind::TurnStarted => {
+                let turn = record
+                    .turn_id
+                    .as_ref()
+                    .filter(|turn| {
+                        !turn.0.is_empty()
+                            && turn.0.len() <= 128
+                            && !turn.0.chars().any(char::is_control)
+                    })
+                    .ok_or(ProjectionError::Identity)?;
+                if self.step.is_some() {
+                    return Err(ProjectionError::Order);
+                }
+                let step_name = format!("turn:{turn}");
+                self.step = Some(step_name.clone());
+                output.push(Event::StepStarted(StepStartedEvent { base, step_name }));
+            }
+            EventKind::TurnCompleted => {
+                let turn = record.turn_id.as_ref().ok_or(ProjectionError::Identity)?;
+                let step_name = format!("turn:{turn}");
+                if self.step.as_ref() != Some(&step_name) {
+                    return Err(ProjectionError::Order);
+                }
+                self.step = None;
+                output.push(Event::StepFinished(StepFinishedEvent { base, step_name }));
             }
             // Explicit source allowlist: these control/operational records have no public projection.
-            EventKind::TurnStarted
-            | EventKind::TurnCompleted
-            | EventKind::ToolCallPending
+            EventKind::ToolCallPending
             | EventKind::ToolCallRunning
             | EventKind::PermissionRequested
             | EventKind::PermissionDecided
-            | EventKind::RunResumed
             | EventKind::ContextEpochStarted
             | EventKind::ContextEpochFinished
             | EventKind::ExtensionNotice
             | EventKind::Custom { .. } => {}
-            EventKind::RunAdmitted | EventKind::RunStarted => unreachable!(),
-            // State/activity projection is a separate durable-host contract.
-            // Until implemented, fail closed instead of dropping a public update.
-            EventKind::PublicStateSnapshot
+            EventKind::RunAdmitted
+            | EventKind::RunStarted
+            | EventKind::RunResumed
+            | EventKind::RunSettled
             | EventKind::ExecutionAttemptChanged
-            | EventKind::RunControlChanged
+            | EventKind::ContinuationWaiting
             | EventKind::ToolPhaseChanged
+            | EventKind::RunControlChanged
             | EventKind::InteractionChanged
-            | EventKind::ContinuationChanged => {
+            | EventKind::ContinuationChanged
+            | EventKind::PublicStateDelta
+            | EventKind::ActivitySnapshot
+            | EventKind::ActivityDelta
+            | EventKind::PublicPresentation
+            | EventKind::InvocationStarted
+            | EventKind::InvocationFinished
+            | EventKind::InvocationError => unreachable!(),
+            EventKind::PublicStateSnapshot => {
                 return Err(ProjectionError::Malformed);
             }
         }
-        Ok(output)
-    }
-
-    /// Emit the sole terminal after the receiver drains and `RunHandle::done` resolves.
-    /// Repeated calls return an empty batch. Task failures outrank durable status hints.
-    ///
-    /// # Errors
-    /// Returns `Limit` if valid presentation closures cannot fit the configured batch.
-    pub fn finish(&mut self, completion: Completion) -> Result<Vec<Event>, ProjectionError> {
-        if self.terminal {
-            return Ok(Vec::new());
-        }
-        let mut output = Vec::new();
-        if !self.started {
-            self.started = true;
-            output.push(self.start_event(base(None)));
-        }
-        if self.active.is_some() {
-            self.fail(ProjectionError::Order);
-        }
-        if completion == Completion::Completed
-            && (self.settled != Some(Completion::Completed)
-                || self
-                    .messages
-                    .values()
-                    .any(|m| m.public && m.phase != MessagePhase::Committed)
-                || self.calls.values().any(|c| !c.settled))
-        {
-            self.fail(ProjectionError::Order);
-        }
-        if completion == Completion::Cancelled && self.settled != Some(Completion::Cancelled) {
-            self.fail(ProjectionError::Order);
-        }
-        if completion == Completion::Paused && !self.paused {
-            self.fail(ProjectionError::Order);
-        }
-        if let Some(id) = self.active.take() {
-            output.extend(self.close_message(&id, &base(None)));
-        }
-        let terminal = if let Some(error) = self.fault {
-            Self::error_event(error.code())
-        } else if completion == Completion::LeaseLost {
-            Self::error_event("crabber_lease_lost")
-        } else if completion == Completion::Failed {
-            Self::error_event("crabber_runtime_failed")
-        } else {
-            self.finished_event(completion)
-        };
-        output.push(terminal);
-        if output.len() > self.config.max_batch {
-            // An error terminal is valid without promising successful stream closure.
-            // Never exceed the configured batch or silently drop a success terminal.
-            output.clear();
-            output.push(Self::error_event(ProjectionError::Limit.code()));
-        }
-        self.terminal = true;
-        self.validate_batch(&output)?;
         Ok(output)
     }
 }

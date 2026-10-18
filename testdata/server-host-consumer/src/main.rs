@@ -15,6 +15,7 @@ async fn main() -> Result<(), Error> {
     assert_eq!(report.frontend_resumes, 2);
     assert_eq!(report.fixed_sessions, 2);
     assert_eq!(report.shared_service_reads, 1);
+    assert_eq!(report.public_source_writes, 4);
     assert!(store.calls() > 0);
     println!(
         "public locked consumer: {}",

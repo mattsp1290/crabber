@@ -714,11 +714,44 @@ impl Store for SqliteStore {
         self.attempt_receipt(session, id).await
     }
 
+    async fn public_continuation_source(
+        &self,
+        fence: &RunFence,
+        authority: &crate::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crate::PublicStateError> {
+        self.read_continuation_source(fence, authority).await
+    }
     async fn public_state(
         &self,
         session: &SessionId,
     ) -> Result<crate::PublicStateSnapshot, crate::PublicStateError> {
         self.read_public_state(session).await
+    }
+    async fn lookup_public_source_publication(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicSourcePublication>, crate::PublicStateError> {
+        self.read_public_source_publication(session, id).await
+    }
+    async fn mutate_bound_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(mutation, authority, None).await
+    }
+    async fn mutate_invocation_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(
+            mutation,
+            crate::PublicSourceAuthority::Invocation(authority),
+            None,
+        )
+        .await
     }
     async fn lookup_public_state_mutation(
         &self,

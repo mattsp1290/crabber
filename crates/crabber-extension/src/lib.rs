@@ -137,3 +137,9 @@ pub use contextual::product::scripted::{
     LibraryScriptedActive, LibraryScriptedError, LibraryScriptedSource,
     LibraryScriptedSourceObservation, LibraryScriptedStream,
 };
+
+mod public_source;
+pub use public_source::{
+    PublicSourceError, PublicSourceSink, PublicSourceSnapshot, PublicSourceWriter,
+    current_public_source, with_public_source,
+};

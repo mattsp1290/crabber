@@ -16,6 +16,26 @@ pub(super) async fn classified(
     let Some(parent) = detached_parent(record) else {
         return Ok(false);
     };
+    if record
+        .snapshot
+        .binding
+        .parent
+        .as_ref()
+        .is_some_and(|parent| parent.invocation.is_some())
+    {
+        super::super::invocation::verify(tx, record, proof)
+            .await
+            .map_err(unknown)?;
+    } else {
+        verify_parent(tx, parent, proof).await?;
+    }
+    Ok(true)
+}
+pub(in crate::postgres) async fn verify_parent(
+    tx: &mut Transaction<'_, Postgres>,
+    parent: &Witness,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
     let cursor = i64::try_from(parent.source.event_cursor.0).map_err(unknown)?;
     let sequence = i64::try_from(parent.run_issuance).map_err(unknown)?;
     let costs = sqlx::query(COST)
@@ -65,8 +85,9 @@ pub(super) async fn classified(
     witness
         .verify_historical_phase(&receipt, &event, &issuance)
         .map_err(unknown)?;
-    Ok(true)
+    Ok(())
 }
+
 fn decode<T: serde::de::DeserializeOwned>(
     row: &sqlx::postgres::PgRow,
     field: &str,

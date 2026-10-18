@@ -39,22 +39,42 @@ impl Orchestrator {
         let session_for_progress = session_id.clone();
         let run_for_progress = run_id.clone();
         let clock = Arc::clone(&self.clock);
+        let call_for_progress = call_id.clone();
+        let progress_live = Arc::new(AtomicBool::new(true));
+        let _progress_lifetime = ProgressLifetime(progress_live.clone());
+        let progress_open = progress_live;
+
         let progress = Arc::new(move |content: ContentBlock| {
+            if !matches!(&content, ContentBlock::Text { .. })
+                || crate::public_source::encoded_len(&content, crabber_core::MAX_PUBLIC_STATE_BYTES)
+                    .is_err()
+            {
+                return;
+            }
+            if !progress_open.load(Ordering::Acquire) {
+                return;
+            }
+
             let event = EventRecord {
                 cursor: None,
                 session_id: session_for_progress.clone(),
                 run_id: run_for_progress.clone(),
                 turn_id: None,
-                kind: EventKind::Custom {
-                    name: "tool_progress".into(),
-                },
-                payload: json!({"content":content}),
-                correlation: None,
+                kind: EventKind::ToolProgress,
+                payload: json!({"version":1,"call_id":call_for_progress,"content":content}),
+                correlation: Some(call_for_progress.0.clone()),
                 live_only: true,
                 created_at: clock.now(),
             };
             observer.emit(&event);
         });
+        let phase_source = crate::public_source::bind(
+            self.store.clone(),
+            session_id.clone(),
+            crabber_session::PublicSourceAuthority::Phase(owner.authority.clone()),
+            self.source_delivery.clone(),
+            Some(call_id.clone()),
+        );
         let context = ToolContext::new(
             session_id.clone(),
             run_id.clone(),
@@ -65,6 +85,7 @@ impl Orchestrator {
             progress,
         );
         let context = context
+            .with_public_source(phase_source.clone())
             .with_resources(resources.clone())
             .with_session_invocations(
                 self.session_invocations.bind(
@@ -79,7 +100,11 @@ impl Orchestrator {
                             .to_owned(),
                         directory: session.workspace.directory().unwrap_or_default().to_owned(),
                         phase: owner.target.clone(),
-                        authority: owner.authority.clone(),
+                        authority:
+                            crabber_session::session_owner::SessionOwnerParentAuthority::Phase(
+                                owner.authority.clone(),
+                            ),
+                        invocation: None,
                     },
                 ),
             );
@@ -163,7 +188,7 @@ impl Orchestrator {
         let execution_result = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Err(RuntimeError::Interrupted),
-            result = plan.dispatcher.around::<ToolExecute>(arguments, terminal) => result,
+            result = crabber_extension::with_public_source(phase_source,plan.dispatcher.around::<ToolExecute>(arguments, terminal)) => result,
         };
         if let Some(proposal) = suspended.lock().expect("tool suspension poisoned").take() {
             return Ok(
@@ -251,4 +276,11 @@ pub(super) fn frozen_identity(
         return Err(crabber_session::ToolContinuationError::SchemaMismatch.into());
     }
     Ok(identity)
+}
+
+struct ProgressLifetime(Arc<AtomicBool>);
+impl Drop for ProgressLifetime {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }

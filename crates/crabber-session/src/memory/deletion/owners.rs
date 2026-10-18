@@ -28,42 +28,62 @@ pub(super) fn read(
             let Some(parent) = detached_parent(record) else {
                 return Ok(false);
             };
-            let witness = state
-                .native_parent_witnesses
-                .get(&parent.source.event_cursor)
-                .ok_or_else(|| unknown("detached parent original witness"))?;
-            proof.measure(witness)?;
-            if witness != parent {
-                return Err(unknown("detached parent witness association"));
+            if record
+                .snapshot
+                .binding
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.invocation.is_some())
+            {
+                super::super::session_owner::invocation::verify(state, record, proof)
+                    .map_err(unknown)?;
+            } else {
+                verify_parent(state, parent, proof)?;
             }
-            let receipt = state
-                .operation_receipts
-                .get(&(
-                    parent.source.session_id.clone(),
-                    parent.source.operation_id.clone(),
-                ))
-                .ok_or_else(|| unknown("detached parent original receipt"))?;
-            proof.measure(receipt)?;
-            let OperationReceipt::Phase(receipt) = receipt else {
-                return Err(unknown("detached parent receipt domain"));
-            };
-            let event = state
-                .events
-                .get(parent.source.event_cursor)
-                .ok_or_else(|| unknown("detached parent original event"))?;
-            proof.measure(event)?;
-            let issuance = state
-                .native_run_issuances
-                .get(&(
-                    session.clone(),
-                    parent.source.run_id.clone(),
-                    parent.run_issuance,
-                ))
-                .ok_or_else(|| unknown("detached parent original issuer"))?;
-            proof.measure(issuance)?;
-            witness
-                .verify_historical_phase(receipt, event, issuance)
-                .map_err(unknown)?;
             Ok(true)
         })
+}
+
+pub(in crate::memory) fn verify_parent(
+    state: &State,
+    parent: &crate::native_parent::Witness,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    let witness = state
+        .native_parent_witnesses
+        .get(&parent.source.event_cursor)
+        .ok_or_else(|| unknown("detached parent original witness"))?;
+    proof.measure(witness)?;
+    if witness != parent {
+        return Err(unknown("detached parent witness association"));
+    }
+    let receipt = state
+        .operation_receipts
+        .get(&(
+            parent.source.session_id.clone(),
+            parent.source.operation_id.clone(),
+        ))
+        .ok_or_else(|| unknown("detached parent original receipt"))?;
+    proof.measure(receipt)?;
+    let OperationReceipt::Phase(receipt) = receipt else {
+        return Err(unknown("detached parent receipt domain"));
+    };
+    let event = state
+        .events
+        .get(parent.source.event_cursor)
+        .ok_or_else(|| unknown("detached parent original event"))?;
+    proof.measure(event)?;
+    let issuance = state
+        .native_run_issuances
+        .get(&(
+            parent.source.session_id.clone(),
+            parent.source.run_id.clone(),
+            parent.run_issuance,
+        ))
+        .ok_or_else(|| unknown("detached parent original issuer"))?;
+    proof.measure(issuance)?;
+    witness
+        .verify_historical_phase(receipt, event, issuance)
+        .map_err(unknown)?;
+    Ok(())
 }

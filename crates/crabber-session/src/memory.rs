@@ -48,6 +48,10 @@ mod native_parent;
 mod pending_initial;
 #[path = "memory/phase.rs"]
 mod phase;
+native_pending_initial_items! {
+    #[path = "memory/public_continuation_source.rs"]
+    mod public_continuation_source;
+}
 #[path = "memory/public_header.rs"]
 mod public_header;
 #[path = "memory/public_run.rs"]
@@ -453,9 +457,18 @@ fn insert_event_captured(
         event.kind,
         crabber_core::EventKind::RunControlChanged
             | crabber_core::EventKind::PublicStateSnapshot
+            | crabber_core::EventKind::PublicStateDelta
+            | crabber_core::EventKind::ActivitySnapshot
+            | crabber_core::EventKind::ActivityDelta
+            | crabber_core::EventKind::PublicPresentation
+            | crabber_core::EventKind::InvocationStarted
+            | crabber_core::EventKind::InvocationFinished
+            | crabber_core::EventKind::InvocationError
+            | crabber_core::EventKind::ToolProgress
             | crabber_core::EventKind::ExecutionAttemptChanged
             | crabber_core::EventKind::InteractionChanged
             | crabber_core::EventKind::ContinuationChanged
+            | crabber_core::EventKind::ContinuationWaiting
             | crabber_core::EventKind::ToolPhaseChanged
     ) {
         return Err(StoreError::Validation(
@@ -1098,6 +1111,31 @@ impl Store for MemoryStore {
     ) -> Result<crate::ManagementReceipt, crate::ManagementError> {
         self.manage(request)
     }
+    async fn lookup_public_source_publication(
+        &self,
+        session: &SessionId,
+        id: &crabber_core::ControlId,
+    ) -> Result<Option<crate::PublicSourcePublication>, crate::PublicStateError> {
+        self.read_public_source_publication(session, id)
+    }
+    async fn mutate_bound_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(mutation, &authority, None)
+    }
+    async fn mutate_invocation_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::session_owner::SessionOwnerAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        self.write_public_source(
+            mutation,
+            &crate::PublicSourceAuthority::Invocation(authority),
+            None,
+        )
+    }
     async fn lookup_session_management(
         &self,
         session: &SessionId,
@@ -1310,6 +1348,13 @@ impl Store for MemoryStore {
         self.attempt_receipt(session, id)
     }
 
+    async fn public_continuation_source(
+        &self,
+        fence: &RunFence,
+        authority: &crate::AttemptAuthority,
+    ) -> Result<crabber_core::continuation_source::ResumeSnapshot, crate::PublicStateError> {
+        self.read_continuation_source(fence, authority)
+    }
     async fn public_state(
         &self,
         session: &SessionId,
@@ -1660,6 +1705,17 @@ impl ExecutionStore for MemoryExecution {
         mutation: crate::PublicStateMutation,
     ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
         self.change_public_state(mutation)
+    }
+    async fn mutate_public_source(
+        &self,
+        mutation: crate::PublicSourceMutation,
+        authority: crate::PublicSourceAuthority,
+    ) -> Result<crate::PublicStateReceipt, crate::PublicStateError> {
+        if matches!(&authority, crate::PublicSourceAuthority::Invocation(_)) {
+            return Err(crate::PublicStateError::Unsupported);
+        }
+        self.store
+            .write_public_source(mutation, &authority, Some(&self.fence))
     }
 
     async fn begin_admission_execution(&self) -> Result<(), crate::AdmissionExecutionError> {

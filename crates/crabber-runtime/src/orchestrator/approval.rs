@@ -189,6 +189,7 @@ impl Orchestrator {
                 run_id: run_id.clone(),
             });
         }
+        let source_terminal = self.seal_public_source(run_id).await?;
         let _observation = self.observation_lifetime.quiescent_commit();
         let run = self
             .store
@@ -233,14 +234,22 @@ impl Orchestrator {
             let event = batch.conclusion(&run, now)?.materialize(&run)?;
             let key = batch.id.clone();
             match execution
-                .suspend_for_approval(batch, owner.authority.clone())
+                .suspend_for_approval(batch.clone(), owner.authority.clone())
                 .await
             {
-                Ok(_) => {
+                Ok(receipt) => {
+                    let waiting = batch.waiting_event(&receipt)?;
+                    drop(source_terminal);
                     self.observer.emit(&event);
                     plan.dispatcher
                         .notify::<EventPublished>(
                             serde_json::to_value(&event).unwrap_or(Value::Null),
+                        )
+                        .await;
+                    self.observer.emit(&waiting);
+                    plan.dispatcher
+                        .notify::<EventPublished>(
+                            serde_json::to_value(&waiting).unwrap_or(Value::Null),
                         )
                         .await;
                     return Ok(());

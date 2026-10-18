@@ -1,6 +1,7 @@
 //! SQL ownership transactions. The session gate includes pre-session reservations.
 mod cancellation;
 pub(in crate::sqlite) mod drivers;
+pub(in crate::sqlite) mod invocation;
 mod owned_scope;
 mod parent;
 mod preflight;
@@ -198,7 +199,7 @@ impl SqliteStore {
         }
         reads::capacity(tx, &binding.session_id).await?;
         let now = self.clock.now();
-        let witness = parent::proof(tx, request, parent, now).await?;
+        let witness = parent::proof(tx, request, parent, now, &mut read_proof).await?;
         let mut record = Record::reserve(request, witness, now)?;
         record.preparation = preparation.map(super::super::session_owner::preparation::origin);
         let authority = record.grant()?;

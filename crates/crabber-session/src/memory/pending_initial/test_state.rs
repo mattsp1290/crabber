@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, atomic::AtomicU8};
 #[derive(Clone, Default)]
 pub(crate) struct TestState {
     pub(crate) fault: Arc<AtomicU8>,
+    pub(crate) public_source_cap: Arc<Mutex<Option<usize>>>,
+    pub(crate) public_source_usage: Arc<Mutex<Vec<usize>>>,
     pub(crate) fixed_policy_seal_fault: Arc<AtomicU8>,
     pub(crate) consumer_precommit_usage:
         Arc<Mutex<Vec<(crate::native_enrollment::initial_consumer::CallKind, usize)>>>,

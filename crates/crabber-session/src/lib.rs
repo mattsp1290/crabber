@@ -121,6 +121,7 @@ mod run_facts;
 mod snapshot_profile;
 pub use public_history::{PublicHistoryOutcome, PublicHistoryPage};
 pub use public_session::*;
+mod continuation_source;
 mod public_state;
 pub mod public_state_contract;
 mod snapshot;
@@ -131,7 +132,8 @@ mod sql_snapshot;
 mod sqlite;
 mod storable;
 pub use public_state::{
-    PublicStateError, PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
+    PublicSourceAuthority, PublicSourceMutation, PublicSourcePublication, PublicStateError,
+    PublicStateMutation, PublicStateReceipt, PublicStateSnapshot,
 };
 mod store;
 pub use snapshot::{

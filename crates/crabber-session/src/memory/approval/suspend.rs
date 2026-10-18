@@ -20,12 +20,13 @@ impl super::super::MemoryExecution {
         #[cfg(not(test))]
         let fault = 0;
         let result = self.store.transact(|state| {
+            let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
             let run = state
                 .runs
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
-            super::super::credential_access::check_bounded(state, &run)
+            super::super::credential_access::check(state, &run, &mut proof)
                 .map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = replay(state, &run.session_id, &run.id, &batch.id, &digest)? {
@@ -106,8 +107,7 @@ impl super::super::MemoryExecution {
                 now,
                 handoff.as_deref(),
             )?;
-            super::super::continuation_input::accept_approval_suspension(state, batch, &receipt)
-                .map_err(|_| Error::UnknownStoreOutcome)?;
+            publish_waiting(state, batch, &receipt, &mut proof)?;
             super::before_commit(fault)?;
             Ok((receipt, true))
         });
@@ -202,5 +202,32 @@ fn validate_batch(
             return Err(Error::SemanticConflict);
         }
     }
+    Ok(())
+}
+
+// Publish acceptance and its safe presentation under the same original State
+// lock and Proof, before the existing fault/commit boundary.
+fn publish_waiting(
+    state: &mut super::super::State,
+    batch: &ApprovalSuspension,
+    receipt: &crate::ApprovalReceipt,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    super::super::continuation_input::accept_approval_suspension(state, batch, receipt)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let mut waiting = batch.waiting_event(receipt)?;
+    waiting.cursor = Some(
+        state
+            .events
+            .next_cursor()
+            .map_err(|_| Error::UnknownStoreOutcome)?,
+    );
+    proof
+        .measure(&waiting)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    state
+        .events
+        .append(waiting)
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     Ok(())
 }

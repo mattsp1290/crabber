@@ -92,31 +92,18 @@ async fn real_http_failures_retries_and_implicit_argument_end() -> CheckResult {
     Ok(())
 }
 
-struct Pause;
-impl crabber::runtime::PermissionPolicy for Pause {
-    fn decide(&self, _: &crabber::core::ToolInfo, _: &Value) -> PermissionDecision {
-        PermissionDecision::Allow
-    }
-    fn interrupt_policy(
-        &self,
-        _: &crabber::core::ToolInfo,
-        _: &Value,
-    ) -> crabber::runtime::InterruptPolicy {
-        crabber::runtime::InterruptPolicy::Pause
-    }
-}
-
 #[tokio::test]
 async fn permission_failure_is_successful_run_and_pause_is_interrupt() -> CheckResult {
     for pause in [false, true] {
         let store = Arc::new(MemoryStore::new());
+        let retained = store.clone();
         let host = Host::new(Arc::new(move || {
             builder(
                 store.clone(),
                 Arc::new(FakeProvider::scripted(journey(false))),
             )
             .policy(if pause {
-                Arc::new(Pause)
+                Arc::new(StaticPolicy::new(PermissionDecision::Ask))
             } else {
                 Arc::new(StaticPolicy::new(PermissionDecision::Deny))
             })
@@ -129,11 +116,41 @@ async fn permission_failure_is_successful_run_and_pause_is_interrupt() -> CheckR
             wire["outcome"]["type"],
             if pause { "interrupt" } else { "success" }
         );
-        if !pause {
+        if pause {
+            let stored = retained
+                .list_events(&SessionId::from("policy"), None, 1000)
+                .await?;
+            let waiting = stored
+                .iter()
+                .find(|event| event.kind == crabber::core::EventKind::ContinuationWaiting)
+                .ok_or("missing native waiting source")?;
+            let native: Vec<_> = waiting.payload["interrupts"]
+                .as_array()
+                .ok_or("missing native interrupts")?
+                .iter()
+                .map(|interrupt| interrupt["interaction_id"].clone())
+                .collect();
+            let projected: Vec<_> = wire["outcome"]["interrupts"]
+                .as_array()
+                .ok_or("missing wire interrupts")?
+                .iter()
+                .map(|interrupt| interrupt["id"].clone())
+                .collect();
+            assert_ne!(native, [] as [Value; 0]);
+            assert_eq!(projected, native);
+        } else {
             for event in events {
                 if let Event::ToolCallResult(result) = event {
-                    let content: Value = serde_json::from_str(result.content.as_text().unwrap())?;
-                    assert_eq!(content["is_error"], true);
+                    assert_eq!(
+                        result
+                            .base
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("crabber"))
+                            .and_then(|metadata| metadata.get("isError"))
+                            .and_then(Value::as_bool),
+                        Some(true)
+                    );
                 }
             }
         }
@@ -271,6 +288,12 @@ impl Streamer for Controlled {
         ))
     }
 }
+struct ReleaseOnDrop(Arc<Notify>);
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.notify_one();
+    }
+}
 fn controlled(args: bool, burst: bool) -> Arc<Controlled> {
     Arc::new(Controlled {
         entered: Notify::new(),
@@ -303,10 +326,11 @@ async fn idle(host: &Host) {
 async fn busy_disconnect_and_shutdown_cancel_owned_run_without_restarting() -> CheckResult {
     let store = Arc::new(MemoryStore::new());
     let provider = controlled(true, false);
+    let _release = ReleaseOnDrop(provider.release.clone());
     let server = Server::start(controlled_host(store.clone(), provider.clone())).await?;
     let client = reqwest::Client::new();
     let response = client.post(&server.url).json(&input("busy")).send().await?;
-    provider.entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified()).await?;
     assert_eq!(
         client
             .post(&server.url)
@@ -337,7 +361,7 @@ async fn busy_disconnect_and_shutdown_cancel_owned_run_without_restarting() -> C
         .json(&input("shutdown"))
         .send()
         .await?;
-    provider.entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified()).await?;
     server.host.shutdown().await?;
     drop(response);
     assert_eq!(provider.requests.load(Ordering::SeqCst), 2);
@@ -348,6 +372,7 @@ async fn busy_disconnect_and_shutdown_cancel_owned_run_without_restarting() -> C
 #[tokio::test]
 async fn deadline_closes_argument_boundaries_before_error() -> CheckResult {
     let provider = controlled(true, false);
+    let _release = ReleaseOnDrop(provider.release.clone());
     let mut host = controlled_host(Arc::new(MemoryStore::new()), provider.clone());
     host.deadline = Duration::from_millis(50);
     let server = Server::start(host).await?;
@@ -414,13 +439,14 @@ async fn active_capacity_is_bounded_before_admission() -> CheckResult {
 async fn burst_lag_faults_and_slow_reader_does_not_block_runtime() -> CheckResult {
     let store = Arc::new(MemoryStore::new());
     let provider = controlled(false, true);
+    let _release = ReleaseOnDrop(provider.release.clone());
     let server = Server::start(controlled_host(store.clone(), provider.clone())).await?;
     let response = reqwest::Client::new()
         .post(&server.url)
         .json(&input("slow"))
         .send()
         .await?;
-    provider.entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified()).await?;
     // No body reads until the runtime/worker completes. Release a synchronous burst
     // larger than the facade broadcast capacity; this deterministically loses events.
     provider.release.notify_one();
@@ -446,7 +472,11 @@ async fn opt_in_reasoning_is_accepted_by_pinned_handler() -> CheckResult {
     let mut host = Host::new(factory(
         Arc::new(MemoryStore::new()),
         vec![vec![
-            StreamDelta::ReasoningDelta("displayed thought".into()),
+            StreamDelta::Reasoning {
+                item_id: "displayed-summary".into(),
+                provenance: crabber::core::ReasoningProvenance::PublicSummary,
+                text: "displayed thought".into(),
+            },
             StreamDelta::Completed,
         ]],
     ));
@@ -509,6 +539,7 @@ async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
     // cancellation. The result-chain driver now drops that future on disconnect.
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
+    let _release = ReleaseOnDrop(release.clone());
     let store = Arc::new(MemoryStore::new());
     let gate = Arc::new(HeldResult {
         count: Arc::new(AtomicUsize::new(0)),
@@ -530,7 +561,7 @@ async fn noncooperative_transform_is_dropped_on_interrupt() -> CheckResult {
         .json(&input("held"))
         .send()
         .await?;
-    entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), entered.notified()).await?;
     drop(response);
     tokio::time::timeout(crabber::runtime::INTERRUPT_SETTLEMENT_BOUND, async {
         while server.host.active.load(Ordering::SeqCst) != 0 {
@@ -617,10 +648,35 @@ async fn startup_failure_has_no_invented_message_and_one_safe_terminal() -> Chec
     })))
     .await?;
     let events = check::request(&server, "startup").await?;
-    assert!(matches!(
-        events.as_slice(),
-        [Event::RunStarted(_), Event::RunError(_)]
-    ));
+    assert!(matches!(events.first(), Some(Event::RunStarted(_))));
+    assert!(matches!(events.last(), Some(Event::RunError(_))));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::RunStarted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::RunError(_) | Event::RunFinished(_)))
+            .count(),
+        1
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        Event::TextMessageStart(_)
+            | Event::TextMessageContent(_)
+            | Event::TextMessageEnd(_)
+            | Event::ToolCallStart(_)
+            | Event::ToolCallArgs(_)
+            | Event::ToolCallEnd(_)
+            | Event::ToolCallResult(_)
+            | Event::ReasoningMessageStart(_)
+            | Event::ReasoningMessageContent(_)
+            | Event::ReasoningMessageEnd(_)
+    )));
     assert!(!serde_json::to_string(&events)?.contains("SECRET_STARTUP"));
     assert_eq!(
         retained
@@ -738,6 +794,7 @@ async fn held_admission_times_out_or_shuts_down_without_losing_late_handle() -> 
     for shutdown in [false, true] {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let _release = ReleaseOnDrop(release.clone());
         let store = Arc::new(MemoryStore::new());
         let admission_store = store.clone();
         let gate = Arc::new(HeldInstall {
