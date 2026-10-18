@@ -64,6 +64,10 @@ mod queue;
 #[path = "memory/run_control.rs"]
 mod run_control;
 
+#[cfg(test)]
+#[path = "memory/transaction_cost_tests.rs"]
+mod transaction_cost_tests;
+
 use crate::{
     AdmitOutcome, AdmitRequest, ExecutionStore, InboxKind, KeyedAdmitOutcome, KeyedAdmitRequest,
     Store, StoreError,
