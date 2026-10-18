@@ -1,11 +1,15 @@
 //! Fixed initial birth producer. No Driver registration, activation or business.
 #[cfg(test)]
-mod budget;
+pub(super) mod budget;
 mod consumer;
 mod lifecycle;
-mod observe;
+pub(super) mod observe;
 mod retirement;
 mod scripted_binding;
+pub(crate) use scripted_binding::{
+    FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
+    verify_fixed_binding,
+};
 mod source;
 mod transport;
 use super::super::driver::MainIngress;
@@ -24,9 +28,11 @@ use crate::{
 };
 #[cfg(test)]
 pub(crate) use budget::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
-pub(in crate::session_owner::owned_scope::task::pending) use consumer::FreshBegun;
 pub(crate) use consumer::{
     DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+};
+pub(in crate::session_owner::owned_scope::task::pending) use consumer::{
+    FreshBegun, InitialResources,
 };
 pub use consumer::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use crabber_core::{ControlId, RunId, SessionContext};
@@ -79,6 +85,7 @@ pub(in crate::session_owner::owned_scope::task::pending) struct RetainedInitial 
     state: Mutex<State>,
     consumer: Option<Arc<consumer::InitialResources>>,
     calls: consumer::Calls,
+    fixed_preparation: Option<super::fixed_preparation::FixedPreparationLoan>,
     #[cfg(test)]
     budget: budget::Harness,
 }
@@ -94,6 +101,9 @@ impl RetainedInitial {
         ingress: Arc<MainIngress>,
         control: Control,
     ) -> Result<(), Error> {
+        if let Some(preparation) = &self.fixed_preparation {
+            preparation.registered(task)?;
+        }
         if let Some(resources) = &self.consumer {
             resources.registered(task)?;
             control.install_resources(&resources.owner)?;
@@ -107,9 +117,13 @@ impl RetainedInitial {
     fn status(&self, value: PendingInitialProducerStatus) {
         self.lock().status = value;
     }
-    fn new_proof(operation: Operation, #[cfg(test)] budget: &budget::Harness) -> Proof {
+    fn new_proof(operation: Operation, #[cfg(test)] retained: &Self) -> Proof {
         #[cfg(test)]
-        let cap = budget.caps.cap(operation);
+        let cap = retained
+            .fixed_preparation
+            .as_ref()
+            .and_then(|loan| loan.test_cap(operation))
+            .unwrap_or_else(|| retained.budget.caps.cap(operation));
         #[cfg(not(test))]
         let cap = {
             let _ = operation;
@@ -205,6 +219,18 @@ impl RetainedInitial {
                         ),
                         _ => None,
                     };
+                    let policy = self
+                        .fixed_preparation
+                        .as_ref()
+                        .zip(consumer.as_ref())
+                        .map(|(loan, association)| loan.view(association));
+                    let policy_retirement = if operation == Operation::Seal {
+                        policy
+                            .as_ref()
+                            .map(super::fixed_preparation::OriginalPolicyView::retirement)
+                    } else {
+                        None
+                    };
                     let call = PendingInitialNativeCall {
                         source: &self.source,
                         expected,
@@ -215,6 +241,8 @@ impl RetainedInitial {
                         lease: &lease,
                         consumer: consumer.as_ref(),
                         retirement: retirement.as_ref(),
+                        original_policy: policy.as_ref(),
+                        policy_retirement: policy_retirement.as_ref(),
                     };
                     let observed = observe::original(
                         || self.store.pending_initial_native(call),
@@ -363,7 +391,7 @@ async fn run_attached(
     let mut proof = RetainedInitial::new_proof(
         Operation::Complete,
         #[cfg(test)]
-        &retained.budget,
+        &retained,
     );
     let identity = retained.identity()?;
     let expected = protocol::prefix::expected(&retained.source.original, &identity, &mut proof)?;
@@ -526,6 +554,51 @@ impl PendingInitialProducer {
             Self::register_with_resources(owner, store, prepared, Some(resources))
         }
     }
+    pub(in crate::session_owner::owned_scope::task::pending) fn register_fixed_scripted(
+        owner: &PendingDriverTasks,
+        core: &Arc<super::fixed_memory::FixedMemoryInitialControl>,
+        context: SessionContext,
+        original: JoinedPreparation,
+        source: crabber_extension::LibraryScriptedSource,
+        loan: super::fixed_preparation::FixedPreparationLoan,
+    ) -> Result<Self, PreparationCommitError> {
+        let mut prepared = PreparedSource::new(context, original)?;
+        loan.verify_intake(core, &prepared.source.original, &mut prepared.proof)?;
+        scripted_binding::verify_fixed(&source, &prepared.source.original, &mut prepared.proof)?;
+        let resources =
+            consumer::InitialResources::new(source, prepared.source.clone(), &mut prepared.proof)?;
+        loan.bind(&resources)?;
+        #[cfg(test)]
+        let budget = {
+            let budget = loan.test_harness();
+            budget.constructor(prepared.proof.used());
+            budget
+        };
+        #[cfg(test)]
+        let fixed_presentation = loan.test_configured();
+        #[cfg(test)]
+        let consumer_caps = loan.test_consumer_caps();
+        let task = Self::register_with_preparation(
+            owner,
+            core.store().clone(),
+            prepared,
+            Some(resources),
+            Some(loan),
+            #[cfg(test)]
+            budget,
+        )?;
+        #[cfg(test)]
+        if fixed_presentation {
+            task.retained.calls.fixed_presentation();
+            task.retained.calls.fixed_test_caps(consumer_caps);
+        }
+        Ok(task)
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) fn take_fixed_observation(
+        &mut self,
+    ) -> Option<PendingInitialProducerObservation> {
+        self.observed.take()
+    }
     fn register_prepared(
         owner: &PendingDriverTasks,
         store: Arc<dyn Store>,
@@ -548,11 +621,30 @@ impl PendingInitialProducer {
         consumer: Option<Arc<consumer::InitialResources>>,
         #[cfg(test)] budget: budget::Harness,
     ) -> Result<Self, PreparationCommitError> {
+        Self::register_with_preparation(
+            owner,
+            store,
+            prepared,
+            consumer,
+            None,
+            #[cfg(test)]
+            budget,
+        )
+    }
+    fn register_with_preparation(
+        owner: &PendingDriverTasks,
+        store: Arc<dyn Store>,
+        prepared: PreparedSource,
+        consumer: Option<Arc<consumer::InitialResources>>,
+        fixed_preparation: Option<super::fixed_preparation::FixedPreparationLoan>,
+        #[cfg(test)] budget: budget::Harness,
+    ) -> Result<Self, PreparationCommitError> {
         let retained = Arc::new(RetainedInitial {
             source: prepared.source.clone(),
             store,
             consumer,
             calls: consumer::Calls::default(),
+            fixed_preparation,
             state: Mutex::new(State {
                 task: None,
                 ingress: None,
@@ -571,7 +663,7 @@ impl PendingInitialProducer {
         let task = core::Task::register_body(
             owner,
             core::Family::EnrolledInitial,
-            Some(retained.clone()),
+            Some(core::RetainedOwner::Initial(retained.clone())),
             move |_, _| run(current, prepared),
         )?;
         Ok(Self {

@@ -20,6 +20,11 @@ impl crate::postgres::PostgresStore {
         // the SQL worker is authenticated by original sources+gate, not task identity.
         let mut parts: crate::session_owner::owned_scope::NativeInitialParts<'_> =
             call.into_native()?;
+        // This composition is tied to the actual library-created Memory root.
+        // A forwarded private view cannot originate a policy on a SQL backend.
+        if parts.original_policy.is_some() || parts.policy_retirement.is_some() {
+            return Err(Error::Unsupported.into());
+        }
         let session = parts.context.session_id();
         let mut tx = self
             .session_transaction(session)

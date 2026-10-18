@@ -169,3 +169,17 @@ fn meter_receipt(
         })
         .map_err(|_| Error::Capacity)
 }
+
+#[cfg(test)]
+impl super::Ledger {
+    pub(crate) fn corrupt_retirement_current_token_for_test(
+        &mut self,
+        session: &crabber_core::SessionId,
+        target: &crabber_core::SessionOwnerId,
+    ) {
+        self.records
+            .get_mut(&(session.clone(), target.clone()))
+            .unwrap()
+            .token = "not-cleared".into();
+    }
+}

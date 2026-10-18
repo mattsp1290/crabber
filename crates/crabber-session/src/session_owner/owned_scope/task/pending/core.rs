@@ -25,6 +25,49 @@ pub(super) enum Family {
     Queue,
     Successor,
     EnrolledInitial,
+    FixedMemoryController,
+}
+#[derive(Clone)]
+pub(super) enum RetainedOwner {
+    Initial(Arc<super::enrolled_initial::RetainedInitial>),
+    FixedMemoryController(Arc<super::fixed_memory::RetainedFixedController>),
+}
+impl RetainedOwner {
+    fn attach(
+        &self,
+        task: tokio::task::Id,
+        ingress: Arc<super::super::driver::MainIngress>,
+        control: Control,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Initial(owner) => owner.attach(task, ingress, control),
+            Self::FixedMemoryController(owner) => owner.attach(task, ingress, &control),
+        }
+    }
+    pub(super) async fn after_join(
+        &self,
+        disposition: OwnedMainDisposition,
+    ) -> Option<super::enrolled_initial::PendingInitialProducerObservation> {
+        match self {
+            Self::Initial(owner) => Some(owner.clone().after_join(disposition).await),
+            Self::FixedMemoryController(owner) => {
+                owner.after_join(disposition).await;
+                None
+            }
+        }
+    }
+    pub(super) fn resources_pending(&self) -> bool {
+        match self {
+            Self::Initial(owner) => owner.resources_pending(),
+            Self::FixedMemoryController(owner) => owner.resources_pending(),
+        }
+    }
+    pub(super) async fn join_original_resources(&self) {
+        match self {
+            Self::Initial(owner) => owner.join_original_resources().await,
+            Self::FixedMemoryController(owner) => owner.join_original_resources().await,
+        }
+    }
 }
 pub(super) enum Source {
     Initial(super::initial::source::Source),
@@ -176,7 +219,7 @@ impl<T: Send + 'static> Task<T> {
     pub(super) fn register_body<F, W>(
         owner: &super::PendingDriverTasks,
         family: Family,
-        protected: Option<Arc<super::enrolled_initial::RetainedInitial>>,
+        protected: Option<RetainedOwner>,
         produce: F,
     ) -> Result<Self, Error>
     where

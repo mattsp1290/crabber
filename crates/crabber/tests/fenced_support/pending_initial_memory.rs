@@ -13,6 +13,15 @@ impl crate::memory::MemoryStore {
             "native historical Initial source unavailable in fixture",
         ))
     }
+    pub(crate) fn classify_initial_resource_policy(
+        _state: &impl Sized,
+        _run: &crabber::core::Run,
+        _proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<bool, crate::public_session::v2::proof::Failure> {
+        Err(crate::public_session::v2::proof::unknown(
+            "native fixed policy unavailable in fixture",
+        ))
+    }
     // Match the real backend's private receiver-shaped ingress without touching
     // the opaque call or pretending to authenticate a native producer.
     #[allow(clippy::unused_self)]

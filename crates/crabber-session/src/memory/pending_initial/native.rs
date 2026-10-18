@@ -62,6 +62,21 @@ fn selected_consumer<'a>(
     }
     Ok(selected)
 }
+/// A consumer Seal must carry its same-task joined retirement witness;
+/// legacy birth-only Seal carries neither consumer nor witness.
+fn seal_witness<'a>(
+    consumer: Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+    retirement: Option<&'a crate::session_owner::owned_scope::InitialRetirementWitness<'a>>,
+) -> Result<
+    Option<&'a crate::session_owner::owned_scope::InitialRetirementWitness<'a>>,
+    PreparationCommitError,
+> {
+    match (consumer, retirement) {
+        (Some(_), Some(witness)) => Ok(Some(witness)),
+        (None, None) => Ok(None),
+        _ => Err(Error::Unsupported.into()),
+    }
+}
 pub(in crate::memory) fn historical<'a>(
     state: &'a State,
     original: &'a JoinedPreparation,
@@ -211,25 +226,34 @@ impl MemoryStore {
             Bundle<'_>,
             &crate::native_enrollment::initial_consumer::Selection<'_>,
         ),
-        witness: Option<&crate::session_owner::owned_scope::InitialRetirementWitness<'_>>,
+        witnesses: (
+            Option<&crate::session_owner::owned_scope::InitialRetirementWitness<'_>>,
+            Option<&crate::session_owner::owned_scope::OriginalPolicyRetirementView<'_>>,
+            Option<&crate::session_owner::owned_scope::OwnedScopeActivation>,
+        ),
         now: time::OffsetDateTime,
         proof: &mut Proof,
     ) -> Result<(Option<State>, PendingInitialNativeReply), PreparationCommitError> {
         let (original, context, expected, prefix) = source;
         let (view, consumer_view) = selected;
+        let (witness, policy_tail, policy_activation) = witnesses;
         if let Some(witness) = witness {
             let local = witness.verify(original, context, expected, proof)?;
             if let Some(register) = consumer_view.registered_driver() {
                 witness.verify_register(register, proof)?;
             }
             if let Some((saved, _)) = consumer_view.retirement() {
-                let plan = crate::native_enrollment::initial_consumer::prepare_paired_close(
+                let plan = crate::native_enrollment::initial_consumer::prepare_paired_policy_close(
                     consumer_view,
                     view,
                     prefix,
                     expected,
                     local.calls,
-                    (saved, local.disposition),
+                    (
+                        saved,
+                        local.disposition,
+                        consumer_view.close.and_then(|c| c.policy_terminal.as_ref()),
+                    ),
                     proof,
                 )?;
                 return match plan {
@@ -248,17 +272,29 @@ impl MemoryStore {
                 witness,
                 proof,
             )?;
+            let policy_prepared = crate::memory::initial_consumer::policy::prepare_optional(
+                state,
+                (policy_tail, policy_activation),
+                proof,
+            )?;
             let mut next = state.clone();
+            let policy_terminal = crate::memory::initial_consumer::policy::publish_terminal(
+                &mut next,
+                consumer_view,
+                policy_prepared.as_ref(),
+                now,
+                proof,
+            )?;
             let (retirement, disposition) = crate::memory::initial_consumer::retirement::publish(
                 &mut next, prepared, now, proof,
             )?;
-            return match crate::native_enrollment::initial_consumer::prepare_paired_close(
+            return match crate::native_enrollment::initial_consumer::prepare_paired_policy_close(
                 consumer_view,
                 view,
                 prefix,
                 expected,
                 local.calls,
-                (&retirement, disposition),
+                (&retirement, disposition, policy_terminal.as_ref()),
                 proof,
             )? {
                 crate::native_enrollment::initial_consumer::PairedCloseDecision::Publish(plan) => {
@@ -302,15 +338,23 @@ impl MemoryStore {
             Bundle<'_>,
             &crate::native_enrollment::initial_consumer::Selection<'_>,
         ),
-        consumer: Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+        purpose: (
+            Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+            Option<&crate::session_owner::owned_scope::OwnedScopeActivation>,
+        ),
         proof: &mut Proof,
     ) -> Result<(Option<State>, PendingInitialNativeReply), PreparationCommitError> {
         let (original, expected, prefix) = source;
         let (view, consumer_view) = selected;
+        let (consumer, policy_activation) = purpose;
         match protocol::prepare_open(prefix, expected, view, proof)? {
             OpenDecision::Publish { record, delta } => {
                 let consumer_delta = consumer
                     .map(|_| {
+                        if let Some(activation) = policy_activation {
+                            let policy = crate::memory::initial_consumer::policy::original(activation, proof)?;
+                            return crate::native_enrollment::initial_consumer::prepare_fixed_anchor(prefix, &record, consumer_view, &policy, proof);
+                        }
                         crate::native_enrollment::initial_consumer::prepare_anchor(
                             prefix,
                             &record,
@@ -378,6 +422,59 @@ impl MemoryStore {
         }
         // The guard is always released before the caller's after-commit hook.
     }
+    fn verify_policy_ingress<'a>(
+        &self,
+        state: &State,
+        selected: &crate::native_enrollment::initial_consumer::Selection<'_>,
+        source: (&JoinedPreparation, &Correlation),
+        purpose: (
+            Option<&'a crate::session_owner::owned_scope::OriginalPolicyView<'a>>,
+            Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+            Option<&crate::session_owner::owned_scope::OriginalPolicyRetirementView<'_>>,
+            NativeInitialOperation,
+        ),
+        proof: &mut Proof,
+    ) -> Result<
+        Option<&'a crate::session_owner::owned_scope::OwnedScopeActivation>,
+        PreparationCommitError,
+    > {
+        let (original, expected) = source;
+        let (policy, association, retirement, operation) = purpose;
+        let purpose = match (policy, association) {
+            (Some(policy), Some(association)) => Some((policy, association)),
+            (None, _) => None,
+            _ => return Err(Error::Unsupported.into()),
+        };
+        let activation = crate::memory::initial_consumer::policy::verify_purpose(
+            self, original, expected, selected, purpose, proof,
+        )?;
+        if let Some(activation) = activation
+            && matches!(
+                selected.origin,
+                Some(crate::native_enrollment::initial_consumer::Origin::NoOpenedMember(_))
+            )
+        {
+            crate::memory::initial_consumer::policy::verify_unopened_retirement(
+                state, activation, proof,
+            )
+            .map_err(|error| failure(&error))?;
+        }
+        if let Some(tail) = retirement {
+            tail.verify_close(
+                self,
+                association.ok_or(Error::Unsupported)?,
+                original,
+                expected,
+                proof,
+            )?;
+        }
+        if (operation == NativeInitialOperation::Seal && activation.is_some())
+            != retirement.is_some()
+        {
+            return Err(Error::Unsupported.into());
+        }
+        Ok(activation)
+    }
     pub(in crate::memory) fn apply_pending_initial(
         &self,
         call: PendingInitialNativeCall<'_>,
@@ -403,6 +500,18 @@ impl MemoryStore {
         // metadata return; a Raw result cannot hide a retained Pending slot.
         let view = selected(&state, expected, proof)?;
         let consumer_view = selected_consumer(&state, expected, view, parts.consumer, proof)?;
+        let policy_activation = self.verify_policy_ingress(
+            &state,
+            &consumer_view,
+            (original, expected),
+            (
+                parts.original_policy,
+                parts.consumer,
+                parts.policy_retirement,
+                parts.operation,
+            ),
+            proof,
+        )?;
         if let Some(raw) =
             Self::pending_initial_raw_completed(&state, original, expected, parts.selected, proof)?
         {
@@ -416,21 +525,22 @@ impl MemoryStore {
                 &state,
                 (original, expected, &prefix),
                 (view, &consumer_view),
-                parts.consumer,
+                (parts.consumer, policy_activation),
                 proof,
             )?,
             NativeInitialOperation::Seal => {
-                let witness = match (parts.consumer, parts.retirement) {
-                    (Some(_), Some(witness)) => Some(witness),
-                    (None, None) => None,
-                    _ => return Err(Error::Unsupported.into()),
-                };
+                let witness = seal_witness(parts.consumer, parts.retirement)?;
+                let now = self.clock.now();
+                #[cfg(test)]
+                let now = parts
+                    .policy_retirement
+                    .map_or(now, |tail| tail.presentation_now(now));
                 Self::pending_seal_publication(
                     &state,
                     (original, parts.context, expected, &prefix),
                     (view, &consumer_view),
-                    witness,
-                    self.clock.now(),
+                    (witness, parts.policy_retirement, policy_activation),
+                    now,
                     proof,
                 )?
             }
@@ -466,7 +576,7 @@ impl MemoryStore {
         Self::commit_pending(state, next);
         #[cfg(test)]
         if committed {
-            after(self)?;
+            after(self, parts.operation)?;
         }
         Ok(reply)
     }
@@ -485,23 +595,38 @@ fn before(
         .lock()
         .unwrap()
         .push((operation, proof.used()));
-    if store
-        .pending_initial_test_state
-        .fault
-        .load(std::sync::atomic::Ordering::SeqCst)
-        == 1
+    if (operation == NativeInitialOperation::Seal
+        && store
+            .pending_initial_test_state
+            .fixed_policy_seal_fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1)
+        || store
+            .pending_initial_test_state
+            .fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
     Ok(())
 }
 #[cfg(test)]
-fn after(store: &MemoryStore) -> Result<(), PreparationCommitError> {
-    if store
-        .pending_initial_test_state
-        .fault
-        .load(std::sync::atomic::Ordering::SeqCst)
-        == 2
+fn after(
+    store: &MemoryStore,
+    operation: NativeInitialOperation,
+) -> Result<(), PreparationCommitError> {
+    if (operation == NativeInitialOperation::Seal
+        && store
+            .pending_initial_test_state
+            .fixed_policy_seal_fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 2)
+        || store
+            .pending_initial_test_state
+            .fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 2
     {
         return Err(Error::UnknownStoreOutcome.into());
     }

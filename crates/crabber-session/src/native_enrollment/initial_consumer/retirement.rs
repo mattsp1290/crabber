@@ -138,7 +138,7 @@ pub(crate) fn unactivated_request(
         },
     })
 }
-fn verify_join(
+pub(super) fn verify_join(
     audit: &Audit,
     before: &Record,
     request: &MutateSessionOwner,

@@ -95,6 +95,22 @@ impl<T> JoinedOwnedTask<T> {
     }
 }
 impl JoinedOwnedScope {
+    pub(crate) fn from_fixed_preparation(
+        witness: &super::OriginalPolicyRetirementView<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Self, crate::session_owner::preparation::PreparationCommitError> {
+        let (activation, disposition) = witness.observed_join(proof)?;
+        proof
+            .measure(&(activation, disposition))
+            .map_err(|_| Error::Capacity)?;
+        Ok(Self {
+            source: JoinSource {
+                activation: activation.clone(),
+                disposition,
+            },
+        })
+    }
+
     /// Construct only from the same supervised Initial main and actual drained
     /// holder, checking the exact activation retained before native I/O.
     pub(crate) fn from_initial_retirement(

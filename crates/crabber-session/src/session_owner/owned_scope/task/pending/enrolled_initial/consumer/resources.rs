@@ -35,7 +35,7 @@ struct State {
     failed: bool,
     calls: Vec<crabber_core::ControlId>,
 }
-pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) struct InitialResources {
+pub(in crate::session_owner::owned_scope::task::pending) struct InitialResources {
     pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) owner:
         ToolResourceOwner,
     source: Arc<RetainedInitialSource>,
@@ -275,6 +275,28 @@ pub(crate) struct InitialResourceAssociation<'a> {
     resources: &'a InitialResources,
 }
 impl InitialResourceAssociation<'_> {
+    pub(in crate::session_owner::owned_scope::task::pending) fn same_holder(
+        &self,
+        other: &Self,
+    ) -> bool {
+        std::ptr::eq(self.resources, other.resources)
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) fn belongs_to(
+        &self,
+        holder: Option<&InitialResources>,
+    ) -> bool {
+        holder.is_some_and(|holder| std::ptr::eq(holder, self.resources))
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) fn verify_policy_close(
+        &self,
+        original: &JoinedPreparation,
+        expected: &Correlation,
+        proof: &mut Proof,
+    ) -> Result<(), PreparationCommitError> {
+        self.verify_close(original, &self.resources.source.context, expected, proof)
+            .map(|_| ())
+    }
+
     pub(crate) fn verify(
         &self,
         original: &JoinedPreparation,

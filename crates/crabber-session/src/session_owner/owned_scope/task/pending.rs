@@ -7,7 +7,18 @@
 //! authority. Native source and local task observations do not prove complete
 //! native enrollment, resource policy or whole-Run main ownership.
 mod core;
+mod fixed_memory;
+pub(super) mod fixed_preparation;
+pub use fixed_memory::{
+    FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
+    FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
+};
+pub(crate) use fixed_preparation::{OriginalPolicyRetirementView, OriginalPolicyView};
 mod enrolled_initial;
+pub(crate) use enrolled_initial::{
+    FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
+    verify_fixed_binding,
+};
 mod execute;
 mod initial;
 pub(crate) use enrolled_initial::{
@@ -205,3 +216,6 @@ pub(crate) use enrolled_initial::initial_consumer_fixture;
 
 #[cfg(test)]
 pub(crate) use enrolled_initial::{ConsumerProofCaps, ConsumerProofUsage};
+
+#[cfg(test)]
+pub(crate) use fixed_preparation::FixedInitialTestHooks;

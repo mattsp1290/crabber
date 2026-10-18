@@ -43,7 +43,7 @@ pub(crate) fn classify_closed(
         return Ok(InitialConsumption::Unproven);
     };
     let closed = InitialConsumption::AuthenticatedClosedPrefix;
-    if close.version != 2
+    if !close.valid_policy_version(view.origin.ok_or_else(|| unknown("Initial origin"))?)
         || !matches!(close.retirement, DriverRetirement::Activated { .. })
         || close.disposition != OwnedMainDisposition::Returned
         || !matches!(

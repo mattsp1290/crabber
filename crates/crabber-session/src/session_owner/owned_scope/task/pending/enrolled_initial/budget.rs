@@ -41,9 +41,9 @@ pub(crate) struct InitialProofUsage {
     pub seal: Vec<InitialOperationUsage>,
 }
 #[derive(Default)]
-pub(super) struct Harness {
-    pub(super) caps: InitialProofCaps,
-    pub(super) usage: Arc<Mutex<InitialProofUsage>>,
+pub(in crate::session_owner::owned_scope::task::pending) struct Harness {
+    pub(in crate::session_owner::owned_scope::task::pending) caps: InitialProofCaps,
+    pub(in crate::session_owner::owned_scope::task::pending) usage: Arc<Mutex<InitialProofUsage>>,
 }
 impl Harness {
     pub(super) fn constructor(&self, used: usize) {

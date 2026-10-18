@@ -108,6 +108,20 @@ fn describe(
     .map_err(|_| conflict())
 }
 
+#[derive(Clone, Copy)]
+enum ProfileKind {
+    Generic,
+    FixedMemory,
+}
+impl ProfileKind {
+    fn components(self) -> (&'static str, &'static str, &'static [u8]) {
+        match self {
+            Self::Generic => (PROFILE_COMPONENT, PROFILE_VERSION, BEHAVIOR),
+            Self::FixedMemory => ("contract:crabber/pending-initial-scripted-fixed-memory.v3", "3", b"crabber.pending-initial.scripted-fixed-memory-behavior.v3:system-clock:literal-preparation:one-turn:no-tools:no-prompts:no-guards:no-provider-factories:no-host-callbacks:no-compaction:no-heartbeat:canonical-attempt-prelude:permission-before-run-started:five-lifecycle-events:one-assistant-message:drain-before-conclusion:actual-main-and-resource-join:atomic-native-preparation-child-and-driver-retirement-and-paired-close:original-policy-open-v1:policy-terminal-v1"),
+        }
+    }
+}
+
 struct Profile {
     behavior: InputFingerprint,
     semantics: serde_json::Value,
@@ -120,16 +134,32 @@ fn profile(
     resource_contract: Option<&InputFingerprint>,
     proof: &mut Proof,
 ) -> Result<Profile, PreparationCommitError> {
-    let behavior =
-        InputFingerprint::new(format!("{:x}", Sha256::digest(BEHAVIOR))).map_err(|_| conflict())?;
+    profile_kind(
+        descriptor,
+        policy,
+        resource_contract,
+        ProfileKind::Generic,
+        proof,
+    )
+}
+fn profile_kind(
+    descriptor: &ProviderBindingDescriptor,
+    policy: &crate::AdmissionSelectionPolicy,
+    resource_contract: Option<&InputFingerprint>,
+    kind: ProfileKind,
+    proof: &mut Proof,
+) -> Result<Profile, PreparationCommitError> {
+    let (component, version, behavior_bytes) = kind.components();
+    let behavior = InputFingerprint::new(format!("{:x}", Sha256::digest(behavior_bytes)))
+        .map_err(|_| conflict())?;
     proof.measure(descriptor).map_err(|error| budget(&error))?;
     proof
         .measure(&(
             PROVIDER_BINDING_COMPONENT,
             HOST_BEHAVIOR_COMPONENT,
             behavior.as_str(),
-            PROFILE_COMPONENT,
-            PROFILE_VERSION,
+            component,
+            version,
         ))
         .map_err(|error| budget(&error))?;
     let mut components = vec![
@@ -142,8 +172,8 @@ fn profile(
             version: behavior.as_str().into(),
         },
         ComponentIdentity {
-            id: PROFILE_COMPONENT.into(),
-            version: PROFILE_VERSION.into(),
+            id: component.into(),
+            version: version.into(),
         },
     ];
     if !policy.is_explicit() {
@@ -195,16 +225,40 @@ fn verify_profile(
     original: &JoinedPreparation,
     proof: &mut Proof,
 ) -> Result<(), PreparationCommitError> {
-    let expected = profile(
+    verify_profile_kind(
+        binding,
         descriptor,
-        &binding.request.selection_policy,
         original
             .observed_grant()
             .original_reservation()
             .resource_contract
             .as_ref(),
+        ProfileKind::Generic,
         proof,
-    )?;
+    )
+}
+fn verify_profile_kind(
+    binding: &ExecutionBindingCapsule,
+    descriptor: &ProviderBindingDescriptor,
+    resource_contract: Option<&InputFingerprint>,
+    kind: ProfileKind,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    let expected = match kind {
+        ProfileKind::Generic => profile(
+            descriptor,
+            &binding.request.selection_policy,
+            resource_contract,
+            proof,
+        ),
+        ProfileKind::FixedMemory => profile_kind(
+            descriptor,
+            &binding.request.selection_policy,
+            resource_contract,
+            kind,
+            proof,
+        ),
+    }?;
     if binding.version != 3
         || binding.provider != *descriptor
         || binding.behavior_fingerprint != expected.behavior
@@ -226,6 +280,14 @@ fn verify_profile(
 pub(super) fn verify(
     source: &LibraryScriptedSource,
     original: &JoinedPreparation,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    verify_kind(source, original, ProfileKind::Generic, proof)
+}
+fn verify_kind(
+    source: &LibraryScriptedSource,
+    original: &JoinedPreparation,
+    kind: ProfileKind,
     proof: &mut Proof,
 ) -> Result<(), PreparationCommitError> {
     let (selection, responses) = source.recipe();
@@ -261,7 +323,92 @@ pub(super) fn verify(
     // Preserve authenticated policy, captured revision, request and original
     // resource declaration. Never rewrite an existing preparation to fit.
     original.verify_original_intent()?;
-    verify_profile(binding, &descriptor, original, proof)
+    if binding.provider != descriptor {
+        return Err(conflict());
+    }
+    match kind {
+        ProfileKind::Generic => verify_profile(binding, &descriptor, original, proof),
+        ProfileKind::FixedMemory => verify_fixed_binding(
+            binding,
+            original
+                .observed_grant()
+                .original_reservation()
+                .resource_contract
+                .as_ref(),
+            proof,
+        ),
+    }
+}
+
+pub(crate) struct FixedInitialProfile {
+    pub(crate) provider: ProviderBindingDescriptor,
+    pub(crate) behavior: InputFingerprint,
+    pub(crate) semantics: serde_json::Value,
+    pub(crate) plan: String,
+}
+pub(crate) fn fixed_initial_resource_contract(
+    proof: &mut Proof,
+) -> Result<InputFingerprint, PreparationCommitError> {
+    let declaration = b"crabber.pending-initial.fixed-memory.literal-preparation-resources.v1";
+    proof
+        .charge(declaration.len())
+        .map_err(|error| budget(&error))?;
+    InputFingerprint::new(format!("{:x}", Sha256::digest(declaration))).map_err(|_| conflict())
+}
+pub(crate) fn fixed_initial_profile(
+    source: &LibraryScriptedSource,
+    policy: &crate::AdmissionSelectionPolicy,
+    resource_contract: Option<&InputFingerprint>,
+    proof: &mut Proof,
+) -> Result<FixedInitialProfile, PreparationCommitError> {
+    if resource_contract != Some(&fixed_initial_resource_contract(proof)?) {
+        return Err(conflict());
+    }
+    let (selection, responses) = source.recipe();
+    let provider = describe(
+        &selection.provider_id,
+        &selection.model_id,
+        responses,
+        proof,
+    )?;
+    let profile = profile_kind(
+        &provider,
+        policy,
+        resource_contract,
+        ProfileKind::FixedMemory,
+        proof,
+    )?;
+    Ok(FixedInitialProfile {
+        provider,
+        behavior: profile.behavior,
+        semantics: profile.semantics,
+        plan: profile.plan,
+    })
+}
+pub(super) fn verify_fixed(
+    source: &LibraryScriptedSource,
+    original: &JoinedPreparation,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    verify_kind(source, original, ProfileKind::FixedMemory, proof)
+}
+pub(crate) fn verify_fixed_binding(
+    binding: &ExecutionBindingCapsule,
+    resource_contract: Option<&InputFingerprint>,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    if resource_contract != Some(&fixed_initial_resource_contract(proof)?) {
+        return Err(conflict());
+    }
+    // The native selector/actual original verifier precharges this complete
+    // borrowed binding before this canonical-only corroboration.
+    verify_profile_kind(
+        binding,
+        &binding.provider,
+        resource_contract,
+        ProfileKind::FixedMemory,
+        proof,
+    )
 }
 
 #[cfg(test)]

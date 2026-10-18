@@ -4,7 +4,7 @@ use super::State;
 mod classification;
 use crate::native_enrollment::initial_consumer::{Correlation, RecordDelta, Selection};
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
-pub(in crate::memory) use classification::classify_run;
+pub(in crate::memory) use classification::{classify_run, resource_policy};
 use crabber_core::SessionId;
 
 pub(super) fn routes(
@@ -185,6 +185,14 @@ pub(super) fn refuse_raw_activation(
     Ok(())
 }
 native_pending_initial_items! {
+    #[cfg(test)]
+    #[path="initial_consumer/policy_budget_tests.rs"]
+    mod policy_budget_tests;
+    #[cfg(test)]
+    #[path="initial_consumer/policy_tests.rs"]
+    mod policy_tests;
+    #[path="initial_consumer/policy.rs"]
+    pub(in crate::memory) mod policy;
     #[cfg(test)]
     #[path="initial_consumer/classification_tests.rs"]
     mod classification_tests;

@@ -1,6 +1,6 @@
 use super::super::{Error, OwnedMainDisposition};
 use super::{Binding, Family, Notice, OwnedScopeActivation};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -16,6 +16,7 @@ struct State {
     bound: Option<Binding>,
     completion: Option<Notice>,
     resources: Option<crabber_extension::ToolResourceOwner>,
+    fixed: Option<Weak<super::super::fixed_memory::RetainedFixedController>>,
 }
 /// Signals/observes this original task. It cannot create a task, context or permit.
 #[derive(Clone)]
@@ -40,6 +41,7 @@ impl Control {
                 bound: None,
                 completion: None,
                 resources: None,
+                fixed: None,
             })),
             changed: watch::channel(()).0,
         }
@@ -48,20 +50,46 @@ impl Control {
     /// future stays owned; already-dispatched business work is not aborted.
     /// Its Runtime owner must signal its independent cancellation/cleanup scope.
     pub(in crate::session_owner::owned_scope::task::pending) fn request_stop(&self) {
-        let resources = {
+        let (resources, fixed) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.stopped = true;
-            state.resources.clone()
+            (state.resources.clone(), state.fixed.clone())
         };
         // Closing can notify actual resource observers; never do that under the
         // administrative mutex or substitute a signal for their actual joins.
         if let Some(resources) = resources {
             resources.close();
         }
+        if let Some(fixed) = fixed.and_then(|owner| owner.upgrade()) {
+            fixed.request_stop();
+        }
         self.changed.send_replace(());
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) fn install_fixed_controller(
+        &self,
+        owner: &Arc<super::super::fixed_memory::RetainedFixedController>,
+    ) -> Result<(), Error> {
+        let stopped = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.family != Family::FixedMemoryController
+                || state.phase != Phase::Ready
+                || state.fixed.is_some()
+            {
+                return Err(Error::InvalidTransition);
+            }
+            state.fixed = Some(Arc::downgrade(owner));
+            state.stopped
+        };
+        if stopped {
+            owner.request_stop();
+        }
+        Ok(())
     }
     /// Metadata from the same original task's validated completion ACK.
     /// # Errors

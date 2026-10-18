@@ -41,7 +41,7 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
     let approved = approval::verify(state, run, proof)?;
     let cancelled = waiting::verify(state, run, proof)?;
     let abandoned = abandonment::verify(state, run, proof)?;
-    Ok(RunHistoryReport::sources(
+    let report = RunHistoryReport::sources(
         initial_present
             && state.preparation_admissions.contains_key(&run.id)
             && (state.admission_execution_protocols.contains(&run.id) || unkeyed_input),
@@ -51,7 +51,9 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
     .with_initial_consumption(crate::memory::initial_consumer::classify_run(
         state, run, proof,
     )?)
-    .with_closed_initial_native_main())
+    .with_closed_initial_native_main();
+    let policy = crate::memory::initial_consumer::resource_policy(state, run, report, proof)?;
+    Ok(report.with_fixed_memory_resource_policy(policy))
 }
 
 fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {
@@ -195,4 +197,18 @@ native_pending_initial_items! {
     #[cfg(test)]
     #[path="run_history/classification_tests.rs"]
     mod classification_tests;
+}
+
+native_pending_initial_items! {
+    #[cfg(test)]
+    impl crate::memory::MemoryStore {
+        pub(crate) fn fixed_initial_fixture_report(&self, session: &SessionId) -> Result<RunHistoryReport, Failure> {
+            self.fixed_initial_fixture_report_with_proof(session, &mut Proof::bounded(crate::deletion::coverage::MAX_PROOF_BYTES))
+        }
+        pub(crate) fn fixed_initial_fixture_report_with_proof(&self, session: &SessionId, proof: &mut Proof) -> Result<RunHistoryReport, Failure> {
+            let state = self.state.lock().map_err(unknown)?;
+            let run = state.runs.values().find(|run| &run.session_id == session).ok_or_else(|| unknown("fixed fixture missing Run"))?;
+            report(&state, run, proof)
+        }
+    }
 }

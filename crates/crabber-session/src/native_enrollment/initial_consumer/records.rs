@@ -10,6 +10,8 @@ pub(crate) struct Anchor {
     pub version: u32,
     pub correlation: Correlation,
     pub birth_open_digest: InputFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_policy: Option<Box<super::OriginalPolicy>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +47,14 @@ impl Origin {
         proof.measure(self)?;
         self.correlation().validate(proof)?;
         let valid = match self {
-            Self::Opened(a) => a.version == 1,
+            Self::Opened(a) => match (a.version, &a.original_policy) {
+                (1, None) => true,
+                (2, Some(policy)) => {
+                    policy.validate(&a.correlation, proof)?;
+                    true
+                }
+                _ => false,
+            },
             Self::NoOpenedMember(n) => {
                 n.version == 2 && matches!(n.retirement, DriverRetirement::NoDriver)
             }
@@ -148,6 +157,8 @@ pub(crate) struct ConsumerClose {
     pub birth_close_digest: InputFingerprint,
     pub prior_head_digest: InputFingerprint,
     pub roster_digest: InputFingerprint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_terminal: Option<super::PolicyTerminal>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

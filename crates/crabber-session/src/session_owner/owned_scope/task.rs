@@ -19,9 +19,18 @@ pub(crate) use pending::{
     DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
     InitialRetirementWitness, NativeConsumerParts,
 };
+pub(crate) use pending::{
+    FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
+    verify_fixed_binding,
+};
+pub use pending::{
+    FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
+    FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
+};
 #[cfg(test)]
 pub(crate) use pending::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
 pub(crate) use pending::{NativeInitialOperation, NativeInitialParts};
+pub(crate) use pending::{OriginalPolicyRetirementView, OriginalPolicyView};
 pub use pending::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -107,6 +116,19 @@ impl<T: Send + 'static> OwnedTaskRegistration<T> {
             task: Some(task),
             joined: None,
         })
+    }
+    // Only the closed preparation owner consumes the cached real observation,
+    // after moving its actual value into that owner's retained output slot.
+    pub(super) fn take_fixed_joined(&mut self) -> Result<JoinedOwnedTask<T>, Error> {
+        if self.task.is_some()
+            || self
+                .joined
+                .as_ref()
+                .is_none_or(|joined| joined.value.is_some())
+        {
+            return Err(Error::InvalidTransition);
+        }
+        self.joined.take().ok_or(Error::InvalidTransition)
     }
     #[must_use]
     pub fn activation(&self) -> &OwnedScopeActivation {
@@ -221,3 +243,6 @@ pub(crate) use pending::initial_consumer_fixture;
 
 #[cfg(test)]
 pub(crate) use pending::{ConsumerProofCaps, ConsumerProofUsage};
+
+#[cfg(test)]
+pub(crate) use pending::FixedInitialTestHooks;

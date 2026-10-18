@@ -25,10 +25,19 @@ impl LocallyJoinedInitialSeal {
             let drained = resources.drain().await;
             drained?;
         }
+        if let Some(preparation) = &retained.fixed_preparation
+            && let Err(error) = preparation.drain().await
+        {
+            retained.lock().observation_failed = true;
+            return Err(error);
+        }
         if let Some(terminal) = &self.terminal {
             return Ok(terminal.clone());
         }
         if retained.lock().identity.is_none() {
+            if let Some(preparation) = &retained.fixed_preparation {
+                preparation.cleanup_partial().await?;
+            }
             let status = retained.lock().status.clone();
             self.terminal = Some(status.clone());
             if let Some(resources) = &retained.consumer {
@@ -40,7 +49,7 @@ impl LocallyJoinedInitialSeal {
         let mut proof = RetainedInitial::new_proof(
             Operation::Seal,
             #[cfg(test)]
-            &retained.budget,
+            retained,
         );
         let expected =
             protocol::prefix::expected(&retained.source.original, &identity, &mut proof)?;
@@ -59,28 +68,24 @@ impl LocallyJoinedInitialSeal {
                 Some(tokio::time::Instant::now() + NATIVE_BOUND),
             )
             .await;
-        let accepted = outcome.and_then(|outcome| {
-            Ok(match outcome {
-                Reply::Closed(record) => match record.outcome {
-                    protocol::CloseOutcome::NoPublication => {
-                        PendingInitialProducerStatus::ClosedNoPublication
-                    }
-                    protocol::CloseOutcome::Assigned { .. } => {
-                        PendingInitialProducerStatus::ClosedAssignment
-                    }
-                },
-                Reply::RawCompleted(record) => {
-                    PendingInitialProducerStatus::SourceAlreadyCompletedRaw {
-                        run_id: record.run_id,
-                    }
-                }
-                Reply::Opened(_)
-                | Reply::AlreadyOpened(_)
-                | Reply::Completed(_)
-                | Reply::AlreadyPublished(_) => return Err(Error::UnknownStoreOutcome.into()),
-            })
-        });
+        let accepted = outcome.and_then(closed_status);
+        if matches!(
+            &accepted,
+            Ok(PendingInitialProducerStatus::ClosedNoPublication)
+        ) && let Some(preparation) = &retained.fixed_preparation
+        {
+            preparation.cleanup_unpublished_root().await?;
+        }
         let accepted = accepted.and_then(|status| {
+            #[cfg(test)]
+            if retained
+                .fixed_preparation
+                .as_ref()
+                .is_some_and(super::super::fixed_preparation::FixedPreparationLoan::refuse_seal_ack)
+            {
+                return Err(Error::UnknownStoreOutcome.into());
+            }
+
             if let PendingInitialProducerStatus::SourceAlreadyCompletedRaw { run_id } = &status {
                 proof
                     .measure(&(run_id, run_id))
@@ -122,12 +127,18 @@ impl RetainedInitial {
         self.consumer
             .as_ref()
             .is_some_and(|resources| resources.owner.snapshot().pending != 0)
+            || self.fixed_preparation.as_ref().is_some_and(
+                super::super::fixed_preparation::FixedPreparationLoan::resources_pending,
+            )
     }
     pub(in crate::session_owner::owned_scope::task::pending) async fn join_original_resources(
         &self,
     ) {
         if let Some(resources) = &self.consumer {
             let _report = resources.owner.join().await;
+        }
+        if let Some(preparation) = &self.fixed_preparation {
+            preparation.join_original_resources().await;
         }
     }
 
@@ -193,4 +204,24 @@ impl RetainedInitial {
             error: None,
         }
     }
+}
+
+fn closed_status(outcome: Reply) -> Result<PendingInitialProducerStatus, PreparationCommitError> {
+    Ok(match outcome {
+        Reply::Closed(record) => match record.outcome {
+            protocol::CloseOutcome::NoPublication => {
+                PendingInitialProducerStatus::ClosedNoPublication
+            }
+            protocol::CloseOutcome::Assigned { .. } => {
+                PendingInitialProducerStatus::ClosedAssignment
+            }
+        },
+        Reply::RawCompleted(record) => PendingInitialProducerStatus::SourceAlreadyCompletedRaw {
+            run_id: record.run_id,
+        },
+        Reply::Opened(_)
+        | Reply::AlreadyOpened(_)
+        | Reply::Completed(_)
+        | Reply::AlreadyPublished(_) => return Err(Error::UnknownStoreOutcome.into()),
+    })
 }

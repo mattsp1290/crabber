@@ -64,6 +64,16 @@ impl RunHistoryReport {
         );
         self
     }
+    /// The actual Memory reader authenticates the original fixed policy and
+    /// both native retirements on the report caller's same State and allowance.
+    pub(crate) fn with_fixed_memory_resource_policy(mut self, verified: bool) -> Self {
+        self.resource_policy = Fact::from_verified(
+            verified
+                && self.main_join == Fact::Authenticated
+                && self.initial_consumption == InitialConsumption::CompletedSource,
+        );
+        self
+    }
     pub(crate) fn complete(self) -> bool {
         self.initial_consumption == InitialConsumption::CompletedSource
             && [

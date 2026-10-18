@@ -81,6 +81,12 @@ pub(super) struct Harness {
 }
 #[cfg(test)]
 impl super::Calls {
+    pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) fn fixed_test_caps(
+        &self,
+        caps: ConsumerProofCaps,
+    ) {
+        self.budget.lock().unwrap().caps = caps;
+    }
     pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) fn fixed_presentation(
         &self,
     ) {

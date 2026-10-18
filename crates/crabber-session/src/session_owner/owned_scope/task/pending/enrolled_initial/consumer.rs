@@ -7,7 +7,7 @@ mod calls;
 pub(super) use calls::{Calls, Step};
 mod run;
 mod transport;
-pub(super) use resources::InitialResources;
+pub(in crate::session_owner::owned_scope::task::pending) use resources::InitialResources;
 pub(crate) use resources::{DrainedInitialResources, InitialResourceAssociation};
 pub(super) use run::run;
 pub(crate) use transport::NativeConsumerParts;

@@ -56,3 +56,30 @@ fn read(state: &State, run: &Run, proof: &mut Proof) -> Result<InitialConsumptio
         }
     }
 }
+
+/// Only actual completed Main/source facts permit entering the independent
+/// resource reader. Unsupported prefixes remain unproven without a false read.
+pub(in crate::memory) fn resource_policy(
+    state: &State,
+    run: &Run,
+    report: crate::deletion::history::RunHistoryReport,
+    proof: &mut Proof,
+) -> Result<bool, Failure> {
+    use crate::deletion::history::Fact;
+    if report.initial_consumption != InitialConsumption::CompletedSource
+        || [
+            report.initial_source,
+            report.every_noninitial_claim,
+            report.retained_noninitial_sources,
+            report.terminal_source,
+            report.main_join,
+        ]
+        .into_iter()
+        .any(|fact| fact != Fact::Authenticated)
+    {
+        return Ok(false);
+    }
+    let result = MemoryStore::classify_initial_resource_policy(state, run, proof);
+    proof.charge(0)?;
+    result
+}

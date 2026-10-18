@@ -3,6 +3,10 @@
 pub(crate) mod join;
 mod task;
 pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTask};
+pub(crate) use task::{
+    FixedInitialProfile, fixed_initial_profile, fixed_initial_resource_contract,
+    verify_fixed_binding,
+};
 pub(crate) mod join_verify;
 pub use task::{
     BoundInitialControl, BoundSuccessorControl, DriverMainContext, InitialAdmissionMetadata,
@@ -19,8 +23,13 @@ pub(crate) use task::{
     DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
     InitialRetirementWitness, NativeConsumerParts, NativeInitialOperation, NativeInitialParts,
 };
+pub use task::{
+    FixedMemoryInitialHost, FixedMemoryInitialInput, FixedMemoryInitialObservation,
+    FixedMemoryInitialTask, FixedMemoryInitialTaskControl,
+};
 #[cfg(test)]
 pub(crate) use task::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub(crate) use task::{OriginalPolicyRetirementView, OriginalPolicyView};
 pub use task::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};
@@ -143,3 +152,6 @@ pub(crate) use task::initial_consumer_fixture;
 
 #[cfg(test)]
 pub(crate) use task::{ConsumerProofCaps, ConsumerProofUsage};
+
+#[cfg(test)]
+pub(crate) use task::FixedInitialTestHooks;

@@ -4,7 +4,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Failure {
+pub(in crate::session_owner::owned_scope::task::pending) enum Failure {
     Construct,
     Poll,
     Install,
@@ -68,7 +68,7 @@ impl<T, A: FnOnce(), D: FnOnce()> Drop for Original<'_, T, A, D> {
 /// `install` stages the actual result before literal-future disposal. An error
 /// never accepts that staged result. Disposal is announced once before every
 /// literal Drop, including Ready, panic, deadline and observer cancellation.
-pub(super) async fn original<'a, T>(
+pub(in crate::session_owner::owned_scope::task::pending) async fn original<'a, T>(
     construct: impl FnOnce() -> BoxFuture<'a, T>,
     install: impl FnOnce(T),
     deadline: Option<Instant>,

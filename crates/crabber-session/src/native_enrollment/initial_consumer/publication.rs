@@ -83,6 +83,27 @@ pub(crate) fn prepare_anchor(
     view: &Selection<'_>,
     proof: &mut Proof,
 ) -> Result<RecordDelta, PreparationCommitError> {
+    prepare_anchor_policy(prefix, opened, view, None, proof)
+}
+pub(crate) fn prepare_fixed_anchor(
+    prefix: &HistoricalInitialPrefix<'_>,
+    opened: &birth::OpenRecord,
+    view: &Selection<'_>,
+    policy: &super::OriginalPolicy,
+    proof: &mut Proof,
+) -> Result<RecordDelta, PreparationCommitError> {
+    policy
+        .validate(opened.correlation(), proof)
+        .map_err(|error| failure(&error))?;
+    prepare_anchor_policy(prefix, opened, view, Some(policy), proof)
+}
+fn prepare_anchor_policy(
+    prefix: &HistoricalInitialPrefix<'_>,
+    opened: &birth::OpenRecord,
+    view: &Selection<'_>,
+    policy: Option<&super::OriginalPolicy>,
+    proof: &mut Proof,
+) -> Result<RecordDelta, PreparationCommitError> {
     let expected = opened.correlation();
     checked_prefix(prefix, expected, proof)?;
     if !matches!(
@@ -97,7 +118,14 @@ pub(crate) fn prepare_anchor(
     }
     proof.measure(opened).map_err(|error| failure(&error))?;
     let origin = Origin::Opened(Anchor {
-        version: 1,
+        version: if policy.is_some() { 2 } else { 1 },
+        original_policy: policy
+            .map(|p| {
+                proof.charge(std::mem::size_of::<super::OriginalPolicy>())?;
+                copied(p, proof).map(Box::new)
+            })
+            .transpose()
+            .map_err(|error| failure(&error))?,
         correlation: copied(expected, proof).map_err(|error| failure(&error))?,
         birth_open_digest: digest(&(
             "crabber.pending-initial.open.v1",
@@ -345,6 +373,7 @@ pub(crate) enum PairedCloseDecision {
 /// The caller supplies the actual local joined roster only after validating its
 /// private joined/resource association. Historical prefix comes from native
 /// selected original audits, never from the local witness or current head.
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn prepare_paired_close(
     view: &Selection<'_>,
     birth_view: birth::Bundle<'_>,
@@ -357,10 +386,40 @@ pub(crate) fn prepare_paired_close(
     ),
     proof: &mut Proof,
 ) -> Result<PairedCloseDecision, PreparationCommitError> {
+    prepare_paired_policy_close(
+        view,
+        birth_view,
+        prefix,
+        expected,
+        local_calls,
+        (retirement.0, retirement.1, None),
+        proof,
+    )
+}
+pub(crate) fn prepare_paired_policy_close(
+    view: &Selection<'_>,
+    birth_view: birth::Bundle<'_>,
+    prefix: &HistoricalInitialPrefix<'_>,
+    expected: &Correlation,
+    local_calls: &[crabber_core::ControlId],
+    retirement: (
+        &DriverRetirement,
+        crate::session_owner::owned_scope::OwnedMainDisposition,
+        Option<&super::PolicyTerminal>,
+    ),
+    proof: &mut Proof,
+) -> Result<PairedCloseDecision, PreparationCommitError> {
     checked_prefix(prefix, expected, proof)?;
-    let verified =
-        verify_close_members(view, birth_view, expected, local_calls, retirement, proof)?;
-    let (retirement, disposition) = retirement;
+    let verified = verify_close_members(
+        view,
+        birth_view,
+        expected,
+        local_calls,
+        (retirement.0, retirement.1),
+        proof,
+    )?;
+    let (retirement, disposition, policy_terminal) = retirement;
+    verify_policy_tail(view, policy_terminal, proof)?;
     match birth::prepare_close(prefix, expected, birth_view, proof)? {
         birth::CloseDecision::Publish {
             record,
@@ -370,7 +429,11 @@ pub(crate) fn prepare_paired_close(
                 .map_err(|error| failure(&error))?;
             let (consumer, kind, original_digest) = if let Some(origin) = view.origin {
                 let close = ConsumerClose {
-                    version: 2,
+                    version: if policy_terminal.is_some() { 3 } else { 2 },
+                    policy_terminal: policy_terminal
+                        .map(|p| copied(p, proof))
+                        .transpose()
+                        .map_err(|error| failure(&error))?,
                     retirement: copied(retirement, proof).map_err(|error| failure(&error))?,
                     disposition,
                     correlation: copied(expected, proof).map_err(|error| failure(&error))?,
@@ -482,4 +545,27 @@ fn verify_close_members(
         return Err(Error::SemanticConflict.into());
     }
     Ok(verified)
+}
+
+fn verify_policy_tail(
+    view: &Selection<'_>,
+    terminal: Option<&super::PolicyTerminal>,
+    proof: &mut Proof,
+) -> Result<(), PreparationCommitError> {
+    match (view.origin.and_then(Origin::original_policy), terminal) {
+        (None, None) => Ok(()),
+        (Some(original), Some(terminal)) => {
+            terminal
+                .verify(original, proof)
+                .map_err(|error| failure(&error))?;
+            if let Some(saved) = view.close.and_then(|close| close.policy_terminal.as_ref())
+                && digest(saved).map_err(|error| failure(&error))?
+                    != digest(terminal).map_err(|error| failure(&error))?
+            {
+                return Err(Error::SemanticConflict.into());
+            }
+            Ok(())
+        }
+        _ => Err(Error::Unsupported.into()),
+    }
 }

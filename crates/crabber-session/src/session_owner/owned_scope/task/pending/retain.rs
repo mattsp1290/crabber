@@ -72,7 +72,7 @@ impl PendingDriverTasks {
         control: Control,
         send: oneshot::Sender<Observation<T>>,
         capacity: OwnedSemaphorePermit,
-        protected: Option<Arc<super::enrolled_initial::RetainedInitial>>,
+        protected: Option<super::core::RetainedOwner>,
     ) {
         let id = uuid::Uuid::new_v4();
         let registry = self.inner.clone();
@@ -107,13 +107,13 @@ impl PendingDriverTasks {
             // the bounded observation or its caller-owned retry is dropped.
             let physical = protected.clone();
             let protected = match protected {
-                Some(retained) => Some(retained.after_join(disposition).await),
+                Some(retained) => retained.after_join(disposition).await,
                 None => None,
             };
             let pending = physical
                 .as_ref()
-                .is_some_and(|retained| retained.resources_pending());
-            let (capacity, physical_capacity) = if protected.is_some() {
+                .is_some_and(super::core::RetainedOwner::resources_pending);
+            let (capacity, physical_capacity) = if physical.is_some() {
                 if pending {
                     (None, Some(capacity))
                 } else {

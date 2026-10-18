@@ -72,6 +72,9 @@ impl Selection<'_> {
         match origin {
             Origin::Opened(_) => {
                 self.verify_assignment(origin)?;
+                if let Some(close) = self.close {
+                    close.verify_policy(origin, proof)?;
+                }
                 self.verify_calls(origin, proof)?;
                 self.verify_publications(origin)?;
                 if let Some(close) = self.close {
@@ -298,7 +301,7 @@ impl Selection<'_> {
             return Err(unknown("consumer protected head"));
         }
         if let Some(close) = self.close
-            && (close.version != 2
+            && (!close.valid_policy_version(origin)
                 || close.correlation != *origin.correlation()
                 || close.anchor_digest != origin.digest()?
                 || self

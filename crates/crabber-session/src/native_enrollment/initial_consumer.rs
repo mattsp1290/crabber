@@ -8,6 +8,9 @@ mod ledger;
 pub(crate) use classification::InitialConsumption;
 #[path = "initial_consumer/original.rs"]
 mod original;
+#[path = "initial_consumer/policy.rs"]
+mod policy;
+pub(crate) use policy::*;
 #[path = "initial_consumer/records.rs"]
 mod records;
 #[path = "initial_consumer/relation.rs"]

@@ -15,6 +15,7 @@ pub(super) fn verify(
     view: &Selection<'_>,
     proof: &mut Proof,
 ) -> Result<(), Failure> {
+    crate::memory::initial_consumer::policy::verify_retained(state, view, proof)?;
     let mut latest_attempt = None;
     for result in &view.results {
         member(state, &result.original, proof)?;

@@ -293,3 +293,43 @@ fn service_context(
         )?
         .require_resource_activation()
 }
+
+#[cfg(test)]
+impl MemoryStore {
+    // Existing real transaction fault; no Store/capability constructor or policy.
+    pub(crate) fn fixed_preparation_owner_fault(&self, point: u8) {
+        self.session_owner_fault
+            .store(point, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+impl MemoryStore {
+    pub(crate) fn fixed_preparation_fixture_owner_state(
+        &self,
+        session: &crabber_core::SessionId,
+        target: &crate::session_owner::SessionOwnerTarget,
+    ) -> Result<crate::session_owner::SessionOwnerState, Error> {
+        let state = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
+        let snapshot = state.session_owners.snapshot(session, &target.id)?;
+        if snapshot.target != *target {
+            return Err(Error::IdentityMismatch);
+        }
+        Ok(snapshot.state)
+    }
+    pub(crate) fn fixed_preparation_fixture_activation(
+        &self,
+        session: &crabber_core::SessionId,
+        id: &crabber_core::SessionOwnerOperationId,
+    ) -> Result<Option<crate::session_owner::SessionOwnerOperation>, Error> {
+        let state = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
+        state
+            .session_owners
+            .source_audit(session, id)
+            .map(|audit| {
+                audit.validate()?;
+                Ok(audit.receipt.operation)
+            })
+            .transpose()
+    }
+}

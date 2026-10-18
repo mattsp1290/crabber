@@ -28,6 +28,10 @@ pub struct PendingInitialNativeCall<'call> {
     pub(super) lease: &'call LocalLease,
     pub(super) consumer: Option<&'call super::InitialResourceAssociation<'call>>,
     pub(super) retirement: Option<&'call super::InitialRetirementWitness<'call>>,
+    pub(super) original_policy:
+        Option<&'call super::super::fixed_preparation::OriginalPolicyView<'call>>,
+    pub(super) policy_retirement:
+        Option<&'call super::super::fixed_preparation::OriginalPolicyRetirementView<'call>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +53,9 @@ pub(crate) struct NativeInitialParts<'a> {
     pub(crate) proof: &'a mut Proof,
     pub(crate) consumer: Option<&'a super::InitialResourceAssociation<'a>>,
     pub(crate) retirement: Option<&'a super::InitialRetirementWitness<'a>>,
+    pub(crate) original_policy: Option<&'a super::super::fixed_preparation::OriginalPolicyView<'a>>,
+    pub(crate) policy_retirement:
+        Option<&'a super::super::fixed_preparation::OriginalPolicyRetirementView<'a>>,
     _lease: &'a LocalLease,
 }
 impl<'a> PendingInitialNativeCall<'a> {
@@ -64,7 +71,12 @@ impl<'a> PendingInitialNativeCall<'a> {
             .verify(self.operation, self.source, self.expected)?;
         let needs_retirement =
             self.operation == NativeInitialOperation::Seal && self.consumer.is_some();
-        if self.retirement.is_some() != needs_retirement {
+        if self.retirement.is_some() != needs_retirement
+            || (self.original_policy.is_some() && self.consumer.is_none())
+            || self.policy_retirement.is_some()
+                != (self.operation == NativeInitialOperation::Seal
+                    && self.original_policy.is_some())
+        {
             return Err(Error::InvalidTransition.into());
         }
         Ok(NativeInitialParts {
@@ -77,6 +89,8 @@ impl<'a> PendingInitialNativeCall<'a> {
             proof: self.proof,
             consumer: self.consumer,
             retirement: self.retirement,
+            original_policy: self.original_policy,
+            policy_retirement: self.policy_retirement,
             _lease: self.lease,
         })
     }
