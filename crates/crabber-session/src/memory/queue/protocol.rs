@@ -136,7 +136,39 @@ pub(super) fn history<'a>(
         })?;
     Ok(head)
 }
-pub(super) fn record<'a>(state: &'a State, scope: &Scope, proof: &mut Proof) -> Result<&'a Record> {
+pub(super) struct LoadedRecord<'a> {
+    pub(super) record: &'a Record,
+    pub(super) prepared: Option<&'a crate::BoundKeyedAdmitRequest>,
+}
+impl std::ops::Deref for LoadedRecord<'_> {
+    type Target = Record;
+    fn deref(&self) -> &Record {
+        self.record
+    }
+}
+impl LoadedRecord<'_> {
+    pub(super) fn retained(&self, proof: &mut Proof) -> Result<crate::RetainedQueue> {
+        #[derive(serde::Serialize)]
+        struct View<'a> {
+            summary: &'a crate::QueueSummary,
+            input: &'a crate::QueueInput,
+            prepared: Option<&'a crate::BoundKeyedAdmitRequest>,
+        }
+        proof
+            .measure(&View {
+                summary: &self.record.summary,
+                input: &self.record.input,
+                prepared: self.prepared,
+            })
+            .map_err(ReadError::Budget)?;
+        Ok(self.record.retained(self.prepared))
+    }
+}
+pub(super) fn record<'a>(
+    state: &'a State,
+    scope: &Scope,
+    proof: &mut Proof,
+) -> Result<LoadedRecord<'a>> {
     crate::memory::deletion::ensure_live(state, &scope.session)?;
     let head = history(state, scope, proof)?;
     let record = state
@@ -184,8 +216,23 @@ pub(super) fn record<'a>(state: &'a State, scope: &Scope, proof: &mut Proof) -> 
         .as_ref()
         .map(|c| selected(&c.operation))
         .transpose()?;
-    verify_sources(record, enqueue, prepare, claim)?;
-    Ok(record)
+    let prepare_source = if head.is_some() {
+        record
+            .prepare_operation
+            .as_ref()
+            .map(|id| {
+                state
+                    .queue_publications
+                    .source(&scope.session, id)
+                    .ok_or_else(corrupt)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let prepared = verify_sources(record, enqueue, prepare, claim, prepare_source)?;
+    record.former_encoded_len(prepared)?;
+    Ok(LoadedRecord { record, prepared })
 }
 
 pub(super) fn context<'a>(

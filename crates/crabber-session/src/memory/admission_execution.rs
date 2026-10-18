@@ -24,6 +24,16 @@ impl MemoryStore {
     }
 }
 
+fn require_raw_origin(
+    state: &super::State,
+    run: &crabber_core::Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), Error> {
+    let enrollment = super::native_enrollment::original(state, &run.session_id, &run.id, proof)
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)
+}
+
 impl MemoryExecution {
     pub(super) fn begin_admission(&self) -> Result<(), Error> {
         self.begin_admission_with_proof(&mut crate::public_session::v2::proof::Proof::bounded(
@@ -45,6 +55,7 @@ impl MemoryExecution {
                 .get(&self.fence.run_id)
                 .ok_or(Error::MissingEvidence)?;
             proof.measure(run).map_err(|_| Error::UnknownStoreFailure)?;
+            require_raw_origin(state, run, proof)?;
             let run = run.clone();
             if run.claim_token != self.fence.claim_token {
                 return Err(Error::StaleOwner);

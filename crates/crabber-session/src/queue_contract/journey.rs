@@ -135,13 +135,14 @@ async fn reclaimed(
     assert!(
         matches!(store.mutate_queue(prepare).await.unwrap(), QueueOutcome::Replayed(saved) if saved == prepared_receipt)
     );
+    rejected_admit_leases(store, first, &new_authority).await;
     let admit = mutation(
         store,
         first,
         QueueAction::Admit {
             authority: new_authority,
             owner: "winner".into(),
-            lease: Duration::from_secs(30),
+            lease: Duration::from_secs(47),
         },
     )
     .await;
@@ -153,6 +154,20 @@ async fn reclaimed(
         } => (receipt, admitted),
         other => panic!("admission must grant once: {other:?}"),
     };
+    assert_eq!(admitted.run.owner, "winner");
+    assert_eq!(
+        admitted.run.lease_until,
+        clock.now() + time::Duration::seconds(47)
+    );
+    let retained = store
+        .retained_queue(&first.session, &first.queue)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(retained.prepared.as_ref().unwrap()).unwrap(),
+        serde_json::to_value(&first.prepared).unwrap(),
+        "admission ownership must leave the original prepared body unchanged"
+    );
     assert_eq!(
         receipt.summary.admission,
         store
@@ -173,6 +188,43 @@ async fn reclaimed(
         matches!(store.mutate_queue(admit).await.unwrap(), QueueOutcome::Replayed(saved) if saved == receipt)
     );
     receipt
+}
+async fn rejected_admit_leases(store: &dyn Store, fixture: &Fixture, authority: &QueueAuthority) {
+    let revision = store.session_revision(&fixture.session).await.unwrap();
+    for lease in [Duration::ZERO, Duration::MAX] {
+        let request = mutation(
+            store,
+            fixture,
+            QueueAction::Admit {
+                authority: authority.clone(),
+                owner: "invalid-lease".into(),
+                lease,
+            },
+        )
+        .await;
+        assert!(matches!(
+            store.mutate_queue(request.clone()).await,
+            Err(StoreError::Validation(_))
+        ));
+        assert_eq!(
+            store.session_revision(&fixture.session).await.unwrap(),
+            revision
+        );
+        assert!(
+            store
+                .lookup_queue(&fixture.session, &request.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .lookup_admission(&fixture.session, &fixture.prepared.keyed.options.key)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 async fn finalized(store: &dyn Store, first: &Fixture, second: &Fixture, receipt: QueueReceipt) {
     let cancel = mutation(

@@ -20,6 +20,9 @@ impl SqliteExecution {
         let fault = super::super::tool_continuation::fault(&self.store);
         let mut tx = self.store.begin_write().await.map_err(unknown)?;
         let result = async {
+            super::super::credential_access::check_origin(&mut tx, &request.session_id, &request.run_id,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20))
+                .await.map_err(|_| Error::UnknownStoreOutcome)?;
             if let Some(saved) = read::receipt(&mut tx, &request.session_id, &request.id).await? {
                 if saved.run_id != request.run_id || saved.semantic_digest != digest { return Err(Error::SemanticConflict); }
                 return Ok((saved, false));

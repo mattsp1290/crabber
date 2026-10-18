@@ -188,6 +188,12 @@ impl MemoryExecution {
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
+            super::credential_access::check(
+                state,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+            .map_err(unknown)?;
             crate::attempt::verify_run(&run, &self.fence, self.store.clock.now())
                 .map_err(|_| Error::StaleOwner)?;
             super::admission_journal::verify(state, &run.id)

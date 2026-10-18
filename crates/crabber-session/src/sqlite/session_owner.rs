@@ -5,6 +5,7 @@ mod owned_scope;
 mod parent;
 mod preflight;
 mod preparation;
+pub(super) use preparation::{pending_prefix, pending_raw};
 pub(super) mod public;
 mod reads;
 mod resources;

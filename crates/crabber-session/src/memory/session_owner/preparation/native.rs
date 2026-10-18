@@ -12,7 +12,7 @@ impl super::super::MemoryStore {
         operation: PreparedOperation,
         proof: &crate::session_owner::preparation::proof::VerifiedPreparation<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-        queue_selection: Option<super::super::super::queue::selection::Selected>,
+        queue_selection: Option<super::super::super::queue::selection::Selected<'_>>,
     ) -> Result<PreparationCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
         let completed = match operation {

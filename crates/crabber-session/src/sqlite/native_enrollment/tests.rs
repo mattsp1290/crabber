@@ -161,8 +161,8 @@ async fn raw_birth_before_and_after_commit_faults_keep_exact_atomic_sources() {
     }
 }
 
-/// Even coherent Raw bytes indexed by the reserved Pending storage label have
-/// no current producer permission. This is a direct SQL counterfeit fixture.
+/// The current bootstrap rejects the old Pending-label-only insert. A separate
+/// rollback-only counterfeit still exercises the original-reader negatives.
 async fn reserved_kind_is_not_supported(store: &crate::SqliteStore, actual: &crabber_core::Run) {
     let mut run = actual.clone();
     run.id = RunId::new();
@@ -191,8 +191,27 @@ async fn reserved_kind_is_not_supported(store: &crate::SqliteStore, actual: &cra
     .unwrap();
     sqlx::query("INSERT INTO native_run_sources(session_id,run_id,sequence,issuance_digest,chain_digest) VALUES($1,$2,1,$3,$4)")
         .bind(&run.session_id.0).bind(&run.id.0).bind(source.issuance_digest.as_str()).bind(source.chain_digest.as_str()).execute(&mut *tx).await.unwrap();
-    // The real native19 source publication trigger retains the original head.
-    sqlx::query("INSERT INTO native_execution_origins(session_id,run_id,first_issuer_digest,origin_digest,birth_kind,unclassified_run_id,data) VALUES($1,$2,$3,$4,'pending',NULL,$5)")
+    // The exact old fixture is now correctly refused by the real bootstrap.
+    let mut save = tx.begin().await.unwrap();
+    let error = sqlx::query("INSERT INTO native_execution_origins(session_id,run_id,first_issuer_digest,origin_digest,birth_kind,unclassified_run_id,data) VALUES($1,$2,$3,$4,'pending',NULL,$5)")
+        .bind(&run.session_id.0).bind(&run.id.0).bind(source.issuance_digest.as_str()).bind(digest.as_str()).bind(serde_json::to_string(&origin).unwrap()).execute(&mut *save).await.unwrap_err();
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("1811")
+    );
+    save.rollback().await.unwrap();
+    // Deliberately bypass ONLY the new immediate assignment guard to inspect
+    // corruption. The outer rollback restores this actual production trigger;
+    // the remaining CHECK and deferred FK guards are left intact.
+    sqlx::query("DROP TRIGGER pending_origin_assignment")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // The real native19 source publication already retained the original head.
+    sqlx::query("INSERT INTO native_execution_origins(session_id,run_id,first_issuer_digest,origin_digest,birth_kind,unclassified_run_id,pending_epoch,data) VALUES($1,$2,$3,$4,'pending',NULL,'counterfeit-epoch',$5)")
         .bind(&run.session_id.0).bind(&run.id.0).bind(source.issuance_digest.as_str()).bind(digest.as_str()).bind(serde_json::to_string(&origin).unwrap()).execute(&mut *tx).await.unwrap();
     // Keep the complete real Raw poison too: missing poison cannot explain refusal.
     sqlx::query("INSERT INTO native_execution_unclassified(session_id,run_id,origin_digest,data) VALUES($1,$2,$3,$4)")

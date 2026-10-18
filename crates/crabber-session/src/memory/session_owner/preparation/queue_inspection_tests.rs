@@ -151,9 +151,20 @@ fn replace_prepare(state: &mut crate::memory::State, receipt: &QueueReceipt) {
     for part in &mut prepared.keyed.request.user_message.parts {
         part.message_id.clone_from(&replacement);
     }
-    let changed = *prepared.clone();
     audit.receipt.semantic_digest = audit.request.fingerprint().unwrap();
     let saved = audit.receipt.clone();
+    let source = state
+        .queue_publications
+        .source(&receipt.session_id, &key.1)
+        .unwrap();
+    let counterfeit =
+        crate::queue::source::Source::new(audit, source.sequence, source.previous.clone()).unwrap();
+    let reference = crate::queue::PreparedReference::published(
+        audit,
+        Some(&counterfeit),
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )
+    .unwrap();
     state
         .operation_receipts
         .insert(key, crate::memory::OperationReceipt::Queue(saved));
@@ -161,5 +172,5 @@ fn replace_prepare(state: &mut crate::memory::State, receipt: &QueueReceipt) {
         .queue
         .get_mut(&(receipt.session_id.clone(), receipt.summary.queue_id.clone()))
         .unwrap()
-        .prepared = Some(changed);
+        .prepared = Some(reference);
 }

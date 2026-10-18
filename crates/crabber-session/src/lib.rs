@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 22;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 23;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 18;
+pub const SQLITE_SCHEMA_VERSION: i64 = 19;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -45,8 +45,16 @@ pub use attempt_control::{
 };
 mod attempt_conclusion;
 pub use attempt_conclusion::{AttemptConclusion, MAX_RUN_BOUNDARY_BYTES, RunBoundary};
+// The source-embedding harness supplies an Unsupported transport adapter.
+// Only this native root compiles private Pending constructors and publishers.
+macro_rules! native_pending_initial_items {
+    ($($item:item)*) => { $($item)* };
+}
 mod native_enrollment;
 mod native_parent;
+#[cfg(test)]
+#[path = "memory/pending_initial/test_state.rs"]
+mod pending_initial_test_state;
 mod phase;
 mod phase_resolution;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]

@@ -7,3 +7,7 @@ pub(crate) mod caller;
 
 #[path = "../../../crabber-session/src/native_enrollment/access.rs"]
 pub(crate) mod access;
+
+#[path = "../../../crabber-session/src/native_enrollment/pending_initial.rs"]
+#[allow(dead_code)]
+pub(crate) mod pending_initial;

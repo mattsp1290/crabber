@@ -31,6 +31,9 @@ impl PostgresExecution {
             .approval_transaction(&scope, &self.fence.run_id)
             .await?;
         let result = async {
+            super::super::credential_access::check(&mut tx, &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20))
+                .await.map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? { return Ok((saved, false)); }
             let now = self.store.clock.now();

@@ -74,6 +74,10 @@ pub(crate) enum CapturedKeyedAdmission {
 /// Exact outer input at the actual grant-returning boundary. Queue includes
 /// both the genuine prepared admission and the actual Queue control result.
 pub(crate) enum Input<'a> {
+    Prepared {
+        selected: &'a SelectedOriginal<'a>,
+        receipt: Option<&'a crabber_core::AdmissionReceipt>,
+    },
     Ordinary(&'a crate::AdmitRequest),
     Bound {
         request: &'a crate::AdmitRequest,
@@ -104,6 +108,27 @@ pub(crate) struct Initial<'a> {
 impl Input<'_> {
     fn request(&self, proof: &mut Proof) -> Result<&crate::AdmitRequest, Failure> {
         Ok(match self {
+            Self::Prepared { selected, receipt } => {
+                selected.verify(selected.original(), proof)?;
+                match (selected.original().observed_operation(), receipt) {
+                    (crate::session_owner::preparation::PreparedOperation::Admit(bound), None) => {
+                        bound.binding.validate(&bound.request).map_err(unknown)?;
+                        &bound.request
+                    }
+                    (
+                        crate::session_owner::preparation::PreparedOperation::AdmitKeyed(bound),
+                        Some(receipt),
+                    ) => {
+                        bound
+                            .binding
+                            .validate_keyed(&bound.keyed)
+                            .map_err(unknown)?;
+                        verify_keyed_result(&bound.keyed, receipt, proof)?;
+                        &bound.keyed.request
+                    }
+                    _ => return Err(unknown("selected Initial input kind")),
+                }
+            }
             Self::Ordinary(request) => {
                 proof.measure(request)?;
                 request
@@ -169,6 +194,13 @@ fn verify_keyed_selected(
     proof: &mut Proof,
 ) -> Result<(), Failure> {
     input_keyed(request, selected, proof)?;
+    verify_keyed_result(request, receipt, proof)
+}
+fn verify_keyed_result(
+    request: &crate::KeyedAdmitRequest,
+    receipt: &crabber_core::AdmissionReceipt,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
     proof.measure(receipt)?;
     if receipt.semantic_digest != request.validated_digest().map_err(unknown)?
         || receipt.fingerprint != request.options.fingerprint
@@ -180,7 +212,7 @@ fn verify_keyed_selected(
     Ok(())
 }
 impl<'a> Initial<'a> {
-    pub(super) fn verify(&self, proof: &mut Proof) -> Result<super::verify::Scope<'a>, Failure> {
+    pub(crate) fn verify(&self, proof: &mut Proof) -> Result<super::verify::Scope<'a>, Failure> {
         let request = self.input.request(proof)?;
         let out = self.result;
         proof.measure(&(
@@ -198,6 +230,7 @@ impl<'a> Initial<'a> {
             | Input::BoundKeyed { receipt, .. }
             | Input::Queue { receipt, .. } => Some(*receipt),
             Input::Ordinary(_) | Input::Bound { .. } => None,
+            Input::Prepared { receipt, .. } => *receipt,
         };
         if out.session.id != out.run.session_id
             || out.session.id != request.user_message.session_id
@@ -207,7 +240,15 @@ impl<'a> Initial<'a> {
                 .is_some_and(|id| *id != out.session.id)
             || out.session.workspace_id != request.workspace_id
             || out.session.directory != request.directory
-            || out.run.owner != request.owner
+            || out.run.owner
+                != match &self.input {
+                    Input::Queue { request, .. } => match &request.action {
+                        crate::QueueAction::Admit { owner, .. } => owner,
+                        _ => return Err(unknown("actual Queue ownership control")),
+                    },
+                    _ => &request.owner,
+                }
+                .as_str()
             || out.run.config_hash != request.config_hash
             || out.run.plan_fingerprint != request.plan_fingerprint
             || out.run.status != crabber_core::RunStatus::Running
@@ -350,6 +391,22 @@ impl Input<'_> {
     pub(crate) fn test_digest(&self) -> crabber_core::InputFingerprint {
         use super::contract::snapshot_digest;
         match self {
+            Self::Prepared { selected, receipt } => {
+                match selected.original().observed_operation() {
+                    crate::session_owner::preparation::PreparedOperation::Admit(bound) => {
+                        snapshot_digest(&(
+                            "prepared-unkeyed",
+                            &bound.request,
+                            &bound.binding,
+                            receipt,
+                        ))
+                    }
+                    crate::session_owner::preparation::PreparedOperation::AdmitKeyed(bound) => {
+                        snapshot_digest(&("prepared-keyed", bound, receipt))
+                    }
+                    _ => panic!("unsupported selected Initial"),
+                }
+            }
             Self::Ordinary(r) => snapshot_digest(&("ordinary", r)),
             Self::Bound { request, binding } => snapshot_digest(&("bound", request, binding)),
             Self::Keyed { request, receipt } => snapshot_digest(&("keyed", request, receipt)),
@@ -373,4 +430,9 @@ impl Input<'_> {
 mod selected;
 #[cfg(any(feature = "postgres", feature = "sqlite", test))]
 pub(crate) use selected::with_queue_input_async;
-pub(crate) use selected::{Dispatch, SelectedInput, input_keyed, input_request, with_queue_input};
+pub(crate) use selected::{Dispatch, SelectedInput, input_keyed, with_queue_input};
+
+pub(crate) use selected::SelectedOriginal;
+native_pending_initial_items! {
+    pub(crate) use selected::{input_preparation, with_initial_original_async};
+}

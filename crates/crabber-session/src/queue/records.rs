@@ -9,13 +9,44 @@ pub(crate) const MAX_PENDING: usize = 64;
 pub(crate) const MAX_PENDING_BYTES: usize = 32 << 20;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Record {
+pub(crate) struct StoredProjection {
+    pub version: u32,
     pub enqueue_operation: ControlId,
     pub prepare_operation: Option<ControlId>,
     pub summary: QueueSummary,
     pub input: QueueInput,
     pub claim: Option<Claim>,
-    pub prepared: Option<BoundKeyedAdmitRequest>,
+    pub prepared: Option<PreparedReference>,
+}
+pub(crate) type Record = StoredProjection;
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PreparedReference {
+    pub operation: ControlId,
+    pub source_digest: Option<crabber_core::InputFingerprint>,
+}
+impl PreparedReference {
+    /// The actual publisher supplies this Source after its real append. This
+    /// reference is a projection only; readers authenticate independent originals.
+    pub(crate) fn published(
+        audit: &Audit,
+        source: Option<&crate::queue::source::Source>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Self, StoreError> {
+        if !matches!(audit.request.action, QueueAction::Prepare { .. }) {
+            return Err(corrupt());
+        }
+        if let Some(source) = source {
+            source.verify(audit)?;
+        }
+        proof
+            .measure(&(&audit.request.id, source.map(|s| &s.digest)))
+            .map_err(|_| corrupt())?;
+        Ok(Self {
+            operation: audit.request.id.clone(),
+            source_digest: source.map(|s| s.digest.clone()),
+        })
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,7 +86,8 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, S
 }
 impl Record {
     pub fn validate(&self, session: &SessionId, id: &QueueId, seq: u64) -> Result<(), StoreError> {
-        if self.summary.session_id != *session
+        if self.version != 2
+            || self.summary.session_id != *session
             || self.summary.queue_id != *id
             || self.summary.sequence != seq
             || seq == 0
@@ -79,37 +111,44 @@ impl Record {
                 return Err(corrupt());
             }
         }
-        if let Some(prepared) = &self.prepared {
-            self.verify_prepared(prepared)?;
+        if let Some(prepared) = &self.prepared
+            && self.prepare_operation.as_ref() != Some(&prepared.operation)
+        {
+            return Err(corrupt());
         }
         Ok(())
     }
     pub fn verify_prepared(&self, prepared: &BoundKeyedAdmitRequest) -> Result<(), StoreError> {
-        prepared.binding.validate_keyed(&prepared.keyed)?;
-        let original = &self.input.request;
-        let actual = &prepared.binding.request;
-        if prepared.keyed.options != self.input.admission
-            || prepared.binding.input_envelope.as_ref() != Some(&self.input.input)
-            || actual.session_id != original.session_id
-            || actual.workspace_id != original.workspace_id
-            || actual.directory != original.directory
-            || actual.text != original.text
-            || actual.selection_policy.is_explicit() != original.selection_policy.is_explicit()
-            || (original.selection_policy.is_explicit()
-                && (actual.provider_id != original.provider_id
-                    || actual.model_id != original.model_id))
-        {
-            return Err(StoreError::AdmissionConflict);
-        }
-        Ok(())
+        verify_prepared(&self.input, prepared)
     }
-    pub fn retained(&self) -> RetainedQueue {
+    pub fn retained(&self, prepared: Option<&BoundKeyedAdmitRequest>) -> RetainedQueue {
         RetainedQueue {
             summary: self.summary.clone(),
             input: self.input.clone(),
-            prepared: self.prepared.clone(),
+            prepared: prepared.cloned(),
         }
     }
+}
+pub(crate) fn verify_prepared(
+    input: &QueueInput,
+    prepared: &BoundKeyedAdmitRequest,
+) -> Result<(), StoreError> {
+    prepared.binding.validate_keyed(&prepared.keyed)?;
+    let original = &input.request;
+    let actual = &prepared.binding.request;
+    if prepared.keyed.options != input.admission
+        || prepared.binding.input_envelope.as_ref() != Some(&input.input)
+        || actual.session_id != original.session_id
+        || actual.workspace_id != original.workspace_id
+        || actual.directory != original.directory
+        || actual.text != original.text
+        || actual.selection_policy.is_explicit() != original.selection_policy.is_explicit()
+        || (original.selection_policy.is_explicit()
+            && (actual.provider_id != original.provider_id || actual.model_id != original.model_id))
+    {
+        return Err(StoreError::AdmissionConflict);
+    }
+    Ok(())
 }
 pub(crate) fn verify_audit(audit: &Audit, saved: &QueueReceipt) -> Result<(), StoreError> {
     if audit.receipt != *saved
@@ -179,12 +218,13 @@ pub(crate) fn validate_summary(
     identifier(&id.0)
 }
 
-pub(crate) fn verify_sources(
+pub(crate) fn verify_sources<'a>(
     record: &Record,
     enqueue: &Audit,
-    prepare: Option<&Audit>,
+    prepare: Option<&'a Audit>,
     claim: Option<&Audit>,
-) -> Result<(), StoreError> {
+    prepare_source: Option<&crate::queue::source::Source>,
+) -> Result<Option<&'a BoundKeyedAdmitRequest>, StoreError> {
     if enqueue.request.id != record.enqueue_operation
         || enqueue.request.session_id != record.summary.session_id
     {
@@ -229,29 +269,28 @@ pub(crate) fn verify_sources(
         _ => return Err(corrupt()),
     }
     match (&record.prepare_operation, &record.prepared, prepare) {
-        (None, None, None) => {}
-        (Some(id), Some(prepared), Some(audit)) => {
+        (None, None, None) if prepare_source.is_none() => Ok(None),
+        (Some(id), Some(reference), Some(audit)) => {
             if audit.request.id != *id
+                || reference.operation != *id
                 || audit.request.session_id != record.summary.session_id
                 || audit.receipt.summary.queue_id != record.summary.queue_id
+                || audit.receipt.summary.sequence != record.summary.sequence
+                || reference.source_digest.as_ref() != prepare_source.map(|source| &source.digest)
             {
                 return Err(corrupt());
             }
-            let QueueAction::Prepare { authority, .. } = &audit.request.action else {
-                return Err(corrupt());
-            };
-            let mut reconstructed = audit.request.clone();
-            reconstructed.action = QueueAction::Prepare {
-                authority: authority.clone(),
-                prepared: Box::new(prepared.clone()),
-            };
-            if reconstructed.fingerprint()? != audit.receipt.semantic_digest {
-                return Err(corrupt());
+            if let Some(source) = prepare_source {
+                source.verify(audit)?;
             }
+            let QueueAction::Prepare { prepared, .. } = &audit.request.action else {
+                return Err(corrupt());
+            };
+            record.verify_prepared(prepared)?;
+            Ok(Some(prepared))
         }
-        _ => return Err(corrupt()),
+        _ => Err(corrupt()),
     }
-    Ok(())
 }
 
 pub(crate) fn verify_current(

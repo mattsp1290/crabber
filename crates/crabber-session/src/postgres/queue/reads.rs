@@ -1,4 +1,5 @@
 use super::super::{PostgresStore, db};
+use super::selection::LoadedRecord;
 use crate::postgres::transaction::Transaction;
 use crate::{
     StoreError,
@@ -11,25 +12,12 @@ use crabber_core::{ControlId, QueueId, SessionId, SessionRevision};
 use sqlx::{Postgres, Row};
 const RECORD: &str = "SELECT sequence,state,prepared,CASE WHEN octet_length(data_json)<=33554432 AND octet_length(data_json)<=$3 THEN data_json END AS data FROM future_queue WHERE session_id=$1 AND queue_id=$2";
 pub(super) const SUMMARY: &str = "SELECT CASE WHEN octet_length(q.queue_id)<=128 THEN q.queue_id END AS queue_id,q.sequence,q.state,q.prepared,CASE WHEN octet_length(q.summary_json)<=16384 THEN q.summary_json END AS summary, CASE WHEN octet_length(r.data_json)<=16384 THEN r.data_json END AS latest_receipt,a.revision AS latest_revision,CASE WHEN octet_length(a.operation_id)<=128 THEN a.operation_id END AS latest_operation,CASE WHEN octet_length(CAST(ar.data AS TEXT))<=16384 THEN CAST(ar.data AS TEXT) END AS admission_receipt,ar.data IS NOT NULL AS admission_exists  FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
-pub(super) async fn record(
-    tx: &mut Transaction<'_, Postgres>,
-    session: &SessionId,
-    id: &QueueId,
-) -> Result<Option<Record>, StoreError> {
-    record_with_proof(
-        tx,
-        session,
-        id,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-    .await
-}
 pub(super) async fn record_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &QueueId,
     proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Option<Record>, StoreError> {
+) -> Result<Option<LoadedRecord>, StoreError> {
     super::super::deletion::ensure_live(tx, session).await?;
     let allowance = i64::try_from(proof.budget().remaining()).map_err(|_| corrupt())?;
     let bytes: Option<i64> = sqlx::query_scalar("SELECT CAST(octet_length(data_json) AS BIGINT) FROM future_queue WHERE session_id=$1 AND queue_id=$2").bind(&session.0).bind(&id.0).fetch_optional(&mut **tx).await.map_err(db)?;
@@ -75,10 +63,14 @@ pub(super) async fn record_with_proof(
     if summary(&row, session)? != result.summary {
         return Err(corrupt());
     }
-    super::protocol::verify_record(tx, &result, proof)
+    let originals = super::protocol::load_record(tx, &result, proof)
         .await
         .map_err(super::protocol::domain)?;
-    Ok(Some(result))
+    result.former_encoded_len(originals.prepared(&result)?)?;
+    Ok(Some(LoadedRecord {
+        projection: result,
+        originals,
+    }))
 }
 pub(super) fn summary(
     row: &sqlx::postgres::PgRow,
@@ -267,10 +259,11 @@ impl PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        let result = record(&mut tx, session, id)
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        let selected = record_with_proof(&mut tx, session, id, &mut proof)
             .await?
-            .ok_or(StoreError::NotFound)?
-            .retained();
+            .ok_or(StoreError::NotFound)?;
+        let result = selected.retained(&mut proof)?;
         tx.commit().await.map_err(db)?;
         Ok(result)
     }

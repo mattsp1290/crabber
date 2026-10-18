@@ -48,6 +48,7 @@ fn verify(
     {
         return Err(unknown("coverage scope/revision"));
     }
+    let pending_initial_retained = super::super::pending_initial::routes(state, session, proof)?;
     let legacy_native_scope = !state.native_session_protocols.contains(session);
     proof.measure(&legacy_native_scope)?;
     super::super::native_parent::source_protocol::routes(state, session, proof)?;
@@ -117,6 +118,7 @@ fn verify(
     // typed positive resource/dispatch join proofs are still required.
     Ok(
         if legacy_native_scope
+            || pending_initial_retained
             || has_runs
             || unproven_run_sources
             || unproven_queue

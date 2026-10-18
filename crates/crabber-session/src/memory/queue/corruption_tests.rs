@@ -6,11 +6,16 @@ async fn queue_rejects_replaced_prepared_and_coherent_input() {
         let (fixture, prepare, authority) = corruption::prepared(&store).await;
         {
             let mut state = store.state.lock().unwrap();
+            let audit = state.queue_audits[&(fixture.session.clone(), prepare.id.clone())].clone();
+            let source = state
+                .queue_publications
+                .source(&fixture.session, &prepare.id)
+                .cloned();
             let record = state
                 .queue
                 .get_mut(&(fixture.session.clone(), fixture.queue.clone()))
                 .unwrap();
-            corruption::replace(record, change_input);
+            corruption::replace(record, &audit, source.as_ref(), change_input).unwrap();
         }
         corruption::refused(&store, &fixture, prepare, authority).await;
     }
@@ -171,4 +176,127 @@ async fn queue_cannot_hide_corrupt_head_behind_changed_session_scope() {
     )
     .await;
     assert!(store.mutate_queue(claim).await.is_err());
+}
+
+#[tokio::test]
+async fn current_projection_is_compact_and_former_capacity_is_lossless() {
+    let store = crate::MemoryStore::new();
+    let (fixture, prepare, _) = corruption::prepared(&store).await;
+    let state = store.state.lock().unwrap();
+    let record = &state.queue[&(fixture.session.clone(), fixture.queue.clone())];
+    let audit = &state.queue_audits[&(fixture.session.clone(), prepare.id)];
+    let crate::QueueAction::Prepare { prepared, .. } = &audit.request.action else {
+        panic!()
+    };
+    let compact = crate::queue::encode(record).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&compact).unwrap();
+    assert_eq!(value["version"], 2);
+    assert!(value["prepared"].get("operation").is_some());
+    assert!(value["prepared"].get("keyed").is_none());
+    assert!(value["prepared"].get("binding").is_none());
+    assert!(
+        compact.len()
+            < crate::queue::encode(&record.view(Some(prepared)))
+                .unwrap()
+                .len()
+    );
+    assert_capacity_parity(record, prepared);
+    // Codec counting must preserve escaping, Unicode and numeric JSON syntax;
+    // these borrowed views exercise serialization, not a new admission authority.
+    for number in [
+        serde_json::json!(1.0),
+        serde_json::json!(1e-8),
+        serde_json::json!(9_007_199_254_740_991_u64),
+    ] {
+        let mut projection = record.clone();
+        projection.input.request.text = "é雪\\\"\n".into();
+        let mut original = prepared.as_ref().clone();
+        original.binding.runtime_semantics = serde_json::json!([number, "é雪\\\"\n"]);
+        assert_capacity_parity(&projection, &original);
+    }
+    // A small current projection must not expand the former full Record cap.
+    let mut oversized = prepared.as_ref().clone();
+    oversized.binding.runtime_semantics =
+        serde_json::Value::String("x".repeat(crate::queue::MAX_RECORD));
+    assert!(crate::queue::encode(record).is_ok());
+    assert!(record.former_encoded_len(Some(&oversized)).is_err());
+    let mut wrong_version = record.clone();
+    wrong_version.version = 1;
+    assert!(
+        wrong_version
+            .validate(&fixture.session, &fixture.queue, record.summary.sequence)
+            .is_err()
+    );
+    let mut old = serde_json::to_value(record).unwrap();
+    old.as_object_mut().unwrap().remove("version");
+    assert!(serde_json::from_value::<crate::queue::Record>(old).is_err());
+    let mut old_body = serde_json::to_value(record).unwrap();
+    old_body["prepared"] = serde_json::to_value(prepared).unwrap();
+    assert!(serde_json::from_value::<crate::queue::Record>(old_body).is_err());
+}
+fn assert_capacity_parity(record: &crate::queue::Record, prepared: &crate::BoundKeyedAdmitRequest) {
+    let compact = crate::queue::encode(record).unwrap();
+    let reference = crate::queue::encode(record.prepared.as_ref().unwrap()).unwrap();
+    let body = crate::queue::encode(prepared).unwrap();
+    let full = crate::queue::encode(&record.view(Some(prepared))).unwrap();
+    assert_eq!(
+        record.former_encoded_len(Some(prepared)).unwrap(),
+        full.len()
+    );
+    assert_eq!(
+        crate::queue::former_encoded_len(compact.len(), Some(reference.len()), Some(body.len()))
+            .unwrap(),
+        full.len()
+    );
+    assert!(crate::queue::former_encoded_len(compact.len(), Some(reference.len()), None).is_err());
+    assert!(
+        crate::queue::former_encoded_len(crate::queue::MAX_RECORD, Some(1), Some(100)).is_err()
+    );
+}
+
+#[tokio::test]
+async fn retained_output_uses_exact_named_carrier_budget() {
+    use crate::public_session::v2::proof::Proof;
+    let store = crate::MemoryStore::new();
+    let (fixture, _, _) = corruption::prepared(&store).await;
+    let state = store.state.lock().unwrap();
+    let scope = crate::queue::source::Scope {
+        session: fixture.session,
+        queue: fixture.queue,
+    };
+    let read = |proof: &mut Proof| super::protocol::record(&state, &scope, proof)?.retained(proof);
+    let mut measured = Proof::bounded(32 << 20);
+    let output = read(&mut measured).unwrap();
+    let exact = measured.used();
+    let mut proof = Proof::bounded(exact);
+    let repeated = read(&mut proof).unwrap();
+    assert_eq!(proof.used(), exact);
+    assert_eq!(
+        serde_json::to_value(output_view(&output)).unwrap(),
+        serde_json::to_value(output_view(&repeated)).unwrap()
+    );
+    assert!(read(&mut Proof::bounded(exact - 1)).is_err());
+    // The whole output named-field shape is charged independently, before clone.
+    let mut proof = Proof::bounded(32 << 20);
+    let loaded = super::protocol::record(&state, &scope, &mut proof).unwrap();
+    let before = proof.used();
+    let output = loaded.retained(&mut proof).unwrap();
+    assert_eq!(
+        proof.used() - before,
+        serde_json::to_vec(&output_view(&output)).unwrap().len()
+    );
+}
+
+fn output_view(output: &crate::RetainedQueue) -> impl serde::Serialize + '_ {
+    #[derive(serde::Serialize)]
+    struct View<'a> {
+        summary: &'a crate::QueueSummary,
+        input: &'a crate::QueueInput,
+        prepared: &'a Option<crate::BoundKeyedAdmitRequest>,
+    }
+    View {
+        summary: &output.summary,
+        input: &output.input,
+        prepared: &output.prepared,
+    }
 }

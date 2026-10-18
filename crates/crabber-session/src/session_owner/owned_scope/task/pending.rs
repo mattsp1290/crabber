@@ -7,8 +7,17 @@
 //! authority. Native source and local task observations do not prove complete
 //! native enrollment, resource policy or whole-Run main ownership.
 mod core;
+mod enrolled_initial;
 mod execute;
 mod initial;
+#[cfg(test)]
+pub(crate) use enrolled_initial::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub use enrolled_initial::{
+    LocallyJoinedInitialSeal, PendingInitialNativeCall, PendingInitialNativeReply,
+    PendingInitialProducer, PendingInitialProducerControl, PendingInitialProducerObservation,
+    PendingInitialProducerStatus,
+};
+pub(crate) use enrolled_initial::{NativeInitialOperation, NativeInitialParts};
 mod queue;
 pub use queue::{
     PendingQueueCompletion, PendingQueueControl, PendingQueueObservation, PendingQueueTask,

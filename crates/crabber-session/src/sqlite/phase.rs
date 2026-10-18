@@ -27,6 +27,17 @@ use crabber_core::{ControlId, PhaseId, Run, RunId, SessionId};
 use sqlx::Sqlite;
 
 mod publication;
+async fn require_raw_worker(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let enrollment = super::native_enrollment::original(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)
+}
+
 #[derive(Clone, Copy)]
 struct PhaseContext<'a> {
     authority: Option<&'a PhaseWriteAuthority>,
@@ -276,6 +287,9 @@ impl SqliteStore {
             fence,
             caller: native_caller,
         } = context;
+        if fence.is_some() {
+            require_raw_worker(tx, run, proof).await?;
+        }
         let digest = effect.fingerprint(request, &run.session_id, &run.id)?;
         if let Some(receipt) = records::receipt_with_proof(tx, &run.session_id, &request.id, proof)
             .await

@@ -24,6 +24,7 @@ pub(super) fn purge(
     let imported = preflight::imported_ids(state, session, proof)?;
     // Ledger is last: it validates all routing before mutation. Every remaining
     // operation is infallible under the caller's unchanged session gate.
+    super::super::pending_initial::purge(state, session, proof)?;
     state.session_owners.purge_session(session, proof)?;
     erase(state, session, &runs, &calls, &imported);
     Ok(())

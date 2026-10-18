@@ -16,6 +16,16 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn pending_initial_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.pending_initial_native_impl(call)).await
+    }
+
     async fn delete_session(
         &self,
         request: crate::DeleteSession,

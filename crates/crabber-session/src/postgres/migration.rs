@@ -99,5 +99,16 @@ pub(super) async fn apply_sources(tx: &mut Transaction<'_, Postgres>) -> Result<
         .await
         .map_err(db)?;
     }
+    let pending_initial: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_version WHERE version=23)")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+    if !pending_initial {
+        sqlx::raw_sql(include_str!("../../migrations/0023_pending_initial.sql"))
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+    }
     Ok(())
 }

@@ -49,12 +49,12 @@ pub(crate) fn body<'a>(
 }
 
 /// The backend has authenticated each full audit against the protected prefix.
-pub(crate) fn prepared(
+pub(crate) fn prepared<'a>(
     joined: &JoinedPreparation,
     enqueue: &crate::queue::Audit,
-    prepare: &crate::queue::Audit,
+    prepare: &'a crate::queue::Audit,
     admit: &crate::queue::Audit,
-) -> Result<BoundKeyedAdmitRequest, PreparationCommitError> {
+) -> Result<&'a BoundKeyedAdmitRequest, PreparationCommitError> {
     let PreparedOperation::Queue {
         request,
         binding: Some(restored),
@@ -71,24 +71,19 @@ pub(crate) fn prepared(
     }
     recorded(request, enqueue, prepare, admit)
 }
-fn recorded(
+fn recorded<'a>(
     request: &QueueMutation,
     enqueue: &crate::queue::Audit,
-    prepare: &crate::queue::Audit,
+    prepare: &'a crate::queue::Audit,
     admit: &crate::queue::Audit,
-) -> Result<BoundKeyedAdmitRequest, PreparationCommitError> {
+) -> Result<&'a BoundKeyedAdmitRequest, PreparationCommitError> {
     let QueueAction::Enqueue { queue_id, input } = &enqueue.request.action else {
         return Err(Error::UnknownStoreOutcome.into());
     };
     let QueueAction::Prepare { prepared, .. } = &prepare.request.action else {
         return Err(Error::UnknownStoreOutcome.into());
     };
-    let QueueAction::Admit {
-        authority,
-        owner,
-        lease,
-    } = &request.action
-    else {
+    let QueueAction::Admit { authority, .. } = &request.action else {
         return Err(Error::Unsupported.into());
     };
     if admit.request.fingerprint()? != request.fingerprint()?
@@ -112,19 +107,8 @@ fn recorded(
     {
         return Err(Error::UnknownStoreOutcome.into());
     }
-    let record = crate::queue::Record {
-        enqueue_operation: enqueue.request.id.clone(),
-        prepare_operation: Some(prepare.request.id.clone()),
-        summary: admit.receipt.summary.clone(),
-        input: *input.clone(),
-        claim: None,
-        prepared: Some(*prepared.clone()),
-    };
-    record.verify_prepared(prepared)?;
-    let mut actual = *prepared.clone();
-    actual.keyed.request.owner.clone_from(owner);
-    actual.keyed.request.lease = *lease;
-    actual.binding.validate_keyed(&actual.keyed)?;
+    crate::queue::verify_prepared(input, prepared)?;
+    let actual = prepared.as_ref();
     let receipt = admit
         .receipt
         .summary
@@ -250,7 +234,7 @@ pub(crate) fn publication_revision<'a>(
         || admit.request.session_id != source.session.id
         || admit.request.expected_revision != origin.expected_revision
         || actual_authority != authority
-        || origin.intent != super::super::queue_admission_intent(&actual)?
+        || origin.intent != super::super::queue_admission_intent(actual)?
         || origin.resource_contract.is_none()
         || source.init.driver_key() != &actual.keyed.options.key
         || source.witness.run_id() != &receipt.run_id

@@ -1,3 +1,12 @@
+// The source-embedding adapter retains the canonical read and negative domains.
+// Genuine opaque Pending transport remains native-crate-only.
+macro_rules! native_pending_initial_items {
+    ($($item:item)*) => {};
+}
+mod pending_initial_test_state {
+    #[derive(Clone, Default)]
+    pub(crate) struct TestState {}
+}
 #[path = "../../crabber-session/src/continuation_handoff.rs"]
 #[allow(dead_code)]
 mod continuation_handoff;
@@ -11,6 +20,8 @@ mod frontend_contract;
 mod native_enrollment;
 #[path = "../../crabber-session/src/native_parent.rs"]
 mod native_parent;
+#[path = "fenced_support/pending_initial_memory.rs"]
+mod pending_initial_memory;
 pub use crabber::session::{ForkBoundary, ForkError, ForkOutcome, ForkReceipt, ForkSession};
 #[path = "../../crabber-session/src/fork/history.rs"]
 #[allow(dead_code)]
@@ -219,6 +230,8 @@ pub use crabber::session::{
     QueueAction, QueueAuthority, QueueInput, QueueMutation, QueueOutcome, QueuePage,
     QueuePageRequest, QueueReceipt, QueueState, QueueSummary, RetainedQueue,
 };
+#[path = "../../crabber-session/src/queue/projection.rs"]
+mod queue_projection;
 #[path = "../../crabber-session/src/queue/records.rs"]
 #[allow(dead_code)]
 mod queue_records;
@@ -229,6 +242,7 @@ pub(crate) mod queue_source;
 #[allow(dead_code)]
 mod queue_transition;
 mod queue {
+    pub(crate) use crate::queue_projection::former_encoded_len;
     pub(crate) use crate::queue_records::*;
     pub(crate) use crate::queue_source as source;
     pub(crate) use crate::queue_transition::*;

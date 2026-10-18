@@ -25,6 +25,8 @@ impl super::super::MemoryExecution {
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
+            super::super::credential_access::check_bounded(state, &run)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = replay(state, &run.session_id, &run.id, &batch.id, &digest)? {
                 return Ok((saved, false));

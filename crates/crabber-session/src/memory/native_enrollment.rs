@@ -115,8 +115,6 @@ pub(super) fn original(
         };
     }
     let origin = origin.ok_or_else(|| unknown("missing execution enrollment origin"))?;
-    let unclassified =
-        unclassified.ok_or_else(|| unknown("missing execution enrollment poison"))?;
     let first_key = (session.clone(), run.clone(), 1);
     let first = state
         .native_run_sources
@@ -126,6 +124,22 @@ pub(super) fn original(
         .native_run_issuances
         .get(&first_key)
         .ok_or_else(|| unknown("execution enrollment first grant"))?;
+    if origin.is_pending() {
+        crate::memory::pending_initial::routes(state, session, proof)?;
+        if unclassified.is_some() {
+            return Err(unknown("Pending origin with Raw poison"));
+        }
+        let assignment = state
+            .pending_initial
+            .assignment_for_run(session, run, proof)?
+            .ok_or_else(|| unknown("missing Pending Initial assignment"))?;
+        origin
+            .verify_pending(assignment, first, issuer, proof)
+            .map_err(crate::public_session::v2::proof::ReadError::public)?;
+        return Ok(Status::Pending);
+    }
+    let unclassified =
+        unclassified.ok_or_else(|| unknown("missing execution enrollment poison"))?;
     origin
         .verify_original(unclassified, first, issuer, proof)
         .map_err(crate::public_session::v2::proof::ReadError::public)?;
@@ -135,10 +149,11 @@ pub(super) fn original(
 /// Whole-scope callers must retain this reverse membership check even when the
 /// current Run set is empty. A selected per-present-Run loop misses erasure.
 pub(super) fn routes(state: &State, session: &SessionId, proof: &mut Proof) -> Result<(), Failure> {
+    crate::memory::pending_initial::routes(state, session, proof)?;
     for (owner, run) in &state.execution_enrollment_protocols {
         if related(state, session, owner, run) {
             proof.measure(&(owner, run))?;
-            if owner != session || original(state, owner, run, proof)? != Status::Unclassified {
+            if owner != session || matches!(original(state, owner, run, proof)?, Status::Legacy) {
                 return Err(unknown("orphaned execution enrollment cohort"));
             }
         }
@@ -146,7 +161,7 @@ pub(super) fn routes(state: &State, session: &SessionId, proof: &mut Proof) -> R
     for ((owner, run), value) in &state.execution_enrollment_origins {
         if related(state, session, owner, run) || &value.session_id == session {
             proof.measure(&(owner, run, value))?;
-            if owner != session || original(state, owner, run, proof)? != Status::Unclassified {
+            if owner != session || matches!(original(state, owner, run, proof)?, Status::Legacy) {
                 return Err(unknown("orphaned execution enrollment origin"));
             }
         }
@@ -154,7 +169,7 @@ pub(super) fn routes(state: &State, session: &SessionId, proof: &mut Proof) -> R
     for ((owner, run), value) in &state.execution_enrollment_unclassified {
         if related(state, session, owner, run) || &value.session_id == session {
             proof.measure(&(owner, run, value))?;
-            if owner != session || original(state, owner, run, proof)? != Status::Unclassified {
+            if owner != session || matches!(original(state, owner, run, proof)?, Status::Legacy) {
                 return Err(unknown("orphaned execution enrollment poison"));
             }
         }
@@ -186,6 +201,7 @@ pub(in crate::memory) fn record_raw_native(
         crate::native_enrollment::caller::Caller::Raw => {
             match original(state, scope.session, scope.run, proof)? {
                 Status::Legacy | Status::Unclassified => (),
+                Status::Pending => return Err(unknown("Raw native call refuses Pending origin")),
             }
         }
     }
@@ -197,3 +213,19 @@ pub(in crate::memory) fn record_raw_native(
 #[cfg(test)]
 #[path = "native_enrollment/attempt_tests.rs"]
 mod attempt_tests;
+
+pub(in crate::memory) fn publish_pending_birth(
+    state: &mut State,
+    assignment: &crate::native_enrollment::pending_initial::Assignment,
+    first: &crate::native_enrollment::caller::initial::FirstPublication,
+    proof: &mut Proof,
+) -> Result<(), Failure> {
+    vacant(state, &assignment.run_id)?;
+    let origin = Origin::pending_birth(assignment, &first.issuer, &first.source, proof)
+        .map_err(crate::public_session::v2::proof::ReadError::public)?;
+    proof.measure(&origin)?;
+    let scope = (origin.session_id.clone(), origin.run_id.clone());
+    state.execution_enrollment_protocols.insert(scope.clone());
+    state.execution_enrollment_origins.insert(scope, origin);
+    Ok(())
+}

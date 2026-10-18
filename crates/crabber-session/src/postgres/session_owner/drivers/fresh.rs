@@ -58,7 +58,7 @@ pub(super) async fn fresh(
         return Err(Error::StaleOwner);
     }
     let latest =
-        super::super::super::native_parent::source_protocol::current(tx, session, id, budget)
+        super::super::super::native_parent::source_protocol::raw_current(tx, session, id, budget)
             .await
             .map_err(unknown)?
             .ok_or(Error::UnknownStoreOutcome)?;

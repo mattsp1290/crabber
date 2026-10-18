@@ -78,7 +78,7 @@ impl PostgresStore {
         if busy || super::super::has_pending_continuation(&mut tx, &authority.session_id).await? {
             return Err(StoreError::Busy);
         }
-        let result = saved.retained();
+        let result = saved.retained(&mut proof)?;
         tx.rollback().await.map_err(super::super::db)?;
         Ok(result)
     }

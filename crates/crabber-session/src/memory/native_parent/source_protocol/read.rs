@@ -14,6 +14,15 @@ pub(in crate::memory) fn history(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<bool, Failure> {
+    Ok(history_enrollment(state, session, run, proof)?.0)
+}
+
+fn history_enrollment(
+    state: &State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<(bool, crate::native_enrollment::Status), Failure> {
     crate::native_parent::source_protocol::validate_scope(session, run).map_err(unknown)?;
     let actual = state
         .runs
@@ -47,8 +56,8 @@ pub(in crate::memory) fn history(
         {
             return Err(unknown("legacy native source membership"));
         }
-        crate::memory::native_enrollment::original(state, session, run, proof)?;
-        return Ok(false);
+        let enrollment = crate::memory::native_enrollment::original(state, session, run, proof)?;
+        return Ok((false, enrollment));
     }
     let head = head.ok_or_else(|| unknown("native source head"))?;
     proof.measure(head)?;
@@ -85,8 +94,8 @@ pub(in crate::memory) fn history(
         }
     }
     stream.finish(head).map_err(unknown)?;
-    crate::memory::native_enrollment::original(state, session, run, proof)?;
-    Ok(true)
+    let enrollment = crate::memory::native_enrollment::original(state, session, run, proof)?;
+    Ok((true, enrollment))
 }
 
 /// Fresh current-state checks consume full protected membership. The exact
@@ -97,7 +106,20 @@ pub(in crate::memory) fn retained_current<'a>(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<Option<&'a RunIssuance>, Failure> {
-    let protected = history(state, session, run, proof)?;
+    retained_current_for(state, session, run, proof, false)
+}
+
+fn retained_current_for<'a>(
+    state: &'a State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+    raw: bool,
+) -> Result<Option<&'a RunIssuance>, Failure> {
+    let (protected, enrollment) = history_enrollment(state, session, run, proof)?;
+    if raw {
+        crate::native_enrollment::access::allow(enrollment).map_err(unknown)?;
+    }
     let actual = state
         .runs
         .get(run)
@@ -141,6 +163,27 @@ pub(in crate::memory) fn current<'a>(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<Option<&'a RunIssuance>, Failure> {
+    current_for(state, session, run, proof, false)
+}
+
+/// Public Driver registration/activation is Raw even when called from an owned
+/// task. Reuse the already authenticated enrollment from the history fold.
+pub(in crate::memory) fn raw_current<'a>(
+    state: &'a State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<&'a RunIssuance>, Failure> {
+    current_for(state, session, run, proof, true)
+}
+
+fn current_for<'a>(
+    state: &'a State,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+    raw: bool,
+) -> Result<Option<&'a RunIssuance>, Failure> {
     crate::native_parent::source_protocol::validate_scope(session, run).map_err(unknown)?;
     proof.measure(&(session, run))?;
     if !state
@@ -149,7 +192,7 @@ pub(in crate::memory) fn current<'a>(
     {
         return Err(unknown("unprotected fresh Run"));
     }
-    retained_current(state, session, run, proof)
+    retained_current_for(state, session, run, proof, raw)
 }
 
 /// Session inventory must check orphaned protected rows before considering an

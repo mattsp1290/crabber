@@ -53,6 +53,11 @@ pub(super) async fn request(
         .measure(&(run, request, conclusion))
         .map_err(|_| Error::UnknownStoreOutcome)?;
     caller::measure_authority(authority, read_proof).map_err(|_| Error::UnknownStoreOutcome)?;
+    let enrollment =
+        super::super::native_enrollment::original(tx, &run.session_id, &run.id, read_proof)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
     let digest = if let Some(conclusion) = conclusion {
         conclusion.fingerprint(&run.session_id, &run.id)?
     } else {

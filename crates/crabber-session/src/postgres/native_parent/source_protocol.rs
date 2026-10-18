@@ -126,6 +126,22 @@ pub(super) async fn head(
     .transpose()
 }
 
+pub(in super::super) async fn append_captured_with_birth(
+    tx: &mut Transaction<'_, Postgres>,
+    issuer: &RunIssuance,
+    proof: &mut Proof,
+    birth: &crate::native_enrollment::pending_initial::BirthDecision<'_>,
+) -> Result<crate::native_enrollment::caller::initial::SourcePublication> {
+    append_output(
+        tx,
+        issuer,
+        true,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+        birth,
+    )
+    .await
+}
 pub(in super::super) async fn append(
     tx: &mut Transaction<'_, Postgres>,
     issuer: &RunIssuance,
@@ -138,6 +154,7 @@ pub(in super::super) async fn append(
         creation,
         proof,
         crate::native_enrollment::caller::initial::Capture::None,
+        &crate::native_enrollment::pending_initial::BirthDecision::Raw,
     )
     .await
     .map(|_| ())
@@ -154,6 +171,7 @@ pub(in super::super) async fn append_captured(
         creation,
         proof,
         crate::native_enrollment::caller::initial::Capture::Original,
+        &crate::native_enrollment::pending_initial::BirthDecision::Raw,
     )
     .await
 }
@@ -163,6 +181,7 @@ async fn append_output(
     creation: bool,
     proof: &mut Proof,
     capture: crate::native_enrollment::caller::initial::Capture,
+    birth: &crate::native_enrollment::pending_initial::BirthDecision<'_>,
 ) -> Result<crate::native_enrollment::caller::initial::SourcePublication> {
     let session = &issuer.state.session_id;
     let run = &issuer.state.run_id;
@@ -187,11 +206,28 @@ async fn append_output(
         .bind(&session.0).bind(&run.0).bind(i64::try_from(value.sequence).map_err(bad)?).bind(value.issuance_digest.as_str()).bind(value.previous_digest.as_ref().map(InputFingerprint::as_str)).bind(value.chain_digest.as_str())
         .execute(&mut **tx).await.map_err(bad)?;
     if creation {
-        Box::pin(super::super::native_enrollment::birth(
-            tx, issuer, &value, proof,
-        ))
-        .await
-        .map_err(ReadError::Budget)?;
+        match birth {
+            crate::native_enrollment::pending_initial::BirthDecision::Raw => {
+                Box::pin(super::super::native_enrollment::birth(
+                    tx, issuer, &value, proof,
+                ))
+                .await
+                .map_err(ReadError::Budget)?;
+            }
+            crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(call) => {
+                call.selected()
+                    .verify(call.selected().original(), proof)
+                    .map_err(ReadError::Budget)?;
+                if issuer.sequence != 1
+                    || issuer.state.session_id != call.correlation().key.session_id
+                {
+                    return Err(bad("Pending first publication scope"));
+                }
+                // The exact actual output is validated and the Pending origin
+                // and assignment are inserted before this SAME transaction commits.
+                // Run->origin is deferred; no Raw origin is inserted or relabelled.
+            }
+        }
     }
     Ok(captured)
 }
@@ -305,13 +341,21 @@ pub(in super::super) async fn history(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<bool> {
+    Ok(history_enrollment(tx, session, run, proof).await?.0)
+}
+pub(in super::super) async fn history_enrollment(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<(bool, crate::native_enrollment::Status)> {
     if !protocol(tx, session, run, proof).await? {
-        Box::pin(super::super::native_enrollment::original(
+        let status = Box::pin(super::super::native_enrollment::original(
             tx, session, run, proof,
         ))
         .await
         .map_err(ReadError::Budget)?;
-        return Ok(false);
+        return Ok((false, status));
     }
     let head = head(tx, session, run, proof)
         .await?
@@ -339,12 +383,12 @@ pub(in super::super) async fn history(
     if extra {
         return Err(bad("unregistered issuer projection"));
     }
-    Box::pin(super::super::native_enrollment::original(
+    let status = Box::pin(super::super::native_enrollment::original(
         tx, session, run, proof,
     ))
     .await
     .map_err(ReadError::Budget)?;
-    Ok(true)
+    Ok((true, status))
 }
 
 #[cfg(test)]
@@ -374,6 +418,7 @@ mod begin_tests;
 
 #[path = "source_protocol/current.rs"]
 mod current;
+pub(in super::super) use current::raw_read as raw_current;
 pub(in super::super) use current::read as current;
 
 #[cfg(test)]

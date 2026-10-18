@@ -131,6 +131,13 @@ impl PostgresExecution {
                 }
             })?;
         let result = async {
+            super::credential_access::check(
+                &mut tx,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+            .await
+            .map_err(public_state::unknown)?;
             let digest = mutation.fingerprint(&run.session_id, &run.id)?;
             if let Some(receipt) = receipt(&mut tx, &run.session_id, &mutation.id).await? {
                 if receipt.run_id != run.id || receipt.semantic_digest != digest {

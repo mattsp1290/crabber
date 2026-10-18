@@ -56,18 +56,15 @@ fn receipt_with_proof(
         Some(_) => Err(StoreError::AdmissionConflict),
     }
 }
-fn record(state: &State, session: &SessionId, id: &QueueId) -> Result<Record, StoreError> {
+fn record(state: &State, session: &SessionId, id: &QueueId) -> Result<RetainedQueue, StoreError> {
     let scope = crate::queue::source::Scope {
         session: session.clone(),
         queue: id.clone(),
     };
-    protocol::record(
-        state,
-        &scope,
-        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
-    )
-    .cloned()
-    .map_err(protocol::domain)
+    let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+    protocol::record(state, &scope, &mut proof)
+        .and_then(|loaded| loaded.retained(&mut proof))
+        .map_err(protocol::domain)
 }
 
 fn current(
@@ -146,7 +143,7 @@ impl MemoryStore {
     ) -> Result<RetainedQueue, StoreError> {
         scope(session, &ControlId("read".into()))?;
         identifier(&id.0)?;
-        Ok(record(&self.state.lock().unwrap(), session, id)?.retained())
+        record(&self.state.lock().unwrap(), session, id)
     }
     pub(super) fn queue_get(
         &self,
@@ -219,50 +216,21 @@ impl MemoryStore {
         proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<QueueOutcome, StoreError> {
         let digest = request.fingerprint()?;
-        let read_proof = std::cell::RefCell::new(proof);
-        let selected = std::cell::RefCell::new(None);
-        let result = self.transact_or_replay(
-            |state| {
-                if let Some(saved) = receipt_with_proof(
-                    state,
-                    &request.session_id,
-                    &request.id,
-                    &mut read_proof.borrow_mut(),
-                )? {
-                    if saved.semantic_digest != digest {
-                        return Err(StoreError::AdmissionConflict);
-                    }
-                    return Ok(Some(QueueOutcome::Replayed(saved)));
-                }
-                *selected.borrow_mut() = Some(selection::select(
-                    state,
-                    request,
-                    &mut read_proof.borrow_mut(),
-                )?);
-                Ok(None)
-            },
-            |state| {
-                if let Some(saved) = receipt_with_proof(
-                    state,
-                    &request.session_id,
-                    &request.id,
-                    &mut read_proof.borrow_mut(),
-                )? {
-                    if saved.semantic_digest != digest {
-                        return Err(StoreError::AdmissionConflict);
-                    }
-                    return Ok(QueueOutcome::Replayed(saved));
-                }
-                self.queue_apply_guarded(
-                    state,
-                    request.clone(),
-                    digest.clone(),
-                    None,
-                    &mut read_proof.borrow_mut(),
-                    selected.borrow_mut().take().ok_or_else(corrupt)?,
-                )
-            },
-        )?;
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        if let Some(saved) = receipt_with_proof(&guard, &request.session_id, &request.id, proof)? {
+            if saved.semantic_digest != digest {
+                return Err(StoreError::AdmissionConflict);
+            }
+            return Ok(QueueOutcome::Replayed(saved));
+        }
+        // The actual protected originals remain borrowed from this same locked
+        // State while the inherited transaction clone is mutated separately.
+        let selected = selection::select(&guard, request, proof)?;
+        let mut next = guard.clone();
+        let result =
+            self.queue_apply_guarded(&mut next, request.clone(), digest, None, proof, selected)?;
+        *guard = next;
+        drop(guard);
         #[cfg(test)]
         if matches!(result, QueueOutcome::Applied { .. }) {
             crate::binding_fault::trip(&self.queue_fault, 2)?;
@@ -276,7 +244,7 @@ impl MemoryStore {
         digest: crabber_core::InputFingerprint,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
-        selected: selection::Selected,
+        selected: selection::Selected<'_>,
     ) -> Result<QueueOutcome, StoreError> {
         let now = self.clock.now();
         super::deletion::ensure_live(state, &request.session_id)?;
@@ -296,8 +264,10 @@ impl MemoryStore {
             head,
             original,
             previous,
+            prepared,
+            quota,
         } = selected.into_parts(&request)?;
-        guards(state, &request)?;
+        guards(state, &request, quota)?;
         let sequence = if matches!(request.action, QueueAction::Enqueue { .. }) {
             state
                 .queue
@@ -315,7 +285,7 @@ impl MemoryStore {
             &request,
             &summary,
             head.as_ref(),
-            original,
+            original.map(|record| (record, prepared)),
             sequence,
             now,
             preparation,
@@ -340,22 +310,12 @@ fn publish_queue_change(
         Option<crate::queue::source::Source>,
         time::OffsetDateTime,
     ),
-    change: Change,
+    mut change: Change<'_>,
     read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(QueueReceipt, Option<QueueAuthority>), StoreError> {
     let (request, digest, previous, now) = operation;
     let saved = publish_queue_revision(state, &request, digest, change.record.summary.clone())?;
-    change.record.validate(
-        &request.session_id,
-        &saved.summary.queue_id,
-        saved.summary.sequence,
-    )?;
-    encode(&change.record)?;
     let key = (request.session_id.clone(), request.id.clone());
-    state.queue.insert(
-        (request.session_id.clone(), saved.summary.queue_id.clone()),
-        change.record,
-    );
     let audit = Audit {
         request,
         receipt: saved.clone(),
@@ -376,12 +336,53 @@ fn publish_queue_change(
     } else {
         None
     };
-    if let Some(source) = source {
-        read_proof.measure(&source).map_err(|failure| {
+    if let Some(source) = &source {
+        // Both the append and its actual retained return are independent small
+        // Source carriers; charge before the one publication copy.
+        read_proof.measure(&(source, source)).map_err(|failure| {
             protocol::domain(crate::public_session::v2::proof::ReadError::Budget(failure))
         })?;
-        state.queue_publications.publish(&audit, source)?;
+        state.queue_publications.publish(&audit, source.clone())?;
     }
+    if matches!(audit.request.action, QueueAction::Prepare { .. }) {
+        change.record.prepared = Some(crate::queue::PreparedReference::published(
+            &audit,
+            source.as_ref(),
+            read_proof,
+        )?);
+    }
+    change.record.validate(
+        &audit.request.session_id,
+        &saved.summary.queue_id,
+        saved.summary.sequence,
+    )?;
+    let full_prepared = match &audit.request.action {
+        QueueAction::Prepare { prepared, .. } => Some(prepared.as_ref()),
+        _ => change
+            .record
+            .prepare_operation
+            .as_ref()
+            .map(|id| {
+                let original = state
+                    .queue_audits
+                    .get(&(audit.request.session_id.clone(), id.clone()))
+                    .ok_or_else(corrupt)?;
+                let QueueAction::Prepare { prepared, .. } = &original.request.action else {
+                    return Err(corrupt());
+                };
+                Ok(prepared.as_ref())
+            })
+            .transpose()?,
+    };
+    change.record.former_encoded_len(full_prepared)?;
+    encode(&change.record)?;
+    state.queue.insert(
+        (
+            audit.request.session_id.clone(),
+            saved.summary.queue_id.clone(),
+        ),
+        change.record,
+    );
     state.queue_audits.insert(key.clone(), audit);
     state
         .operation_receipts
@@ -389,7 +390,11 @@ fn publish_queue_change(
     Ok((saved, change.authority))
 }
 
-fn guards(state: &State, request: &QueueMutation) -> Result<(), StoreError> {
+fn guards(
+    state: &State,
+    request: &QueueMutation,
+    quota: Option<(usize, usize)>,
+) -> Result<(), StoreError> {
     if let QueueAction::Enqueue { input, .. } = &request.action
         && (state.queue.values().any(|r| {
             r.summary.session_id == request.session_id
@@ -404,23 +409,13 @@ fn guards(state: &State, request: &QueueMutation) -> Result<(), StoreError> {
         request.action,
         QueueAction::Enqueue { .. } | QueueAction::Prepare { .. }
     ) {
-        let pending: Vec<_> = state
-            .queue
-            .values()
-            .filter(|r| {
-                r.summary.session_id == request.session_id
-                    && matches!(r.summary.state, QueueState::Queued | QueueState::Claimed)
-            })
-            .collect();
-        let bytes = pending.iter().try_fold(encode(request)?.len(), |sum, r| {
-            Ok::<_, StoreError>(sum + encode(r)?.len())
-        })?;
+        let (pending, bytes) = quota.ok_or_else(corrupt)?;
         let budget = if matches!(request.action, QueueAction::Prepare { .. }) {
             MAX_PENDING_BYTES + crate::queue::MAX_RECORD
         } else {
             MAX_PENDING_BYTES
         };
-        if (matches!(request.action, QueueAction::Enqueue { .. }) && pending.len() >= MAX_PENDING)
+        if (matches!(request.action, QueueAction::Enqueue { .. }) && pending >= MAX_PENDING)
             || bytes > budget
         {
             return Err(StoreError::Busy);
@@ -494,16 +489,17 @@ pub(super) fn preparation_context(
     {
         return Err(StoreError::HostUnsupported);
     }
-    preparation_context_selected(state, saved, authority, intent, now)
+    preparation_context_selected(state, &saved, saved.prepared, authority, intent, now)
 }
 pub(in crate::memory) fn preparation_context_selected(
     state: &State,
     saved: &Record,
+    prepared: Option<&crate::BoundKeyedAdmitRequest>,
     authority: &crate::QueueAuthority,
     intent: &crabber_core::InputFingerprint,
     now: time::OffsetDateTime,
 ) -> Result<(), StoreError> {
-    if let Some(prepared) = &saved.prepared
+    if let Some(prepared) = prepared
         && crate::session_owner::preparation::queue_admission_intent(prepared)
             .map_err(|_| StoreError::AdmissionConflict)?
             != *intent

@@ -111,12 +111,50 @@ pub(super) fn append_captured_with_proof(
         crate::native_enrollment::caller::initial::Capture::Original,
     )
 }
+pub(super) fn append_initial_captured_with_birth(
+    state: &mut State,
+    issuer: &RunIssuance,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output_with_birth(
+        state,
+        issuer,
+        true,
+        proof,
+        crate::native_enrollment::caller::initial::Capture::Original,
+        birth,
+    )
+}
 fn append_output(
     state: &mut State,
     issuer: &RunIssuance,
     creation: bool,
     proof: &mut crate::public_session::v2::proof::Proof,
     capture: crate::native_enrollment::caller::initial::Capture,
+) -> Result<
+    crate::native_enrollment::caller::initial::SourcePublication,
+    crate::public_session::v2::proof::ReadError<Error>,
+> {
+    append_output_with_birth(
+        state,
+        issuer,
+        creation,
+        proof,
+        capture,
+        crate::native_enrollment::pending_initial::BirthDecision::Raw,
+    )
+}
+fn append_output_with_birth(
+    state: &mut State,
+    issuer: &RunIssuance,
+    creation: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+    birth_decision: crate::native_enrollment::pending_initial::BirthDecision<'_>,
 ) -> Result<
     crate::native_enrollment::caller::initial::SourcePublication,
     crate::public_session::v2::proof::ReadError<Error>,
@@ -193,7 +231,11 @@ fn append_output(
     }
     let source = JournalSource::new(previous, issuer)?;
     let head = JournalHead::advance(previous, &source)?;
-    let birth = if creation {
+    let birth = if creation
+        && matches!(
+            birth_decision,
+            crate::native_enrollment::pending_initial::BirthDecision::Raw
+        ) {
         Some(
             crate::memory::native_enrollment::prepare_birth(state, issuer, &source, proof)
                 .map_err(ReadError::Budget)?,
@@ -201,6 +243,7 @@ fn append_output(
     } else {
         None
     };
+    verify_pending_initial_birth(birth_decision, creation, issuer, proof)?;
     let captured = crate::native_enrollment::caller::initial::SourcePublication::capture(
         capture, issuer, &source, creation, proof,
     )
@@ -214,11 +257,36 @@ fn append_output(
     Ok(captured)
 }
 
+fn verify_pending_initial_birth(
+    birth_decision: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+    creation: bool,
+    issuer: &RunIssuance,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), crate::public_session::v2::proof::ReadError<Error>> {
+    use crate::public_session::v2::proof::ReadError;
+    if let crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(call) =
+        birth_decision
+    {
+        if !creation || issuer.sequence != 1 {
+            return Err(Error.into());
+        }
+        call.selected()
+            .verify(call.selected().original(), proof)
+            .map_err(ReadError::Budget)?;
+        if call.correlation().key.session_id != issuer.state.session_id {
+            return Err(Error.into());
+        }
+        // The actual complete result assigns the Pending origin later in this
+        // SAME transaction; no Raw origin is ever published in this branch.
+    }
+    Ok(())
+}
+
 #[path = "source_protocol/original.rs"]
 mod original;
 #[path = "source_protocol/read.rs"]
 mod read;
-pub(in crate::memory) use read::{current, history, retained_current, routes};
+pub(in crate::memory) use read::{current, history, raw_current, retained_current, routes};
 #[cfg(test)]
 #[path = "source_protocol/tests.rs"]
 mod tests;

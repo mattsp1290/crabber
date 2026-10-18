@@ -634,11 +634,16 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
 }
 
 /// A downgraded version roster must not retain the newer immutable birth DDL.
-/// Removing it models a predecessor, rather than replaying migration22 over its
-/// already-created columns and protected raw sources.
+/// Removing it models a predecessor, rather than replaying migrations22/23 over
+/// their already-created columns and protected raw/Pending sources.
 async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
     sqlx::raw_sql(
-        "DROP TRIGGER runs_execution_identity ON runs;
+        "DROP TABLE pending_initial_cohorts,pending_initial_epochs,
+        pending_initial_source_slots,pending_initial_registered_completes,
+        pending_initial_assignments,pending_initial_closes,
+        pending_initial_publications,pending_initial_heads CASCADE;
+        DROP FUNCTION crabber_pending_initial_guard();
+        DROP TRIGGER runs_execution_identity ON runs;
         ALTER TABLE runs DROP COLUMN execution_enrollment_origin_id;
         DROP TABLE native_execution_unclassified,native_execution_origins CASCADE;
         ALTER TABLE runs DROP COLUMN execution_enrollment_protocol CASCADE;

@@ -3,6 +3,10 @@
 mod inspection;
 #[path = "preparation/native.rs"]
 mod native;
+native_pending_initial_items! {
+    #[path = "preparation/pending_initial.rs"]
+    mod pending_initial;
+}
 #[path = "preparation/preflight.rs"]
 mod preflight;
 #[path = "preparation/queue.rs"]
@@ -45,80 +49,78 @@ impl MemoryStore {
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
     {
-        let read_proof = std::cell::RefCell::new(read_proof);
-        crate::native_enrollment::caller::initial::preparation_input(
-            joined,
-            &mut read_proof.borrow_mut(),
-        )
-        .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
+        crate::native_enrollment::caller::initial::preparation_input(joined, read_proof)
+            .map_err(|_| crate::session_owner::SessionOwnerError::Capacity)?;
         joined.verify_original_intent()?;
-        let session = joined
+        let mut guard = self.state.lock().expect("memory store poisoned");
+        let selected = match self.before_prepared_native(&guard, joined, read_proof)? {
+            queue::Before::Other => None,
+            queue::Before::Selected(selected) => Some(*selected),
+            queue::Before::Replayed(outcome) => {
+                return Ok(
+                    crate::session_owner::preparation::driver_completion::replayed(*outcome),
+                );
+            }
+        };
+        // Retain borrowed protected originals under this same lock while the
+        // inherited State clone is mutated. That whole clone is not bounded.
+        let mut next = guard.clone();
+        let outcome = self.complete_preparation_transaction(
+            &mut next,
+            joined,
+            require_input_birth,
+            read_proof,
+            selected,
+        )?;
+        *guard = next;
+        drop(guard);
+        #[cfg(test)]
+        after_commit(self, &outcome.completion)?;
+        Ok(outcome)
+    }
+    fn complete_preparation_transaction(
+        &self,
+        state: &mut super::super::State,
+        joined: &JoinedPreparation,
+        require_input_birth: bool,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+        selected: Option<super::super::queue::selection::Selected<'_>>,
+    ) -> Result<PreparedDriverCompletion, crate::session_owner::preparation::PreparationCommitError>
+    {
+        let session = &joined
             .observed_grant()
             .original_reservation()
             .owner
             .binding
-            .session_id
-            .clone();
-        let queue_selection = std::cell::RefCell::new(None);
-        let outcome = self.transact_or_replay(
-            |state| match self.before_prepared_native(
-                state,
-                joined,
-                &mut read_proof.borrow_mut(),
-            )? {
-                queue::Before::Other => Ok(None),
-                queue::Before::Selected(selected) => {
-                    *queue_selection.borrow_mut() = Some(*selected);
-                    Ok(None)
-                }
-                queue::Before::Replayed(outcome) => Ok(Some(
-                    crate::session_owner::preparation::driver_completion::replayed(*outcome),
-                )),
-            },
-            |state| -> Result<_, crate::session_owner::preparation::PreparationCommitError> {
-                super::super::deletion::ensure_live(state, &session)?;
-                let now = self.clock.now();
-                ensure_input_birth(
-                    state,
-                    joined,
-                    require_input_birth,
-                    &mut read_proof.borrow_mut(),
-                )?;
-                let before = revision(state, &session);
-                let mut proof = state
-                    .session_owners
-                    .verify_preparation_with_proof(
-                        joined.observed_grant(),
-                        before,
-                        now,
-                        &mut read_proof.borrow_mut(),
-                    )
-                    .map_err(storage_error)?;
-                proof.bind_observed_operation(joined)?;
-                state
-                    .session_owners
-                    .mutate_preparation_join(&proof, now, before)
-                    .map_err(storage_error)?;
-                if state.sessions.contains_key(&session) {
-                    super::super::bump_public_revision(state, &session)?;
-                }
-                let outcome = self.apply_prepared_native(
-                    state,
-                    joined.observed_operation().clone(),
-                    &proof,
-                    &mut read_proof.borrow_mut(),
-                    queue_selection.borrow_mut().take(),
-                )?;
-                let outcome =
-                    crate::session_owner::preparation::driver_completion::native(outcome, &proof)?;
-                super::before(super::fault(self))?;
-                #[cfg(test)]
-                crate::binding_fault::trip(&self.binding_fault, 1)?;
-                Ok(outcome)
-            },
+            .session_id;
+        super::super::deletion::ensure_live(state, session)?;
+        let now = self.clock.now();
+        ensure_input_birth(state, joined, require_input_birth, read_proof)?;
+        let before = revision(state, session);
+        let mut proof = state
+            .session_owners
+            .verify_preparation_with_proof(joined.observed_grant(), before, now, read_proof)
+            .map_err(storage_error)?;
+        proof.bind_observed_operation(joined)?;
+        state
+            .session_owners
+            .mutate_preparation_join(&proof, now, before)
+            .map_err(storage_error)?;
+        if state.sessions.contains_key(session) {
+            super::super::bump_public_revision(state, session)?;
+        }
+        let outcome = self.apply_prepared_native(
+            state,
+            joined.observed_operation().clone(),
+            &proof,
+            read_proof,
+            selected,
         )?;
+        let outcome =
+            crate::session_owner::preparation::driver_completion::native(outcome, &proof)?;
+        super::before(super::fault(self))?;
         #[cfg(test)]
-        after_commit(self, &outcome.completion)?;
+        crate::binding_fault::trip(&self.binding_fault, 1)?;
         Ok(outcome)
     }
 }

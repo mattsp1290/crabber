@@ -15,7 +15,7 @@ use crate::{
     },
 };
 use crabber_core::SessionContext;
-pub(super) use state::Control;
+pub(super) use state::{CallAdmission, Control};
 use std::{future::Future, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, oneshot};
 
@@ -24,6 +24,7 @@ pub(super) enum Family {
     Initial,
     Queue,
     Successor,
+    EnrolledInitial,
 }
 pub(super) enum Source {
     Initial(super::initial::source::Source),
@@ -129,7 +130,8 @@ pub(super) struct Observation<T> {
     pub(super) disposition: OwnedMainDisposition,
     pub(super) error: Option<PendingSuccessorError>,
     pub(super) replay: Option<Replay>,
-    pub(super) _capacity: OwnedSemaphorePermit,
+    pub(super) _capacity: Option<OwnedSemaphorePermit>,
+    pub(super) protected: Option<super::enrolled_initial::PendingInitialProducerObservation>,
 }
 impl<T> Drop for Observation<T> {
     fn drop(&mut self) {
@@ -158,24 +160,47 @@ impl<T: Send + 'static> Task<T> {
         F: FnOnce(DriverMainContext, PreparationCompletion) -> W + Send + 'static,
         W: Future<Output = T> + Send + 'static,
     {
+        Self::register_body(
+            owner,
+            source.family(),
+            None,
+            move |current, ingress| async move {
+                execute::run(
+                    store, context, original, source, &current, ingress, business,
+                )
+                .await
+            },
+        )
+    }
+    pub(super) fn register_body<F, W>(
+        owner: &super::PendingDriverTasks,
+        family: Family,
+        protected: Option<Arc<super::enrolled_initial::RetainedInitial>>,
+        produce: F,
+    ) -> Result<Self, Error>
+    where
+        F: FnOnce(Control, Arc<super::super::driver::MainIngress>) -> W + Send + 'static,
+        W: Future<Output = Result<TaskOutput<T>, super::PendingSuccessorError>> + Send + 'static,
+    {
         let capacity = owner.capacity()?;
-        let control = Control::new(source.family());
+        let control = Control::new(family);
         let (start, ready) = oneshot::channel();
         let (send, result) = oneshot::channel();
         let current = control.clone();
         let ingress = super::super::driver::MainIngress::new();
         let seal = ingress.guard();
+        let registered_ingress = ingress.clone();
         let task = tokio::spawn(async move {
             let _seal = seal;
             if ready.await.is_err() || current.stopped() {
                 return Ok(TaskOutput::Stopped);
             }
-            execute::run(
-                store, context, original, source, &current, ingress, business,
-            )
-            .await
+            produce(current, ingress).await
         });
-        owner.retain(task, control.clone(), send, capacity);
+        if let Some(retained) = &protected {
+            retained.attach(task.id(), registered_ingress, control.clone());
+        }
+        owner.retain(task, control.clone(), send, capacity, protected);
         Ok(Self {
             start: Some(start),
             result,

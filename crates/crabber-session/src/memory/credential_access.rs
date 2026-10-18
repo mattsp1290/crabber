@@ -5,10 +5,36 @@ use crate::native_enrollment::access::{allow, failure};
 use crate::public_session::v2::proof::Proof;
 use crabber_core::{Run, RunFence, RunId};
 
-fn check(state: &State, run: &Run, proof: &mut Proof) -> Result<(), StoreError> {
+native_pending_initial_items! {
+    #[cfg(test)]
+    #[path = "credential_access/prefix_tests.rs"]
+    mod prefix_tests;
+}
+
+pub(super) fn check(state: &State, run: &Run, proof: &mut Proof) -> Result<(), StoreError> {
     proof.measure(run).map_err(failure)?;
-    allow(native_enrollment::original(state, &run.session_id, &run.id, proof).map_err(failure)?);
-    Ok(())
+    check_origin(state, &run.session_id, &run.id, proof)
+}
+
+/// Legacy writer guards; these APIs have no enclosing operation Proof.
+pub(super) fn check_bounded(state: &State, run: &Run) -> Result<(), StoreError> {
+    check(state, run, &mut Proof::bounded(32 << 20))
+}
+pub(super) fn check_origin_bounded(
+    state: &State,
+    session: &crabber_core::SessionId,
+    run: &RunId,
+) -> Result<(), StoreError> {
+    check_origin(state, session, run, &mut Proof::bounded(32 << 20))
+}
+
+pub(super) fn check_origin(
+    state: &State,
+    session: &crabber_core::SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<(), StoreError> {
+    allow(native_enrollment::original(state, session, run, proof).map_err(failure)?)
 }
 
 impl MemoryStore {
@@ -73,6 +99,9 @@ impl MemoryStore {
 
 #[cfg(test)]
 mod tests {
+    native_pending_initial_items! {
+        use super::{MemoryStore, Proof, native_enrollment};
+    }
     use crate::Store;
     use crate::native_enrollment::access::contract;
 
@@ -212,5 +241,41 @@ mod tests {
             refused,
             "restoring a previous projection cannot restore its authority"
         );
+    }
+    native_pending_initial_items! {
+    #[tokio::test]
+    async fn genuine_pending_birth_refuses_copied_cached_raw_mutations() {
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let session = contract::pending(store.clone()).await;
+        let run = {
+            let state = store.state.lock().unwrap();
+            state
+                .runs
+                .values()
+                .filter(|run| run.session_id == session)
+                .find(|run| {
+                    native_enrollment::original(
+                        &state,
+                        &session,
+                        &run.id,
+                        &mut Proof::bounded(32 << 20),
+                    )
+                    .unwrap()
+                        == crate::native_enrollment::Status::Pending
+                })
+                .unwrap()
+                .clone()
+        };
+        let cached = crate::memory::MemoryExecution {
+            store: store.as_ref().clone(),
+            fence: RunFence {
+                run_id: run.id.clone(),
+                claim_token: run.claim_token.clone(),
+            },
+        };
+        contract::cached_mutations(store.as_ref(), &run, &cached).await;
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.runs[&run.id].lease_until, run.lease_until);
+    }
     }
 }

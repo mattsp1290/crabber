@@ -18,6 +18,12 @@ impl MemoryExecution {
                 .get(&self.fence.run_id)
                 .cloned()
                 .ok_or(Error::NotFound)?;
+            super::super::credential_access::check(
+                state,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
             if let Some(saved) = replay(state, &run.session_id, &run.id, &batch.id, &digest)? {
                 return Ok((saved, false));

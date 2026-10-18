@@ -55,6 +55,14 @@ async fn check(
     if cross_scope {
         return Err(unknown("relational scope"));
     }
+    // Pre-Run original owners survive independently of Session/Run rows. Even
+    // a closed first-producer relation has no whole-resource policy yet.
+    proof.charge(1)?;
+    let pending_initial: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_initial_cohorts WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_epochs WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_source_slots WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_registered_completes WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_assignments WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_closes WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_publications WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_heads WHERE session_id=$1)")
+        .bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
+    if pending_initial {
+        return Err(Failure::Blocked(DeletionBlocker::OwnershipUnknown));
+    }
     let unproven_run_sources = native::runtime(tx, session, &mut proof).await?;
     super::super::fork::verify_imported_history(tx, session, &mut proof).await?;
     let unknown_native = native::attempts(tx, session, &mut proof).await?;

@@ -90,6 +90,7 @@ impl MemoryStore {
                 || state
                     .session_owners
                     .contains_scope(&request.target_session_id)
+                || super::pending_initial::contains_scope(state, &request.target_session_id)
             {
                 return Err(Error::TargetExists);
             }

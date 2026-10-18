@@ -1,6 +1,9 @@
 //! Durable future admissions. Public metadata never carries a dispatch capability.
 mod fingerprint;
+mod projection;
 mod records;
+#[cfg(any(feature = "postgres", feature = "sqlite", test))]
+pub(crate) use projection::former_encoded_len;
 pub(crate) mod source;
 mod transition;
 use crate::{AdmissionRequestData, BoundKeyedAdmitRequest, StoreError};

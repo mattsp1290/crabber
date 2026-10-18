@@ -1,6 +1,7 @@
 //! Fresh effect guards require the complete protected source membership.
 use super::{
-    Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head, history, original,
+    Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head,
+    history_enrollment, history_prefix, original,
 };
 use crate::transaction::Transaction;
 use sqlx::{Row, Sqlite};
@@ -10,9 +11,42 @@ pub(in crate::sqlite) async fn read(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<Option<RunIssuance>> {
-    if !history(tx, session, run, proof).await? {
+    read_for(tx, session, run, proof, false).await
+}
+
+pub(in crate::sqlite) async fn raw_read(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<RunIssuance>> {
+    read_for(tx, session, run, proof, true).await
+}
+
+async fn read_for(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+    raw: bool,
+) -> Result<Option<RunIssuance>> {
+    let (protected, enrollment) = history_enrollment(tx, session, run, proof).await?;
+    if raw {
+        crate::native_enrollment::access::allow(enrollment).map_err(bad)?;
+    }
+    if !protected {
         return Err(bad("unprotected fresh Run"));
     }
+    current_projection(tx, session, run, proof).await.map(Some)
+}
+
+/// This body is reached only after its caller's full prefix verification.
+async fn current_projection(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<RunIssuance> {
     let selected = head(tx, session, run, proof)
         .await?
         .ok_or_else(|| bad("current head"))?;
@@ -37,5 +71,40 @@ pub(in crate::sqlite) async fn read(
     if issuer.state != actual {
         return Err(bad("current Run state"));
     }
-    Ok(Some(issuer))
+    Ok(issuer)
 }
+
+/// One closed scope authenticates the original exactly once before checking the
+/// complete current prefix. No caller can inject status or reuse a certificate.
+pub(in crate::sqlite) async fn check_raw_current(
+    tx: &mut Transaction<'_, Sqlite>,
+    native: &crabber_core::Run,
+    proof: &mut Proof,
+) -> std::result::Result<(), crate::StoreError> {
+    let session = &native.session_id;
+    let run = &native.id;
+    match crate::sqlite::native_enrollment::original(tx, session, run, proof)
+        .await
+        .map_err(crate::native_enrollment::access::failure)?
+    {
+        crate::native_enrollment::Status::Legacy => Ok(()),
+        crate::native_enrollment::Status::Pending => Err(crate::StoreError::HostUnsupported),
+        crate::native_enrollment::Status::Unclassified => {
+            let current = async {
+                if !history_prefix(tx, session, run, proof).await? {
+                    return Err(bad("unprotected fresh Run"));
+                }
+                let issuer = current_projection(tx, session, run, proof).await?;
+                issuer.verify(native).map_err(bad)
+            }
+            .await;
+            current.map_err(|_| {
+                crate::StoreError::Validation("native run fence evidence unavailable".into())
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "current_tests.rs"]
+mod tests;

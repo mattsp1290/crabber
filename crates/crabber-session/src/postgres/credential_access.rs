@@ -6,18 +6,61 @@ use crate::public_session::v2::proof::Proof;
 use crabber_core::{Run, RunFence, RunId, SessionId};
 use sqlx::Row;
 
-async fn check(
+#[cfg(test)]
+#[path = "credential_access/regression_tests.rs"]
+mod regression_tests;
+
+pub(super) async fn check(
     tx: &mut Transaction<'_, Postgres>,
     run: &Run,
     proof: &mut Proof,
 ) -> Result<(), StoreError> {
     proof.measure(run).map_err(failure)?;
+    check_origin(tx, &run.session_id, &run.id, proof).await
+}
+
+/// Credential acquisition and cached writes authenticate the current issuer
+/// for native Runs. Genuine pre-protocol legacy rows keep their old behavior.
+pub(super) async fn check_current(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<(), StoreError> {
+    proof.measure(run).map_err(failure)?;
+    match native_enrollment::original(tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(failure)?
+    {
+        crate::native_enrollment::Status::Legacy => Ok(()),
+        crate::native_enrollment::Status::Unclassified => {
+            super::native_parent::current_issuance_with_proof(tx, run, proof)
+                .await
+                .map(|_| ())
+                .map_err(|_| StoreError::Validation("native run fence evidence unavailable".into()))
+        }
+        crate::native_enrollment::Status::Pending => Err(StoreError::HostUnsupported),
+    }
+}
+
+/// Legacy writer guard; its API has no enclosing operation Proof.
+pub(super) async fn check_bounded(
+    tx: &mut Transaction<'_, Postgres>,
+    run: &Run,
+) -> Result<(), StoreError> {
+    check(tx, run, &mut Proof::bounded(32 << 20)).await
+}
+
+pub(super) async fn check_origin(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<(), StoreError> {
     allow(
-        native_enrollment::original(tx, &run.session_id, &run.id, proof)
+        native_enrollment::original(tx, session, run, proof)
             .await
             .map_err(failure)?,
-    );
-    Ok(())
+    )
 }
 
 fn decode_run(row: &sqlx::postgres::PgRow) -> Result<Run, StoreError> {
@@ -45,7 +88,7 @@ impl PostgresStore {
         {
             return Err(StoreError::Conflict);
         }
-        check(&mut tx, &run, &mut proof).await?;
+        check_current(&mut tx, &run, &mut proof).await?;
         tx.rollback().await.map_err(db)
     }
 
@@ -231,5 +274,30 @@ mod tests {
             .unwrap();
         contract::succeeds(&store, &first).await;
         assert!(refused, "a row cannot borrow a distinct genuine Run origin");
+    }
+    #[tokio::test]
+    async fn genuine_pending_birth_refuses_copied_cached_raw_mutations() {
+        let Some(url) = crate::postgres::tests::test_url() else {
+            return;
+        };
+        let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+        crate::PostgresStore::migrate(&url).await.unwrap();
+        let store = std::sync::Arc::new(crate::PostgresStore::connect(&url).await.unwrap());
+        let session = contract::pending(store.clone()).await;
+        let data: String = sqlx::query_scalar("SELECT r.data::text FROM runs r JOIN native_execution_origins o ON o.run_id=r.id WHERE o.birth_kind='pending' AND r.session_id=$1")
+            .bind(&session.0).fetch_one(&store.pool).await.unwrap();
+        let run: Run = super::super::decode_record(&data).unwrap();
+        let cached = crate::postgres::PostgresExecution {
+            store: store.as_ref().clone(),
+            fence: RunFence {
+                run_id: run.id.clone(),
+                claim_token: run.claim_token.clone(),
+            },
+        };
+        contract::cached_mutations(store.as_ref(), &run, &cached).await;
+        let after: String = sqlx::query_scalar("SELECT r.data::text FROM runs r JOIN native_execution_origins o ON o.run_id=r.id WHERE o.birth_kind='pending' AND r.session_id=$1")
+            .bind(&session.0).fetch_one(&store.pool).await.unwrap();
+        assert_eq!(after, data);
+        store.purge_pending_initial_fixture(&session).await.unwrap();
     }
 }

@@ -1,8 +1,10 @@
 mod admission;
+mod capacity;
 mod inspection;
 pub(in crate::postgres) mod protocol;
 pub(super) mod public;
 pub(super) mod reads;
+mod selection;
 use super::{PostgresStore, db};
 use crate::postgres::transaction::Transaction;
 use crate::{
@@ -14,7 +16,7 @@ use crate::{
     },
 };
 use crabber_core::SessionRevision;
-use sqlx::{Postgres, Row};
+use sqlx::Postgres;
 impl PostgresStore {
     pub(super) async fn queue_mutate(
         &self,
@@ -69,21 +71,7 @@ impl PostgresStore {
         } else {
             None
         };
-        let previous = if let Some(id) = id {
-            protocol::verified_head(
-                tx,
-                &crate::queue::source::Scope {
-                    session: request.session_id.clone(),
-                    queue: id.clone(),
-                },
-                read_proof,
-            )
-            .await
-            .map_err(protocol::domain)?
-        } else {
-            None
-        };
-        self.queue_guards(tx, &request).await?;
+        self.queue_guards(tx, &request, read_proof).await?;
         let sequence = if matches!(request.action, QueueAction::Enqueue { .. }) {
             let previous: Option<i64> =
                 sqlx::query_scalar("SELECT MAX(sequence) FROM future_queue WHERE session_id=$1")
@@ -100,11 +88,22 @@ impl PostgresStore {
         } else {
             0
         };
+        let (projection, mut originals) = match original {
+            Some(loaded) => (Some(loaded.projection), Some(loaded.originals)),
+            None => (None, None),
+        };
+        // Move the already authenticated actual head; do not reread or clone it.
+        let previous = originals.as_mut().and_then(|selected| selected.head.take());
+        let prepared = match (&projection, &originals) {
+            (Some(record), Some(originals)) => originals.prepared(record)?,
+            (None, None) => None,
+            _ => return Err(corrupt()),
+        };
         let change = crate::queue::apply_guarded(
             &request,
             &summary,
             head.as_ref(),
-            original,
+            projection.map(|record| (record, prepared)),
             sequence,
             now,
             preparation,
@@ -113,6 +112,7 @@ impl PostgresStore {
             tx,
             (request, digest, previous, now),
             change,
+            prepared,
             preparation,
             read_proof,
         ))
@@ -122,6 +122,7 @@ impl PostgresStore {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         request: &QueueMutation,
+        proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<(), StoreError> {
         if let QueueAction::Enqueue { input, .. } = &request.action {
             let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND admission_key=$2) OR EXISTS(SELECT 1 FROM admission_receipts WHERE session_id=$1 AND admission_key=$2)").bind(&request.session_id.0).bind(input.admission.key.as_str()).fetch_one(&mut **tx).await.map_err(db)?;
@@ -133,10 +134,7 @@ impl PostgresStore {
             request.action,
             QueueAction::Enqueue { .. } | QueueAction::Prepare { .. }
         ) {
-            let row = sqlx::query("SELECT COUNT(*) AS count, CAST(COALESCE(SUM(octet_length(data_json)),0) AS BIGINT) AS bytes FROM future_queue WHERE session_id=$1 AND state IN ('Queued','Claimed')")
-                .bind(&request.session_id.0).fetch_one(&mut **tx).await.map_err(db)?;
-            let count: i64 = row.try_get("count").map_err(db)?;
-            let bytes: i64 = row.try_get("bytes").map_err(db)?;
+            let (count, bytes) = capacity::pending(tx, &request.session_id, proof).await?;
             // Enqueue reserves a separate bounded slot for the FIFO head's
             // prepared capsule, so a full backlog can still make progress.
             let budget = if matches!(request.action, QueueAction::Prepare { .. }) {
@@ -144,10 +142,11 @@ impl PostgresStore {
             } else {
                 MAX_PENDING_BYTES
             };
-            if (matches!(request.action, QueueAction::Enqueue { .. })
-                && count >= i64::try_from(MAX_PENDING).map_err(|_| invalid())?)
-                || bytes + i64::try_from(encode(request)?.len()).map_err(|_| invalid())?
-                    > i64::try_from(budget).map_err(|_| invalid())?
+            if (matches!(request.action, QueueAction::Enqueue { .. }) && count >= MAX_PENDING)
+                || bytes
+                    .checked_add(encode(request)?.len())
+                    .ok_or_else(invalid)?
+                    > budget
             {
                 return Err(StoreError::Busy);
             }
@@ -187,12 +186,11 @@ async fn publish_queue_revision(
     Ok(saved)
 }
 
-async fn save(
+async fn write_projection(
     tx: &mut Transaction<'_, Postgres>,
     audit: &Audit,
     record: &Record,
-    previous: Option<crate::queue::source::Source>,
-    proof: &mut crate::public_session::v2::proof::Proof,
+    fresh: bool,
 ) -> Result<(), StoreError> {
     let request = &audit.request;
     let saved = &audit.receipt;
@@ -202,7 +200,6 @@ async fn save(
         saved.summary.sequence,
     )?;
     let seq = i64::try_from(record.summary.sequence).map_err(|_| invalid())?;
-    let fresh = matches!(request.action, QueueAction::Enqueue { .. });
     if fresh {
         sqlx::query("INSERT INTO future_queue(session_id,queue_id,sequence,state,prepared,summary_json,data_json,admission_key,source_protocol) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1)")
             .bind(&request.session_id.0).bind(&record.summary.queue_id.0).bind(seq).bind(format!("{:?}",record.summary.state)).bind(record.summary.prepared).bind(encode(&record.summary)?).bind(encode(record)?).bind(record.input.admission.key.as_str()).execute(&mut **tx).await.map_err(db)?;
@@ -213,9 +210,44 @@ async fn save(
             return Err(corrupt());
         }
     }
-    protocol::publish(tx, audit, previous, fresh, proof)
+    Ok(())
+}
+
+async fn save(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: &Audit,
+    record: &mut Record,
+    original_prepared: Option<&crate::BoundKeyedAdmitRequest>,
+    previous: Option<crate::queue::source::Source>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<(), StoreError> {
+    let request = &audit.request;
+    let saved = &audit.receipt;
+    let fresh = matches!(request.action, QueueAction::Enqueue { .. });
+    // The real first cohort references its current row. Prepare already has
+    // that row, so its actual Source can publish before the compact reference.
+    if fresh {
+        record.former_encoded_len(None)?;
+        write_projection(tx, audit, record, true).await?;
+    }
+    let source = protocol::publish(tx, audit, previous, fresh, proof)
         .await
         .map_err(protocol::domain)?;
+    if matches!(request.action, QueueAction::Prepare { .. }) {
+        record.prepared = Some(crate::queue::PreparedReference::published(
+            audit,
+            source.as_ref(),
+            proof,
+        )?);
+    }
+    let prepared = match &request.action {
+        QueueAction::Prepare { prepared, .. } => Some(prepared.as_ref()),
+        _ => original_prepared,
+    };
+    record.former_encoded_len(prepared)?;
+    if !fresh {
+        write_projection(tx, audit, record, false).await?;
+    }
     sqlx::query("INSERT INTO operation_receipts(session_id,operation_id,kind,semantic_digest,event_seq,data_json) VALUES($1,$2,'future_queue',$3,NULL,$4)")
         .bind(&request.session_id.0).bind(&request.id.0).bind(saved.semantic_digest.as_str()).bind(encode(saved)?).execute(&mut **tx).await.map_err(db)?;
     sqlx::query(
@@ -285,7 +317,7 @@ impl PostgresStore {
         {
             return Err(StoreError::HostUnsupported);
         }
-        if let Some(prepared) = &saved.prepared
+        if let Some(prepared) = saved.prepared()?
             && crate::session_owner::preparation::queue_admission_intent(prepared)
                 .map_err(|_| StoreError::AdmissionConflict)?
                 != *intent
@@ -316,3 +348,6 @@ mod publication_tests;
 
 #[cfg(test)]
 mod migration_tests;
+
+#[cfg(test)]
+mod compact_tests;

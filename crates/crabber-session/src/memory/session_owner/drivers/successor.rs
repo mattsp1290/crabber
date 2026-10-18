@@ -96,9 +96,10 @@ pub(in crate::memory::session_owner) fn fresh(
     {
         return Err(Error::StaleOwner);
     }
-    let latest = crate::memory::native_parent::source_protocol::current(state, session, id, proof)
-        .map_err(|_| Error::UnknownStoreOutcome)?
-        .ok_or(Error::UnknownStoreOutcome)?;
+    let latest =
+        crate::memory::native_parent::source_protocol::raw_current(state, session, id, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?
+            .ok_or(Error::UnknownStoreOutcome)?;
     let current = state.sessions.get(session).ok_or(Error::NotFound)?;
     super::measure(proof, current)?;
     if crate::snapshot::encoded_bytes(current, 16384).is_none()

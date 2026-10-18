@@ -35,6 +35,7 @@ impl SqliteExecution {
         let fault = fault(&self.store);
 
         let result = Box::pin(async {
+            require_raw_execution(&mut tx, &run).await?;
             let digest = batch.fingerprint(&run.session_id, &run.id)?;
 
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? {
@@ -139,6 +140,15 @@ impl SqliteExecution {
         after(finish(tx, result).await, fault)
     }
 }
+async fn require_raw_execution(
+    tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
+    run: &crabber_core::Run,
+) -> Result<(), Error> {
+    super::super::credential_access::check_bounded(tx, run)
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)
+}
+
 async fn frontend_replay(
     execution: &SqliteExecution,
     scope: &SessionId,

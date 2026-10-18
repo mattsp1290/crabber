@@ -59,7 +59,7 @@ pub(super) fn inspect(
     if run.session_id != claim.session_id || run.id != claim.run_id {
         return Err(Error::IdentityMismatch);
     }
-    let protected = crate::memory::native_parent::source_protocol::current(
+    let protected = crate::memory::native_parent::source_protocol::raw_current(
         state,
         &claim.session_id,
         &claim.run_id,

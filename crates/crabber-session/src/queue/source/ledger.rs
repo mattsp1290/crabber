@@ -41,6 +41,11 @@ impl Ledger {
                 .collect::<Vec<_>>(),
         ))
     }
+    /// Unverified borrowed metadata. Full history/Source authentication and
+    /// caller Proof precharge remain mandatory before this can be used.
+    pub(crate) fn source(&self, session: &SessionId, operation: &ControlId) -> Option<&Source> {
+        self.sources.get(&(session.clone(), operation.clone()))
+    }
     pub(crate) fn contains_operation(
         &self,
         session: &SessionId,

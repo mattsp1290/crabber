@@ -42,6 +42,8 @@ mod management;
 mod native_enrollment;
 #[path = "memory/native_parent.rs"]
 mod native_parent;
+#[path = "memory/pending_initial.rs"]
+mod pending_initial;
 #[path = "memory/phase.rs"]
 mod phase;
 #[path = "memory/public_header.rs"]
@@ -86,6 +88,8 @@ pub struct MemoryStore {
     limits: ByteLimits,
     snapshot_key: String,
     #[cfg(test)]
+    pending_initial_test_state: crate::pending_initial_test_state::TestState,
+    #[cfg(test)]
     public_state_fault: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(test)]
     management_fault: Arc<std::sync::atomic::AtomicU8>,
@@ -126,6 +130,13 @@ struct State {
         BTreeMap<(SessionId, RunId, u64), crate::native_parent::source_protocol::JournalSource>,
     native_run_source_heads:
         BTreeMap<(SessionId, RunId), crate::native_parent::source_protocol::JournalHead>,
+    pending_initial: crate::native_enrollment::pending_initial::Ledger,
+    #[cfg(test)]
+    pending_initial_carrier_observations: Arc<Mutex<Vec<(SessionId, usize)>>>,
+    pending_initial_protocols: BTreeMap<
+        crate::native_enrollment::pending_initial::SourceKey,
+        crate::native_enrollment::pending_initial::SourceSlot,
+    >,
     execution_enrollment_protocols: BTreeSet<(SessionId, RunId)>,
     execution_enrollment_origins: BTreeMap<(SessionId, RunId), crate::native_enrollment::Origin>,
     execution_enrollment_unclassified:
@@ -229,6 +240,8 @@ impl MemoryStore {
             limits: ByteLimits::default(),
             snapshot_key: uuid::Uuid::new_v4().to_string(),
             #[cfg(test)]
+            pending_initial_test_state: crate::pending_initial_test_state::TestState::default(),
+            #[cfg(test)]
             public_state_fault: Arc::default(),
             #[cfg(test)]
             management_fault: Arc::default(),
@@ -323,6 +336,11 @@ impl MemoryStore {
             {
                 return Err(StoreError::Conflict);
             }
+            credential_access::check(
+                state,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )?;
             let previous = crate::native_parent::RunState::from_run(&run).map_err(|_| {
                 StoreError::Validation("native run fence evidence unavailable".into())
             })?;
@@ -557,6 +575,16 @@ fn initial_epoch(
 
 #[async_trait]
 impl Store for MemoryStore {
+    async fn pending_initial_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.apply_pending_initial(call)
+    }
+
     async fn frontend_call_origin(
         &self,
         session: &SessionId,

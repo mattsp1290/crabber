@@ -5,20 +5,33 @@ use crate::queue::{
 use time::OffsetDateTime;
 /// Constructed only after queue authority, FIFO and latest revision verification.
 /// Native admission still checks scope, archive, barriers and active runs.
-pub(crate) struct VerifiedAdmission {
-    bound: BoundKeyedAdmitRequest,
+pub(crate) struct VerifiedAdmission<'a> {
+    bound: &'a BoundKeyedAdmitRequest,
+    owner: String,
+    lease: std::time::Duration,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum AdmissionGuard<'a> {
     Ordinary,
-    Queue(&'a VerifiedAdmission),
+    Queue(&'a VerifiedAdmission<'a>),
     PreparedQueue {
-        queue: &'a VerifiedAdmission,
+        queue: &'a VerifiedAdmission<'a>,
         preparation: &'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>,
     },
     Preparation(&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>),
 }
 impl<'a> AdmissionGuard<'a> {
+    pub(crate) fn owner_and_lease<'r>(
+        &'r self,
+        request: &'r crate::AdmitRequest,
+    ) -> (&'r str, std::time::Duration) {
+        match self {
+            Self::Queue(proof) | Self::PreparedQueue { queue: proof, .. } => {
+                (&proof.owner, proof.lease)
+            }
+            _ => (&request.owner, request.lease),
+        }
+    }
     pub fn is_ordinary(self) -> bool {
         !matches!(self, Self::Queue(_) | Self::PreparedQueue { .. })
     }
@@ -67,15 +80,15 @@ impl<'a> AdmissionGuard<'a> {
         Ok(())
     }
 }
-impl VerifiedAdmission {
+impl VerifiedAdmission<'_> {
     pub fn bound_ref(&self) -> &BoundKeyedAdmitRequest {
-        &self.bound
+        self.bound
     }
 }
-pub(crate) struct Change {
+pub(crate) struct Change<'a> {
     pub record: Record,
     pub authority: Option<QueueAuthority>,
-    pub admission: Option<VerifiedAdmission>,
+    pub admission: Option<VerifiedAdmission<'a>>,
 }
 fn live(
     record: &Record,
@@ -95,11 +108,11 @@ pub(crate) fn apply_guarded<'a>(
     request: &QueueMutation,
     summary: &crate::SessionSummary,
     head: Option<&QueueSummary>,
-    original: Option<Record>,
+    original: Option<(Record, Option<&'a BoundKeyedAdmitRequest>)>,
     sequence: u64,
     now: OffsetDateTime,
     preparation: Option<&'a crate::session_owner::preparation::proof::VerifiedPreparation<'a>>,
-) -> Result<Change, StoreError> {
+) -> Result<Change<'a>, StoreError> {
     let expected = if let Some(proof) = preparation {
         proof.verify_queue(request)?;
         proof.effective_revision
@@ -119,30 +132,10 @@ pub(crate) fn apply_guarded<'a>(
             if original.is_some() {
                 return Err(StoreError::AdmissionConflict);
             }
-            if input.request.workspace_id != summary.workspace_id
-                || input.request.directory != summary.directory
-            {
-                return Err(StoreError::SessionIdentityMismatch);
-            }
-            Record {
-                enqueue_operation: request.id.clone(),
-                prepare_operation: None,
-                summary: QueueSummary {
-                    session_id: request.session_id.clone(),
-                    queue_id: queue_id.clone(),
-                    sequence,
-                    state: QueueState::Queued,
-                    prepared: false,
-                    claim_generation: 0,
-                    admission: None,
-                },
-                input: *input.clone(),
-                claim: None,
-                prepared: None,
-            }
+            enqueue_record(request, summary, queue_id, input, sequence)?
         }
         action => {
-            let mut record = original.ok_or(StoreError::NotFound)?;
+            let (mut record, prepared_original) = original.ok_or(StoreError::NotFound)?;
             if !matches!(action, QueueAction::Cancel { .. }) && head != Some(&record.summary) {
                 return Err(StoreError::Busy);
             }
@@ -166,7 +159,6 @@ pub(crate) fn apply_guarded<'a>(
                         return Err(StoreError::Conflict);
                     }
                     record.verify_prepared(prepared)?;
-                    record.prepared = Some(*prepared.clone());
                     record.prepare_operation = Some(request.id.clone());
                     record.summary.prepared = true;
                 }
@@ -176,10 +168,16 @@ pub(crate) fn apply_guarded<'a>(
                     lease,
                 } => {
                     live(&record, authority, now)?;
-                    let mut bound = record.prepared.clone().ok_or(StoreError::Conflict)?;
-                    bound.keyed.request.owner.clone_from(owner);
-                    bound.keyed.request.lease = *lease;
-                    admission = Some(VerifiedAdmission { bound });
+                    let bound = prepared_original.ok_or(StoreError::Conflict)?;
+                    if record.prepared.is_none() {
+                        return Err(StoreError::Conflict);
+                    }
+                    record.verify_prepared(bound)?;
+                    admission = Some(VerifiedAdmission {
+                        bound,
+                        owner: owner.clone(),
+                        lease: *lease,
+                    });
                 }
                 QueueAction::Cancel { .. } => {
                     if record.summary.state == QueueState::Cancelled {
@@ -201,6 +199,37 @@ pub(crate) fn apply_guarded<'a>(
         admission,
     })
 }
+fn enqueue_record(
+    request: &QueueMutation,
+    summary: &crate::SessionSummary,
+    queue_id: &QueueId,
+    input: &crate::QueueInput,
+    sequence: u64,
+) -> Result<Record, StoreError> {
+    if input.request.workspace_id != summary.workspace_id
+        || input.request.directory != summary.directory
+    {
+        return Err(StoreError::SessionIdentityMismatch);
+    }
+    Ok(Record {
+        version: 2,
+        enqueue_operation: request.id.clone(),
+        prepare_operation: None,
+        summary: QueueSummary {
+            session_id: request.session_id.clone(),
+            queue_id: queue_id.clone(),
+            sequence,
+            state: QueueState::Queued,
+            prepared: false,
+            claim_generation: 0,
+            admission: None,
+        },
+        input: input.clone(),
+        claim: None,
+        prepared: None,
+    })
+}
+
 fn claim(
     record: &mut Record,
     session: &SessionId,
@@ -249,7 +278,7 @@ fn claim(
     Ok(fresh)
 }
 pub(crate) fn complete(
-    change: &mut Change,
+    change: &mut Change<'_>,
     admitted: &crate::AdmitOutcome,
     receipt: crabber_core::AdmissionReceipt,
 ) {

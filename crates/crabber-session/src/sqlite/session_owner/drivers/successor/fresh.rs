@@ -17,10 +17,11 @@ pub(in crate::sqlite::session_owner::drivers) async fn fresh(
     let id = &request.fence.run_id;
     proof::membership(tx, session, budget).await?;
     let run = run(tx, request, now, budget).await?;
-    let latest = crate::sqlite::native_parent::source_protocol::current(tx, session, id, budget)
-        .await
-        .map_err(unknown)?
-        .ok_or(Error::UnknownStoreOutcome)?;
+    let latest =
+        crate::sqlite::native_parent::source_protocol::raw_current(tx, session, id, budget)
+            .await
+            .map_err(unknown)?
+            .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(&run).map_err(unknown)?;
     let binding = crate::sqlite::execution_binding::read_with_proof(tx, session, id, budget)
         .await

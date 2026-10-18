@@ -7,12 +7,17 @@ pub use driver::DriverMainContext;
 use driver::MainIngress;
 pub use pending::{
     BoundInitialControl, BoundSuccessorControl, InitialAdmissionMetadata, InitialAdmissionReplay,
-    PendingDriverTasks, PendingInitialCompletion, PendingInitialControl, PendingInitialObservation,
-    PendingInitialTask, PendingQueueCompletion, PendingQueueControl, PendingQueueObservation,
-    PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
-    PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
-    PendingSuccessorTasks, QueueAdmissionMetadata,
+    LocallyJoinedInitialSeal, PendingDriverTasks, PendingInitialCompletion, PendingInitialControl,
+    PendingInitialNativeCall, PendingInitialNativeReply, PendingInitialObservation,
+    PendingInitialProducer, PendingInitialProducerControl, PendingInitialProducerObservation,
+    PendingInitialProducerStatus, PendingInitialTask, PendingQueueCompletion, PendingQueueControl,
+    PendingQueueObservation, PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl,
+    PendingSuccessorError, PendingSuccessorObservation, PendingSuccessorReplay,
+    PendingSuccessorTask, PendingSuccessorTasks, QueueAdmissionMetadata,
 };
+#[cfg(test)]
+pub(crate) use pending::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub(crate) use pending::{NativeInitialOperation, NativeInitialParts};
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};
 

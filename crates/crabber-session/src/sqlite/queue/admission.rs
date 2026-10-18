@@ -12,12 +12,14 @@ impl SqliteStore {
             Option<crate::queue::source::Source>,
             time::OffsetDateTime,
         ),
-        mut change: crate::queue::Change,
+        mut change: crate::queue::Change<'_>,
+        original_prepared: Option<&crate::BoundKeyedAdmitRequest>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::QueueOutcome, StoreError> {
         let Some(admission) = change.admission.take() else {
-            let (audit, authority) = publish(tx, operation, change, read_proof).await?;
+            let (audit, authority) =
+                publish(tx, operation, change, original_prepared, read_proof).await?;
             return Ok(crate::QueueOutcome::Applied {
                 receipt: audit.receipt,
                 authority,
@@ -39,7 +41,8 @@ impl SqliteStore {
                             read_proof,
                         )
                         .await?;
-                    let (audit, authority) = publish(tx, operation, change, read_proof).await?;
+                    let (audit, authority) =
+                        publish(tx, operation, change, original_prepared, read_proof).await?;
                     let input = crate::native_enrollment::caller::initial::Input::Queue {
                         request: &audit.request,
                         prepared: admission_ref.bound_ref(),
@@ -63,9 +66,9 @@ impl SqliteStore {
     async fn queue_admission(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        change: &mut crate::queue::Change,
+        change: &mut crate::queue::Change<'_>,
         input: (
-            &crate::queue::VerifiedAdmission,
+            &crate::queue::VerifiedAdmission<'_>,
             &crate::native_enrollment::caller::initial::SelectedInput<'_>,
         ),
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
@@ -121,7 +124,8 @@ async fn publish(
         Option<crate::queue::source::Source>,
         time::OffsetDateTime,
     ),
-    change: crate::queue::Change,
+    mut change: crate::queue::Change<'_>,
+    original_prepared: Option<&crate::BoundKeyedAdmitRequest>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(crate::queue::Audit, Option<crate::QueueAuthority>), StoreError> {
     let (request, digest, previous, now) = operation;
@@ -133,6 +137,14 @@ async fn publish(
         authority: change.authority.clone(),
         created_at: now,
     };
-    super::save(tx, &audit, &change.record, previous, proof).await?;
+    super::save(
+        tx,
+        &audit,
+        &mut change.record,
+        original_prepared,
+        previous,
+        proof,
+    )
+    .await?;
     Ok((audit, change.authority))
 }

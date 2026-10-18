@@ -43,7 +43,7 @@ fn inspect(
 ) -> Result<Metadata, Error> {
     let claim = choice::claim(request);
     let run = scoped_run(state, request, proof)?;
-    let protected = crate::memory::native_parent::source_protocol::current(
+    let protected = crate::memory::native_parent::source_protocol::raw_current(
         state,
         &claim.session_id,
         &claim.run_id,

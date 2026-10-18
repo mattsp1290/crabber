@@ -8,18 +8,49 @@ use crate::public_session::v2::proof::Proof;
 use crabber_core::{Run, RunFence, RunId};
 use sqlx::Row;
 
-async fn check(
+#[cfg(test)]
+#[path = "credential_access/regression_tests.rs"]
+mod regression_tests;
+
+pub(super) async fn check(
     tx: &mut Transaction<'_, Sqlite>,
     run: &Run,
     proof: &mut Proof,
 ) -> Result<(), StoreError> {
     proof.measure(run).map_err(failure)?;
+    check_origin(tx, &run.session_id, &run.id, proof).await
+}
+
+/// Credential acquisition and cached writes authenticate the current issuer
+/// for native Runs. Genuine pre-protocol legacy rows keep their old behavior.
+pub(super) async fn check_current(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+    proof: &mut Proof,
+) -> Result<(), StoreError> {
+    proof.measure(run).map_err(failure)?;
+    super::native_parent::source_protocol::check_raw_current(tx, run, proof).await
+}
+
+/// Legacy writer guard; its API has no enclosing operation Proof.
+pub(super) async fn check_bounded(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &Run,
+) -> Result<(), StoreError> {
+    check(tx, run, &mut Proof::bounded(32 << 20)).await
+}
+
+pub(super) async fn check_origin(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &crabber_core::SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<(), StoreError> {
     allow(
-        native_enrollment::original(tx, &run.session_id, &run.id, proof)
+        native_enrollment::original(tx, session, run, proof)
             .await
             .map_err(failure)?,
-    );
-    Ok(())
+    )
 }
 
 impl SqliteStore {
@@ -40,7 +71,7 @@ impl SqliteStore {
             {
                 return Err(StoreError::Conflict);
             }
-            check(&mut tx, &run, &mut proof).await
+            check_current(&mut tx, &run, &mut proof).await
         }
         .await;
         super::transactions::finish(tx, result, std::convert::identity).await
@@ -206,5 +237,27 @@ mod tests {
             .unwrap();
         contract::succeeds(&store, &first).await;
         assert!(refused, "a row cannot borrow a distinct genuine Run origin");
+    }
+    #[tokio::test]
+    async fn genuine_pending_birth_refuses_copied_cached_raw_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending-cache.sqlite");
+        crate::SqliteStore::migrate(&path).await.unwrap();
+        let store = std::sync::Arc::new(crate::SqliteStore::connect(&path).await.unwrap());
+        let session = contract::pending(store.clone()).await;
+        let data: String = sqlx::query_scalar("SELECT r.data FROM runs r JOIN native_execution_origins o ON o.run_id=r.id WHERE o.birth_kind='pending' AND r.session_id=$1")
+            .bind(&session.0).fetch_one(&store.readers).await.unwrap();
+        let run: Run = serde_json::from_str(&data).unwrap();
+        let cached = crate::sqlite::SqliteExecution {
+            store: store.as_ref().clone(),
+            fence: RunFence {
+                run_id: run.id.clone(),
+                claim_token: run.claim_token.clone(),
+            },
+        };
+        contract::cached_mutations(store.as_ref(), &run, &cached).await;
+        let after: String = sqlx::query_scalar("SELECT r.data FROM runs r JOIN native_execution_origins o ON o.run_id=r.id WHERE o.birth_kind='pending' AND r.session_id=$1")
+            .bind(&session.0).fetch_one(&store.readers).await.unwrap();
+        assert_eq!(after, data);
     }
 }

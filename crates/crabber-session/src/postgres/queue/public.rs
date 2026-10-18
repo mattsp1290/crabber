@@ -118,12 +118,12 @@ const IDS: &str = r"SELECT CAST(octet_length(q.queue_id) AS BIGINT) AS bytes,CAS
 const SCOPE: &str = r"SELECT EXISTS(SELECT 1 FROM future_queue_audit a WHERE a.session_id=$1 AND NOT EXISTS(SELECT 1 FROM future_queue q WHERE q.session_id=a.session_id AND q.queue_id=a.queue_id) UNION ALL SELECT 1 FROM future_queue q WHERE q.session_id=$1 AND NOT EXISTS(SELECT 1 FROM future_queue_audit a WHERE a.session_id=q.session_id AND a.queue_id=q.queue_id))";
 const COST: &str = r"SELECT CAST(octet_length(q.summary_json)+COALESCE(octet_length(r.data_json),0)+COALESCE(octet_length(CAST(ar.data AS TEXT)),0)+octet_length(q.queue_id)+octet_length(q.state)+COALESCE(octet_length(a.operation_id),0)+COALESCE(octet_length({receipt}),0) AS BIGINT) AS bytes FROM future_queue q LEFT JOIN future_queue_audit a ON a.session_id=q.session_id AND a.queue_id=q.queue_id AND a.revision=(SELECT MAX(x.revision) FROM future_queue_audit x WHERE x.session_id=q.session_id AND x.queue_id=q.queue_id) LEFT JOIN operation_receipts r ON r.session_id=a.session_id AND r.operation_id=a.operation_id AND r.kind='future_queue' AND r.event_seq IS NULL LEFT JOIN admission_receipts ar ON ar.session_id=q.session_id AND ar.admission_key=q.admission_key WHERE q.session_id=$1 AND q.queue_id=$2";
 
-// PostgreSQL JSON extraction traverses keys in ignored request values too. The
-// temporary marker lets valid private NUL context remain server-side. A selected
-// receipt containing either decoded marker spelling is rejected before it can
-// authenticate state: replacement must never create an alias for original IDs.
-pub(super) const RECEIPT: &str =
-    r"CAST(replace(a.data_json, '\u0000', '\u0001')::json->'receipt' AS TEXT)";
+// PostgreSQL inspects ignored private keys/values during JSON extraction. Only
+// genuine JSON NUL escapes change to the equally long U+0001 escape; paired
+// literal backslashes remain exact. Actual decoded U+0001 in selected metadata
+// still refuses below before it can authenticate an original Source.
+pub(super) const RECEIPT: &str = r"CAST(regexp_replace(a.data_json,
+ $rx$(?<!\\)((?:\\\\)*)\\u0000$rx$, $replacement$\1\\u0001$replacement$, 'g')::json->'receipt' AS TEXT)";
 pub(super) fn projected_receipt(text: &str) -> Result<QueueReceipt, Failure> {
     let value: serde_json::Value = serde_json::from_str(text).map_err(unknown)?;
     if marked(&value) {
@@ -133,7 +133,7 @@ pub(super) fn projected_receipt(text: &str) -> Result<QueueReceipt, Failure> {
 }
 fn marked(value: &serde_json::Value) -> bool {
     fn marker(text: &str) -> bool {
-        text.contains('\u{1}') || text.contains("\\u0001")
+        text.contains('\u{1}')
     }
     match value {
         serde_json::Value::String(text) => marker(text),
@@ -148,13 +148,14 @@ fn marked(value: &serde_json::Value) -> bool {
 #[test]
 fn aggregate_queue_projection_marker_cannot_alias_original_receipt() {
     for depth in 0..5 {
-        let original = format!("original{}u0000", "\\".repeat(depth + 1));
-        let projected =
-            serde_json::to_string(&serde_json::json!({"nested":[{original.clone():original}]}))
-                .unwrap()
-                .replace("\\u0000", "\\u0001");
-        let value = serde_json::from_str(&projected).unwrap();
-        assert!(marked(&value));
+        let literal = format!(
+            "original{}u0000{}u0001",
+            "\\".repeat(depth + 1),
+            "\\".repeat(depth + 1)
+        );
+        assert!(!marked(
+            &serde_json::json!({"nested":[{literal.clone():literal}]})
+        ));
     }
     assert!(marked(
         &serde_json::json!({"nested":[{"actual\u{1}":"value"}]})
@@ -173,20 +174,20 @@ async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
     let mut f = crate::queue_contract::fixture(&store).await;
-    let original = r"original\u0000";
-    let forged = r"original\u0001";
+    let original = r"original\u0000\u0001";
+    let forged = r"original\u0001\u0001";
     f.enqueue.id = crabber_core::ControlId::from(original);
-    store.mutate_queue(f.enqueue).await.unwrap();
+    let outcome = store.mutate_queue(f.enqueue).await.unwrap();
     let request = crate::public_session::v2::tests::request(&store, &f.session, None).await;
-    // Literal marker spellings may conservatively fail closed even before the
-    // forged index exists; they must never become a different authenticated ID.
-    assert_eq!(
-        store
-            .public_control_header_v2(request.clone())
-            .await
-            .unwrap_err(),
-        PublicSessionError::UnknownStoreOutcome
-    );
+    let crate::PublicHeaderOutcomeV2::Header(header) = store
+        .public_control_header_v2(request.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("valid literal identity must retain its actual source");
+    };
+    assert_eq!(header.session.session_id, f.session);
+    assert_eq!(header.queue, vec![outcome.receipt().summary.clone()]);
     // Keep the authoritative serialized original body unchanged while changing
     // both mutable routing indexes and the copied receipt coherently. A plain
     // replacement projection would now make that different original ID match.
@@ -208,4 +209,40 @@ async fn aggregate_queue_projection_rejects_changed_literal_source_identity() {
         store.public_control_header_v2(request).await.unwrap_err(),
         PublicSessionError::UnknownStoreOutcome
     );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn actual_receipt_projection_rejects_decoded_markers_in_selected_metadata() {
+    use crate::Store;
+    let Some(url) = crate::postgres::tests::test_url() else {
+        return;
+    };
+    let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
+    crate::PostgresStore::migrate(&url).await.unwrap();
+    let store = crate::PostgresStore::connect(&url).await.unwrap();
+    let fixture = crate::queue_contract::fixture(&store).await;
+    let outcome = store.mutate_queue(fixture.enqueue).await.unwrap();
+    let receipt = serde_json::to_value(outcome.receipt()).unwrap();
+    let query = format!("SELECT {}", RECEIPT.replace("a.data_json", "$1"));
+    for marker in ["\u{0}", "\u{1}"] {
+        for path in [
+            "/session_id",
+            "/operation_id",
+            "/summary/session_id",
+            "/summary/queue_id",
+        ] {
+            let mut changed = receipt.clone();
+            *changed.pointer_mut(path).unwrap() = serde_json::Value::String(marker.into());
+            let document = serde_json::json!({"receipt":changed,
+                "ignored":{"nul\u{0}":"private\u{0}"}})
+            .to_string();
+            let projected: String = sqlx::query_scalar(&query)
+                .bind(document)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+            assert!(projected_receipt(&projected).is_err());
+        }
+    }
 }

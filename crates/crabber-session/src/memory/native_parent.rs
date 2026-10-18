@@ -192,27 +192,30 @@ pub(super) fn record_run_with_proof(
         proof,
     )
 }
-pub(super) fn record_initial_run_with_proof(
+pub(super) fn record_initial_run_with_birth(
     state: &mut State,
     run: &Run,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
     proof.measure(run).map_err(|_| Error)?;
-    record_run_states_output(
+    record_run_states_output_with_birth(
         state,
         None,
         RunState::from_run(run)?,
         None,
         proof,
         crate::native_enrollment::caller::initial::Capture::Original,
+        birth,
     )?
     .first
     .ok_or(Error)
 }
-pub(super) fn record_owned_admission_with_proof(
+pub(super) fn record_owned_admission_with_birth(
     state: &mut State,
     run: &Run,
     witness: crate::session_owner::preparation::admission::Witness,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<crate::native_enrollment::caller::initial::FirstPublication, Error> {
     proof.measure(&witness).map_err(|_| Error)?;
@@ -231,7 +234,7 @@ pub(super) fn record_owned_admission_with_proof(
     {
         return Err(Error);
     }
-    let first = source_protocol::append_captured_with_proof(state, &issuance, true, proof)
+    let first = source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
         .map_err(|_| Error)?
         .first
         .ok_or(Error)?;
@@ -334,6 +337,25 @@ fn record_run_states_output(
     proof: &mut crate::public_session::v2::proof::Proof,
     capture: crate::native_enrollment::caller::initial::Capture,
 ) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
+    record_run_states_output_with_birth(
+        state,
+        previous,
+        next,
+        completion,
+        proof,
+        capture,
+        crate::native_enrollment::pending_initial::BirthDecision::Raw,
+    )
+}
+fn record_run_states_output_with_birth(
+    state: &mut State,
+    previous: Option<&RunState>,
+    next: RunState,
+    completion: Option<crate::native_parent::CompletionSource>,
+    proof: &mut crate::public_session::v2::proof::Proof,
+    capture: crate::native_enrollment::caller::initial::Capture,
+    birth: crate::native_enrollment::pending_initial::BirthDecision<'_>,
+) -> Result<crate::native_enrollment::caller::initial::RunPublication, Error> {
     crate::native_parent::source_protocol::validate_scope(&next.session_id, &next.run_id)?;
     let latest = state
         .native_run_issuances
@@ -367,6 +389,10 @@ fn record_run_states_output(
             return Err(Error);
         }
         let source = match capture {
+            crate::native_enrollment::caller::initial::Capture::Original if previous.is_none() => {
+                source_protocol::append_initial_captured_with_birth(state, &issuance, birth, proof)
+                    .map_err(|_| Error)?
+            }
             crate::native_enrollment::caller::initial::Capture::Original => {
                 source_protocol::append_captured_with_proof(
                     state,

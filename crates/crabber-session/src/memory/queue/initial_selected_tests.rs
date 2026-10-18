@@ -35,22 +35,22 @@ async fn prepared() -> (MemoryStore, QueueMutation) {
     .await;
     (store, request)
 }
-fn selected(
+fn selected<'a>(
     store: &MemoryStore,
+    state: &'a crate::memory::State,
+    summary: &crate::SessionSummary,
     request: &QueueMutation,
     proof: &mut Proof,
-) -> crate::queue::VerifiedAdmission {
-    let summary = store.queue_session_snapshot(&request.session_id).unwrap();
-    let state = store.state.lock().unwrap();
-    let selected = selection::select(&state, request, proof)
+) -> crate::queue::VerifiedAdmission<'a> {
+    let selected = selection::select(state, request, proof)
         .unwrap()
         .into_parts(request)
         .unwrap();
     crate::queue::apply_guarded(
         request,
-        &summary,
+        summary,
         selected.head.as_ref(),
-        selected.original,
+        selected.original.map(|record| (record, selected.prepared)),
         0,
         store.clock.now(),
         None,
@@ -102,8 +102,10 @@ async fn raw_initial_queue_selected_budget_and_rollback() {
 #[tokio::test]
 async fn raw_initial_queue_selected_reuse_wrong_body_proof_and_replacement() {
     let (store, request) = prepared().await;
+    let summary = store.queue_session_snapshot(&request.session_id).unwrap();
+    let state = store.state.lock().unwrap();
     let mut proof = Proof::bounded(32 << 20);
-    let admission = selected(&store, &request, &mut proof);
+    let admission = selected(&store, &state, &summary, &request, &mut proof);
     let used = proof.used();
     with_queue_input(&admission, &mut proof, |selected, proof| {
         input_keyed(&admission.bound_ref().keyed, Some(selected), proof).unwrap();
@@ -131,8 +133,10 @@ async fn raw_initial_queue_selected_reuse_wrong_body_proof_and_replacement() {
 #[tokio::test]
 async fn raw_initial_queue_selected_panic_and_cancellation_fail_closed() {
     let (store, request) = prepared().await;
+    let summary = store.queue_session_snapshot(&request.session_id).unwrap();
+    let state = store.state.lock().unwrap();
     let mut proof = Proof::bounded(32 << 20);
-    let admission = selected(&store, &request, &mut proof);
+    let admission = selected(&store, &state, &summary, &request, &mut proof);
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _: Result<(), _> =
             with_queue_input(&admission, &mut proof, |_, _| panic!("scoped test panic"));
@@ -143,13 +147,14 @@ async fn raw_initial_queue_selected_panic_and_cancellation_fail_closed() {
         StoreError::Conflict
     );
     let mut proof = Proof::bounded(32 << 20);
-    let admission = selected(&store, &request, &mut proof);
+    let admission = selected(&store, &state, &summary, &request, &mut proof);
     let mut cancelled = Box::pin(with_queue_input_async::<()>(
         &admission,
         &mut proof,
         |_, _| Box::pin(std::future::pending()),
     ));
-    assert!(futures::poll!(cancelled.as_mut()).is_pending());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(cancelled.as_mut(), &mut context).is_pending());
     drop(cancelled);
     assert_eq!(
         with_queue_input(&admission, &mut proof, |_, _| Ok(())).unwrap_err(),

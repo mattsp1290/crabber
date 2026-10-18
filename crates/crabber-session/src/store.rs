@@ -548,6 +548,17 @@ pub trait Store: Send + Sync {
     > {
         Err(StoreError::HostUnsupported.into())
     }
+    /// Closed original-task initial birth/Open/Seal transport. Unsupported
+    /// adapters refuse; this never falls back to public Raw completion.
+    async fn pending_initial_native(
+        &self,
+        _call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported.into())
+    }
     /// Complete an owned Approval, Tool or Frontend claim/recovery preparation,
     /// returning its actual committed v3 issuer locator. Metadata/replay never reconstructs fresh authority.
     async fn complete_preparation_with_driver_source(

@@ -18,7 +18,19 @@ async fn queue_rejects_replaced_prepared_and_coherent_input() {
         .await
         .unwrap();
         let mut record: Record = decode(&encoded).unwrap();
-        corruption::replace(&mut record, change_input);
+        let original: String = sqlx::query_scalar(
+            "SELECT data_json FROM future_queue_audit WHERE session_id=$1 AND operation_id=$2",
+        )
+        .bind(&fixture.session.0)
+        .bind(&prepare.id.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let source: String = sqlx::query_scalar("SELECT data_json FROM queue_publication_sources WHERE session_id=$1 AND operation_id=$2")
+            .bind(&fixture.session.0).bind(&prepare.id.0).fetch_one(&store.pool).await.unwrap();
+        let audit: Audit = decode(&original).unwrap();
+        let source: crate::queue::source::Source = decode(&source).unwrap();
+        corruption::replace(&mut record, &audit, Some(&source), change_input).unwrap();
         sqlx::query("UPDATE future_queue SET data_json=$1 WHERE session_id=$2 AND queue_id=$3")
             .bind(encode(&record).unwrap())
             .bind(&fixture.session.0)

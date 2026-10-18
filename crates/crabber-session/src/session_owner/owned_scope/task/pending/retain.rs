@@ -72,6 +72,7 @@ impl PendingDriverTasks {
         control: Control,
         send: oneshot::Sender<Observation<T>>,
         capacity: OwnedSemaphorePermit,
+        protected: Option<Arc<super::enrolled_initial::RetainedInitial>>,
     ) {
         let id = uuid::Uuid::new_v4();
         let registry = self.inner.clone();
@@ -99,6 +100,16 @@ impl PendingDriverTasks {
                 disposition,
                 value,
             });
+            let protected = match protected {
+                Some(retained) => Some(retained.after_join(disposition).await),
+                None => None,
+            };
+            let capacity = if protected.is_some() {
+                drop(capacity);
+                None
+            } else {
+                Some(capacity)
+            };
             let observation = Observation {
                 family: control.family(),
                 main,
@@ -106,6 +117,7 @@ impl PendingDriverTasks {
                 error,
                 replay,
                 _capacity: capacity,
+                protected,
             };
             control.finish(disposition);
             // Failed send owns/disposes the actual result here, not a detached main.

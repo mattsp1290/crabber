@@ -5,6 +5,9 @@ use crabber_core::{AdmissionKey, AdmissionReceipt, InputFingerprint, RunStatus};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[path = "admission_journal/materialize.rs"]
+mod materialize;
+pub(crate) use materialize::{init_with_proof, measure_record};
 pub(crate) const MAX_BYTES: usize = 8192;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) enum Kind {
@@ -51,20 +54,6 @@ fn invalid() -> StoreError {
     StoreError::AdmissionConflict
 }
 impl Init {
-    pub fn new(
-        record: &AdmissionExecutionRecord,
-        issuance: RunIssuance,
-    ) -> Result<Self, StoreError> {
-        let value = Self {
-            version: 1,
-            receipt: record.receipt.clone(),
-            key: record.key.clone(),
-            capsule_digest: record.capsule.digest().map_err(|_| invalid())?,
-            issuance,
-        };
-        value.verify(record)?;
-        Ok(value)
-    }
     pub fn verify(&self, record: &AdmissionExecutionRecord) -> Result<(), StoreError> {
         self.verify_capsule(&record.receipt, &record.key, &record.capsule)
     }

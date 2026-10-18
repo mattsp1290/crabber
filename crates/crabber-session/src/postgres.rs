@@ -804,21 +804,17 @@ impl PostgresStore {
         caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::native_enrollment::caller::initial::CapturedAdmission, StoreError> {
-        match caller.caller {
-            crate::native_enrollment::caller::Caller::Raw => (),
-        }
-        crate::native_enrollment::caller::initial::input_request(
-            request,
-            caller.selected(),
-            read_proof,
-        )
-        .map_err(|_| StoreError::Conflict)?;
+        let birth = caller.birth();
+        caller
+            .input_request(request, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
         guard.verify(request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
         }
         let now = self.clock.now();
-        let lease = time::Duration::try_from(request.lease)
+        let (owner, requested_lease) = guard.owner_and_lease(request);
+        let lease = time::Duration::try_from(requested_lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
         if lease <= time::Duration::ZERO {
             return Err(StoreError::Validation("lease must be positive".into()));
@@ -907,7 +903,7 @@ impl PostgresStore {
             id: run_id.clone(),
             session_id: session_id.clone(),
             status: RunStatus::Running,
-            owner: request.owner.clone(),
+            owner: owner.to_owned(),
             claim_token: token.clone(),
             lease_until: now + lease,
             epoch_id: epoch_id.clone(),
@@ -953,6 +949,14 @@ impl PostgresStore {
         }
         sqlx::query("INSERT INTO runs(id,session_id,status,claim_token,lease_until,data,native_source_protocol,execution_enrollment_protocol,execution_enrollment_origin_id) VALUES($1,$2,$3,$4,$5,$6,1,1,$1)")
             .bind(&run.id.0).bind(&session_id.0).bind(status(run.status)).bind(&token).bind(micros(run.lease_until)).bind(json(&run)?).execute(&mut **tx).await.map_err(db)?;
+        if !guard.has_owned_resources()
+            && matches!(
+                &birth,
+                crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(_)
+            )
+        {
+            return Err(StoreError::Conflict);
+        }
         let raw_first = if guard.has_owned_resources() {
             None
         } else {
@@ -974,9 +978,16 @@ impl PostgresStore {
             message.run_id = Some(run_id.clone());
             insert_message(tx, &run, &message).await?;
         }
-        let owned_first =
-            ownership_origin::record_admission(tx, &session, &run, !had_session, guard, read_proof)
-                .await?;
+        let owned_first = ownership_origin::record_admission(
+            tx,
+            &session,
+            &run,
+            !had_session,
+            guard,
+            &birth,
+            read_proof,
+        )
+        .await?;
         let ((Some(first), None) | (None, Some(first))) = (raw_first, owned_first) else {
             return Err(StoreError::Conflict);
         };
@@ -1001,13 +1012,20 @@ impl PostgresStore {
         &self,
         fence: &RunFence,
     ) -> Result<(Transaction<'_, Postgres>, Run), StoreError> {
-        let (tx, run) = self.run_transaction(&fence.run_id).await?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        proof
+            .measure(fence)
+            .map_err(crate::native_enrollment::access::failure)?;
+        let (mut tx, run) = self
+            .run_transaction_with_proof(&fence.run_id, &mut proof)
+            .await?;
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
             || run.lease_until <= self.clock.now()
         {
             return Err(StoreError::Conflict);
         }
+        credential_access::check_current(&mut tx, &run, &mut proof).await?;
         Ok((tx, run))
     }
     async fn fenced(
@@ -1030,6 +1048,16 @@ impl PostgresStore {
 #[allow(clippy::too_many_lines)] // Transactional trait methods stay together.
 #[async_trait]
 impl Store for PostgresStore {
+    async fn pending_initial_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Box::pin(self.pending_initial_native_impl(call)).await
+    }
+
     async fn delete_session(
         &self,
         request: crate::DeleteSession,
@@ -2653,7 +2681,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let blocked: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT data FROM runs WHERE id=%FOR UPDATE%')"
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' AND query LIKE 'SELECT CASE WHEN octet_length(data::text)<=33554432 THEN data END AS data FROM runs WHERE id=% FOR UPDATE')"
                 )
                 .bind(blocker_pid).fetch_one(&store.pool).await.unwrap();
                 if blocked { break; }
@@ -2724,3 +2752,6 @@ mod snapshot_tests;
 pub(crate) async fn pending_initial_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
     tests::TEST_LOCK.lock().await
 }
+
+#[cfg(test)]
+mod pending_initial_fixture;

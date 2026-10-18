@@ -9,3 +9,5 @@ pub(crate) mod caller;
 
 #[path = "native_enrollment/access.rs"]
 pub(crate) mod access;
+
+pub(crate) mod pending_initial;

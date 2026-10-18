@@ -35,14 +35,18 @@ fn issuer<'a>(
     }
     Ok(value)
 }
-pub(super) fn init(
+pub(super) fn init_with_proof(
     state: &mut State,
     record: &AdmissionExecutionRecord,
     run: &Run,
+    proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), StoreError> {
-    let issuance = issuer(state, run, Some(1))?.clone();
+    let issuance = issuer(state, run, Some(1))?;
     issuance.verify(run).map_err(|_| invalid())?;
-    let source = Source::Init(Init::new(record, issuance)?);
+    // The caller charged this independent record immediately before its copy.
+    // Charge the new Init source before receipt/key/actual issuer are copied.
+    let source = admission_journal::init_with_proof(record, issuance, proof)
+        .map_err(|error| error.into_domain_or(invalid()))?;
     source.encode()?;
     if !state.admission_execution_protocols.insert(run.id.clone())
         || state

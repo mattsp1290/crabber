@@ -8,17 +8,17 @@ use crate::{
     StoreError,
     memory::{State, queue},
 };
-pub(super) enum Before {
+pub(super) enum Before<'a> {
     Other,
     Replayed(Box<PreparationCompletion>),
-    Selected(Box<queue::selection::Selected>),
+    Selected(Box<queue::selection::Selected<'a>>),
 }
-pub(super) fn before(
-    state: &State,
+pub(super) fn before<'a>(
+    state: &'a State,
     joined: &JoinedPreparation,
     proof: &mut Proof,
     now: time::OffsetDateTime,
-) -> Result<Before, PreparationCommitError> {
+) -> Result<Before<'a>, PreparationCommitError> {
     let PreparedOperation::Queue { request, .. } = joined.observed_operation() else {
         return Ok(Before::Other);
     };
@@ -47,6 +47,7 @@ pub(super) fn before(
     queue::preparation_context_selected(
         state,
         selected.record().ok_or(StoreError::NotFound)?,
+        selected.prepared(),
         authority,
         &original.intent,
         now,

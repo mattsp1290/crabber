@@ -6,13 +6,18 @@ pub use join::{JoinSource, JoinedOwnedScope, OwnedCleanupFailure, OwnedCleanupTa
 pub(crate) mod join_verify;
 pub use task::{
     BoundInitialControl, BoundSuccessorControl, DriverMainContext, InitialAdmissionMetadata,
-    InitialAdmissionReplay, JoinedOwnedTask, OwnedTaskRegistration, PendingDriverTasks,
-    PendingInitialCompletion, PendingInitialControl, PendingInitialObservation, PendingInitialTask,
-    PendingQueueCompletion, PendingQueueControl, PendingQueueObservation, PendingQueueTask,
-    PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
+    InitialAdmissionReplay, JoinedOwnedTask, LocallyJoinedInitialSeal, OwnedTaskRegistration,
+    PendingDriverTasks, PendingInitialCompletion, PendingInitialControl, PendingInitialNativeCall,
+    PendingInitialNativeReply, PendingInitialObservation, PendingInitialProducer,
+    PendingInitialProducerControl, PendingInitialProducerObservation, PendingInitialProducerStatus,
+    PendingInitialTask, PendingQueueCompletion, PendingQueueControl, PendingQueueObservation,
+    PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
     PendingSuccessorTasks, QueueAdmissionMetadata,
 };
+#[cfg(test)]
+pub(crate) use task::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub(crate) use task::{NativeInitialOperation, NativeInitialParts};
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};
 use crabber_core::{InputFingerprint, SessionId, SessionOwnerOperationId};

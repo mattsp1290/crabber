@@ -9,6 +9,7 @@ pub(in super::super) async fn record_admission(
     run: &Run,
     new_session: bool,
     guard: AdmissionGuard<'_>,
+    birth: &crate::native_enrollment::pending_initial::BirthDecision<'_>,
     read_proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<Option<crate::native_enrollment::caller::initial::FirstPublication>, StoreError> {
     if !guard.has_owned_resources() {
@@ -40,8 +41,8 @@ pub(in super::super) async fn record_admission(
     let encoded = witness.encoded().map_err(invalid)?;
     let join = witness.join_id().map_err(invalid)?;
     let initial = serde_json::to_string(&issuance).map_err(invalid)?;
-    let first = super::super::native_parent::source_protocol::append_captured(
-        tx, &issuance, true, read_proof,
+    let first = super::super::native_parent::source_protocol::append_captured_with_birth(
+        tx, &issuance, read_proof, birth,
     )
     .await
     .map_err(invalid)?

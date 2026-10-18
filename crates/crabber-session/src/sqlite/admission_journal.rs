@@ -52,7 +52,9 @@ pub(super) async fn init(
         .await
         .map_err(|_| invalid())?;
     issuance.verify(run).map_err(|_| invalid())?;
-    insert(tx, Source::Init(Init::new(record, issuance)?)).await
+    let source = admission_journal::init_with_proof(record, &issuance, proof)
+        .map_err(|error| error.into_domain_or(invalid()))?;
+    insert(tx, source).await
 }
 /// None denotes an authenticated legacy cohort, never missing new evidence.
 pub(super) async fn read(

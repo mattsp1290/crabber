@@ -13,7 +13,7 @@ impl MemoryStore {
             Option<crate::queue::source::Source>,
             time::OffsetDateTime,
         ),
-        mut change: Change,
+        mut change: Change<'_>,
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<QueueOutcome, StoreError> {
@@ -79,9 +79,9 @@ impl MemoryStore {
     fn queue_admission(
         &self,
         state: &mut State,
-        change: &mut Change,
+        change: &mut Change<'_>,
         input: (
-            &crate::queue::VerifiedAdmission,
+            &crate::queue::VerifiedAdmission<'_>,
             &crate::native_enrollment::caller::initial::SelectedInput<'_>,
         ),
         preparation: Option<&crate::session_owner::preparation::proof::VerifiedPreparation<'_>>,

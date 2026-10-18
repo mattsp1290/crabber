@@ -55,7 +55,10 @@ pub(crate) use legacy::LegacyTool;
 #[path = "../../../crabber-session/src/native_enrollment/caller/admission_begin.rs"]
 mod admission_begin;
 pub(crate) use admission_begin::AdmissionBegin;
+// Retain the canonical closed variants for read/negative verification. Their
+// positive Pending constructors are intentionally absent from this fixture.
 #[path = "../../../crabber-session/src/native_enrollment/caller/initial.rs"]
+#[allow(dead_code)]
 pub(crate) mod initial;
 
 pub(crate) fn measure_owner_authority(
@@ -63,9 +66,49 @@ pub(crate) fn measure_owner_authority(
     proof: &mut Proof,
 ) -> Result<(), Failure> {
     proof.measure(&(authority.session_id(), authority.target()))?;
-    // This scaffold accounts only the documented 512-byte constructor token;
-    // real authority validation remains the unchanged opaque authenticator.
-    proof.charge(2 * 512 + 2)
+    // The constructor caps tokens at 512 ASCII-graphic bytes. Include maximal
+    // JSON escaping, quotes, and the added third-tuple-element separator.
+    // Real authority validation remains the unchanged opaque authenticator.
+    proof.charge(2 * 512 + 3)
+}
+
+#[test]
+fn owner_authority_meter_covers_maximum_escaped_constructor_token_exactly() {
+    use crate::session_owner::{SessionOwnerAuthority, SessionOwnerTarget};
+    use crabber_core::{SessionId, SessionOwnerGeneration, SessionOwnerId};
+    let session = SessionId::new();
+    let target = SessionOwnerTarget {
+        id: SessionOwnerId::new(),
+        generation: SessionOwnerGeneration::INITIAL,
+    };
+    for character in ['"', '\\'] {
+        let token = character.to_string().repeat(512);
+        let authority =
+            SessionOwnerAuthority::from_store(session.clone(), target.clone(), token.clone())
+                .unwrap();
+        // Serialize the exact constructor values, without any private getter.
+        // This tests representation accounting, never native permission.
+        let actual = serde_json::to_vec(&(&session, &target, &token))
+            .unwrap()
+            .len();
+        let mut exact = Proof::bounded(actual);
+        measure_owner_authority(&authority, &mut exact).unwrap();
+        assert_eq!(exact.used(), actual);
+        let mut short = Proof::bounded(actual - 1);
+        assert!(matches!(
+            measure_owner_authority(&authority, &mut short),
+            Err(Failure::Limited(_))
+        ));
+        assert_eq!(short.used(), actual);
+        assert!(
+            SessionOwnerAuthority::from_store(
+                session.clone(),
+                target.clone(),
+                character.to_string().repeat(513),
+            )
+            .is_err()
+        );
+    }
 }
 
 #[path = "../../../crabber-session/src/native_enrollment/caller/recovery.rs"]

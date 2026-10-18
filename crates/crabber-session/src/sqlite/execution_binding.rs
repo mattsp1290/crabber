@@ -150,12 +150,9 @@ impl SqliteStore {
                 ),
             );
         }
-        crate::native_enrollment::caller::initial::input_keyed(
-            keyed,
-            caller.selected(),
-            read_proof,
-        )
-        .map_err(|_| StoreError::Conflict)?;
+        caller
+            .input_keyed(keyed, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
         let digest = keyed.validated_digest()?;
         if let Some((existing, _)) =
             super::admission_reads::session(tx, session, read_proof).await?
@@ -536,6 +533,16 @@ async fn save_execution(
 ) -> Result<(), StoreError> {
     if let Some(capsule) = &keyed.execution {
         let version = i32::try_from(capsule.version).map_err(|_| StoreError::AdmissionConflict)?;
+        // Independently allocated record/encoded bytes need their own allowance
+        // before clone, even when the original request has selected-body credit.
+        crate::admission_journal::measure_record(
+            receipt,
+            &keyed.options.key,
+            capsule,
+            crate::AdmissionExecutionState::Unstarted,
+            read_proof,
+        )
+        .map_err(|error| error.into_domain_or(StoreError::Conflict))?;
         let record = crate::AdmissionExecutionRecord {
             receipt: receipt.clone(),
             key: keyed.options.key.clone(),

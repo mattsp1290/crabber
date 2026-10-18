@@ -15,6 +15,12 @@ impl MemoryExecution {
         let digest = request.fingerprint()?;
         let fault = super::super::tool_continuation::fault(&self.store);
         let result = self.store.transact(|state| {
+            super::super::credential_access::check_origin_bounded(
+                state,
+                &request.session_id,
+                &request.run_id,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?;
             if let Some(saved) = receipt(state, &request.session_id, &request.id)? {
                 if saved.run_id != request.run_id || saved.semantic_digest != digest {
                     return Err(Error::SemanticConflict);

@@ -88,6 +88,12 @@ impl MemoryExecution {
             if run.id != self.fence.run_id {
                 return Err(Error::UnknownStoreOutcome);
             }
+            super::credential_access::check(
+                state,
+                &run,
+                &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+            )
+            .map_err(public_state::unknown)?;
             let digest = mutation.fingerprint(&run.session_id, &run.id)?;
             let key = (run.session_id.clone(), mutation.id.clone());
             if let Some(saved) = state.operation_receipts.get(&key) {

@@ -1,5 +1,6 @@
 //! Selected queue publications and fresh full-prefix verification.
 use super::super::db;
+use super::selection::Originals;
 use crate::public_session::v2::proof::{Failure, Proof, ReadError};
 use crate::{
     StoreError,
@@ -241,20 +242,23 @@ pub(super) async fn history(
     scope: &Scope,
     proof: &mut Proof,
 ) -> Result<Option<Source>> {
-    full_history(tx, scope, proof, None).await
+    Ok(full_history(tx, scope, proof, None)
+        .await?
+        .and_then(|originals| originals.head))
 }
 async fn full_history(
     tx: &mut Transaction<'_, Postgres>,
     scope: &Scope,
     proof: &mut Proof,
     record: Option<&crate::queue::Record>,
-) -> Result<Option<Source>> {
+) -> Result<Option<Originals>> {
     if !protocol(tx, scope, proof).await? {
         return Ok(None);
     }
     let (origin, head) = cohort(tx, scope, proof).await?;
     let mut previous: Option<Source> = None;
     let (mut enqueue, mut prepare, mut claim) = (None, None, None);
+    let mut prepare_source = None;
     for sequence in 1..=head.sequence {
         let value = indexed(tx, scope, sequence, proof).await?;
         let (_, audit) = super::reads::audited_leaf(tx, &scope.session, &value.operation, proof)
@@ -273,6 +277,8 @@ async fn full_history(
             if audit.receipt.operation_id == record.enqueue_operation {
                 enqueue = Some(audit);
             } else if record.prepare_operation.as_ref() == Some(&audit.receipt.operation_id) {
+                proof.measure(&value).map_err(budget)?;
+                prepare_source = Some(value.clone());
                 prepare = Some(audit);
             } else if record
                 .claim
@@ -306,15 +312,17 @@ async fn full_history(
     {
         return Err(corrupt().into());
     }
+    let originals = Originals {
+        head: Some(head),
+        enqueue,
+        prepare,
+        claim,
+        prepare_source,
+    };
     if let Some(record) = record {
-        crate::queue::verify_sources(
-            record,
-            enqueue.as_ref().ok_or_else(corrupt)?,
-            prepare.as_ref(),
-            claim.as_ref(),
-        )?;
+        originals.prepared(record)?;
     }
-    Ok(Some(head))
+    Ok(Some(originals))
 }
 pub(super) async fn publish(
     tx: &mut Transaction<'_, Postgres>,
@@ -322,7 +330,7 @@ pub(super) async fn publish(
     previous: Option<Source>,
     fresh: bool,
     proof: &mut Proof,
-) -> Result<()> {
+) -> Result<Option<Source>> {
     proof.measure(audit).map_err(budget)?;
     let value = if let Some(previous) = previous {
         Source::new(
@@ -333,7 +341,7 @@ pub(super) async fn publish(
     } else if fresh {
         Source::new(audit, 1, None)?
     } else {
-        return Ok(());
+        return Ok(None);
     };
     proof.measure(&value).map_err(budget)?;
     sqlx::query("INSERT INTO queue_publication_sources(session_id,queue_id,protocol_version,queue_sequence,operation_id,sequence,kind,revision,previous_digest,source_digest,data_json) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10)").bind(&value.scope.session.0).bind(&value.scope.queue.0).bind(i64::try_from(value.queue_sequence).map_err(|_| corrupt())?).bind(&value.operation.0).bind(i64::try_from(value.sequence).map_err(|_| corrupt())?).bind(value.kind.name()).bind(i64::try_from(value.revision.get()).map_err(|_| corrupt())?).bind(value.previous.as_ref().map(crabber_core::InputFingerprint::as_str)).bind(value.digest.as_str()).bind(serde_json::to_string(&value).map_err(|_| corrupt())?).execute(&mut **tx).await.map_err(db)?;
@@ -345,33 +353,19 @@ pub(super) async fn publish(
             return Err(corrupt().into());
         }
     }
-    Ok(())
+    Ok(Some(value))
 }
-pub(super) async fn verified_head(
-    tx: &mut Transaction<'_, Postgres>,
-    scope: &Scope,
-    proof: &mut Proof,
-) -> Result<Option<Source>> {
-    if protocol(tx, scope, proof).await? {
-        Ok(Some(cohort(tx, scope, proof).await?.1))
-    } else {
-        Ok(None)
-    }
-}
-pub(super) async fn verify_record(
+pub(super) async fn load_record(
     tx: &mut Transaction<'_, Postgres>,
     record: &crate::queue::Record,
     proof: &mut Proof,
-) -> Result<bool> {
+) -> Result<Originals> {
     let scope = Scope {
         session: record.summary.session_id.clone(),
         queue: record.summary.queue_id.clone(),
     };
-    if full_history(tx, &scope, proof, Some(record))
-        .await?
-        .is_some()
-    {
-        return Ok(true);
+    if let Some(originals) = full_history(tx, &scope, proof, Some(record)).await? {
+        return Ok(originals);
     }
     let (_, enqueue) =
         super::reads::audited_leaf(tx, &scope.session, &record.enqueue_operation, proof)
@@ -397,8 +391,15 @@ pub(super) async fn verify_record(
     } else {
         None
     };
-    crate::queue::verify_sources(record, &enqueue, prepare.as_ref(), claim.as_ref())?;
-    Ok(false)
+    let originals = Originals {
+        head: None,
+        enqueue: Some(enqueue),
+        prepare,
+        claim,
+        prepare_source: None,
+    };
+    originals.prepared(record)?;
+    Ok(originals)
 }
 
 /// Verify every retained identity used by FIFO routing, including terminal rows.

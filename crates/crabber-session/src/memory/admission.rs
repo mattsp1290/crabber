@@ -100,17 +100,16 @@ pub(super) fn admit_transaction_captured(
     caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<CapturedAdmission, StoreError> {
-    match caller.caller {
-        Caller::Raw => (),
-    }
-    crate::native_enrollment::caller::initial::input_request(request, caller.selected(), proof)
+    caller
+        .input_request(request, proof)
         .map_err(initial_invalid)?;
     selected(state, request, None, proof)?;
     guard.verify(request)?;
     if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
         request.validate_messages()?;
     }
-    let lease = time::Duration::try_from(request.lease)
+    let (owner, requested_lease) = guard.owner_and_lease(request);
+    let lease = time::Duration::try_from(requested_lease)
         .map_err(|_| StoreError::Validation("lease is too large".into()))?;
     if lease <= time::Duration::ZERO {
         return Err(StoreError::Validation("lease must be positive".into()));
@@ -149,7 +148,7 @@ pub(super) fn admit_transaction_captured(
         id: run_id.clone(),
         session_id: session_id.clone(),
         status: RunStatus::Running,
-        owner: request.owner.clone(),
+        owner: owner.to_owned(),
         claim_token: token.clone(),
         lease_until: now + lease,
         epoch_id: epoch_id.clone(),
@@ -172,7 +171,7 @@ pub(super) fn admit_transaction_captured(
         insert_message(state, &run, message)?;
     }
     let new_session = !state.sessions.contains_key(&session_id);
-    let first = record_ownership(state, &session, &run, new_session, guard, proof)?;
+    let first = record_ownership(state, &session, &run, new_session, guard, caller, proof)?;
     if new_session {
         super::native_parent::source_protocol::session_birth(state, &session_id)
             .map_err(|_| StoreError::Conflict)?;
@@ -351,8 +350,7 @@ pub(super) fn admit_keyed_captured(
         }
         return Ok(CapturedKeyedAdmission::Replayed(receipt.clone()));
     }
-    crate::native_enrollment::caller::initial::input_keyed(keyed, caller.selected(), proof)
-        .map_err(initial_invalid)?;
+    caller.input_keyed(keyed, proof).map_err(initial_invalid)?;
     let digest = keyed.validated_digest()?;
     if guard.is_ordinary()
         && state.queue.values().any(|record| {
@@ -377,11 +375,25 @@ pub(super) fn admit_keyed_captured(
         semantic_digest: digest,
     };
     crate::ensure_storable(&receipt)?;
-    if let Some(capsule) = keyed.execution.clone() {
+    if let Some(capsule) = &keyed.execution {
+        crate::admission_journal::measure_record(
+            &receipt,
+            &keyed.options.key,
+            capsule,
+            crate::AdmissionExecutionState::Unstarted,
+            proof,
+        )
+        .map_err(|error| error.into_domain_or(initial_invalid("execution record budget")))?;
+        #[cfg(test)]
+        state
+            .pending_initial_carrier_observations
+            .lock()
+            .unwrap()
+            .push((receipt.session_id.clone(), proof.used()));
         let execution = crate::AdmissionExecutionRecord {
             receipt: receipt.clone(),
             key: keyed.options.key.clone(),
-            capsule,
+            capsule: capsule.clone(),
             state: crate::AdmissionExecutionState::Unstarted,
         };
         if execution.capsule.version == 2 {
@@ -389,7 +401,7 @@ pub(super) fn admit_keyed_captured(
         } else {
             crate::ensure_storable(&execution)?;
         }
-        super::admission_journal::init(state, &execution, &admitted.run)?;
+        super::admission_journal::init_with_proof(state, &execution, &admitted.run, proof)?;
         state
             .admission_executions
             .insert(admitted.run.id.clone(), execution);
@@ -412,6 +424,7 @@ fn record_ownership(
     run: &Run,
     new_session: bool,
     guard: crate::queue::AdmissionGuard<'_>,
+    caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<crate::native_enrollment::caller::initial::FirstPublication, StoreError> {
     proof.measure(&(session, run)).map_err(initial_invalid)?;
@@ -441,16 +454,21 @@ fn record_ownership(
         } else {
             None
         };
-        let first =
-            super::native_parent::record_owned_admission_with_proof(state, run, witness, proof)
-                .map_err(|_| StoreError::Conflict)?;
+        let first = super::native_parent::record_owned_admission_with_birth(
+            state,
+            run,
+            witness,
+            caller.birth(),
+            proof,
+        )
+        .map_err(|_| StoreError::Conflict)?;
         if let Some(origin) = origin {
             state.ownership_protocol_sessions.insert(session.id.clone());
             state.ownership_origins.insert(session.id.clone(), origin);
         }
         Ok(first)
     } else {
-        super::native_parent::record_initial_run_with_proof(state, run, proof)
+        super::native_parent::record_initial_run_with_birth(state, run, caller.birth(), proof)
             .map_err(|_| StoreError::Conflict)
     }
 }

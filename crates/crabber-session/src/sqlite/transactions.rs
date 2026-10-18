@@ -1,5 +1,5 @@
 //! Admission and fencing inside a caller-owned immediate transaction.
-use super::records::{insert_message, load_run, micros, status};
+use super::records::{insert_message, micros, status};
 use super::{Sqlite, SqliteStore, StoreError, Transaction, admission_execution, db, text};
 use crate::{AdmitOutcome, AdmitRequest};
 use crabber_core::{
@@ -69,21 +69,17 @@ impl SqliteStore {
         caller: crate::native_enrollment::caller::initial::Dispatch<'_>,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<crate::native_enrollment::caller::initial::CapturedAdmission, StoreError> {
-        match caller.caller {
-            crate::native_enrollment::caller::Caller::Raw => (),
-        }
-        crate::native_enrollment::caller::initial::input_request(
-            request,
-            caller.selected(),
-            read_proof,
-        )
-        .map_err(|_| StoreError::Conflict)?;
+        let birth = caller.birth();
+        caller
+            .input_request(request, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
         guard.verify(request)?;
         if request.input_envelope.is_some() || !request.additional_messages.is_empty() {
             request.validate_messages()?;
         }
         let now = self.clock.now();
-        let lease = time::Duration::try_from(request.lease)
+        let (owner, requested_lease) = guard.owner_and_lease(request);
+        let lease = time::Duration::try_from(requested_lease)
             .map_err(|_| StoreError::Validation("lease is too large".into()))?;
         if lease <= time::Duration::ZERO {
             return Err(StoreError::Validation("lease must be positive".into()));
@@ -173,7 +169,7 @@ impl SqliteStore {
             id: run_id.clone(),
             session_id: session_id.clone(),
             status: RunStatus::Running,
-            owner: request.owner.clone(),
+            owner: owner.to_owned(),
             claim_token: token.clone(),
             lease_until: now + lease,
             epoch_id: epoch_id.clone(),
@@ -230,6 +226,14 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(db)?;
+        if !guard.has_owned_resources()
+            && matches!(
+                &birth,
+                crate::native_enrollment::pending_initial::BirthDecision::PendingInitial(_)
+            )
+        {
+            return Err(StoreError::Conflict);
+        }
         let raw_first = if guard.has_owned_resources() {
             None
         } else {
@@ -257,6 +261,7 @@ impl SqliteStore {
             &run,
             !had_session,
             guard,
+            &birth,
             read_proof,
         )
         .await?;
@@ -285,13 +290,34 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         fence: &RunFence,
     ) -> Result<Run, StoreError> {
-        let run = load_run(tx, &fence.run_id).await?;
+        let mut proof = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+        proof
+            .measure(fence)
+            .map_err(crate::native_enrollment::access::failure)?;
+        super::read_proof::charge(
+            tx,
+            sqlx::query_scalar("SELECT length(CAST(session_id AS BLOB)) FROM runs WHERE id=$1")
+                .bind(&fence.run_id.0),
+            &mut proof,
+        )
+        .await
+        .map_err(crate::native_enrollment::access::failure)?;
+        let session: Option<String> = sqlx::query_scalar(
+            "SELECT CASE WHEN length(CAST(session_id AS BLOB))<=512 THEN session_id END FROM runs WHERE id=$1"
+        ).bind(&fence.run_id.0).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(StoreError::NotFound)?;
+        let run = super::records::load_run_with_proof(tx, &fence.run_id, &mut proof).await?;
+        if run.id != fence.run_id || session.as_deref() != Some(run.session_id.0.as_str()) {
+            return Err(StoreError::Validation(
+                "stored run identity is invalid".into(),
+            ));
+        }
         if run.claim_token != fence.claim_token
             || run.status.is_terminal()
             || run.lease_until <= self.clock.now()
         {
             return Err(StoreError::Conflict);
         }
+        super::credential_access::check_current(tx, &run, &mut proof).await?;
         Ok(run)
     }
     pub(super) async fn fenced(

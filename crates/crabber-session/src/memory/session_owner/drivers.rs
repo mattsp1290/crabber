@@ -91,7 +91,7 @@ pub(super) fn fresh(
     if run.lease_until <= now {
         return Err(Error::StaleOwner);
     }
-    let latest = super::super::native_parent::source_protocol::current(
+    let latest = super::super::native_parent::source_protocol::raw_current(
         state,
         &run.session_id,
         &run.id,

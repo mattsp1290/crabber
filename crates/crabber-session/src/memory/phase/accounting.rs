@@ -21,6 +21,10 @@ pub(super) fn selected(
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }
     if let PhaseCaller::Worker { fence, authority } = caller {
+        let enrollment =
+            super::super::native_enrollment::original(state, &run.session_id, &run.id, proof)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
         proof
             .measure(fence)
             .map_err(|_| Error::UnknownStoreOutcome)?;
@@ -88,10 +92,12 @@ pub(super) fn selected(
         )
         .map_err(|_| Error::UnknownStoreOutcome)?;
     }
-    if matches!(
-        request.command,
-        crate::PhaseCommand::Claim { .. } | crate::PhaseCommand::Begin { .. }
-    ) {
+    if !matches!(caller, PhaseCaller::Worker { .. })
+        && matches!(
+            request.command,
+            crate::PhaseCommand::Claim { .. } | crate::PhaseCommand::Begin { .. }
+        )
+    {
         super::super::native_enrollment::original(state, &run.session_id, &run.id, proof)
             .map_err(|_| Error::UnknownStoreOutcome)?;
     }

@@ -19,6 +19,10 @@ pub(super) fn selected(
         .measure(&(fence, request, conclusion, run))
         .map_err(|_| Error::UnknownStoreOutcome)?;
     measure_authority(authority, proof).map_err(|_| Error::UnknownStoreOutcome)?;
+    let enrollment =
+        super::super::native_enrollment::original(state, &run.session_id, &run.id, proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
     if let Some(saved) = state
         .operation_receipts
         .get(&(run.session_id.clone(), request.id.clone()))
@@ -79,8 +83,6 @@ pub(super) fn selected(
             )
             .map_err(|_| Error::UnknownStoreOutcome)?;
         }
-        super::super::native_enrollment::original(state, &run.session_id, &run.id, proof)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
     }
     Ok(())
 }

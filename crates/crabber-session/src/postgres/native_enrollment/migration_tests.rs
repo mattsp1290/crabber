@@ -30,6 +30,12 @@ async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_
     assert_eq!(saved, (bytes.to_owned(), 0, None));
     let sources: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM native_execution_origins)+(SELECT COUNT(*) FROM native_execution_unclassified)").fetch_one(&mut *tx).await.unwrap();
     assert_eq!(sources, 0);
+    // The current reader also selects the Pending column; retain the actual
+    // raw-migration assertions above before installing its real successor DDL.
+    sqlx::raw_sql(include_str!("../../../migrations/0023_pending_initial.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let session = SessionId("legacy-session".into());
     let run = RunId("legacy-run".into());
     assert_eq!(

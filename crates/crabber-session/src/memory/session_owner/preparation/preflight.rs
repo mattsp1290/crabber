@@ -7,12 +7,13 @@ use crate::{
     public_session::v2::proof::Proof,
 };
 impl MemoryStore {
-    pub(super) fn before_prepared_native(
+    pub(super) fn before_prepared_native<'a>(
         &self,
-        state: &State,
+        state: &'a State,
         joined: &JoinedPreparation,
         proof: &mut Proof,
-    ) -> Result<queue::Before, PreparationCommitError> {
+    ) -> Result<queue::Before<'a>, PreparationCommitError> {
+        crate::memory::pending_initial::raw_preparation(state, joined, proof)?;
         if let Some(outcome) = Self::replay_prepared(state, joined)? {
             return Ok(queue::Before::Replayed(Box::new(outcome)));
         }

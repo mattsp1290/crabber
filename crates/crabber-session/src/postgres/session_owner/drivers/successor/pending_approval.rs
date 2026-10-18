@@ -50,7 +50,7 @@ pub(super) async fn inspect(
             _ => Error::UnknownStoreOutcome,
         })?;
     let run = run(tx, request, proof).await?;
-    let protected = crate::postgres::native_parent::source_protocol::current(
+    let protected = crate::postgres::native_parent::source_protocol::raw_current(
         tx,
         &claim.session_id,
         &claim.run_id,

@@ -15,7 +15,12 @@ pub(crate) async fn prepared(store: &dyn Store) -> (Fixture, QueueMutation, Queu
     store.mutate_queue(prepare.clone()).await.unwrap();
     (fixture, prepare, authority)
 }
-pub(crate) fn replace(record: &mut Record, change_input: bool) {
+pub(crate) fn replace(
+    record: &mut Record,
+    audit: &Audit,
+    source: Option<&crate::queue::source::Source>,
+    change_input: bool,
+) -> Result<(), StoreError> {
     if change_input {
         record.input.input = InputEnvelope::text(
             "COHERENTLY_REPLACED_INPUT",
@@ -34,15 +39,33 @@ pub(crate) fn replace(record: &mut Record, change_input: bool) {
         OffsetDateTime::UNIX_EPOCH,
     );
     replacement.keyed.options = record.input.admission.clone();
-    record.prepared = Some(replacement);
+    let mut counterfeit = audit.clone();
+    let QueueAction::Prepare { prepared, .. } = &mut counterfeit.request.action else {
+        return Err(crate::queue::corrupt());
+    };
+    **prepared = replacement;
+    counterfeit.receipt.semantic_digest = counterfeit.request.fingerprint()?;
+    let counterfeit_source = source
+        .map(|original| {
+            crate::queue::source::Source::new(
+                &counterfeit,
+                original.sequence,
+                original.previous.clone(),
+            )
+        })
+        .transpose()?;
+    record.prepared = Some(crate::queue::PreparedReference::published(
+        &counterfeit,
+        counterfeit_source.as_ref(),
+        &mut crate::public_session::v2::proof::Proof::bounded(32 << 20),
+    )?);
     // These are internally consistent but differ from the authoritative original audits.
-    record
-        .validate(
-            &record.summary.session_id,
-            &record.summary.queue_id,
-            record.summary.sequence,
-        )
-        .unwrap();
+    record.validate(
+        &record.summary.session_id,
+        &record.summary.queue_id,
+        record.summary.sequence,
+    )?;
+    Ok(())
 }
 pub(crate) async fn refused(
     store: &dyn Store,

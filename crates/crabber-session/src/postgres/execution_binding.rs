@@ -149,12 +149,9 @@ impl PostgresStore {
                 ),
             );
         }
-        crate::native_enrollment::caller::initial::input_keyed(
-            keyed,
-            caller.selected(),
-            read_proof,
-        )
-        .map_err(|_| StoreError::Conflict)?;
+        caller
+            .input_keyed(keyed, read_proof)
+            .map_err(|_| StoreError::Conflict)?;
         let digest = keyed.validated_digest()?;
         if let Some((existing, _)) =
             super::admission_reads::session(tx, session, read_proof).await?
@@ -185,6 +182,16 @@ impl PostgresStore {
             .bind(&receipt.session_id.0).bind(keyed.options.key.as_str()).bind(&receipt.run_id.0).bind(&receipt.user_message_id.0).bind(json(&receipt)?)
             .execute(&mut **tx).await.map_err(db)?;
         if let Some(capsule) = &keyed.execution {
+            // This is a new independently materialized execution record, not
+            // another borrowed visit to the already selected original input.
+            crate::admission_journal::measure_record(
+                &receipt,
+                &keyed.options.key,
+                capsule,
+                crate::AdmissionExecutionState::Unstarted,
+                read_proof,
+            )
+            .map_err(|error| error.into_domain_or(StoreError::Conflict))?;
             let record = crate::AdmissionExecutionRecord {
                 receipt: receipt.clone(),
                 key: keyed.options.key.clone(),

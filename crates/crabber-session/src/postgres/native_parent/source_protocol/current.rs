@@ -1,6 +1,7 @@
 //! Fresh effect guards require the complete protected source membership.
 use super::{
-    Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head, history, original,
+    Proof, ReadError, Result, RunId, RunIssuance, RunState, SessionId, bad, head,
+    history_enrollment, original,
 };
 use crate::postgres::transaction::Transaction;
 use sqlx::{Postgres, Row};
@@ -10,7 +11,30 @@ pub(in crate::postgres) async fn read(
     run: &RunId,
     proof: &mut Proof,
 ) -> Result<Option<RunIssuance>> {
-    if !history(tx, session, run, proof).await? {
+    read_for(tx, session, run, proof, false).await
+}
+
+pub(in crate::postgres) async fn raw_read(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+) -> Result<Option<RunIssuance>> {
+    read_for(tx, session, run, proof, true).await
+}
+
+async fn read_for(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &SessionId,
+    run: &RunId,
+    proof: &mut Proof,
+    raw: bool,
+) -> Result<Option<RunIssuance>> {
+    let (protected, enrollment) = history_enrollment(tx, session, run, proof).await?;
+    if raw {
+        crate::native_enrollment::access::allow(enrollment).map_err(bad)?;
+    }
+    if !protected {
         return Err(bad("unprotected fresh Run"));
     }
     let selected = head(tx, session, run, proof)

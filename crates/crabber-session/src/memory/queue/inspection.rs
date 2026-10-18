@@ -64,6 +64,6 @@ impl MemoryStore {
         {
             return Err(StoreError::Busy);
         }
-        Ok(saved.retained())
+        saved.retained(&mut proof).map_err(protocol::domain)
     }
 }

@@ -1,6 +1,9 @@
 //! Physical preparation join and native successor publication share one transaction.
 mod inspection;
 mod native;
+mod pending_complete;
+pub(in crate::sqlite) mod pending_prefix;
+pub(in crate::sqlite) mod pending_raw;
 mod queue_inspection;
 mod replay;
 use super::{Audit, Error, SessionOwnerOperation, publish_revision, reads};
@@ -31,6 +34,22 @@ impl super::SqliteStore {
         ))
         .await
     }
+    async fn raw_preparation_source_gate(
+        tx: &mut crate::transaction::Transaction<'_, sqlx::Sqlite>,
+        joined: &JoinedPreparation,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), crate::session_owner::preparation::PreparationCommitError> {
+        let session = &joined
+            .observed_grant()
+            .original_reservation()
+            .owner
+            .binding
+            .session_id;
+        super::super::deletion::ensure_live(tx, session)
+            .await
+            .map_err(crate::deletion::owner_error)?;
+        super::super::native_enrollment::pending_initial::refuse_raw(tx, joined, proof).await
+    }
     pub(in crate::sqlite) async fn complete_preparation_captured_with_proof(
         &self,
         joined: JoinedPreparation,
@@ -52,6 +71,7 @@ impl super::SqliteStore {
             .await
             .map_err(super::super::db)?;
         let result = async {
+            Self::raw_preparation_source_gate(&mut tx, &joined, read_proof).await?;
             if let Some(outcome) = self.replay_prepared(&mut tx, &joined).await? {
                 return Ok(crate::session_owner::preparation::driver_completion::replayed(outcome));
             }

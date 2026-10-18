@@ -119,6 +119,10 @@ pub(super) async fn begin_with_proof(
     if run.lease_until <= store.clock.now() {
         return Err(Error::StaleOwner);
     }
+    let enrollment = super::native_enrollment::original(&mut tx, &run.session_id, &run.id, proof)
+        .await
+        .map_err(|_| Error::UnknownStoreFailure)?;
+    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
     let mut record = load_record_with_proof(&mut tx, &run.id, proof)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?

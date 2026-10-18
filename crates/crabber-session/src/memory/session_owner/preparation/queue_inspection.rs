@@ -89,7 +89,7 @@ impl MemoryStore {
             .map_err(|error| inspection::read_error(&error))?;
         queue_admission::verify(
             original,
-            &actual,
+            actual,
             receipt,
             &queue_admission::AdmissionSources {
                 session,

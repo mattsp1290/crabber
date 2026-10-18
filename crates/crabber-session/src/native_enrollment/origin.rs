@@ -12,6 +12,7 @@ pub(crate) const SOURCE_BYTES: usize = 4096;
 pub(crate) enum Status {
     Legacy,
     Unclassified,
+    Pending,
 }
 
 #[derive(Debug)]
@@ -19,10 +20,14 @@ pub(crate) struct Error;
 pub(crate) type Result<T> = std::result::Result<T, ReadError<Error>>;
 
 /// This first protocol has only raw births. A later driver cannot adopt one.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Birth {
     Raw,
+    Pending {
+        epoch: crabber_core::ControlId,
+        assignment_digest: InputFingerprint,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,64 @@ impl Origin {
         Ok((origin, unclassified))
     }
 
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(&self.birth, Birth::Pending { .. })
+    }
+    pub(crate) fn pending_birth(
+        assignment: &crate::native_enrollment::pending_initial::Assignment,
+        issuer: &RunIssuance,
+        source: &JournalSource,
+        proof: &mut Proof,
+    ) -> Result<Self> {
+        proof
+            .measure(&(assignment, issuer, source))
+            .map_err(ReadError::Budget)?;
+        source.verify(issuer).map_err(|_| Error)?;
+        if issuer.sequence != 1
+            || source.sequence != 1
+            || assignment.version != 1
+            || assignment.correlation.key.session_id != issuer.state.session_id
+            || assignment.run_id != issuer.state.run_id
+            || assignment.first_issuer_digest != source.issuance_digest
+            || assignment.first_source_digest != source.chain_digest
+        {
+            return Err(Error.into());
+        }
+        proof
+            .measure(&(
+                &issuer.state.session_id,
+                &issuer.state.run_id,
+                &source.issuance_digest,
+                &assignment.correlation.identity.epoch,
+            ))
+            .map_err(ReadError::Budget)?;
+        let value = Self {
+            version: 2,
+            session_id: issuer.state.session_id.clone(),
+            run_id: issuer.state.run_id.clone(),
+            first_issuer_digest: source.issuance_digest.clone(),
+            birth: Birth::Pending {
+                epoch: assignment.correlation.identity.epoch.clone(),
+                assignment_digest: assignment.digest().map_err(ReadError::Budget)?,
+            },
+        };
+        value.validate()?;
+        Ok(value)
+    }
+    pub(crate) fn verify_pending(
+        &self,
+        assignment: &crate::native_enrollment::pending_initial::Assignment,
+        first: &JournalSource,
+        issuer: &RunIssuance,
+        proof: &mut Proof,
+    ) -> Result<()> {
+        self.validate()?;
+        let expected = Self::pending_birth(assignment, issuer, first, proof)?;
+        if *self != expected {
+            return Err(Error.into());
+        }
+        Ok(())
+    }
     pub(crate) fn digest(&self, proof: &mut Proof) -> Result<InputFingerprint> {
         proof.measure(self).map_err(ReadError::Budget)?;
         self.validate()?;
@@ -95,7 +158,11 @@ impl Origin {
     }
 
     fn validate(&self) -> std::result::Result<(), Error> {
-        if self.version != 1 || crate::snapshot::encoded_bytes(self, SOURCE_BYTES).is_none() {
+        if !matches!(
+            (&self.birth, self.version),
+            (Birth::Raw, 1) | (Birth::Pending { .. }, 2)
+        ) || crate::snapshot::encoded_bytes(self, SOURCE_BYTES).is_none()
+        {
             return Err(Error);
         }
         crate::native_parent::source_protocol::validate_scope(&self.session_id, &self.run_id)
@@ -111,6 +178,9 @@ impl Origin {
         issuer: &RunIssuance,
         proof: &mut Proof,
     ) -> Result<()> {
+        if self.is_pending() {
+            return Err(Error.into());
+        }
         proof.measure(first).map_err(ReadError::Budget)?;
         proof.measure(issuer).map_err(ReadError::Budget)?;
         first.verify(issuer).map_err(|_| Error)?;
