@@ -372,6 +372,40 @@ async fn raw_legacy_expired_original_sources_and_atomic_rollback() {
         .await;
 }
 
+/// Rollback does not roll PostgreSQL sequence allocation back. Keep this finite
+/// exact-proof comparison within one decimal width; real cursor bytes still count.
+async fn stable_approval_event_cursor_width(store: &crate::PostgresStore) {
+    // 2 recovery choices × 4 faults. Each fixture emits at most 12 setup events:
+    // admission(2), Reserve/Begin(2), tool pending(3), suspend(1), answers(2),
+    // optional initial claim(2). At most 4 compound attempts emit 2 events each
+    // (measurement, N-minus-one, exact N, optional fault-one retry). Replay and
+    // stale calls publish none; prepared cases use fewer attempts.
+    const MAX_ALLOCATIONS: i64 = 2 * 4 * (12 + 4 * 2);
+    let allocated: i64 =
+        sqlx::query_scalar("SELECT nextval(pg_get_serial_sequence('events','seq'))")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let mut start = 10_i64;
+    loop {
+        let end = start.checked_mul(10).expect("fixture decimal band");
+        if start > allocated && end - start > MAX_ALLOCATIONS {
+            break;
+        }
+        start = end;
+    }
+    assert!(
+        start > allocated,
+        "fixture never reuses an allocated cursor"
+    );
+    let _: i64 =
+        sqlx::query_scalar("SELECT setval(pg_get_serial_sequence('events','seq'),$1,false)")
+            .bind(start)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+}
+
 #[tokio::test]
 async fn raw_approval_compound_original_grant_proof_and_rollback() {
     let Some(url) = crate::postgres::tests::test_url() else {
@@ -380,6 +414,7 @@ async fn raw_approval_compound_original_grant_proof_and_rollback() {
     let _guard = crate::postgres::tests::TEST_LOCK.lock().await;
     crate::PostgresStore::migrate(&url).await.unwrap();
     let store = crate::PostgresStore::connect(&url).await.unwrap();
+    stable_approval_event_cursor_width(&store).await;
     let clock = std::sync::Arc::new(crabber_core::ManualClock::new(
         time::OffsetDateTime::UNIX_EPOCH,
     ));
