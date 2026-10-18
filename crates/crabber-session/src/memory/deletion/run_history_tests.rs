@@ -152,7 +152,12 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
     issuer.version = 1;
     issuer.sequence = 2;
     issuer.ownership_handoff = None;
-    issuer.state.token = crabber_core::InputFingerprint::new("e".repeat(64)).unwrap();
+    // Import a coherent legacy current projection, using an actual token and
+    // its canonical hash. The original first issuer/Witness stay unchanged;
+    // this later legacy claim still has no protected completion source.
+    let current = state.runs.get_mut(&receipt.run_id).unwrap();
+    current.claim_token = "e".repeat(64);
+    issuer.state = crate::native_parent::RunState::from_run(current).unwrap();
     issuer.validate().unwrap();
     state.native_run_issuances.insert(
         (receipt.session_id.clone(), receipt.run_id.clone(), 2),
@@ -162,6 +167,13 @@ async fn run_history_report_keeps_legacy_noninitial_claim_unproven() {
     let observed = report(&state, run, &mut bounded()).unwrap();
     assert_eq!(observed.initial_source, Fact::Authenticated);
     assert_eq!(observed.every_noninitial_claim, Fact::Unproven);
+    assert_eq!(observed.retained_noninitial_sources, Fact::Unproven);
+    assert_eq!(
+        observed.initial_consumption,
+        crate::native_enrollment::initial_consumer::InitialConsumption::Unproven
+    );
+    assert_eq!(observed.main_join, Fact::Unproven);
+    assert_eq!(observed.resource_policy, Fact::Unproven);
     assert!(!observed.complete());
     // The original witness cannot silently relink to the remaining issuer.
     state.native_run_issuances.remove(&key);
