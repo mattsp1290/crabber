@@ -334,6 +334,7 @@ dependencies = [
 name = "crabber-guest"
 version = "0.1.0"
 dependencies = [
+ "crabber-core",
  "crabber-guest-macros",
  "serde_json",
  "wit-bindgen 0.62.0",
@@ -369,6 +370,7 @@ dependencies = [
  "futures",
  "reqwest",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 
@@ -398,12 +400,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "crabber-core",
+ "crabber-extension",
  "futures",
+ "jsonschema",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
  "time",
+ "tokio",
  "uuid",
 ]
 
