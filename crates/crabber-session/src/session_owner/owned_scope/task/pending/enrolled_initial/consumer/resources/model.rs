@@ -156,6 +156,8 @@ impl InitialResources {
                     Delta::Error(_)
                     | Delta::TextDelta(_)
                     | Delta::ReasoningDelta(_)
+                    | Delta::Reasoning { .. }
+                    | Delta::ReasoningSignature { .. }
                     | Delta::ToolCallStart { .. }
                     | Delta::ToolCallArgsDelta { .. }
                     | Delta::ToolCallDone { .. }

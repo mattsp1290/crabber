@@ -46,6 +46,8 @@ mod prompt_products;
 mod provider_products;
 #[path = "tests/public_state.rs"]
 mod public_state;
+#[path = "tests/reasoning_provenance.rs"]
+mod reasoning_provenance;
 #[path = "tests/suspension_observation.rs"]
 mod suspension_observation;
 #[path = "tests/tool_suspension_faults.rs"]

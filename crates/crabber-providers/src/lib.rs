@@ -147,10 +147,32 @@ pub struct ProviderError {
 pub enum StreamDelta {
     TextDelta(String),
     ReasoningDelta(String),
-    ToolCallStart { call_id: ToolCallId, name: String },
-    ToolCallArgsDelta { call_id: ToolCallId, text: String },
-    ToolCallDone { call_id: ToolCallId },
-    ProviderState { codec_id: String, payload: Value },
+    /// Explicit provider-boundary classification, scoped to one reasoning item.
+    Reasoning {
+        item_id: String,
+        provenance: crabber_core::ReasoningProvenance,
+        text: String,
+    },
+    /// Private signature fragments belong only to the exact thinking item.
+    ReasoningSignature {
+        item_id: String,
+        signature: String,
+    },
+    ToolCallStart {
+        call_id: ToolCallId,
+        name: String,
+    },
+    ToolCallArgsDelta {
+        call_id: ToolCallId,
+        text: String,
+    },
+    ToolCallDone {
+        call_id: ToolCallId,
+    },
+    ProviderState {
+        codec_id: String,
+        payload: Value,
+    },
     Usage(Usage),
     Completed,
     Error(ProviderError),

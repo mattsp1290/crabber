@@ -105,6 +105,12 @@ impl Codec {
         if let Some(text) = delta["content"].as_str() {
             out.push(StreamDelta::TextDelta(text.into()));
         }
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(text) = delta[key].as_str() {
+                // Chat-compatible vendor fields carry no public-summary contract.
+                out.push(StreamDelta::ReasoningDelta(text.into()));
+            }
+        }
         if let Some(calls) = delta["tool_calls"].as_array() {
             for call in calls {
                 let index = call["index"].as_u64().unwrap_or(0);

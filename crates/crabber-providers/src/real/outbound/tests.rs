@@ -72,6 +72,26 @@ pub(super) fn request(content: ContentBlock, nested: bool) -> ModelRequest {
     }
 }
 #[tokio::test]
+async fn incomplete_signed_thinking_refuses_before_credentials_or_network() {
+    let credentials = Arc::new(Credentials(AtomicUsize::new(0)));
+    let adapter = HttpAdapter::custom("fixture", "http://127.0.0.1:1", Protocol::Messages)
+        .with_credential_source(credentials.clone());
+    let mut request = request(
+        ContentBlock::Reasoning {
+            text: "PRIVATE_THINKING".into(),
+            item_id: Some("anthropic:0".into()),
+            provenance: crabber_core::ReasoningProvenance::Private,
+            provider_state: None,
+        },
+        false,
+    );
+    request.messages[0].role = Role::Assistant;
+    let error = adapter.stream(request).await.err().unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Invalid);
+    assert!(!format!("{error:?}").contains("PRIVATE"));
+    assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
 async fn unsupported_media_is_rejected_before_credentials_or_network() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();

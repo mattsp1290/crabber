@@ -86,6 +86,8 @@ pub(super) async fn settled(
                 ContentBlock::Reasoning {
                     text: "deep".into(),
                     provider_state: None,
+                    provenance: crabber_core::ReasoningProvenance::Unspecified,
+                    item_id: None,
                 },
             ],
             is_error: false,

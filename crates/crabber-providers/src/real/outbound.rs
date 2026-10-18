@@ -36,6 +36,33 @@ fn invalid_media() -> ProviderError {
         retryable: false,
     }
 }
+fn validate_reasoning(
+    protocol: super::Protocol,
+    block: &ContentBlock,
+) -> Result<(), ProviderError> {
+    if let ContentBlock::Reasoning {
+        item_id: Some(item),
+        provenance: crabber_core::ReasoningProvenance::Private,
+        provider_state,
+        ..
+    } = block
+        && protocol == super::Protocol::Messages
+        && item.starts_with("anthropic:")
+        && !provider_state.as_ref().is_some_and(|state| {
+            state["codec_id"] == "crabber.anthropic.thinking/v1"
+                && state["signature"]
+                    .as_str()
+                    .is_some_and(|signature| !signature.is_empty())
+        })
+    {
+        return Err(ProviderError {
+            kind: ProviderErrorKind::Invalid,
+            message: "incomplete signed thinking continuity".into(),
+            retryable: false,
+        });
+    }
+    Ok(())
+}
 pub(super) fn validate(
     protocol: super::Protocol,
     request: &ModelRequest,
@@ -61,6 +88,7 @@ pub(super) fn validate(
             .map(|part| (&part.content, false))
             .collect();
         while let Some((block, in_result)) = pending.pop() {
+            validate_reasoning(protocol, block)?;
             match block {
                 ContentBlock::MediaContent {
                     kind,

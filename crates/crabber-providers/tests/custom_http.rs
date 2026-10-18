@@ -290,6 +290,13 @@ fn assert_single_protocol_error(items: &[StreamDelta], expected_message: &str) {
     );
     assert_eq!(stream_errors(items).len(), 1);
     assert!(stream_errors(items)[0].message != "provider transport body");
+    let diagnostic = format!("{} {:?}", stream_errors(items)[0], stream_errors(items)[0]);
+    for private in ["PRIVATE_CODE_SENTINEL", "PRIVATE_BODY_SENTINEL"] {
+        assert!(
+            !diagnostic.contains(private),
+            "private protocol error leaked"
+        );
+    }
 }
 
 fn request(provider: &str) -> ModelRequest {

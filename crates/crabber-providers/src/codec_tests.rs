@@ -4,6 +4,8 @@ use crabber_core::{
     ToolCallId, TurnId,
 };
 use serde_json::json;
+#[path = "codec_tests/reasoning.rs"]
+mod reasoning;
 
 fn fixture(text: &str, decode: impl FnMut(&sse::Event) -> Vec<StreamDelta>) -> Vec<StreamDelta> {
     let mut parser = sse::Parser::default();

@@ -98,11 +98,16 @@ impl Codec {
                     out.push(StreamDelta::TextDelta(s.into()));
                 }
             }
-            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
-                if let Some(s) = value["delta"].as_str() {
-                    out.push(StreamDelta::ReasoningDelta(s.into()));
-                }
-            }
+            "response.reasoning_text.delta" => out.push(reasoning_delta(
+                &value,
+                crabber_core::ReasoningProvenance::Private,
+                "text",
+            )?),
+            "response.reasoning_summary_text.delta" => out.push(reasoning_delta(
+                &value,
+                crabber_core::ReasoningProvenance::PublicSummary,
+                "summary",
+            )?),
             "response.output_item.added" => {
                 let item = &value["item"];
                 if item["type"] == "function_call" {
@@ -186,7 +191,7 @@ impl Codec {
                     } else {
                         ProviderErrorKind::Server
                     },
-                    message: format!("Responses {kind}: {code}"),
+                    message: "Responses stream failed".into(),
                     retryable: false,
                 }));
             }
@@ -194,6 +199,31 @@ impl Codec {
         }
         Ok(out)
     }
+}
+fn reasoning_delta(
+    value: &Value,
+    provenance: crabber_core::ReasoningProvenance,
+    channel: &str,
+) -> Result<StreamDelta, ProviderError> {
+    let item = value["item_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 512)
+        .ok_or_else(|| invalid("missing reasoning item identity"))?;
+    let index = value[if channel == "summary" {
+        "summary_index"
+    } else {
+        "content_index"
+    }]
+    .as_u64()
+    .ok_or_else(|| invalid("missing reasoning part identity"))?;
+    let text = value["delta"]
+        .as_str()
+        .ok_or_else(|| invalid("invalid reasoning delta"))?;
+    Ok(StreamDelta::Reasoning {
+        item_id: format!("responses:{item}:{channel}:{index}"),
+        provenance,
+        text: text.into(),
+    })
 }
 fn invalid(message: &str) -> ProviderError {
     ProviderError {

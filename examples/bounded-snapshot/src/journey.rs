@@ -513,6 +513,8 @@ pub async fn journey(stores: Stores, backend: &str, source: &Source, mode: Child
         status: ToolResultStatus::Completed,
         content: vec![
             ContentBlock::Reasoning {
+                provenance: crabber::core::ReasoningProvenance::Unspecified,
+                item_id: None,
                 text: "é nested result".into(),
                 provider_state: None,
             },

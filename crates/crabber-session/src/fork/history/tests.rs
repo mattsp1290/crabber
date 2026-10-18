@@ -151,6 +151,8 @@ fn copied_history_redacts_private_state_and_rewrites_only_typed_ids() {
             ContentBlock::Reasoning {
                 text: "private-reasoning".into(),
                 provider_state: Some(json!("private-codec")),
+                provenance: crabber_core::ReasoningProvenance::Unspecified,
+                item_id: None,
             },
             start(&call),
         ],

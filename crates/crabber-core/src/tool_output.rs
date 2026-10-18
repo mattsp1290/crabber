@@ -243,6 +243,8 @@ mod tests {
             crate::ContentBlock::Reasoning {
                 text: "private".into(),
                 provider_state: None,
+                provenance: crate::ReasoningProvenance::Unspecified,
+                item_id: None,
             },
         ] {
             assert!(ToolOutput::from_content_blocks(vec![forbidden], false).is_err());

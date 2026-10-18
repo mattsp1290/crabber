@@ -12,6 +12,8 @@ fn reasoning() -> ContentBlock {
     ContentBlock::Reasoning {
         text: "private-reasoning".into(),
         provider_state: Some(serde_json::json!({"secret":"private-state"})),
+        provenance: crabber_core::ReasoningProvenance::Unspecified,
+        item_id: None,
     }
 }
 fn nested(call: &ToolCallId) -> ContentBlock {
@@ -21,6 +23,18 @@ fn nested(call: &ToolCallId) -> ContentBlock {
         content: vec![
             secret(),
             reasoning(),
+            ContentBlock::Reasoning {
+                text: "private-explicit".into(),
+                provider_state: Some(serde_json::json!({"signature":"private-signature"})),
+                provenance: crabber_core::ReasoningProvenance::Private,
+                item_id: Some("private-item".into()),
+            },
+            ContentBlock::Reasoning {
+                text: "summary-omitted-by-default".into(),
+                provider_state: Some(serde_json::json!({"secret":"private-even-under-summary"})),
+                provenance: crabber_core::ReasoningProvenance::PublicSummary,
+                item_id: Some("summary-item".into()),
+            },
             ContentBlock::ToolResult {
                 call_id: call.clone(),
                 is_error: true,

@@ -14,10 +14,12 @@ pub use continuation::{
 };
 
 mod public_state;
+mod reasoning;
 pub use public_state::{
     MAX_ACTIVITY_BYTES, MAX_PUBLIC_CONTENTS_BYTES, MAX_PUBLIC_STATE_BYTES, PublicActivity,
     PublicStateContents,
 };
+pub use reasoning::ReasoningProvenance;
 
 mod frontend_result;
 pub use frontend_result::{FrontendResultStatus, FrontendToolResult};
@@ -172,6 +174,10 @@ pub enum ContentBlock {
     Reasoning {
         text: String,
         provider_state: Option<Value>,
+        #[serde(default, skip_serializing_if = "ReasoningProvenance::is_unspecified")]
+        provenance: ReasoningProvenance,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
     },
     Media {
         uri: String,
@@ -521,6 +527,15 @@ pub mod event_payload {
     #[serde(deny_unknown_fields)]
     pub struct MessageDelta {
         pub message_id: MessageId,
+        pub text: String,
+    }
+    /// Only explicitly classified public summaries may use this live payload.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ReasoningDelta {
+        pub message_id: MessageId,
+        pub item_id: String,
+        pub provenance: super::ReasoningProvenance,
         pub text: String,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]

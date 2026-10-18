@@ -4,6 +4,7 @@ mod heartbeat;
 mod host_close;
 mod model_callbacks;
 mod notifications;
+mod reasoning;
 mod worker;
 pub use close_dependents::RuntimeDependentCloseReport;
 use heartbeat::HeartbeatGuard;
@@ -3978,8 +3979,7 @@ impl Orchestrator {
         );
         let mut presentation = crate::event_payload::Presentation::new(self, snapshot, id.clone());
         let mut text = String::new();
-        let mut reasoning = String::new();
-        let mut provider_state = Vec::new();
+        let mut reasoning = reasoning::ReasoningBuffer::default();
         let mut calls: Vec<PendingCall> = Vec::new();
         let mut usage = Usage::default();
         let observe_model = |status: &str, usage: &Usage| {
@@ -4020,15 +4020,33 @@ impl Orchestrator {
                         );
                     }
                     StreamDelta::ReasoningDelta(fragment) => {
-                        reasoning.push_str(&fragment);
-                        self.live_payload(
-                            snapshot,
-                            EventKind::ReasoningDelta,
-                            event_payload::MessageDelta {
-                                message_id: id.clone(),
-                                text: fragment,
-                            },
-                        );
+                        reasoning.push(
+                            None,
+                            crabber_core::ReasoningProvenance::Unspecified,
+                            fragment,
+                        )?;
+                    }
+                    StreamDelta::Reasoning {
+                        item_id,
+                        provenance,
+                        text,
+                    } => {
+                        reasoning.push(Some(item_id.clone()), provenance, text.clone())?;
+                        if provenance == crabber_core::ReasoningProvenance::PublicSummary {
+                            self.live_payload(
+                                snapshot,
+                                EventKind::ReasoningDelta,
+                                crabber_core::event_payload::ReasoningDelta {
+                                    message_id: id.clone(),
+                                    item_id,
+                                    provenance,
+                                    text,
+                                },
+                            );
+                        }
+                    }
+                    StreamDelta::ReasoningSignature { item_id, signature } => {
+                        reasoning.signature(&item_id, &signature)?;
                     }
                     StreamDelta::ToolCallStart { call_id, name } => {
                         if calls.iter().any(|call| call.id == call_id) {
@@ -4089,7 +4107,7 @@ impl Orchestrator {
                         presentation.complete_call(&call_id);
                     }
                     StreamDelta::ProviderState { codec_id, payload } => {
-                        provider_state.push((codec_id, payload));
+                        reasoning.opaque(codec_id, payload)?;
                     }
                     StreamDelta::Usage(delta) => {
                         usage.input_tokens += delta.input_tokens;
@@ -4107,11 +4125,7 @@ impl Orchestrator {
             if !completed {
                 return Err(invalid_provider("model stream ended without completion").into());
             }
-            if text.is_empty()
-                && reasoning.is_empty()
-                && calls.is_empty()
-                && provider_state.is_empty()
-            {
+            if text.is_empty() && reasoning.is_empty() && calls.is_empty() {
                 return Err(invalid_provider("empty model response").into());
             }
             Ok(())
@@ -4135,16 +4149,9 @@ impl Orchestrator {
                     ContentBlock::Text { text: text.clone() },
                 );
             }
-            if !reasoning.is_empty() {
-                push_part(
-                    &mut parts,
-                    &id,
-                    PartKind::Reasoning,
-                    ContentBlock::Reasoning {
-                        text: reasoning.clone(),
-                        provider_state: None,
-                    },
-                );
+            for block in reasoning.interrupted_blocks() {
+                let kind = reasoning::ReasoningBuffer::part_kind(&block);
+                push_part(&mut parts, &id, kind, block);
             }
             ensure_lease(lease_lost)?;
             execution
@@ -4177,24 +4184,9 @@ impl Orchestrator {
                 ContentBlock::Text { text },
             );
         }
-        if !reasoning.is_empty() {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::Reasoning,
-                ContentBlock::Reasoning {
-                    text: reasoning,
-                    provider_state: None,
-                },
-            );
-        }
-        for (codec_id, payload) in provider_state {
-            push_part(
-                &mut parts,
-                &id,
-                PartKind::ProviderState,
-                ContentBlock::ProviderState { codec_id, payload },
-            );
+        for block in reasoning.into_blocks() {
+            let kind = reasoning::ReasoningBuffer::part_kind(&block);
+            push_part(&mut parts, &id, kind, block);
         }
         for call in &calls {
             push_part(
