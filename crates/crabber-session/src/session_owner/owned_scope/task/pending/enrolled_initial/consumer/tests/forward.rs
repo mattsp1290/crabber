@@ -12,6 +12,14 @@ pub(super) enum Fault {
     HoldConsumer(CallKind),
     Literal(CallKind),
     Pending(CallKind),
+    LostAck(CallKind),
+    LostSealAckThenHold,
+}
+#[derive(Debug)]
+pub(super) struct RetirementObservation {
+    pub disposition: OwnedMainDisposition,
+    pub activation: bool,
+    pub grant: bool,
 }
 pub(super) struct Forward {
     pub inner: Arc<dyn Store>,
@@ -19,6 +27,8 @@ pub(super) struct Forward {
     pub entered: tokio::sync::Notify,
     pub release: tokio::sync::Notify,
     pub calls: Mutex<Vec<(CallKind, Option<tokio::task::Id>)>>,
+    pub retirement: Mutex<Vec<RetirementObservation>>,
+    pub seals: Mutex<Vec<crate::native_enrollment::pending_initial::Identity>>,
 }
 impl Forward {
     pub fn new(inner: Arc<dyn Store>, fault: Fault) -> Arc<Self> {
@@ -28,6 +38,8 @@ impl Forward {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
             calls: Mutex::default(),
+            retirement: Mutex::default(),
+            seals: Mutex::default(),
         })
     }
 }
@@ -134,6 +146,49 @@ impl Store for Forward {
         &self,
         call: PendingInitialNativeCall<'_>,
     ) -> Result<PendingInitialNativeReply, PreparationCommitError> {
+        if let Some(witness) = call.retirement {
+            let view = witness.verify(
+                &call.source.original,
+                &call.source.context,
+                call.expected,
+                &mut *call.proof,
+            )?;
+            if let Some(activation) = view.activation {
+                let joined = witness.joined_scope(activation, &mut *call.proof)?;
+                assert_eq!(joined.activation().nonce, activation.nonce);
+                assert_eq!(joined.inspection().disposition, view.disposition);
+                let other = crate::session_owner::owned_scope::OwnedScopeActivation::new(
+                    view.grant.unwrap().scope_source()?,
+                )?;
+                assert!(witness.joined_scope(&other, &mut *call.proof).is_err());
+            }
+            self.retirement.lock().unwrap().push(RetirementObservation {
+                disposition: view.disposition,
+                activation: view.activation.is_some(),
+                grant: view.grant.is_some(),
+            });
+        } else {
+            assert!(
+                !call.is_seal(),
+                "scripted Seal omitted its actual joined/drained witness"
+            );
+        }
+        if call.is_seal() && matches!(self.fault, Fault::LostSealAckThenHold) {
+            let index = {
+                let mut seals = self.seals.lock().unwrap();
+                let index = seals.len();
+                seals.push(call.expected.identity.clone());
+                index
+            };
+            if index == 0 {
+                // The actual native Seal commits before its original reply is
+                // lost. This adapter cannot fabricate or clone that reply.
+                let _reply = self.inner.pending_initial_native(call).await?;
+                return Err(Error::UnknownStoreOutcome.into());
+            }
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         self.inner.pending_initial_native(call).await
     }
     fn pending_initial_consumer_native<'life0, 'life1, 'async_trait>(
@@ -157,6 +212,12 @@ impl Store for Forward {
             return Box::pin(Pending { _call: call });
         }
         let original = self.inner.pending_initial_consumer_native(call);
+        if matches!(self.fault,Fault::LostAck(selected) if selected==kind) {
+            return Box::pin(async move {
+                let _reply = original.await?;
+                Err(Error::UnknownStoreOutcome.into())
+            });
+        }
         if matches!(self.fault,Fault::HoldConsumer(selected) if selected==kind) {
             return Box::pin(async move {
                 let reply = original.await;

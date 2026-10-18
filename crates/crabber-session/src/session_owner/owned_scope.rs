@@ -16,8 +16,8 @@ pub use task::{
     PendingSuccessorTasks, QueueAdmissionMetadata,
 };
 pub(crate) use task::{
-    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
-    NativeInitialOperation, NativeInitialParts,
+    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
+    InitialRetirementWitness, NativeConsumerParts, NativeInitialOperation, NativeInitialParts,
 };
 #[cfg(test)]
 pub(crate) use task::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};

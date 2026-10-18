@@ -243,7 +243,7 @@ fn initial_journal<'a>(
     initial_journal_read(state, run, initial, proof)
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
-fn original_read(
+pub(in crate::memory) fn original_read(
     state: &State,
     source: &DriverLink,
     proof: &mut Proof,

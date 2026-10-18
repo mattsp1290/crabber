@@ -9,6 +9,8 @@ mod original;
 mod records;
 #[path = "initial_consumer/relation.rs"]
 mod relation;
+#[path = "initial_consumer/retirement.rs"]
+mod retirement;
 pub(crate) use super::pending_initial::{Correlation, SourceKey};
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
 use crabber_core::InputFingerprint;
@@ -16,6 +18,7 @@ pub(crate) use ledger::Ledger;
 pub(crate) use original::*;
 pub(crate) use records::*;
 pub(crate) use relation::*;
+pub(crate) use retirement::*;
 use serde::Serialize;
 
 pub(crate) fn digest(value: &impl Serialize) -> Result<InputFingerprint, Failure> {

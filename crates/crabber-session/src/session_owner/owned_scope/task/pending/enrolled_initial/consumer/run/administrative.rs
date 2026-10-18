@@ -35,20 +35,30 @@ impl Run<'_> {
             return Err(Error::UnknownStoreOutcome.into());
         };
         let grant: Arc<crate::session_owner::driver::ExecutionDriverGrant> = Arc::from(grant);
-        *self
-            .retained
+        self.retained
             .calls
             .driver
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&grant));
+            .set(Arc::clone(&grant))
+            .map_err(|_| Error::InvalidTransition)?;
         let mut step = Step::new(self.retained, CallKind::Activate)?;
         step.proof
             .measure(grant.receipt())
             .map_err(|_| Error::Capacity)?;
         let request = OwnedScopeActivation::new(grant.scope_source()?)?;
+        self.retained
+            .calls
+            .activation
+            .set(request)
+            .map_err(|_| Error::InvalidTransition)?;
+        let request = self
+            .retained
+            .calls
+            .activation
+            .get()
+            .ok_or(Error::InvalidTransition)?;
         let (output, record, mut proof) = step
             .invoke(&ConsumerInput::Activate {
-                request: &request,
+                request,
                 grant: &grant,
             })
             .await?;
@@ -67,7 +77,7 @@ impl Run<'_> {
         }
         // This seam runs only after the actual original native future returned,
         // was explicitly disposed, and its full ACK passed this call's Proof.
-        proof.measure(&request).map_err(|_| Error::Capacity)?;
+        proof.measure(request).map_err(|_| Error::Capacity)?;
         let permit = OwnedDispatchPermit::applied(request.clone());
         let control = self
             .retained
@@ -75,7 +85,7 @@ impl Run<'_> {
             .control
             .clone()
             .ok_or(Error::InvalidTransition)?;
-        if !control.dispatch_consumer(permit, &request)? {
+        if !control.dispatch_consumer(permit, request)? {
             return Err(Error::CancellationPending.into());
         }
         Ok(())

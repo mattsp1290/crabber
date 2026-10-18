@@ -9,6 +9,7 @@ use super::{
 /// Only the existing supervisor constructs this after the actual original join.
 struct JoinedInitialOriginal {
     retained: Arc<RetainedInitial>,
+    disposition: OwnedMainDisposition,
 }
 
 /// Reconcile only this actually joined original's exact Seal. No grant or
@@ -46,7 +47,7 @@ impl LocallyJoinedInitialSeal {
         let lease = LocalLease {
             retained: retained.clone(),
             _call: None,
-            joined: true,
+            joined: Some(self.original.disposition),
         };
         let outcome = retained
             .invoke(
@@ -163,6 +164,7 @@ impl RetainedInitial {
         let mut retry = LocallyJoinedInitialSeal {
             original: JoinedInitialOriginal {
                 retained: self.clone(),
+                disposition,
             },
             terminal: None,
         };

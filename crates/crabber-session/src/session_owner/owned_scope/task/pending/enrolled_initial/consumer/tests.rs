@@ -1,5 +1,6 @@
 //! Actual scripted-task and retained-owner mechanisms, without policy claims.
 mod forward;
+mod retirement;
 use super::super::{
     PendingDriverTasks, PendingInitialNativeCall, PendingInitialNativeReply,
     PendingInitialProducer, PendingInitialProducerStatus as Status,
@@ -244,4 +245,45 @@ async fn native_deadline_after_successful_literal_drop_can_reconcile_paired_clos
     assert_eq!(calls.len(), 1);
     assert!(calls[0].0 == CallKind::Register);
     assert_eq!(owner.available_capacity(), 64);
+}
+
+#[tokio::test]
+async fn retirement_witness_keeps_actual_disposition_and_pre_io_activation() {
+    for fault in [
+        Fault::Pass,
+        Fault::LostAck(CallKind::Register),
+        Fault::LostAck(CallKind::Activate),
+    ] {
+        let store = Arc::new(MemoryStore::new());
+        let source = source();
+        let (context, original) = initial_consumer_fixture::prepared(&*store, false, &source).await;
+        let adapter = Forward::new(store, fault);
+        let owner = PendingDriverTasks::default();
+        let mut producer = PendingInitialProducer::register_scripted(
+            &owner,
+            adapter.clone(),
+            context,
+            original,
+            source,
+        )
+        .unwrap();
+        producer.start().unwrap();
+        let observation = producer.join().await.unwrap();
+        let expected = if matches!(fault, Fault::Pass) {
+            OwnedMainDisposition::Returned
+        } else {
+            OwnedMainDisposition::NoDispatch
+        };
+        assert_eq!(observation.disposition(), expected);
+        assert_eq!(observation.status(), &Status::ClosedAssignment);
+        owner.wait_for_supervision().await;
+        let retirement = adapter.retirement.lock().unwrap();
+        assert_eq!(retirement.len(), 1);
+        let actual = &retirement[0];
+        assert_eq!(actual.disposition, expected);
+        let registered = !matches!(fault, Fault::LostAck(CallKind::Register));
+        assert_eq!(actual.grant, registered);
+        assert_eq!(actual.activation, registered);
+        assert_eq!(owner.available_capacity(), 64);
+    }
 }

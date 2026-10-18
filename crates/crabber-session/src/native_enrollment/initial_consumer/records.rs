@@ -1,4 +1,6 @@
-use super::{Correlation, Failure, InputFingerprint, Original, Proof, digest, unknown};
+use super::{
+    Correlation, DriverRetirement, Failure, InputFingerprint, Original, Proof, digest, unknown,
+};
 use crabber_core::{ControlId, RunId};
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +17,8 @@ pub(crate) struct NoOpenedMember {
     pub version: u32,
     pub correlation: Correlation,
     pub birth_close_digest: InputFingerprint,
+    pub retirement: DriverRetirement,
+    pub disposition: crate::session_owner::owned_scope::OwnedMainDisposition,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
@@ -40,11 +44,13 @@ impl Origin {
     pub(crate) fn validate(&self, proof: &mut Proof) -> Result<(), Failure> {
         proof.measure(self)?;
         self.correlation().validate(proof)?;
-        let version = match self {
-            Self::Opened(a) => a.version,
-            Self::NoOpenedMember(n) => n.version,
+        let valid = match self {
+            Self::Opened(a) => a.version == 1,
+            Self::NoOpenedMember(n) => {
+                n.version == 2 && matches!(n.retirement, DriverRetirement::NoDriver)
+            }
         };
-        if version != 1 {
+        if !valid {
             return Err(unknown("consumer origin version"));
         }
         Ok(())
@@ -135,6 +141,8 @@ pub(crate) struct ReverseMembership {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConsumerClose {
     pub version: u32,
+    pub retirement: DriverRetirement,
+    pub disposition: crate::session_owner::owned_scope::OwnedMainDisposition,
     pub correlation: Correlation,
     pub anchor_digest: InputFingerprint,
     pub birth_close_digest: InputFingerprint,

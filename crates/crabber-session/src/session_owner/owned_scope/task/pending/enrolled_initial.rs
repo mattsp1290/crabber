@@ -4,6 +4,7 @@ mod budget;
 mod consumer;
 mod lifecycle;
 mod observe;
+mod retirement;
 mod scripted_binding;
 mod source;
 mod transport;
@@ -29,6 +30,7 @@ pub(crate) use consumer::{
 };
 pub use consumer::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use crabber_core::{ControlId, RunId, SessionContext};
+pub(crate) use retirement::{InitialRetirementView, InitialRetirementWitness};
 use source::{PreparedSource, RetainedInitialSource};
 use std::{
     sync::{Arc, Mutex},
@@ -124,7 +126,7 @@ impl RetainedInitial {
         Ok(control.enter_call()?.map(|call| LocalLease {
             retained: self.clone(),
             _call: Some(call),
-            joined: false,
+            joined: None,
         }))
     }
     fn identity(&self) -> Result<Arc<Identity>, PreparationCommitError> {
@@ -197,6 +199,12 @@ impl RetainedInitial {
                         .as_ref()
                         .map(|resources| resources.association())
                         .transpose()?;
+                    let retirement = match (lease.joined, consumer.as_ref()) {
+                        (Some(disposition), Some(association)) => Some(
+                            InitialRetirementWitness::new(self, disposition, association, expected),
+                        ),
+                        _ => None,
+                    };
                     let call = PendingInitialNativeCall {
                         source: &self.source,
                         expected,
@@ -206,6 +214,7 @@ impl RetainedInitial {
                         proof: &mut *proof,
                         lease: &lease,
                         consumer: consumer.as_ref(),
+                        retirement: retirement.as_ref(),
                     };
                     let observed = observe::original(
                         || self.store.pending_initial_native(call),
@@ -252,7 +261,7 @@ impl RetainedInitial {
 struct LocalLease {
     retained: Arc<RetainedInitial>,
     _call: Option<core::CallAdmission>,
-    joined: bool,
+    joined: Option<OwnedMainDisposition>,
 }
 impl LocalLease {
     fn verify(
@@ -268,7 +277,7 @@ impl LocalLease {
         {
             return Err(Error::IdentityMismatch.into());
         }
-        if self.joined {
+        if self.joined.is_some() {
             if operation != Operation::Seal || !state.joined || state.identity.is_none() {
                 return Err(Error::InvalidTransition.into());
             }

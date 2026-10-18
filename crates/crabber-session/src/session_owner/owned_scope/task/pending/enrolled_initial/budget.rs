@@ -76,3 +76,39 @@ impl PendingInitialProducer {
         Self::register_prepared(owner, store, prepared?, budget)
     }
 }
+
+impl PendingInitialProducer {
+    /// Real constructor/Open, Complete and Seal caps for the same scripted
+    /// registration path. Presentation alone is fixed for numerical tests;
+    /// native lease clocks, Proofs, permission and disposal stay unchanged.
+    pub(crate) fn register_scripted_with_initial_caps(
+        owner: &PendingDriverTasks,
+        store: Arc<dyn Store>,
+        context: SessionContext,
+        original: JoinedPreparation,
+        source: crabber_extension::LibraryScriptedSource,
+        limits: (InitialProofCaps, Arc<Mutex<InitialProofUsage>>),
+    ) -> Result<Self, PreparationCommitError> {
+        let (caps, usage) = limits;
+        let budget = Harness { caps, usage };
+        let (prepared, used) = PreparedSource::bounded(context, original, caps.open);
+        budget.constructor(used);
+        let mut prepared = prepared?;
+        let resources = (|| {
+            super::scripted_binding::verify(
+                &source,
+                &prepared.source.original,
+                &mut prepared.proof,
+            )?;
+            super::consumer::InitialResources::new(
+                source,
+                prepared.source.clone(),
+                &mut prepared.proof,
+            )
+        })();
+        budget.constructor(prepared.proof.used());
+        let task = Self::register_with_resources(owner, store, prepared, Some(resources?), budget)?;
+        task.retained.calls.fixed_presentation();
+        Ok(task)
+    }
+}

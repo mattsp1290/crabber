@@ -139,7 +139,7 @@ pub(super) async fn scope(
     Ok(())
 }
 /// A selected current record and its actual source materializations share one allowance.
-pub(super) async fn current_with_proof(
+pub(in crate::postgres) async fn current_with_proof(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
     id: &SessionOwnerId,

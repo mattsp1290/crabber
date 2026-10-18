@@ -6,6 +6,10 @@ mod cancellation;
 mod drivers;
 #[path = "ledger/owned_scope.rs"]
 mod owned_scope;
+native_pending_initial_items! {
+    #[path="ledger/initial_retirement.rs"]
+    mod initial_retirement;
+}
 #[path = "ledger/public.rs"]
 mod public;
 #[path = "ledger/publications.rs"]

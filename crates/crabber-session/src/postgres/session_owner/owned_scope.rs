@@ -1,4 +1,6 @@
 //! Exact original source and native-parent proof precede fresh activation.
+mod initial_retirement;
+pub(in crate::postgres) use initial_retirement::driver_roster as initial_driver_roster;
 mod context;
 use super::{
     Audit, Error, PostgresStore, SessionOwnerAuthority, SessionOwnerOperation, SessionOwnerOutcome,
@@ -105,60 +107,122 @@ impl PostgresStore {
         }
         Ok(outcome)
     }
+    pub(in crate::postgres) async fn join_owned_scope_in(
+        &self,
+        tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
+        proof: &crate::session_owner::owned_scope::JoinedOwnedScope,
+        authority: &SessionOwnerAuthority,
+        budget: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(SessionOwnerOutcome, Audit), Error> {
+        budget
+            .measure(proof.inspection())
+            .map_err(|_| Error::Capacity)?;
+        crate::native_enrollment::caller::measure_owner_authority(authority, budget)
+            .map_err(|_| Error::Capacity)?;
+        let request = proof.request()?;
+        let digest = proof.fingerprint()?;
+        super::super::deletion::ensure_live(tx, &request.session_id)
+            .await
+            .map_err(crate::deletion::owner_error)?;
+
+        if let Some(audit) =
+            super::drivers::selected_consumer_audit(tx, &request.session_id, &request.id, budget)
+                .await
+                .map_err(|error| error.into_domain_or(Error::Capacity))?
+        {
+            if audit.receipt.operation != SessionOwnerOperation::Join
+                || audit.receipt.semantic_digest != digest
+            {
+                return Err(Error::SemanticConflict);
+            }
+            budget
+                .measure(&audit.receipt)
+                .map_err(|_| Error::Capacity)?;
+            let outcome = SessionOwnerOutcome::Replayed(audit.receipt.clone());
+            return Ok((outcome, audit));
+        }
+        reads::scope(tx, &request.session_id).await?;
+        let mut record =
+            reads::current_with_proof(tx, &request.session_id, &request.target.id, budget).await?;
+        let activation = proof.activation();
+        let reserve = super::drivers::selected_consumer_audit(
+            tx,
+            &request.session_id,
+            &activation.source.reserve,
+            budget,
+        )
+        .await
+        .map_err(|error| error.into_domain_or(Error::Capacity))?
+        .ok_or(Error::UnknownStoreOutcome)?;
+        let begin = super::drivers::selected_consumer_audit(
+            tx,
+            &request.session_id,
+            &activation.source.begin,
+            budget,
+        )
+        .await
+        .map_err(|error| error.into_domain_or(Error::Capacity))?
+        .ok_or(Error::UnknownStoreOutcome)?;
+        let activated = super::drivers::selected_consumer_audit(
+            tx,
+            &request.session_id,
+            &activation.id,
+            budget,
+        )
+        .await
+        .map_err(|error| error.into_domain_or(Error::Capacity))?;
+        source::join_candidate(&record, proof, &reserve, &begin, activated.as_ref())?;
+        record.mutate(&request, Some(authority), self.clock.now())?;
+        budget
+            .measure(proof.inspection())
+            .map_err(|_| Error::Capacity)?;
+        record.owned_join = Some(proof.inspection().clone());
+        budget
+            .measure(&(&request.id, &digest, &record.snapshot))
+            .map_err(|_| Error::Capacity)?;
+        let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Join);
+        let publication = publish_revision(tx, &request.session_id, true).await?;
+        budget.measure(&receipt).map_err(|_| Error::Capacity)?;
+        let audit = Audit {
+            version: 2,
+            receipt: receipt.clone(),
+            record,
+            publication: Some(publication),
+        };
+        budget.measure(&audit).map_err(|_| Error::Capacity)?;
+        let actual = Box::pin(reads::publish_captured_with_proof(
+            tx, &audit, false, budget,
+        ))
+        .await?;
+        Ok((
+            SessionOwnerOutcome::Applied {
+                receipt,
+                authority: None,
+            },
+            actual,
+        ))
+    }
     pub(in crate::postgres) async fn join_owned_scope(
         &self,
         proof: crate::session_owner::owned_scope::JoinedOwnedScope,
         authority: SessionOwnerAuthority,
     ) -> Result<SessionOwnerOutcome, Error> {
         let request = proof.request()?;
-        let digest = proof.fingerprint()?;
         let mut tx = self
             .session_transaction(&request.session_id)
             .await
             .map_err(unknown)?;
         let result = Box::pin(async {
-            if let Some(audit) = reads::audit(&mut tx, &request.session_id, &request.id).await? {
-                if audit.receipt.operation != SessionOwnerOperation::Join
-                    || audit.receipt.semantic_digest != digest
-                {
-                    return Err(Error::SemanticConflict);
-                }
-                return Ok(SessionOwnerOutcome::Replayed(audit.receipt));
+            let mut budget = crate::public_session::v2::proof::Proof::bounded(32 << 20);
+            let (outcome, _audit) =
+                Box::pin(self.join_owned_scope_in(&mut tx, &proof, &authority, &mut budget))
+                    .await?;
+            if matches!(outcome, SessionOwnerOutcome::Applied { .. }) {
+                #[cfg(test)]
+                crate::session_owner_contract::process::pause("scope-join-before");
+                before(self)?;
             }
-            reads::scope(&mut tx, &request.session_id).await?;
-            let mut record =
-                reads::current(&mut tx, &request.session_id, &request.target.id).await?;
-            let activation = proof.activation();
-            let reserve = reads::audit(&mut tx, &request.session_id, &activation.source.reserve)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
-            let begin = reads::audit(&mut tx, &request.session_id, &activation.source.begin)
-                .await?
-                .ok_or(Error::UnknownStoreOutcome)?;
-            let activated = reads::audit(&mut tx, &request.session_id, &activation.id).await?;
-            source::join_candidate(&record, &proof, &reserve, &begin, activated.as_ref())?;
-            record.mutate(&request, Some(&authority), self.clock.now())?;
-            record.owned_join = Some(proof.inspection().clone());
-            let receipt = record.receipt(request.id.clone(), digest, SessionOwnerOperation::Join);
-            let publication = publish_revision(&mut tx, &request.session_id, true).await?;
-            reads::publish(
-                &mut tx,
-                &Audit {
-                    version: 2,
-                    receipt: receipt.clone(),
-                    record,
-                    publication: Some(publication),
-                },
-                false,
-            )
-            .await?;
-            #[cfg(test)]
-            crate::session_owner_contract::process::pause("scope-join-before");
-            before(self)?;
-            Ok(SessionOwnerOutcome::Applied {
-                receipt,
-                authority: None,
-            })
+            Ok(outcome)
         })
         .await;
         let outcome = finish(tx, result).await?;

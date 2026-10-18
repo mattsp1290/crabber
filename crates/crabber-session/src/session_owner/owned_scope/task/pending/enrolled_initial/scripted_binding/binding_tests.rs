@@ -21,6 +21,34 @@ fn plan(bound: &mut crate::BoundKeyedAdmitRequest) {
 }
 
 #[tokio::test]
+async fn genuine_previous_scripted_profile_cannot_gain_retirement_tail() {
+    const OLD_BEHAVIOR: &[u8] = b"crabber.pending-initial.scripted-behavior.v1:one-turn:no-tools:no-prompts:no-guards:no-provider-factories:no-host-callbacks:no-compaction:no-heartbeat:canonical-attempt-prelude:permission-before-run-started:five-lifecycle-events:one-assistant-message:drain-before-conclusion:paired-close";
+    for keyed in [false, true] {
+        let store = MemoryStore::new();
+        let source = source(&["response"]);
+        let (_, original) = fixture::prepared_with(&store, keyed, &source, |bound| {
+            let old = InputFingerprint::new(format!("{:x}", Sha256::digest(OLD_BEHAVIOR))).unwrap();
+            bound.binding.behavior_fingerprint = old.clone();
+            bound.binding.runtime_semantics[12][1]["version"] = json!(old.as_str());
+            bound.binding.runtime_semantics[12][2] = json!({
+                "id": "contract:crabber/pending-initial-scripted.v1",
+                "version": "1",
+            });
+            plan(bound);
+        })
+        .await;
+        // The old profile is frozen before the genuine root/child registration,
+        // activation and actual task join. No original is rewritten afterwards.
+        original.verify_original_intent().unwrap();
+        assert_eq!(
+            verify(&source, &original, &mut Proof::bounded(32 << 20)),
+            Err(conflict())
+        );
+        assert_eq!(source.recipe().1, ["response"]);
+    }
+}
+
+#[tokio::test]
 async fn actual_registered_preparations_match_only_their_actual_full_recipe() {
     for keyed in [false, true] {
         let store = MemoryStore::new();

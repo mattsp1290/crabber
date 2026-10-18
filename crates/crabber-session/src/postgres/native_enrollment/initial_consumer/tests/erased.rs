@@ -63,6 +63,11 @@ pub(super) async fn verify(
         .rows_affected();
     let part_projection = view.verify(origin.correlation(), &mut proof);
     let rejected_part = super::super::members::verify(&mut tx, &view, &mut proof).await;
+    sqlx::query("ROLLBACK TO SAVEPOINT original_event")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let native = Box::pin(retirement_losses(&mut tx, &view, session, &mut proof)).await;
     tx.rollback().await.unwrap(); // Restore native originals BEFORE asserting outcomes.
     assert!(
         intact.is_ok(),
@@ -80,4 +85,85 @@ pub(super) async fn verify(
         rejected_part.is_err(),
         "cached Message parts cannot substitute for erased native Part"
     );
+    assert_eq!(native.erased_join, 1);
+    assert!(
+        native.refused_join,
+        "saved Close cannot replace erased actual native Join"
+    );
+    assert_eq!(native.erased_activation, 1);
+    assert!(
+        native.refused_activation,
+        "saved retirement cannot replace erased actual activation"
+    );
+
+    assert_eq!(native.changed, 1);
+    assert!(
+        native.refused_rotation,
+        "native current token mismatch cannot replay saved retirement"
+    );
+}
+
+struct RetirementLoss {
+    erased_join: u64,
+    refused_join: bool,
+    erased_activation: u64,
+    refused_activation: bool,
+    changed: u64,
+    refused_rotation: bool,
+}
+async fn retirement_losses(
+    tx: &mut crate::postgres::transaction::Transaction<'_, sqlx::Postgres>,
+    view: &crate::native_enrollment::initial_consumer::Selection<'_>,
+    session: &crabber_core::SessionId,
+    proof: &mut Proof,
+) -> RetirementLoss {
+    let retired = view.retirement().unwrap().0.audit().unwrap();
+    let erased_join =
+        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+            .bind(&session.0)
+            .bind(&retired.receipt.operation_id.0)
+            .execute(&mut **tx)
+            .await
+            .unwrap()
+            .rows_affected();
+    let refused_join = super::super::retirement::corroborate(tx, view, proof).await;
+    sqlx::query("ROLLBACK TO SAVEPOINT original_event")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    let activated = view.activated_driver().unwrap();
+    let erased_activation =
+        sqlx::query("DELETE FROM session_owner_audits WHERE session_id=$1 AND operation_id=$2")
+            .bind(&session.0)
+            .bind(&activated.audit.receipt.operation_id.0)
+            .execute(&mut **tx)
+            .await
+            .unwrap()
+            .rows_affected();
+    let refused_activation = super::super::retirement::corroborate(tx, view, proof).await;
+    sqlx::query("ROLLBACK TO SAVEPOINT original_event")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    let mut rotated = retired.record.clone();
+    rotated.token = "rotated-projection".into();
+    let changed = sqlx::query(
+        "UPDATE session_owner_current SET data_json=$3 WHERE session_id=$1 AND owner_id=$2",
+    )
+    .bind(&session.0)
+    .bind(&retired.record.snapshot.target.id.0)
+    .bind(serde_json::to_string(&rotated).unwrap())
+    .execute(&mut **tx)
+    .await
+    .unwrap()
+    .rows_affected();
+    let refused_rotation = super::super::retirement::corroborate(tx, view, proof).await;
+    RetirementLoss {
+        erased_join,
+        refused_join: refused_join.is_err(),
+        erased_activation,
+        refused_activation: refused_activation.is_err(),
+        changed,
+        refused_rotation: refused_rotation.is_err(),
+    }
 }

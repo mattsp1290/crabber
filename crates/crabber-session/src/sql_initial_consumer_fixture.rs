@@ -13,7 +13,7 @@ use crate::{
 use crabber_core::RunId;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 pub(super) struct Forward {
     pub inner: Arc<dyn Store>,
@@ -21,6 +21,8 @@ pub(super) struct Forward {
     pub armed: Arc<AtomicBool>,
     pub calls: std::sync::Mutex<Vec<CallKind>>,
     pub fail_first_open: AtomicBool,
+    pub fault: AtomicU8,
+    pub expire_clock: Option<Arc<crabber_core::ManualClock>>,
 }
 #[async_trait::async_trait]
 impl Store for Forward {
@@ -105,7 +107,18 @@ impl Store for Forward {
         if self.fail_first_open.swap(false, Ordering::SeqCst) {
             return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into());
         }
-        self.inner.pending_initial_native(call).await
+        let seal = call.is_seal();
+        let result = self.inner.pending_initial_native(call).await;
+        if seal
+            && result.is_ok()
+            && self
+                .fault
+                .compare_exchange(3, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into());
+        }
+        result
     }
     async fn pending_initial_consumer_native(
         &self,
@@ -116,6 +129,36 @@ impl Store for Forward {
         if kind == self.kind {
             self.armed.store(true, Ordering::SeqCst);
         }
-        self.inner.pending_initial_consumer_native(call).await
+        if kind == self.kind
+            && self
+                .fault
+                .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into());
+        }
+        let result = self.inner.pending_initial_consumer_native(call).await;
+        if kind == self.kind
+            && result.is_ok()
+            && self
+                .fault
+                .compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            if let Some(clock) = &self.expire_clock {
+                clock.set(crabber_core::Clock::now(clock.as_ref()) + time::Duration::hours(1));
+            }
+            return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into());
+        }
+        if kind == self.kind
+            && self
+                .fault
+                .compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            && result.is_ok()
+        {
+            return Err(crate::session_owner::SessionOwnerError::UnknownStoreOutcome.into());
+        }
+        result
     }
 }

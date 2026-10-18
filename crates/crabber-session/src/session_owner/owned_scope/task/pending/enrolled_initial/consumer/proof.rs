@@ -80,6 +80,14 @@ pub(super) struct Harness {
     fixed_presentation: bool,
 }
 #[cfg(test)]
+impl super::Calls {
+    pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) fn fixed_presentation(
+        &self,
+    ) {
+        self.budget.lock().unwrap().fixed_presentation = true;
+    }
+}
+#[cfg(test)]
 impl super::super::PendingInitialProducer {
     /// Applies limits at the actual per-call Proof constructor, never by reset.
     pub(crate) fn register_scripted_with_caps(

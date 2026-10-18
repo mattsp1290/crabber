@@ -27,6 +27,7 @@ pub struct PendingInitialNativeCall<'call> {
     pub(super) proof: &'call mut Proof,
     pub(super) lease: &'call LocalLease,
     pub(super) consumer: Option<&'call super::InitialResourceAssociation<'call>>,
+    pub(super) retirement: Option<&'call super::InitialRetirementWitness<'call>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,14 +48,25 @@ pub(crate) struct NativeInitialParts<'a> {
     pub(crate) selected: &'a SelectedOriginal<'a>,
     pub(crate) proof: &'a mut Proof,
     pub(crate) consumer: Option<&'a super::InitialResourceAssociation<'a>>,
+    pub(crate) retirement: Option<&'a super::InitialRetirementWitness<'a>>,
     _lease: &'a LocalLease,
 }
 impl<'a> PendingInitialNativeCall<'a> {
+    #[cfg(test)]
+    pub(crate) fn is_seal(&self) -> bool {
+        self.operation == NativeInitialOperation::Seal
+    }
+
     /// Local issuer admission only; native selected-source/current verification
     /// is mandatory afterwards and is not replaced by a Tokio task identity.
     pub(crate) fn into_native(self) -> Result<NativeInitialParts<'a>, PreparationCommitError> {
         self.lease
             .verify(self.operation, self.source, self.expected)?;
+        let needs_retirement =
+            self.operation == NativeInitialOperation::Seal && self.consumer.is_some();
+        if self.retirement.is_some() != needs_retirement {
+            return Err(Error::InvalidTransition.into());
+        }
         Ok(NativeInitialParts {
             operation: self.operation,
             original: &self.source.original,
@@ -64,6 +76,7 @@ impl<'a> PendingInitialNativeCall<'a> {
             selected: self.selected,
             proof: self.proof,
             consumer: self.consumer,
+            retirement: self.retirement,
             _lease: self.lease,
         })
     }

@@ -182,6 +182,14 @@ pub(super) fn refuse_raw_activation(
     Ok(())
 }
 native_pending_initial_items! {
+    #[cfg(test)]
+    #[path="initial_consumer/retirement_budget_tests.rs"]
+    mod retirement_budget_tests;
+    #[cfg(test)]
+    #[path="initial_consumer/retirement_tests.rs"]
+    mod retirement_tests;
+    #[path="initial_consumer/retirement.rs"]
+    pub(in crate::memory) mod retirement;
     #[path="initial_consumer/native.rs"]
     pub(in crate::memory) mod native;
     #[cfg(test)]

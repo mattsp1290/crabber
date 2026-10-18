@@ -10,11 +10,14 @@ use crate::native_enrollment::{
     caller::initial::with_initial_original_async,
     initial_consumer::{CallResult, ConsumerInput, ConsumerOutput, ConsumerResult},
 };
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Default)]
 pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) struct Calls {
-    pub(super) driver: Mutex<Option<Arc<crate::session_owner::driver::ExecutionDriverGrant>>>,
+    pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) driver:
+        OnceLock<Arc<crate::session_owner::driver::ExecutionDriverGrant>>,
+    pub(in crate::session_owner::owned_scope::task::pending::enrolled_initial) activation:
+        OnceLock<crate::session_owner::owned_scope::OwnedScopeActivation>,
     pub(super) authority: Mutex<Option<Arc<crate::AttemptAuthority>>>,
     pub(super) begun: Mutex<Option<Arc<super::FreshBegun>>>,
     #[cfg(test)]

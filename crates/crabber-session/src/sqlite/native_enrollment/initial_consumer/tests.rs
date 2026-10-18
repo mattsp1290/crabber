@@ -3,6 +3,7 @@ use crate::Store;
 use std::sync::Arc;
 const RESPONSE: &str = "actual finite response\u{1} literal \\u0000 slashes \\\\\\u0000";
 mod erased;
+mod retirement;
 use crate::sql_initial_consumer_fixture as forwarding;
 mod guards;
 mod stopped;
@@ -76,7 +77,7 @@ async fn sqlite_closed_initial_scripted_consumer_preserves_all_actual_originals(
         assert!(!failed, "{failure}");
         verify(store.as_ref(), &session, &key, keyed).await;
         guards::verify(store.as_ref(), &session, &key).await;
-        erased::verify(store.as_ref(), &session, &key).await;
+        Box::pin(erased::verify(store.as_ref(), &session, &key)).await;
     }
 }
 async fn verify(

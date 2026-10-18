@@ -26,6 +26,8 @@ async fn sqlite_scripted_original_open_refusal_has_absorbing_no_opened_member() 
             armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             calls: std::sync::Mutex::new(Vec::new()),
             fail_first_open: std::sync::atomic::AtomicBool::new(true),
+            fault: std::sync::atomic::AtomicU8::new(0),
+            expire_clock: None,
         });
         let mut producer =
             PendingInitialProducer::register_scripted(&owner, adapter, context, original, source)

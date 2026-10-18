@@ -23,6 +23,9 @@ pub(in crate::sqlite) async fn check_birth(
     super::members::verify(tx, &view, parts.proof)
         .await
         .map_err(|error| consumer::failure(&error))?;
+    super::retirement::corroborate(tx, &view, parts.proof)
+        .await
+        .map_err(|error| consumer::failure(&error))?;
     match parts.consumer {
         Some(actual) => {
             actual.verify(parts.original, parts.context, parts.expected, parts.proof)?;
@@ -80,6 +83,7 @@ pub(in crate::sqlite) async fn complete(
     Ok(())
 }
 pub(in crate::sqlite) async fn close(
+    store: &crate::sqlite::SqliteStore,
     tx: &mut Transaction<'_, Sqlite>,
     parts: &mut NativeInitialParts<'_>,
     prefix: &birth::prefix::HistoricalInitialPrefix<'_>,
@@ -93,12 +97,15 @@ pub(in crate::sqlite) async fn close(
     let view = selected
         .selection(parts.proof)
         .map_err(|error| consumer::failure(&error))?;
+    let (retirement, disposition) =
+        Box::pin(super::retirement::produce(store, tx, parts, &view)).await?;
     let record = match consumer::prepare_paired_close(
         &view,
         before,
         prefix,
         parts.expected,
         local,
+        (&retirement, disposition),
         parts.proof,
     )? {
         consumer::PairedCloseDecision::Publish(delta) => {

@@ -56,7 +56,12 @@ pub(super) async fn apply(
         .view()
         .verify(&parts.expected.key, parts.proof)
         .map_err(budget)?;
-    let consumer = super::super::initial_consumer::check_birth(tx, parts, state.view()).await?;
+    let consumer = Box::pin(super::super::initial_consumer::check_birth(
+        tx,
+        parts,
+        state.view(),
+    ))
+    .await?;
     if let Some(raw) = Box::pin(crate::sqlite::session_owner::pending_raw::read(
         tx,
         parts.original,
@@ -113,9 +118,15 @@ async fn change(
             }
         }
         NativeInitialOperation::Seal => {
-            if let Some(record) =
-                super::super::initial_consumer::close(tx, parts, prefix, state.view(), consumer)
-                    .await?
+            if let Some(record) = super::super::initial_consumer::close(
+                store,
+                tx,
+                parts,
+                prefix,
+                state.view(),
+                consumer,
+            )
+            .await?
             {
                 return PendingInitialNativeReply::closed(record, parts.proof);
             }

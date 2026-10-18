@@ -8,6 +8,8 @@ mod preparation;
 pub(super) use preparation::{pending_prefix, pending_raw};
 pub(super) mod public;
 mod reads;
+pub(in crate::sqlite) use owned_scope::initial_driver_roster;
+pub(in crate::sqlite) use reads::current_with_proof as current_owner_with_proof;
 mod resources;
 pub(super) mod run;
 mod services;

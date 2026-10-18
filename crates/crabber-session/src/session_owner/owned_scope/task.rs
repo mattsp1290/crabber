@@ -16,7 +16,8 @@ pub use pending::{
     PendingSuccessorTask, PendingSuccessorTasks, QueueAdmissionMetadata,
 };
 pub(crate) use pending::{
-    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
+    InitialRetirementWitness, NativeConsumerParts,
 };
 #[cfg(test)]
 pub(crate) use pending::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};

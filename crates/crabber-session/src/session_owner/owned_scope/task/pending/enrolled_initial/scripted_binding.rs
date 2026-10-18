@@ -19,9 +19,9 @@ pub(crate) mod fixture;
 
 const BACKEND: &str = "crabber.library-scripted.initial";
 const LEAF: &str = "1:pristine-cursor0:single-stream:ordered-script:explicit-resource-drain";
-const PROFILE_COMPONENT: &str = "contract:crabber/pending-initial-scripted.v1";
-const PROFILE_VERSION: &str = "1";
-const BEHAVIOR: &[u8] = b"crabber.pending-initial.scripted-behavior.v1:one-turn:no-tools:no-prompts:no-guards:no-provider-factories:no-host-callbacks:no-compaction:no-heartbeat:canonical-attempt-prelude:permission-before-run-started:five-lifecycle-events:one-assistant-message:drain-before-conclusion:paired-close";
+const PROFILE_COMPONENT: &str = "contract:crabber/pending-initial-scripted.v2";
+const PROFILE_VERSION: &str = "2";
+const BEHAVIOR: &[u8] = b"crabber.pending-initial.scripted-behavior.v2:one-turn:no-tools:no-prompts:no-guards:no-provider-factories:no-host-callbacks:no-compaction:no-heartbeat:canonical-attempt-prelude:permission-before-run-started:five-lifecycle-events:one-assistant-message:drain-before-conclusion:actual-main-and-resource-join:atomic-native-driver-retirement-and-paired-close:v2-no-retroactive-retirement";
 
 fn conflict() -> PreparationCommitError {
     SessionOwnerError::SemanticConflict.into()

@@ -1,6 +1,7 @@
 //! Closed original Initial consumer under the actual Session transaction.
 mod birth;
 mod members;
+mod retirement;
 pub(in crate::postgres) mod storage;
 mod write;
 pub(super) use birth::{check_birth, close, complete, open};

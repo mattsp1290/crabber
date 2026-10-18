@@ -11,7 +11,8 @@ mod enrolled_initial;
 mod execute;
 mod initial;
 pub(crate) use enrolled_initial::{
-    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+    DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,
+    InitialRetirementWitness, NativeConsumerParts,
 };
 #[cfg(test)]
 pub(crate) use enrolled_initial::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};

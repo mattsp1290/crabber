@@ -54,6 +54,8 @@ async fn sqlite_initial_consumer_actual_conclusion_worker_lost_ack_is_paired_clo
         armed: armed.clone(),
         calls: Mutex::new(Vec::new()),
         fail_first_open: AtomicBool::new(false),
+        fault: std::sync::atomic::AtomicU8::new(0),
+        expire_clock: None,
     });
     let (entered, entry) = tokio::sync::oneshot::channel();
     hold_commit(&store, armed, barrier.clone(), entered).await;

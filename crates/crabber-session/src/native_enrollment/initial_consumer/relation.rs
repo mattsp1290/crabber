@@ -74,6 +74,11 @@ impl Selection<'_> {
                 self.verify_assignment(origin)?;
                 self.verify_calls(origin, proof)?;
                 self.verify_publications(origin)?;
+                if let Some(close) = self.close {
+                    close
+                        .retirement
+                        .verify(self, expected, close.disposition, proof)?;
+                }
                 Ok(Bundle::Opened)
             }
             Origin::NoOpenedMember(_) => {
@@ -87,6 +92,11 @@ impl Selection<'_> {
                     return Err(unknown("no-Open consumer has opened members"));
                 }
                 self.verify_publications(origin)?;
+                if let Origin::NoOpenedMember(value) = origin {
+                    value
+                        .retirement
+                        .verify(self, expected, value.disposition, proof)?;
+                }
                 Ok(Bundle::NoOpenedMember)
             }
         }
@@ -288,7 +298,7 @@ impl Selection<'_> {
             return Err(unknown("consumer protected head"));
         }
         if let Some(close) = self.close
-            && (close.version != 1
+            && (close.version != 2
                 || close.correlation != *origin.correlation()
                 || close.anchor_digest != origin.digest()?
                 || self

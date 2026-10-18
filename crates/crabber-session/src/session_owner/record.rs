@@ -2,6 +2,10 @@
 //! calling these methods, then publish record, receipt and revision atomically.
 #[path = "record/resources.rs"]
 mod resources;
+native_pending_initial_items! {
+    #[path = "record/initial_retirement.rs"]
+    mod initial_retirement;
+}
 use crate::session_owner::{
     MutateSessionOwner, ReserveSessionOwner, SessionOwnerAuthority, SessionOwnerCommand,
     SessionOwnerError as Error, SessionOwnerOperation, SessionOwnerReceipt, SessionOwnerResolver,
