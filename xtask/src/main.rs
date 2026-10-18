@@ -124,6 +124,19 @@ fn check() {
 
 // This local adoption probe deliberately needs no network provider or AG-UI SDK.
 fn check_server_host(workspace: &Path) {
+    // check() builds the actual local component fixtures before this gate.
+    run(
+        workspace,
+        &[
+            "test",
+            "-p",
+            "server-host-probe",
+            "--features",
+            "wasm",
+            "--test",
+            "shared_wasm",
+        ],
+    );
     run(
         workspace,
         &["test", "-p", "server-host-probe", "--features", "sqlite"],

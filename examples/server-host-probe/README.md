@@ -9,12 +9,14 @@ adapter remain Unsupported; the probe checks that it cannot start provider work.
 ```sh
 cargo run -p server-host-probe -- memory
 cargo run -p server-host-probe --features sqlite -- sqlite /explicit/fresh/host.db
+cargo xtask build-fixtures
+cargo test -p server-host-probe --features wasm --test shared_wasm
 CRABBER_REQUIRE_POSTGRES=1 cargo test -p server-host-probe --features postgres
 ```
 
 For PostgreSQL, set `CRABBER_TEST_POSTGRES_URL` to a dedicated test database first.
-SQLite currently requires a fresh schema-13 file; PostgreSQL currently uses schema
-17. Migration is explicit. `connect` does not create or upgrade storage.
+Use a fresh database migrated by this checkout. Migration is explicit.
+`connect` does not create or upgrade storage.
 
 The assertions verify actual behavior:
 
@@ -25,10 +27,28 @@ The assertions verify actual behavior:
   host answers. Reconstructed Agents resume the exact checkpoint; the effect
   before the first checkpoint runs once. Answer and continuation retries replay
   metadata. Reconstruction here is in one process, not a process-crash proof.
+- Frontend descriptors pause twice without backend executors. Reconstructed Agents
+  submit authenticated external results, persist the exact tool results, and
+  replay both continuation receipts without provider work. Original typed keyed
+  input also reconciles through admission and recovery metadata replay.
+- A separate fixed Memory host runs keyed and unkeyed pristine library sources
+  through parked start, actual join and supervisor drain, then deletes each
+  completed session with its current revision and replays that deletion. Any
+  genuine returned Seal retry is retained and reconciled on the same handle;
+  the normal probe does not inject lost acknowledgements. A third parked task is
+  stopped before dispatch and joins without changing its managed session; it is
+  not counted among the two completed fixed sessions.
+- An explicitly shared extension executes a tool that reads the real
+  `shared_host_services` capability. Registration and the service each run once.
+- The feature-gated WASM test loads the actual SHA-256-checked local echo
+  component through `shared_wasm_extension`, executes it, and checks the exact
+  stored result and next model request before closing extensions. `cargo xtask
+  check` builds the fixture and runs this test explicitly.
 - After close, pure controls fork verified closed history, read imported calls
   across coherent V2 pages, and atomically delete the quiet fork. The original
-  executed session remains blocked: this probe does not certify whole-runtime
-  cleanup or make retained runs deletable.
+  generic executed session remains blocked: its scoped cleanup does not certify
+  whole-runtime coverage. The separate fixed Memory path verifies its narrower
+  supported guarded deletion.
 
 The separate locked [path consumer](../../testdata/server-host-consumer/README.md)
 executes these fixtures using only exported interfaces. Native faults, killed
@@ -42,7 +62,8 @@ whole-runtime deletion evidence. The API remains unstable pending the independen
 SDK, external Git-only consumer and publication/adoption gates.
 
 The `conformance` integration target also runs the published
-`session_management_contract`, `control_contract` and `interaction_contract`
+`session_management_contract`, `control_contract`, `interaction_contract`,
+`attempt_contract` and `phase_contract`
 harnesses through the custom adapter on every enabled backend. These exercise
 actual transactions, revision conflicts, frozen interactions and metadata replay;
 they are not success-returning Store mocks. The historical harness import paths

@@ -1,7 +1,10 @@
 //! An out-of-crate custom adapter runs the actual published transactional suites.
 use crabber::{
     core::ManualClock,
-    session::{Store, control_contract, interaction_contract, session_management_contract},
+    session::{
+        Store, attempt_contract, control_contract, interaction_contract, phase_contract,
+        session_management_contract,
+    },
 };
 use server_host_probe::store::AuditedStore;
 use std::sync::Arc;
@@ -14,6 +17,8 @@ async fn contracts(factory: impl Fn(Arc<ManualClock>) -> Arc<dyn Store>) {
     assert!(management.calls() > 0);
     control_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
     interaction_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
+    attempt_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
+    phase_contract::run_contract(|clock| AuditedStore::new(factory(clock))).await;
 }
 #[tokio::test]
 async fn memory_custom_adapter_conformance() {

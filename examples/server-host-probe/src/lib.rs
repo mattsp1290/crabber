@@ -1,8 +1,11 @@
 //! Credential-free public embedding journeys, without a server or projection.
 //! These fixtures do not certify whole-runtime resource coverage or delivery.
 mod controls;
+mod fixed_memory;
+mod frontend;
 mod interactive;
 mod ordinary;
+mod shared_services;
 pub mod store;
 mod unsupported_store;
 use crabber::{
@@ -22,6 +25,9 @@ pub struct Report {
     pub interactive_starts: usize,
     pub interactive_resumes: usize,
     pub interactive_effects: usize,
+    pub frontend_resumes: usize,
+    pub fixed_sessions: usize,
+    pub shared_service_reads: usize,
 }
 
 /// Execute public host flows against an injected Store. The Store alone remains
@@ -36,7 +42,10 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
     let (scoped_instances, ordinary_effects, source) = ordinary::run(store.clone()).await?;
     let (interactive_starts, interactive_resumes, interactive_effects) =
         interactive::run(store.clone()).await?;
+    let frontend_resumes = frontend::run(store.clone()).await?;
+    let shared_service_reads = shared_services::run(store.clone()).await?;
     controls::run(store, source).await?;
+    let fixed_sessions = fixed_memory::run().await?;
     assert_eq!(std::env::current_dir()?, cwd);
     Ok(Report {
         contexts: 2,
@@ -45,6 +54,9 @@ pub async fn run(store: Arc<dyn Store>) -> Result<Report, Error> {
         interactive_starts,
         interactive_resumes,
         interactive_effects,
+        frontend_resumes,
+        fixed_sessions,
+        shared_service_reads,
     })
 }
 async fn unsupported(inner: Arc<dyn Store>) -> Result<(), Error> {
