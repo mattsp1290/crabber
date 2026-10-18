@@ -50,7 +50,8 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
     )
     .with_initial_consumption(crate::memory::initial_consumer::classify_run(
         state, run, proof,
-    )?))
+    )?)
+    .with_closed_initial_native_main())
 }
 
 fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {

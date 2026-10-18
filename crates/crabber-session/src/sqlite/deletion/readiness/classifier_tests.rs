@@ -61,7 +61,10 @@ pub(in crate::sqlite) async fn verify(store: &crate::SqliteStore, session: &Sess
         report.initial_consumption,
         InitialConsumption::CompletedSource
     );
-    assert_eq!(report.main_join, crate::deletion::history::Fact::Unproven);
+    assert_eq!(
+        report.main_join,
+        crate::deletion::history::Fact::Authenticated
+    );
     assert_eq!(
         report.resource_policy,
         crate::deletion::history::Fact::Unproven
@@ -250,4 +253,21 @@ async fn child_activation_loss(
             Err(Failure::Error(DeletionError::UnknownStoreOutcome))
         ),
     )
+}
+
+/// Use the actual bounded current Run/status and the production report builder;
+/// no terminal status or completed-source label is supplied by the fixture.
+pub(in crate::sqlite) async fn report_for_fixture(
+    tx: &mut crate::transaction::Transaction<'_, Sqlite>,
+    session: &SessionId,
+    id: &RunId,
+    proof: &mut Proof,
+) -> crate::sql_deletion::readiness::Result<crate::deletion::history::RunHistoryReport> {
+    let selected = crate::sqlite::records::load_run_with_proof(tx, id, proof).await;
+    proof.charge(0)?;
+    let run = selected.map_err(unknown)?;
+    if run.session_id != *session || run.id != *id {
+        return Err(unknown("actual report fixture Run route"));
+    }
+    Box::pin(native::runs::verify(tx, session, id, run.status, proof)).await
 }

@@ -115,3 +115,6 @@ impl SqliteStore {
 
 #[cfg(test)]
 pub(in crate::sqlite) use readiness::classifier_tests::verify as verify_initial_classifier_fixture;
+
+#[cfg(test)]
+pub(in crate::sqlite) use readiness::classifier_tests::report_for_fixture as initial_report_fixture;

@@ -63,7 +63,8 @@ pub(in crate::postgres::deletion::readiness) async fn verify(
         claims.with_membership(protected),
         terminal || abandoned,
     )
-    .with_initial_consumption(consumption))
+    .with_initial_consumption(consumption)
+    .with_closed_initial_native_main())
 }
 async fn journal(
     tx: &mut Transaction<'_, Postgres>,

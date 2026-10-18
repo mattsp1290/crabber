@@ -37,7 +37,7 @@ async fn completed(keyed: bool) -> Arc<MemoryStore> {
     store
 }
 #[tokio::test]
-async fn completed_source_fact_never_supplies_main_resource_or_deletion_coverage() {
+async fn completed_source_authenticates_native_main_but_not_resource_or_deletion() {
     for keyed in [false, true] {
         let store = completed(keyed).await;
         let state = store.state.lock().unwrap();
@@ -52,7 +52,10 @@ async fn completed_source_fact_never_supplies_main_resource_or_deletion_coverage
             actual.initial_source,
             crate::deletion::history::Fact::Authenticated
         );
-        assert_eq!(actual.main_join, crate::deletion::history::Fact::Unproven);
+        assert_eq!(
+            actual.main_join,
+            crate::deletion::history::Fact::Authenticated
+        );
         assert_eq!(
             actual.resource_policy,
             crate::deletion::history::Fact::Unproven
@@ -250,4 +253,94 @@ fn assert_original_resource_live(state: &State, run: &crabber_core::Run, proof: 
         live[0].state,
         crate::session_owner::SessionOwnerState::Active
     );
+}
+
+#[derive(Clone, Copy)]
+enum IncompleteOriginal {
+    Raw,
+    BirthOnly,
+    ClosedPrefix,
+}
+async fn incomplete_original(keyed: bool, kind: IncompleteOriginal) -> Arc<MemoryStore> {
+    use crate::native_enrollment::initial_consumer::CallKind;
+    use crate::session_owner::owned_scope::{ConsumerProofCaps, ConsumerProofUsage};
+    let store = Arc::new(MemoryStore::with_clock(Arc::new(
+        crabber_core::ManualClock::new(time::OffsetDateTime::UNIX_EPOCH),
+    )));
+    let source = crabber_extension::LibraryScriptedSource::new(
+        crabber::Selection {
+            provider_id: "p".into(),
+            model_id: "m".into(),
+        },
+        vec!["actual incomplete original".into()],
+    )
+    .unwrap();
+    let (context, original) = initial_consumer_fixture::prepared(&*store, keyed, &source).await;
+    if matches!(kind, IncompleteOriginal::Raw) {
+        crate::Store::complete_preparation(&*store, original)
+            .await
+            .unwrap();
+        return store;
+    }
+    let owner = PendingDriverTasks::default();
+    let mut task = match kind {
+        IncompleteOriginal::BirthOnly => {
+            PendingInitialProducer::register(&owner, store.clone(), context, original).unwrap()
+        }
+        IncompleteOriginal::ClosedPrefix => {
+            // This is the real per-operation budget constructor, not a fake
+            // receipt/refusal. Birth commits, actual Register cannot begin,
+            // then the original joined task genuinely publishes paired Close.
+            let usage: Arc<std::sync::Mutex<Vec<ConsumerProofUsage>>> = Arc::default();
+            PendingInitialProducer::register_scripted_with_caps(
+                &owner,
+                store.clone(),
+                context,
+                original,
+                source,
+                ConsumerProofCaps(vec![(CallKind::Register, 0)]),
+                usage,
+            )
+            .unwrap()
+        }
+        IncompleteOriginal::Raw => unreachable!(),
+    };
+    task.start().unwrap();
+    let observed = task.join().await.unwrap();
+    assert!(!observed.observation_failed());
+    assert_eq!(
+        *observed.status(),
+        PendingInitialProducerStatus::ClosedAssignment
+    );
+    assert_eq!(
+        observed.error().is_some(),
+        matches!(kind, IncompleteOriginal::ClosedPrefix)
+    );
+    owner.wait_for_supervision().await;
+    store
+}
+#[tokio::test]
+async fn actual_raw_birth_only_and_closed_prefix_reports_keep_native_main_unproven() {
+    for keyed in [false, true] {
+        for (kind, expected) in [
+            (IncompleteOriginal::Raw, InitialConsumption::Unproven),
+            (IncompleteOriginal::BirthOnly, InitialConsumption::Unproven),
+            (
+                IncompleteOriginal::ClosedPrefix,
+                InitialConsumption::AuthenticatedClosedPrefix,
+            ),
+        ] {
+            let store = incomplete_original(keyed, kind).await;
+            let state = store.state.lock().unwrap();
+            let run = state.runs.values().next().unwrap();
+            let actual = report(&state, run, &mut Proof::bounded(MAX_PROOF_BYTES)).unwrap();
+            assert_eq!(actual.initial_consumption, expected);
+            assert_eq!(actual.main_join, crate::deletion::history::Fact::Unproven);
+            assert_eq!(
+                actual.resource_policy,
+                crate::deletion::history::Fact::Unproven
+            );
+            assert!(!actual.complete());
+        }
+    }
 }

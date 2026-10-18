@@ -144,15 +144,38 @@ async fn closed_native_counts(
         .await
         .unwrap();
     let mut tx = store.begin_write().await.unwrap();
+    let run = crabber_core::RunId(run);
     let class = Box::pin(super::super::classify_selected_run(
         &mut tx,
         session,
-        &crabber_core::RunId(run),
+        &run,
         &mut Proof::bounded(32 << 20),
     ))
     .await
     .unwrap();
+    let report = Box::pin(crate::sqlite::deletion::initial_report_fixture(
+        &mut tx,
+        session,
+        &run,
+        &mut Proof::bounded(32 << 20),
+    ))
+    .await;
     tx.rollback().await.unwrap();
+    let report = report.unwrap_or_else(|_| panic!("actual partial Initial report failed"));
+    assert_eq!(report.initial_consumption, class);
+    assert_eq!(
+        report.main_join,
+        if class == InitialConsumption::CompletedSource {
+            crate::deletion::history::Fact::Authenticated
+        } else {
+            crate::deletion::history::Fact::Unproven
+        }
+    );
+    assert_eq!(
+        report.resource_policy,
+        crate::deletion::history::Fact::Unproven
+    );
+    assert!(!report.complete());
     (close, joined, activated, class)
 }
 

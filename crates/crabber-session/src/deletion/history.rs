@@ -24,6 +24,8 @@ pub(crate) struct RunHistoryReport {
     pub(crate) every_noninitial_claim: Fact,
     pub(crate) retained_noninitial_sources: Fact,
     pub(crate) terminal_source: Fact,
+    /// Complete native execution-worker/Main closure only. Injected control,
+    /// callback, preparation and other host resources are a separate fact.
     pub(crate) main_join: Fact,
     pub(crate) resource_policy: Fact,
 }
@@ -35,14 +37,31 @@ impl RunHistoryReport {
             every_noninitial_claim: claims.complete,
             retained_noninitial_sources: claims.retained_sources,
             terminal_source: Fact::from_verified(terminal),
-            // No verifier here authenticates a complete per-Run join inventory
-            // or a fixed whole-Run library resource policy.
+            // Source construction alone supplies neither complete native Main
+            // closure nor an original fixed library resource policy.
             main_join: Fact::Unproven,
             resource_policy: Fact::Unproven,
         }
     }
     pub(crate) fn with_initial_consumption(mut self, value: InitialConsumption) -> Self {
         self.initial_consumption = value;
+        self
+    }
+    /// Compose only the completed original Pending Initial native execution
+    /// package after every independent same-gate/same-Proof source check. This
+    /// says nothing about arbitrary Store/Clock callbacks or resource joins.
+    pub(crate) fn with_closed_initial_native_main(mut self) -> Self {
+        self.main_join = Fact::from_verified(
+            self.initial_consumption == InitialConsumption::CompletedSource
+                && [
+                    self.initial_source,
+                    self.every_noninitial_claim,
+                    self.retained_noninitial_sources,
+                    self.terminal_source,
+                ]
+                .into_iter()
+                .all(|fact| fact == Fact::Authenticated),
+        );
         self
     }
     pub(crate) fn complete(self) -> bool {
