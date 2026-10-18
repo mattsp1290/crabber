@@ -1,5 +1,7 @@
 //! Historical original preparation sources, independent of current eligibility.
 //! A verified prefix is transaction-local corroboration, never a task join.
+#[path = "prefix/historical.rs"]
+mod historical;
 use super::{Correlation, Identity, SourceKey};
 use crate::native_enrollment::caller::initial::{SelectedOriginal, input_preparation};
 use crate::public_session::v2::proof::{Failure, Proof};
@@ -10,6 +12,7 @@ use crate::session_owner::{
     preparation::{self, JoinedPreparation, PreparationCommitError, PreparedOperation},
 };
 use crabber_core::{InputFingerprint, SessionOwnerOperationId};
+pub(crate) use historical::HistoricalInitialSources;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 

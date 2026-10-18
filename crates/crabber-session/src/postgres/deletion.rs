@@ -112,3 +112,6 @@ impl PostgresStore {
         })
     }
 }
+
+#[cfg(test)]
+pub(in crate::postgres) use readiness::classifier_tests::verify as verify_initial_classifier_fixture;

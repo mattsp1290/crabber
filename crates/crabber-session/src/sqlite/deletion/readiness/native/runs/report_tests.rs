@@ -29,6 +29,10 @@ async fn run_history_report_preserves_noninitial_and_missing_proof() {
     .await
     .unwrap_or_else(|_| panic!("bounded fixture operation failed"));
     assert_eq!(report.initial_source, Fact::Authenticated);
+    assert_eq!(
+        report.initial_consumption,
+        crate::native_enrollment::initial_consumer::InitialConsumption::Unproven
+    );
     assert_eq!(report.every_noninitial_claim, Fact::Authenticated);
     assert_eq!(report.retained_noninitial_sources, Fact::Authenticated);
     assert_eq!(report.terminal_source, Fact::Unproven);

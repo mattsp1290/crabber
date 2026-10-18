@@ -52,6 +52,8 @@ pub(super) async fn no_effect_still_requires_resource_policy(store: &crate::Sqli
         .await,
         Ok(crate::deletion::history::RunHistoryReport {
             initial_source: crate::deletion::history::Fact::Authenticated,
+            initial_consumption:
+                crate::native_enrollment::initial_consumer::InitialConsumption::Unproven,
             terminal_source: crate::deletion::history::Fact::Authenticated,
             main_join: crate::deletion::history::Fact::Unproven,
             resource_policy: crate::deletion::history::Fact::Unproven,

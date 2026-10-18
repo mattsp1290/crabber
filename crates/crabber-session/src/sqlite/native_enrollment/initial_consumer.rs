@@ -1,5 +1,7 @@
 //! Closed original Initial consumer under the actual Session transaction.
 mod birth;
+mod classification;
+pub(in crate::sqlite) use classification::{classify_run, classify_selected_run};
 mod members;
 mod retirement;
 pub(in crate::sqlite) mod storage;
@@ -39,3 +41,6 @@ impl crate::sqlite::SqliteStore {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::sqlite) use classification::{original_child_activation_id, original_started_cursor};

@@ -440,6 +440,21 @@ impl Ledger {
             }
         }
     }
+    /// Deliberate isolated snapshot corruption: leave the genuine head, cohort,
+    /// originals and every other publication intact.
+    pub(crate) fn test_erase_publication(
+        &mut self,
+        key: &SourceKey,
+        sequence: u64,
+    ) -> super::Publication {
+        let records = Arc::make_mut(&mut self.inner);
+        let publications = Arc::make_mut(records.publications.get_mut(key).unwrap());
+        let index = publications
+            .iter()
+            .position(|publication| publication.sequence == sequence)
+            .unwrap();
+        publications.remove(index)
+    }
     pub(crate) fn test_shared_payloads(&self, other: &Self) -> bool {
         self.inner.results.iter().all(|(key, value)| {
             other

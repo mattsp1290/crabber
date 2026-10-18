@@ -259,7 +259,7 @@ pub(in crate::memory) fn original_read(
         .verify_original(session, initial, witness, &sources, init)
         .map_err(Into::into)
 }
-pub(super) fn initial_journal_read<'a>(
+pub(in crate::memory) fn initial_journal_read<'a>(
     state: &'a State,
     run: &crabber_core::RunId,
     initial: &RunIssuance,
@@ -347,7 +347,7 @@ fn journal(
     }
     Ok(())
 }
-pub(super) type Sources<'a> = (
+pub(in crate::memory) type Sources<'a> = (
     &'a crabber_core::Session,
     &'a RunIssuance,
     &'a Witness,
@@ -364,7 +364,7 @@ fn sources<'a>(
 fn measure_read(proof: &mut Proof, value: &impl serde::Serialize) -> Result<(), ReadError<Error>> {
     proof.measure(value).map_err(ReadError::Budget)
 }
-pub(super) fn sources_read<'a>(
+pub(in crate::memory) fn sources_read<'a>(
     state: &'a State,
     run: &crabber_core::RunId,
     proof: &mut Proof,

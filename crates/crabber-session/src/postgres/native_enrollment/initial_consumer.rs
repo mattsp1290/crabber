@@ -1,5 +1,7 @@
 //! Closed original Initial consumer under the actual Session transaction.
 mod birth;
+mod classification;
+pub(in crate::postgres) use classification::{classify_run, classify_selected_run};
 mod members;
 mod retirement;
 pub(in crate::postgres) mod storage;
@@ -39,3 +41,8 @@ impl crate::postgres::PostgresStore {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::postgres) use classification::{
+    original_child_activation_id, original_started_cursor,
+};

@@ -6,7 +6,7 @@ use crate::{AttemptCleanup, AttemptState, DeletionBlocker};
 use crabber_core::{AttemptId, RunId, RunStatus, SessionId};
 use sqlx::Postgres;
 mod phases;
-mod runs;
+pub(super) mod runs;
 mod scan;
 mod source;
 pub(super) async fn run_ids(

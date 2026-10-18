@@ -25,10 +25,18 @@ async fn check(
     session: &SessionId,
     coverage: &VerifiedDeletionCoverage,
 ) -> crate::sql_deletion::readiness::Result<VerifiedScope> {
+    let mut proof = Proof::bounded(MAX_PROOF_BYTES);
+    check_with_proof(tx, session, coverage, &mut proof).await
+}
+async fn check_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &SessionId,
+    coverage: &VerifiedDeletionCoverage,
+    proof: &mut Proof,
+) -> crate::sql_deletion::readiness::Result<VerifiedScope> {
     if coverage.session_id() != session {
         return Err(unknown("coverage scope"));
     }
-    let mut proof = Proof::bounded(MAX_PROOF_BYTES);
     proof.charge(coverage.proof_bytes())?;
     let revision: Option<i64> =
         sqlx::query_scalar("SELECT public_revision FROM sessions WHERE id=$1")
@@ -60,16 +68,13 @@ async fn check(
     proof.charge(1)?;
     let pending_initial: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_initial_cohorts WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_epochs WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_source_slots WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_registered_completes WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_assignments WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_closes WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_publications WHERE session_id=$1 UNION ALL SELECT 1 FROM pending_initial_heads WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_origins WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_cohorts WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_assignments WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_calls WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_results WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_roster WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_reverse WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_publications WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_heads WHERE session_id=$1 UNION ALL SELECT 1 FROM initial_consumer_closes WHERE session_id=$1)")
         .bind(&session.0).fetch_one(&mut **tx).await.map_err(unknown)?;
-    if pending_initial {
-        return Err(Failure::Blocked(DeletionBlocker::OwnershipUnknown));
-    }
-    let unproven_run_sources = native::runtime(tx, session, &mut proof).await?;
-    super::super::fork::verify_imported_history(tx, session, &mut proof).await?;
-    let unknown_native = native::attempts(tx, session, &mut proof).await?;
-    let unknown_calls = native::phases(tx, session, &mut proof).await?;
-    domains::continuations(tx, session, &mut proof).await?;
-    native::released_suspensions(tx, session, &mut proof).await?;
-    domains::queue(tx, session, &mut proof).await?;
+    let unproven_run_sources = native::runtime(tx, session, proof).await?;
+    super::super::fork::verify_imported_history(tx, session, proof).await?;
+    let unknown_native = native::attempts(tx, session, proof).await?;
+    let unknown_calls = native::phases(tx, session, proof).await?;
+    domains::continuations(tx, session, proof).await?;
+    native::released_suspensions(tx, session, proof).await?;
+    domains::queue(tx, session, proof).await?;
     proof.charge(1)?;
     let unproven_queue: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM future_queue WHERE session_id=$1 AND source_protocol=0)",
@@ -79,11 +84,12 @@ async fn check(
     .await
     .map_err(unknown)?;
     domains::pending_input(tx, session).await?;
-    domains::controls(tx, session, &mut proof).await?;
-    let unknown_owner = domains::owners(tx, session, &mut proof).await?;
+    domains::controls(tx, session, proof).await?;
+    let unknown_owner = domains::owners(tx, session, proof).await?;
     // Authenticated native history still requires a fixed known whole-Run
     // Runtime resource policy. The retained-Run gate remains conservative.
-    if native_protocol != 1
+    if pending_initial
+        || native_protocol != 1
         || unproven_run_sources
         || unproven_queue
         || unknown_native
@@ -100,3 +106,6 @@ mod tests;
 
 #[cfg(test)]
 mod imported_tests;
+
+#[cfg(test)]
+pub(super) mod classifier_tests;

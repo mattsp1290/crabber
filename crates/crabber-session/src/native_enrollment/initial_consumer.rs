@@ -1,8 +1,11 @@
 //! Protected originals for the closed, original Initial consumer.
 //! Stored records describe actual native publications. They never recreate a
 //! task, a resource source, a grant, or permission to dispatch.
+#[path = "initial_consumer/classification.rs"]
+mod classification;
 #[path = "initial_consumer/ledger.rs"]
 mod ledger;
+pub(crate) use classification::InitialConsumption;
 #[path = "initial_consumer/original.rs"]
 mod original;
 #[path = "initial_consumer/records.rs"]
@@ -31,6 +34,7 @@ fn copied<T: Serialize + Clone>(value: &T, proof: &mut Proof) -> Result<T, Failu
     Ok(value.clone())
 }
 native_pending_initial_items! {
+    pub(crate) use classification::classify_closed;
     #[cfg(test)]
     pub(crate) use ledger::Projection;
     #[path = "initial_consumer/publication.rs"]

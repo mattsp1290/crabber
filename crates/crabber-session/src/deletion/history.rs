@@ -1,4 +1,6 @@
 //! Independent source facts are not a resource-ownership certificate.
+use crate::native_enrollment::initial_consumer::InitialConsumption;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fact {
     Authenticated,
@@ -18,6 +20,7 @@ impl Fact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RunHistoryReport {
     pub(crate) initial_source: Fact,
+    pub(crate) initial_consumption: InitialConsumption,
     pub(crate) every_noninitial_claim: Fact,
     pub(crate) retained_noninitial_sources: Fact,
     pub(crate) terminal_source: Fact,
@@ -28,6 +31,7 @@ impl RunHistoryReport {
     pub(crate) fn sources(initial: bool, claims: ClaimHistory, terminal: bool) -> Self {
         Self {
             initial_source: Fact::from_verified(initial),
+            initial_consumption: InitialConsumption::Unproven,
             every_noninitial_claim: claims.complete,
             retained_noninitial_sources: claims.retained_sources,
             terminal_source: Fact::from_verified(terminal),
@@ -37,17 +41,22 @@ impl RunHistoryReport {
             resource_policy: Fact::Unproven,
         }
     }
+    pub(crate) fn with_initial_consumption(mut self, value: InitialConsumption) -> Self {
+        self.initial_consumption = value;
+        self
+    }
     pub(crate) fn complete(self) -> bool {
-        [
-            self.initial_source,
-            self.every_noninitial_claim,
-            self.retained_noninitial_sources,
-            self.terminal_source,
-            self.main_join,
-            self.resource_policy,
-        ]
-        .into_iter()
-        .all(|fact| fact == Fact::Authenticated)
+        self.initial_consumption == InitialConsumption::CompletedSource
+            && [
+                self.initial_source,
+                self.every_noninitial_claim,
+                self.retained_noninitial_sources,
+                self.terminal_source,
+                self.main_join,
+                self.resource_policy,
+            ]
+            .into_iter()
+            .all(|fact| fact == Fact::Authenticated)
     }
 }
 /// Retained associations and complete historical membership are independent.

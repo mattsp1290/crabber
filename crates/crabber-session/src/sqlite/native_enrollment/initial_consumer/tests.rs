@@ -76,6 +76,11 @@ async fn sqlite_closed_initial_scripted_consumer_preserves_all_actual_originals(
         );
         assert!(!failed, "{failure}");
         verify(store.as_ref(), &session, &key, keyed).await;
+        Box::pin(crate::sqlite::deletion::verify_initial_classifier_fixture(
+            store.as_ref(),
+            &session,
+        ))
+        .await;
         guards::verify(store.as_ref(), &session, &key).await;
         Box::pin(erased::verify(store.as_ref(), &session, &key)).await;
     }

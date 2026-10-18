@@ -11,7 +11,7 @@ use crate::transaction::Transaction;
 use crabber_core::{RunId, RunStatus, SessionId};
 use sqlx::{Row, Sqlite};
 /// Independent source facts remain distinct from actual resource joins.
-pub(super) async fn verify(
+pub(in crate::sqlite::deletion::readiness) async fn verify(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     run: &RunId,
@@ -52,11 +52,18 @@ pub(super) async fn verify(
     let terminal = terminal::verify(tx, session, run, status, proof).await?;
     let abandoned =
         super::super::super::super::abandon_history::verify(tx, session, run, proof).await?;
+    let consumption = Box::pin(
+        super::super::super::super::native_enrollment::initial_consumer::classify_selected_run(
+            tx, session, run, proof,
+        ),
+    )
+    .await?;
     Ok(RunHistoryReport::sources(
         admitted,
         claims.with_membership(protected),
         terminal || abandoned,
-    ))
+    )
+    .with_initial_consumption(consumption))
 }
 async fn journal(
     tx: &mut Transaction<'_, Sqlite>,

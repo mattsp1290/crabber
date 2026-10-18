@@ -82,6 +82,10 @@ async fn postgres_closed_initial_scripted_consumer_preserves_all_actual_original
         );
         assert!(!failed, "{failure}");
         verify(store.as_ref(), &session, &key, keyed).await;
+        Box::pin(
+            crate::postgres::deletion::verify_initial_classifier_fixture(store.as_ref(), &session),
+        )
+        .await;
         guards::verify(store.as_ref(), &session, &key).await;
         Box::pin(erased::verify(store.as_ref(), &session, &key)).await;
         store.purge_pending_initial_fixture(&session).await.unwrap();

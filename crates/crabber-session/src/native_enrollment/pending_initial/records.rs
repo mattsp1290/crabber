@@ -22,6 +22,35 @@ impl PartialOrd for SourceKey {
     }
 }
 impl SourceKey {
+    /// The shared original identity recipe. All values are borrowed originals;
+    /// this hash supplies routing metadata and never native authentication.
+    pub(crate) fn from_original_identities(
+        session: &SessionId,
+        root_reserve: &crabber_core::SessionOwnerOperationId,
+        root_begin: &crabber_core::SessionOwnerOperationId,
+        root_target: &crate::session_owner::SessionOwnerTarget,
+        registration: &crate::session_owner::owned_scope::OwnedScopeActivation,
+        proof: &mut Proof,
+    ) -> Result<Self, Failure> {
+        let identities = (
+            session,
+            root_reserve,
+            root_begin,
+            root_target,
+            &registration.source.reserve,
+            &registration.source.begin,
+            &registration.source.target,
+            &registration.id,
+            &registration.nonce,
+        );
+        proof.measure(&identities)?;
+        let identity = digest(&("crabber.pending-initial.source-key.v1", identities))?;
+        proof.measure(session)?;
+        Ok(Self {
+            session_id: session.clone(),
+            identity,
+        })
+    }
     pub(crate) fn expected(
         original: &JoinedPreparation,
         proof: &mut Proof,
@@ -40,26 +69,17 @@ impl SourceKey {
         crate::native_enrollment::caller::measure_owner_authority(authority, proof)
             .map_err(|_| Error::Capacity)?;
         let root = reserve.reconciliation()?;
-        let identities = (
+        Self::from_original_identities(
             &reserve.owner.binding.session_id,
             &root.reserve_id,
             &root.begin_id,
             target,
-            &registration.source.reserve,
-            &registration.source.begin,
-            &registration.source.target,
-            &registration.id,
-            &registration.nonce,
-        );
-        proof.measure(&identities).map_err(|_| Error::Capacity)?;
-        let identity = digest(&("crabber.pending-initial.source-key.v1", identities))
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-        proof
-            .measure(&reserve.owner.binding.session_id)
-            .map_err(|_| Error::Capacity)?;
-        Ok(Self {
-            session_id: reserve.owner.binding.session_id.clone(),
-            identity,
+            registration,
+            proof,
+        )
+        .map_err(|error| match error {
+            Failure::Limited(_) => Error::Capacity.into(),
+            Failure::Error(_) => Error::UnknownStoreOutcome.into(),
         })
     }
 }

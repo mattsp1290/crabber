@@ -47,7 +47,10 @@ fn report(state: &State, run: &Run, proof: &mut Proof) -> Result<RunHistoryRepor
             && (state.admission_execution_protocols.contains(&run.id) || unkeyed_input),
         claims.with_membership(protected),
         terminal || approved || abandoned || cancelled,
-    ))
+    )
+    .with_initial_consumption(crate::memory::initial_consumer::classify_run(
+        state, run, proof,
+    )?))
 }
 
 fn input(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure> {
@@ -186,3 +189,9 @@ fn terminal(state: &State, run: &Run, proof: &mut Proof) -> Result<bool, Failure
 #[cfg(test)]
 #[path = "run_history_tests.rs"]
 mod tests;
+
+native_pending_initial_items! {
+    #[cfg(test)]
+    #[path="run_history/classification_tests.rs"]
+    mod classification_tests;
+}

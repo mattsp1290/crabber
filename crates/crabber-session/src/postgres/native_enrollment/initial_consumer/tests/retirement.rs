@@ -4,7 +4,10 @@ use super::{
     initial_consumer_fixture,
 };
 use crate::Store;
-use crate::native_enrollment::initial_consumer::{CallKind, ConsumerClose, DriverRetirement};
+use crate::native_enrollment::initial_consumer::{
+    CallKind, ConsumerClose, DriverRetirement, InitialConsumption,
+};
+use crate::public_session::v2::proof::Proof;
 use std::sync::atomic::{AtomicBool, AtomicU8};
 #[tokio::test]
 async fn postgres_initial_driver_retirement_original_register_activate_and_paired_ack_faults() {
@@ -125,7 +128,7 @@ async fn effect_counts(
 async fn closed_native_counts(
     store: &crate::PostgresStore,
     session: &crabber_core::SessionId,
-) -> (ConsumerClose, i64, i64) {
+) -> (ConsumerClose, i64, i64, InitialConsumption) {
     let raw: String =
         sqlx::query_scalar("SELECT data_json FROM initial_consumer_closes WHERE session_id=$1")
             .bind(&session.0)
@@ -141,7 +144,22 @@ async fn closed_native_counts(
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    (close, joined, activated)
+    let run: String = sqlx::query_scalar("SELECT id FROM runs WHERE session_id=$1")
+        .bind(&session.0)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let mut tx = store.session_transaction(session).await.unwrap();
+    let class = Box::pin(super::super::classify_selected_run(
+        &mut tx,
+        session,
+        &crabber_core::RunId(run),
+        &mut Proof::bounded(32 << 20),
+    ))
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    (close, joined, activated, class)
 }
 
 async fn fault_case(store: Arc<crate::PostgresStore>, keyed: bool, case: (CallKind, u8, i32)) {
@@ -204,7 +222,8 @@ async fn fault_case(store: Arc<crate::PostgresStore>, keyed: bool, case: (CallKi
     } else {
         None
     };
-    let (close, joined, activated) = Box::pin(closed_native_counts(store.as_ref(), &session)).await;
+    let (close, joined, activated, class) =
+        Box::pin(closed_native_counts(store.as_ref(), &session)).await;
 
     if kind == CallKind::Conclude {
         older_driver_new_no_opened(store.clone(), &session).await;
@@ -238,17 +257,25 @@ async fn fault_case(store: Arc<crate::PostgresStore>, keyed: bool, case: (CallKi
         "{keyed}/{expected}/{mode}: {status:?} {error}"
     );
     assert!(!failed, "{error}");
-    verify_retirement(&close, expected, (joined, activated), (kind, mode));
+    verify_retirement(&close, expected, (joined, activated, class), (kind, mode));
 }
 
 fn verify_retirement(
     close: &ConsumerClose,
     expected: i32,
-    counts: (i64, i64),
+    counts: (i64, i64, InitialConsumption),
     call: (CallKind, u8),
 ) {
-    let (joined, activated) = counts;
+    let (joined, activated, consumption) = counts;
     let (kind, mode) = call;
+    assert_eq!(
+        consumption,
+        if kind == CallKind::Conclude {
+            InitialConsumption::CompletedSource
+        } else {
+            InitialConsumption::AuthenticatedClosedPrefix
+        }
+    );
     let class = match &close.retirement {
         DriverRetirement::NoDriver => 0,
         DriverRetirement::Unactivated { .. } => 1,

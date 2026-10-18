@@ -1,7 +1,10 @@
 //! Selected protected consumer originals under the actual Memory lock.
 use super::State;
+#[path = "initial_consumer/classification.rs"]
+mod classification;
 use crate::native_enrollment::initial_consumer::{Correlation, RecordDelta, Selection};
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
+pub(in crate::memory) use classification::classify_run;
 use crabber_core::SessionId;
 
 pub(super) fn routes(
@@ -182,6 +185,11 @@ pub(super) fn refuse_raw_activation(
     Ok(())
 }
 native_pending_initial_items! {
+    #[cfg(test)]
+    #[path="initial_consumer/classification_tests.rs"]
+    mod classification_tests;
+    #[path="initial_consumer/classification_native.rs"]
+    mod classification_native;
     #[cfg(test)]
     #[path="initial_consumer/retirement_budget_tests.rs"]
     mod retirement_budget_tests;
