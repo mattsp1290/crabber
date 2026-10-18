@@ -17,7 +17,7 @@ pub use task::{
     PendingInitialTask, PendingQueueCompletion, PendingQueueControl, PendingQueueObservation,
     PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl, PendingSuccessorError,
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
-    PendingSuccessorTasks, QueueAdmissionMetadata,
+    PendingSuccessorTasks, PendingSupervisionReport, QueueAdmissionMetadata,
 };
 pub(crate) use task::{
     DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,

@@ -50,7 +50,7 @@ use crate::{
     },
 };
 use crabber_core::SessionContext;
-pub use retain::PendingDriverTasks;
+pub use retain::{PendingDriverTasks, PendingSupervisionReport};
 /// Compatibility name for the shared initial/successor supervisor registry.
 pub type PendingSuccessorTasks = PendingDriverTasks;
 pub use initial::{

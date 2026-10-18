@@ -13,7 +13,7 @@ pub use pending::{
     PendingInitialProducerStatus, PendingInitialTask, PendingQueueCompletion, PendingQueueControl,
     PendingQueueObservation, PendingQueueTask, PendingSuccessorCompletion, PendingSuccessorControl,
     PendingSuccessorError, PendingSuccessorObservation, PendingSuccessorReplay,
-    PendingSuccessorTask, PendingSuccessorTasks, QueueAdmissionMetadata,
+    PendingSuccessorTask, PendingSuccessorTasks, PendingSupervisionReport, QueueAdmissionMetadata,
 };
 pub(crate) use pending::{
     DrainedInitialResources, InitialResourceAssociation, InitialRetirementView,

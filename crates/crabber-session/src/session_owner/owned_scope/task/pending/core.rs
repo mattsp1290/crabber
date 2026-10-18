@@ -17,7 +17,7 @@ use crate::{
 use crabber_core::SessionContext;
 pub(super) use state::{CallAdmission, Control};
 use std::{future::Future, sync::Arc};
-use tokio::sync::{OwnedSemaphorePermit, oneshot};
+use tokio::sync::oneshot;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Family {
@@ -174,7 +174,7 @@ pub(super) struct Observation<T> {
     pub(super) disposition: OwnedMainDisposition,
     pub(super) error: Option<PendingSuccessorError>,
     pub(super) replay: Option<Replay>,
-    pub(super) _capacity: Option<OwnedSemaphorePermit>,
+    pub(super) _capacity: Option<Arc<super::retain::CapacityLease>>,
     pub(super) protected: Option<super::enrolled_initial::PendingInitialProducerObservation>,
 }
 impl<T> Drop for Observation<T> {

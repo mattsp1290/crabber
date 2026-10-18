@@ -1,9 +1,16 @@
-use super::super::{Error, JoinedOwnedTask, OwnedMainDisposition};
+//! Actual original supervisor joins, with bounded retained failure accounting.
+mod body;
+mod observation;
+use super::super::Error;
 use super::PendingSuccessorError;
 use super::core::{Control, Observation, TaskOutput};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch},
@@ -11,14 +18,44 @@ use tokio::{
 };
 
 const MAX_PENDING: usize = 64;
+pub(super) struct CapacityLease {
+    _permit: OwnedSemaphorePermit,
+}
+struct Entry {
+    failed: AtomicBool,
+    _capacity: Arc<CapacityLease>,
+    unobserved: Mutex<Option<JoinHandle<()>>>,
+}
 struct Registry {
-    tasks: Mutex<BTreeMap<uuid::Uuid, JoinHandle<()>>>,
+    tasks: Mutex<BTreeMap<uuid::Uuid, Arc<Entry>>>,
     capacity: Arc<Semaphore>,
     changed: watch::Sender<()>,
+    #[cfg(test)]
+    epilogue: Mutex<Option<Arc<supervision_joins::Gate>>>,
 }
-/// Explicit Session-owned supervisor registry, limited to 64 concurrent retained
-/// registrations. This is not a per-Run history or native ownership limit.
-/// Dropping all public handles still retains supervisors through actual joins.
+/// Actual retained-supervisor observation, not native/resource retirement proof.
+/// Concurrent later registrations and caller-owned cached outputs are excluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingSupervisionReport {
+    pending: usize,
+    failed: usize,
+}
+impl PendingSupervisionReport {
+    #[must_use]
+    pub fn pending_supervisors(&self) -> usize {
+        self.pending
+    }
+    #[must_use]
+    pub fn failed_supervisors(&self) -> usize {
+        self.failed
+    }
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.pending == 0 && self.failed == 0
+    }
+}
+/// At most 64 registrations, including sticky failed supervision and cached
+/// legacy output leases. Dropped public tasks retain their actual supervisors.
 #[derive(Clone)]
 pub struct PendingDriverTasks {
     inner: Arc<Registry>,
@@ -30,7 +67,25 @@ impl Default for PendingDriverTasks {
                 tasks: Mutex::default(),
                 capacity: Arc::new(Semaphore::new(MAX_PENDING)),
                 changed: watch::channel(()).0,
+                #[cfg(test)]
+                epilogue: Mutex::default(),
             }),
+        }
+    }
+}
+impl Registry {
+    fn report(&self) -> PendingSupervisionReport {
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failed = tasks
+            .values()
+            .filter(|entry| entry.failed.load(Ordering::Acquire))
+            .count();
+        PendingSupervisionReport {
+            pending: tasks.len() - failed,
+            failed,
         }
     }
 }
@@ -46,23 +101,39 @@ impl PendingDriverTasks {
             .try_acquire_owned()
             .map_err(|_| Error::Capacity)
     }
-    /// Wait for actual main observations/disposal by retained supervisors.
-    /// Cached caller-owned results may still retain capacity; no native/resource
-    /// retirement or complete ownership policy follows from this observation.
+    /// Wait for successful actual supervisor joins. Sticky failed supervision
+    /// keeps this wait pending; use `observe_supervision` for a bounded report.
+    /// This does not observe disposal of caller-retained legacy cached outputs.
     pub async fn wait_for_supervision(&self) {
         let mut changed = self.inner.changed.subscribe();
         loop {
-            if self
-                .inner
-                .tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty()
-            {
+            if self.inner.report().is_complete() {
                 return;
             }
             if changed.changed().await.is_err() {
-                return;
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+    /// Observe the same actual supervisors until completion, terminal failure,
+    /// or the deadline. Cancellation drops only this watch waiter. Zero or
+    /// overflowing durations return the current conservative snapshot.
+    /// No native settlement, arbitrary resource join, or future admission is certified.
+    pub async fn observe_supervision(&self, bound: Duration) -> PendingSupervisionReport {
+        let mut changed = self.inner.changed.subscribe();
+        let Some(deadline) = tokio::time::Instant::now().checked_add(bound) else {
+            return self.inner.report();
+        };
+        loop {
+            let report = self.inner.report();
+            if report.pending == 0 || tokio::time::Instant::now() >= deadline {
+                return report;
+            }
+            if tokio::time::timeout_at(deadline, changed.changed())
+                .await
+                .is_err()
+            {
+                return self.inner.report();
             }
         }
     }
@@ -74,87 +145,33 @@ impl PendingDriverTasks {
         capacity: OwnedSemaphorePermit,
         protected: Option<super::core::RetainedOwner>,
     ) {
+        let capacity = Arc::new(CapacityLease { _permit: capacity });
+        // The original main is still parked until register_body returns.
+        let supervisor = tokio::spawn(body::run(
+            task,
+            control,
+            send,
+            capacity.clone(),
+            protected,
+            #[cfg(test)]
+            self.inner.epilogue.lock().unwrap().clone(),
+        ));
+        self.track(supervisor, capacity);
+    }
+    fn track(&self, supervisor: JoinHandle<()>, capacity: Arc<CapacityLease>) {
         let id = uuid::Uuid::new_v4();
-        let registry = self.inner.clone();
-        // The original task is parked; it cannot finish before insertion below.
-        let supervisor = tokio::spawn(async move {
-            let (disposition, value, error, replay) = match task.await {
-                Ok(Ok(TaskOutput::Business(value))) => {
-                    (OwnedMainDisposition::Returned, Some(value), None, None)
-                }
-                Ok(Ok(TaskOutput::BusinessFailed(error))) => {
-                    (OwnedMainDisposition::Returned, None, Some(error), None)
-                }
-                Ok(Ok(TaskOutput::Stopped)) => (OwnedMainDisposition::NoDispatch, None, None, None),
-                Ok(Ok(TaskOutput::Replayed(replay))) => {
-                    (OwnedMainDisposition::NoDispatch, None, None, Some(replay))
-                }
-                Ok(Err(error)) => (OwnedMainDisposition::NoDispatch, None, Some(error), None),
-                Err(error) if error.is_panic() => {
-                    // Persist failure before safely disposing an untrusted payload.
-                    control.finish(OwnedMainDisposition::Panicked);
-                    super::super::discard_panic(error);
-                    (OwnedMainDisposition::Panicked, None, None, None)
-                }
-                Err(_) => (OwnedMainDisposition::Aborted, None, None, None),
-            };
-            let main = control.binding().map(|bound| JoinedOwnedTask {
-                activation: bound.activation().clone(),
-                disposition,
-                value,
-            });
-            // The same supervisor retains original outputs/resources even if
-            // the bounded observation or its caller-owned retry is dropped.
-            let physical = protected.clone();
-            let protected = match protected {
-                Some(retained) => retained.after_join(disposition).await,
-                None => None,
-            };
-            let pending = physical
-                .as_ref()
-                .is_some_and(super::core::RetainedOwner::resources_pending);
-            let (capacity, physical_capacity) = if physical.is_some() {
-                if pending {
-                    (None, Some(capacity))
-                } else {
-                    drop(capacity);
-                    (None, None)
-                }
-            } else {
-                (Some(capacity), None)
-            };
-            let observation = Observation {
-                family: control.family(),
-                main,
-                disposition,
-                error,
-                replay,
-                _capacity: capacity,
-                protected,
-            };
-            control.finish(disposition);
-            // Failed send owns/disposes the actual result here, not a detached main.
-            if let Err(observation) = send.send(observation) {
-                drop(observation);
-            }
-            if let Some(capacity) = physical_capacity {
-                if let Some(retained) = &physical {
-                    retained.join_original_resources().await;
-                }
-                drop(capacity);
-            }
-            registry
-                .tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
-            registry.changed.send_replace(());
+        let entry = Arc::new(Entry {
+            failed: AtomicBool::new(false),
+            _capacity: capacity,
+            unobserved: Mutex::default(),
         });
         self.inner
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, supervisor);
+            .insert(id, entry.clone());
+        let observer = observation::Observer::new(self.inner.clone(), id, entry, supervisor);
+        tokio::spawn(observer.run());
     }
 }
 
@@ -166,3 +183,7 @@ pub(super) fn discard<T>(value: T) {
         std::mem::forget(nested);
     }
 }
+
+#[cfg(test)]
+#[path = "retain/tests.rs"]
+mod supervision_joins;
