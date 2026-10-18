@@ -7,6 +7,8 @@ mod driver;
 mod faults;
 #[path = "preparation_resources/heartbeat.rs"]
 pub(super) mod heartbeat;
+#[path = "preparation_resources/legacy_failure.rs"]
+mod legacy_failure;
 #[path = "preparation_resources/pending_approval.rs"]
 mod pending_approval;
 #[path = "preparation_resources/pending_tool.rs"]

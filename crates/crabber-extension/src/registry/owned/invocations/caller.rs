@@ -63,6 +63,9 @@ pub struct CallbackInvocationCapability {
     parent: ToolResources,
 }
 impl CallbackInvocationCapability {
+    pub(crate) fn parent_matches(&self, resources: &ToolResources) -> bool {
+        self.parent.same_scope(resources)
+    }
     /// Check actual async joins and synchronous return/unwind observations.
     /// Success is neither a seal nor evidence of complete resource membership:
     /// this open capability may still admit later callbacks. No task is polled,

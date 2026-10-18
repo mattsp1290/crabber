@@ -15,7 +15,7 @@ use crabber_session::{
 
 pub(super) async fn start(
     store: &dyn Store,
-    entry: &Entry,
+    entry: &std::sync::Arc<Entry>,
     receipt: &SessionServiceDependencyReceipt,
     authority: &SessionOwnerAuthority,
     task: SessionServiceDependencyTask,
@@ -30,16 +30,19 @@ pub(super) async fn start(
     };
     let parent_done = entry.parent_done.clone();
     let (started, observed) = tokio::sync::oneshot::channel();
-    let Ok(registration) = OwnedTaskRegistration::register(source, move || async move {
-        // This guard closes ingress only; it is never a main/resource Join.
-        // Once this task has actually been transferred, ending the parent does
-        // not cancel the independently retained dependency's lifetime.
-        if parent_done.is_cancelled() || context.cancel.is_cancelled() {
-            return Ok(());
-        }
-        let work = task(context);
-        let _ = started.send(());
-        work.await
+    let original_entry = entry.clone();
+    let Ok(registration) = OwnedTaskRegistration::register(source, move || {
+        super::super::close::scope(original_entry, async move {
+            // This guard closes ingress only; it is never a main/resource Join.
+            // Once this task has actually been transferred, ending the parent does
+            // not cancel the independently retained dependency's lifetime.
+            if parent_done.is_cancelled() || context.cancel.is_cancelled() {
+                return Ok(());
+            }
+            let work = task(context);
+            let _ = started.send(());
+            work.await
+        })
     }) else {
         entry.set_status(Status::Uncertain);
         return None;

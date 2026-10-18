@@ -36,10 +36,17 @@ impl WorkerResources {
         kind: WorkerResourceKind,
     ) -> crabber_extension::ToolResourceOwner {
         let owner = crabber_extension::ToolResourceOwner::new();
-        self.tasks
-            .owners
-            .lock()
-            .unwrap()
+        self.tasks.refresh_resources();
+        let mut retained = self.tasks.owners.lock().unwrap();
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| !scope.belongs_to(&self.tasks) || scope.verify(&retained).is_err())
+        {
+            owner.close();
+            return owner;
+        }
+        retained
             .background_tasks
             .push(Arc::new(OwnedBackgroundResources {
                 session_id: self.session_id.clone(),
@@ -56,7 +63,15 @@ impl WorkerResources {
         task: impl Future<Output = Result<(), crabber_extension::ResourceFailure>> + Send + 'static,
     ) -> Result<(), crabber_extension::ResourceRegistrationError> {
         let owner = crabber_extension::ToolResourceOwner::new();
+        self.tasks.refresh_resources();
         let mut owners = self.tasks.owners.lock().unwrap();
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| !scope.belongs_to(&self.tasks) || scope.verify(&owners).is_err())
+        {
+            return Err(crabber_extension::ResourceRegistrationError::Sealed);
+        }
         owners
             .background_tasks
             .push(Arc::new(OwnedBackgroundResources {
@@ -178,4 +193,25 @@ pub(super) fn snapshots(
         !report.sealed || report.pending != 0 || !report.failures.is_empty()
     });
     reports
+}
+
+// Exact retained worker identity; no native or routing equality is used.
+pub(super) fn worker_done(owners: &ExecutionOwners, worker: &WorkerResourceId) -> bool {
+    owners
+        .background_tasks
+        .iter()
+        .filter(|scope| Arc::ptr_eq(&scope.worker.0, &worker.0))
+        .all(|scope| {
+            let r = scope.owner.snapshot();
+            r.sealed && r.pending == 0
+        })
+}
+
+pub(super) fn callback_owners(
+    owners: &ExecutionOwners,
+) -> impl Iterator<Item = crabber_extension::ToolResourceOwner> + '_ {
+    owners
+        .background_tasks
+        .iter()
+        .map(|scope| scope.owner.clone())
 }

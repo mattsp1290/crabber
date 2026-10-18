@@ -1882,12 +1882,33 @@ struct SettlementGate {
     terminal_control_seen: Notify,
     reject_run_reads: std::sync::atomic::AtomicBool,
     session_owner_ack_lost: AtomicUsize,
+    legacy_cancel_calls: AtomicUsize,
     session_owner_cancel_on_begin: AtomicUsize,
     owner_observe_ack_lost: std::sync::atomic::AtomicBool,
     owner_observe_keys: Mutex<Vec<crabber_core::SessionOwnerOperationId>>,
 }
 
 impl SettlementGate {
+    fn legacy_cancellation(
+        &self,
+        kind: crabber_session::session_owner::SessionOwnerKind,
+        command: &crabber_session::session_owner::SessionOwnerCommand,
+    ) -> bool {
+        use crabber_session::session_owner::{
+            SessionOwnerCommand, SessionOwnerKind, SessionOwnerTermination,
+        };
+        let cancelled = kind == SessionOwnerKind::Preparation
+            && matches!(
+                command,
+                SessionOwnerCommand::Join {
+                    termination: SessionOwnerTermination::Cancelled
+                }
+            );
+        if cancelled {
+            self.legacy_cancel_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        cancelled
+    }
     fn malformed_driver_ack(
         &self,
         outcome: &mut crabber_session::session_owner::SessionOwnerOutcome,
@@ -2700,7 +2721,17 @@ impl Store for DelayedTerminalStore {
         };
         let scope = request.session_id.clone();
         let target = request.target.clone();
+        let legacy_cancel = self.gate.legacy_cancellation(kind, &request.command);
         let result = self.inner.mutate_session_owner(request, authority).await?;
+        if legacy_cancel
+            && self
+                .gate
+                .session_owner_ack_lost
+                .compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
+        }
         if uncertain_fault == 2 {
             return Err(crabber_session::session_owner::SessionOwnerError::UnknownStoreOutcome);
         }

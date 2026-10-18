@@ -12,24 +12,16 @@ use crabber_session::{
 };
 use futures::FutureExt;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Status {
-    Registering,
-    Active,
-    Uncertain,
-    Closing,
-    Joined,
-    Replayed,
-    Cancelled,
-    Rejected,
-    Deleted,
-}
+pub(super) use super::close::SessionServiceStatus as Status;
 pub(super) struct Access {
     pub grant: PreparationGrant,
     pub parent_done: CancellationToken,
@@ -60,6 +52,7 @@ pub(super) struct Entry {
         Mutex<Option<crabber_session::session_owner::ObserveSessionOwnerCancel>>,
     pub supervisor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub observed: Mutex<bool>,
+    pub join_failed: AtomicBool,
 }
 impl Entry {
     pub fn new(
@@ -83,6 +76,7 @@ impl Entry {
             cancel_observation: Mutex::new(None),
             supervisor: tokio::sync::Mutex::new(None),
             observed: Mutex::new(false),
+            join_failed: AtomicBool::new(false),
         })
     }
     pub fn status(&self) -> Status {
@@ -93,19 +87,27 @@ impl Entry {
     }
     pub async fn join(&self) -> Result<(), Error> {
         let mut supervisor = self.supervisor.lock().await;
-        if let Some(task) = supervisor.as_mut() {
+        let error = if let Some(task) = supervisor.as_mut() {
             let result = task.await;
             *supervisor = None;
-            *self.observed.lock().unwrap() = true;
-            if let Err(error) = result {
+            let error = result.err();
+            if error.is_some() {
+                self.join_failed.store(true, Ordering::Release);
                 self.set_status(Status::Uncertain);
-                if error.is_panic() {
-                    discard_panic(error.into_panic());
-                }
-                return Err(Error::Incomplete);
             }
+            *self.observed.lock().unwrap() = true;
+            error
+        } else {
+            None
+        };
+        drop(supervisor);
+        if let Some(error) = error {
+            if error.is_panic() {
+                discard_panic(error.into_panic());
+            }
+            return Err(Error::Incomplete);
         }
-        if !*self.observed.lock().unwrap() {
+        if self.join_failed.load(Ordering::Acquire) || !*self.observed.lock().unwrap() {
             return Err(Error::Incomplete);
         }
         Ok(())

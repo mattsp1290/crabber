@@ -79,7 +79,7 @@ async fn contract(store: Arc<dyn Store>) {
     let descriptor = grant.reconciliation().unwrap();
     let entry = runtime
         .retained_preparations
-        .reserve(grant.clone(), capacity)
+        .reserve(grant.clone(), capacity, None)
         .unwrap();
     let PreparationResourceOutcome::Applied { receipt, grant } =
         store.retain_preparation_resources(grant).await.unwrap()

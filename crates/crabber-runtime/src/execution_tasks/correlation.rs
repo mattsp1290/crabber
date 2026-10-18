@@ -19,7 +19,10 @@ impl ExecutionTasks {
         run: &RunId,
     ) -> Result<(), ()> {
         let owners = self.owners.lock().unwrap();
-        if task.session_id != *session
+        if task
+            .session_id
+            .as_ref()
+            .is_some_and(|actual| actual != session)
             || !owners
                 .tasks
                 .get(&task.local_id)

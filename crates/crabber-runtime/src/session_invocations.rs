@@ -1,5 +1,7 @@
 //! Retained registration and actual joins, independent of the parent run.
 mod cancellation;
+mod close;
+pub(crate) use close::InvocationCloseSelection;
 mod registration;
 mod scoped;
 mod worker;
@@ -12,7 +14,10 @@ use crabber_extension::{
 use crabber_session::{PhaseAuthority, PhaseTarget, Store};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::oneshot;
@@ -45,16 +50,34 @@ struct Invocation {
     status: Mutex<SessionInvocationStatus>,
     resources: crabber_extension::ToolResourceOwner,
     join: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    observed: AtomicBool,
+    join_failed: AtomicBool,
 }
 impl Invocation {
     fn status(&self, status: SessionInvocationStatus) {
         *self.status.lock().unwrap() = status;
+    }
+    fn publish_join_result(
+        &self,
+        join: &mut Option<tokio::task::JoinHandle<()>>,
+        result: Result<(), tokio::task::JoinError>,
+    ) -> Option<tokio::task::JoinError> {
+        *join = None;
+        let error = result.err();
+        if error.is_some() {
+            self.join_failed.store(true, Ordering::Release);
+            self.status(SessionInvocationStatus::Uncertain);
+        }
+        // Failure/status precede the publication read first by close snapshots.
+        self.observed.store(true, Ordering::Release);
+        error
     }
 }
 type Owners = BTreeMap<(SessionId, SessionOwnerId), Arc<Invocation>>;
 #[derive(Default, Clone)]
 pub(crate) struct SessionInvocations {
     owners: Arc<Mutex<Owners>>,
+    closed: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 pub(crate) struct Parent {
@@ -83,15 +106,18 @@ impl SessionInvocations {
             let Ok(mut join) = owner.join.try_lock() else {
                 continue;
             };
-            if let Some(handle) = join.as_mut() {
+            let error = if let Some(handle) = join.as_mut() {
                 if !handle.is_finished() {
                     continue;
                 }
-                if let Err(error) = handle.await {
-                    worker::discard_panic(error);
-                    owner.status(SessionInvocationStatus::Uncertain);
-                }
-                *join = None;
+                let result = handle.await;
+                owner.publish_join_result(&mut join, result)
+            } else {
+                None
+            };
+            drop(join);
+            if let Some(error) = error {
+                worker::discard_panic(error);
             }
             let status = *owner.status.lock().unwrap();
             let resources = owner.resources.snapshot();
@@ -160,16 +186,19 @@ impl SessionInvocations {
                 });
                 continue;
             };
-            if let Some(handle) = join.as_mut()
+            let error = if let Some(handle) = join.as_mut()
                 && let Ok(result) = tokio::time::timeout_at(deadline, handle).await
             {
-                if let Err(error) = result {
-                    worker::discard_panic(error);
-                    owner.status(SessionInvocationStatus::Uncertain);
-                }
-                *join = None;
+                owner.publish_join_result(&mut join, result)
+            } else {
+                None
+            };
+            let local_joined = join.is_none();
+            drop(join);
+            if let Some(error) = error {
+                worker::discard_panic(error);
             }
-            let resources = if join.is_none() || cancel {
+            let resources = if local_joined || cancel {
                 owner
                     .resources
                     .drain(deadline.saturating_duration_since(tokio::time::Instant::now()))
@@ -181,7 +210,7 @@ impl SessionInvocations {
                 session_id: owner.session.clone(),
                 id: owner.request.id.clone(),
                 status: *owner.status.lock().unwrap(),
-                local_joined: join.is_none(),
+                local_joined,
                 resources,
             });
         }
@@ -203,6 +232,10 @@ impl SessionInvocationSpawner for BoundSpawner {
         let (sender, receiver) = oneshot::channel();
         let existing = {
             let mut owners = self.owners.owners.lock().unwrap();
+            if self.owners.closed.load(Ordering::Acquire) {
+                drop(owners);
+                return Err(Error::Rejected);
+            }
             let key = (self.parent.session.clone(), request.id.clone());
             if owners.contains_key(&key) {
                 true
@@ -218,16 +251,20 @@ impl SessionInvocationSpawner for BoundSpawner {
                     status: Mutex::new(SessionInvocationStatus::Registering),
                     resources: crabber_extension::ToolResourceOwner::new(),
                     join: tokio::sync::Mutex::new(None),
+                    observed: AtomicBool::new(false),
+                    join_failed: AtomicBool::new(false),
                 });
                 let retained = invocation.clone();
                 let store = self.store.clone();
                 let parent = self.parent.clone();
+                let original = invocation.clone();
                 *invocation
                     .join
                     .try_lock()
-                    .expect("new invocation join lock") = Some(tokio::spawn(async move {
-                    worker::run(store, parent, retained, task, sender).await;
-                }));
+                    .expect("new invocation join lock") =
+                    Some(tokio::spawn(close::scope(original, async move {
+                        worker::run(store, parent, retained, task, sender).await;
+                    })));
                 owners.insert(key, invocation);
                 false
             }

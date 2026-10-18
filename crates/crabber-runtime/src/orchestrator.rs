@@ -1,9 +1,13 @@
+mod close_dependents;
 mod driver;
 mod heartbeat;
+mod host_close;
 mod model_callbacks;
 mod notifications;
 mod worker;
+pub use close_dependents::RuntimeDependentCloseReport;
 use heartbeat::HeartbeatGuard;
+pub use host_close::{CloseObservation, RuntimeCloseObservation, RuntimeCloseReport};
 mod host_callbacks;
 #[path = "orchestrator/observation_lifetime.rs"]
 mod observation_lifetime;
@@ -34,6 +38,7 @@ mod continuation;
 mod management;
 #[path = "orchestrator/queue.rs"]
 mod queue;
+mod queue_context;
 mod run_control;
 #[path = "orchestrator/session_owner.rs"]
 mod session_owner;
@@ -525,6 +530,8 @@ pub struct Orchestrator {
     host_callbacks: crabber_core::InputFingerprint,
     execution_tasks: crate::execution_tasks::ExecutionTasks,
     worker_resources: Option<crate::execution_tasks::WorkerResources>,
+    root_scope: Option<crate::execution_tasks::RootScope>,
+    close_coordinator: Arc<host_close::CloseCoordinator>,
     worker_callbacks: Option<crabber_extension::CallbackInvocationCapability>,
     session_invocations: crate::session_invocations::SessionInvocations,
     session_services: crate::session_services::SessionServices,
@@ -545,6 +552,7 @@ pub struct Orchestrator {
     resolver: Arc<dyn Resolver>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Arc<dyn RunPlanProvider>,
+    contextual_provider: Option<Arc<crabber_extension::ContextualPlanProvider>>,
     clock: Arc<dyn Clock>,
     monotonic_clock: Arc<dyn MonotonicClock>,
     observer: Arc<dyn Observer>,
@@ -666,6 +674,7 @@ pub struct OrchestratorBuilder {
     resolver: Option<Arc<dyn Resolver>>,
     workspace_reader_resolver: Option<Arc<dyn WorkspaceReaderResolver>>,
     plan_provider: Option<Arc<dyn RunPlanProvider>>,
+    contextual_provider: Option<Arc<crabber_extension::ContextualPlanProvider>>,
     clock: Option<Arc<dyn Clock>>,
     monotonic_clock: Option<Arc<dyn MonotonicClock>>,
     observer: Option<Arc<dyn Observer>>,
@@ -727,8 +736,20 @@ impl OrchestratorBuilder {
     #[must_use]
     pub fn plan_provider(mut self, value: Arc<dyn RunPlanProvider>) -> Self {
         self.plan_provider = Some(value);
+        self.contextual_provider = None;
         self
     }
+    /// Configure this concrete provider for owned initialization and acquisition.
+    #[must_use]
+    pub fn contextual_plan_provider(
+        mut self,
+        provider: Arc<crabber_extension::ContextualPlanProvider>,
+    ) -> Self {
+        self.plan_provider = Some(provider.clone());
+        self.contextual_provider = Some(provider);
+        self
+    }
+
     #[must_use]
     pub fn clock(mut self, value: Arc<dyn Clock>) -> Self {
         self.clock = Some(value);
@@ -829,6 +850,8 @@ impl OrchestratorBuilder {
             host_callbacks,
             execution_tasks: crate::execution_tasks::ExecutionTasks::default(),
             worker_resources: None,
+            root_scope: None,
+            close_coordinator: Arc::default(),
             worker_callbacks: None,
             session_invocations: crate::session_invocations::SessionInvocations::default(),
             session_services: crate::session_services::SessionServices::default(),
@@ -844,6 +867,7 @@ impl OrchestratorBuilder {
             store: self.store.ok_or(RuntimeError::Missing("store"))?,
             resolver: self.resolver.ok_or(RuntimeError::Missing("resolver"))?,
             workspace_reader_resolver: self.workspace_reader_resolver,
+            contextual_provider: self.contextual_provider,
             plan_provider: self
                 .plan_provider
                 .ok_or(RuntimeError::Missing("plan provider"))?,
@@ -1034,11 +1058,24 @@ impl RunHandle {
         self.enqueue(InboxKind::FollowUp, text.into()).await
     }
     async fn enqueue(&self, kind: InboxKind, text: String) -> Result<(), RuntimeError> {
-        let message = user_message(self.session_id.clone(), text, self.clock.now());
-        self.store
-            .enqueue_inbox(&self.session_id, kind, message)
-            .await?;
-        Ok(())
+        let store = self.store.clone();
+        let session = self.session_id.clone();
+        let clock = self.clock.clone();
+        let admitted = self
+            .tasks
+            .admit(Some(session.clone()), move |scope| async move {
+                if scope.cancellation().is_cancelled() {
+                    return Err(RuntimeError::HostClosed);
+                }
+                let message = user_message(session.clone(), text, clock.now());
+                store.enqueue_inbox(&session, kind, message).await?;
+                Ok(())
+            })?;
+        let result = admitted.result.await;
+        if self.tasks.join(&admitted.task).await != crate::TaskTermination::Returned {
+            return Err(RuntimeError::TaskStopped);
+        }
+        result.map_err(|_| RuntimeError::TaskStopped)?
     }
 }
 
@@ -1104,26 +1141,49 @@ impl Orchestrator {
         self.session_invocations.drain(session, cancel, bound).await
     }
 
-    fn own_preparation<T: Send + 'static>(
+    fn own_preparation<T, F, W>(
         &self,
         session_id: SessionId,
-        work: impl std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
-    ) -> impl std::future::Future<Output = Result<T, RuntimeError>> + Send + '_ {
-        Box::pin(async move {
-            let (sender, receiver) = oneshot::channel();
-            // This task owns the entire prepare/admit/claim future before its first
-            // storage await. Dropping the caller detaches only this result waiter.
-            let task = self
-                .execution_tasks
-                .spawn_preparation(session_id, async move {
-                    let _ = sender.send(work.await);
-                });
-            let outcome = receiver.await;
-            if self.execution_tasks.join(&task).await != crate::TaskTermination::Returned {
+        build: F,
+    ) -> impl std::future::Future<Output = Result<T, RuntimeError>> + Send + '_
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+    {
+        self.own_root(Some(session_id), build)
+    }
+    fn own_root<T, F, W>(
+        &self,
+        session: Option<SessionId>,
+        build: F,
+    ) -> impl std::future::Future<Output = Result<T, RuntimeError>> + Send + '_
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> W + Send + 'static,
+        W: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
+    {
+        let runtime = self.clone();
+        async move {
+            let admitted = self.execution_tasks.admit(session, move |scope| {
+                let mut runtime = runtime;
+                runtime.root_scope = Some(scope);
+                // Public reentry never inherits a prior worker's native/local loan.
+                runtime.worker_resources = None;
+                runtime.worker_callbacks = None;
+                runtime.preparation_scope = None;
+                runtime.owned_attempt = None;
+                async move {
+                    runtime.check_original_stop()?;
+                    build(runtime).await
+                }
+            })?;
+            let result = admitted.result.await;
+            if self.execution_tasks.join(&admitted.task).await != crate::TaskTermination::Returned {
                 return Err(RuntimeError::TaskStopped);
             }
-            outcome.map_err(|_| RuntimeError::TaskStopped)?
-        })
+            result.map_err(|_| RuntimeError::TaskStopped)?
+        }
     }
 
     /// Rebuilds the latest assistant batch when a resumed process died after
@@ -1258,14 +1318,18 @@ impl Orchestrator {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        let runtime = self.with_context(context);
+        if let Some(provider) = &self.contextual_provider {
+            provider.check_ready_allowed()?;
+        }
         let run_id = run_id.clone();
-        let run = runtime
-            .store
-            .get_run(&run_id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        self.own_preparation(run.session_id.clone(), async move {
+        self.own_root(None, move |runtime| async move {
+            let runtime = runtime.with_context(context);
+            runtime.initialize_owned().await?;
+            let run = runtime
+                .store
+                .get_run(&run_id)
+                .await?
+                .ok_or(StoreError::NotFound)?;
             let validated = runtime.validated_session(&run).await?;
             let binding = runtime.stored_binding(&run.session_id, &run.id).await?;
             if crabber_session::session_owner::preparation::resource_contract(
@@ -1276,13 +1340,13 @@ impl Orchestrator {
                 return Box::pin(runtime.spawn_prepared_expired(run, validated, binding)).await;
             }
             let session_id = validated.0.id.clone();
-            Ok(runtime.spawn_worker(
+            runtime.spawn_worker(
                 session_id,
                 run_id,
                 move |runtime, cancellation| async move {
                     Box::pin(runtime.resume_loaded(run, validated, cancellation, None)).await
                 },
-            ))
+            )
         })
         .await
     }
@@ -1376,9 +1440,8 @@ impl Orchestrator {
         let (plan, bound, prepared_authority) = if let Some(prepared) = prepared {
             (prepared.plan, prepared.bound, Some(prepared.authority))
         } else {
-            let (plan, bound) = self
-                .prepare_resume_resources(&run, &binding, &mut approval)
-                .await?;
+            let (plan, bound) =
+                Box::pin(self.prepare_resume_resources(&run, &binding, &mut approval)).await?;
             (plan, bound, None)
         };
         if !self.store.supports_owned_attempts()
@@ -1853,7 +1916,23 @@ impl Orchestrator {
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
         let mut report = RecoverReport::default();
-        for run in self.store.list_unfinished_runs().await? {
+        if let Some(provider) = &self.contextual_provider {
+            provider.check_ready_allowed()?;
+        }
+        let runs = self
+            .own_root(None, |runtime| async move {
+                runtime.initialize_owned().await?;
+                runtime
+                    .store
+                    .list_unfinished_runs()
+                    .await
+                    .map_err(RuntimeError::from)
+            })
+            .await?;
+        for run in runs {
+            if self.is_closed() {
+                return Err(RuntimeError::HostClosed);
+            }
             if run.lease_until > self.clock.now() {
                 continue;
             }
@@ -2020,9 +2099,11 @@ impl Orchestrator {
         request: Request,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        let runtime = self.clone();
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            return Err(refusal);
+        }
         let session_id = request.session_id.clone().unwrap_or_default();
-        self.own_preparation(session_id.clone(), async move {
+        self.own_preparation(session_id.clone(), move |runtime| async move {
             runtime.start_admission(request, session_id, context).await
         })
         .await
@@ -2080,14 +2161,14 @@ impl Orchestrator {
             crabber_session::session_owner::preparation::PreparationCompletion::AdmissionReplayed(receipt) => return Err(RuntimeError::AdmissionAlreadyCommitted(receipt)),
             _ => return Err(StoreError::AdmissionConflict.into()),
         };
-        Ok(runtime.spawn_admitted(
+        runtime.spawn_admitted(
             request,
             plan,
             admitted.fence,
             &admitted.session,
             InitialEntry::Unkeyed,
             bound,
-        ))
+        )
     }
 
     /// Admit with a host-selected stable session ID, or reconcile its original receipt.
@@ -2113,24 +2194,17 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        // Original receipts must remain readable before a fresh preparation
-        // can register ownership or initialize contextual resources.
-        if let Some(receipt) = self.replay_admission(&request, &options).await? {
-            return Ok(Admission::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            return self
+                .replay_admission(&request, &options)
+                .await?
+                .map(Admission::Replayed)
+                .ok_or(refusal);
         }
-        let session = request.session_id.as_ref().ok_or(StoreError::NotFound)?;
-        self.reject_pending_preparation(
-            session,
-            &crabber_session::session_owner::preparation::PreparationKey::Admission(
-                options.key.clone(),
-            ),
-        )
-        .await?;
-        let runtime = self.clone();
         let session_id = request.session_id.clone().ok_or_else(|| {
             StoreError::Validation("keyed admission requires a stable session ID".into())
         })?;
-        self.own_preparation(session_id, async move {
+        self.own_preparation(session_id, move |runtime| async move {
             runtime
                 .start_keyed_admission(request, options, context)
                 .await
@@ -2231,7 +2305,7 @@ impl Orchestrator {
                     &admitted.session,
                     InitialEntry::Keyed,
                     bound,
-                ),
+                )?,
             }),
             KeyedAdmitOutcome::Replayed(receipt) => Ok(Admission::Replayed(receipt)),
         }
@@ -2261,12 +2335,15 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        if let Some(receipt) = self.replay_started_admission(&request, &options).await? {
-            return Ok(Admission::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            return self
+                .replay_started_admission(&request, &options)
+                .await?
+                .map(Admission::Replayed)
+                .ok_or(refusal);
         }
-        let runtime = self.clone();
         let session_id = request.session_id.clone().ok_or(StoreError::NotFound)?;
-        self.own_preparation(session_id, async move {
+        self.own_preparation(session_id, move |runtime| async move {
             Box::pin(runtime.recover_retained_admission(request, options, context)).await
         })
         .await
@@ -2278,6 +2355,15 @@ impl Orchestrator {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
+        self.check_original_stop()?;
+        if let Some(session) = &request.session_id {
+            self.validate_context(&SessionContext::new(
+                session.clone(),
+                request.workspace_id.clone(),
+                request.directory.clone(),
+            ))
+            .await?;
+        }
         let retained = self
             .retained_admission(&request, &options)
             .await?
@@ -2364,7 +2450,7 @@ impl Orchestrator {
                 &persisted,
                 InitialEntry::RecoveredKeyed(None),
                 Some(bound),
-            ),
+            )?,
         })
     }
 
@@ -2599,7 +2685,7 @@ impl Orchestrator {
         session: &Session,
         entry: InitialEntry,
         bound: Option<crabber_providers::BoundProvider>,
-    ) -> RunHandle {
+    ) -> Result<RunHandle, RuntimeError> {
         let work_session = RunSession::from(session);
         let driver = driver::registration::for_entry(
             &entry,
@@ -2632,7 +2718,12 @@ impl Orchestrator {
         )
     }
 
-    fn spawn_worker<F, W>(&self, session_id: SessionId, run_id: RunId, work: F) -> RunHandle
+    fn spawn_worker<F, W>(
+        &self,
+        session_id: SessionId,
+        run_id: RunId,
+        work: F,
+    ) -> Result<RunHandle, RuntimeError>
     where
         F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
         W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
@@ -2646,7 +2737,7 @@ impl Orchestrator {
         run_id: RunId,
         driver: Option<driver::Request>,
         work: F,
-    ) -> RunHandle
+    ) -> Result<RunHandle, RuntimeError>
     where
         F: FnOnce(Self, CancellationToken) -> W + Send + 'static,
         W: std::future::Future<Output = Result<RunResult, RuntimeError>> + Send + 'static,
@@ -2656,12 +2747,17 @@ impl Orchestrator {
             business,
             resources,
             complete,
-        } = self.worker_launch(session_id.clone(), run_id.clone());
+        } = self.worker_launch(session_id.clone(), run_id.clone())?;
         let store = self.store.clone();
         let cancellation = handle.cancellation.clone();
-        let task = self
-            .execution_tasks
-            .spawn_reporting(session_id, Some(run_id), async move {
+        let parent = self.root_scope.as_ref().ok_or(RuntimeError::HostClosed)?;
+        let original = parent.clone();
+        let original_run = run_id.clone();
+        let task = self.execution_tasks.spawn_reporting_in(
+            parent,
+            session_id,
+            Some(run_id),
+            move |_scope| async move {
                 if let Some(request) = driver {
                     if let Err(error) = driver::run(
                         store,
@@ -2673,6 +2769,7 @@ impl Orchestrator {
                     )
                     .await
                     {
+                        original.record_business_failure(&original_run, &error);
                         complete.publish(Err(error));
                     }
                 } else {
@@ -2680,8 +2777,9 @@ impl Orchestrator {
                     let _ = resources.finish_background().await;
                 }
                 complete.termination()
-            });
-        handle.finish(task)
+            },
+        )?;
+        Ok(handle.finish(task))
     }
 
     async fn run(
@@ -4561,25 +4659,32 @@ mod recovery_contract_tests {
         let work_session = session_id.clone();
         let work_run = run_id.clone();
         let work_plan = plan.clone();
-        let recovery = runtime.spawn_worker(
-            session_id.clone(),
-            run_id.clone(),
-            move |worker, _| async move {
-                worker
-                    .settle_unfinished_calls(
-                        execution.as_ref(),
-                        &work_session,
-                        &work_run,
-                        &work_plan,
-                        false,
-                        None,
-                    )
-                    .await?;
-                // This fixture exercises settlement without claiming a native
-                // terminal Run result. Its actual worker still owns delivery.
-                Err(RuntimeError::Interrupted)
-            },
-        );
+        let recovery_session = session_id.clone();
+        let recovery_run = run_id.clone();
+        let recovery = runtime
+            .own_preparation(session_id.clone(), move |runtime| async move {
+                runtime.spawn_worker(
+                    recovery_session,
+                    recovery_run,
+                    move |worker, _| async move {
+                        worker
+                            .settle_unfinished_calls(
+                                execution.as_ref(),
+                                &work_session,
+                                &work_run,
+                                &work_plan,
+                                false,
+                                None,
+                            )
+                            .await?;
+                        // This fixture exercises settlement without claiming a native
+                        // terminal Run result. Its actual worker still owns delivery.
+                        Err(RuntimeError::Interrupted)
+                    },
+                )
+            })
+            .await
+            .unwrap();
         assert!(matches!(
             recovery.done().await,
             Err(RuntimeError::Interrupted)

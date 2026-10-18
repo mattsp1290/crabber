@@ -85,13 +85,16 @@ impl Orchestrator {
         &self,
         request: RecoverTool,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_tool_recovery(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_tool_recovery(&request).await? {
+                return Ok(ToolContinuation::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.clone();
-        self.own_preparation(request.original.session_id.clone(), async move {
-            runtime.prepare_tool_recovery(request).await
-        })
+        self.own_preparation(
+            request.original.session_id.clone(),
+            move |runtime| async move { runtime.prepare_tool_recovery(request).await },
+        )
         .await
     }
     async fn prepare_tool_recovery(

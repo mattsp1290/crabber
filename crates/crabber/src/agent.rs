@@ -1,3 +1,6 @@
+#[path = "agent/close.rs"]
+mod close;
+pub use close::{HostCloseReport, HostExtensionClose};
 #[path = "agent/frontend_continuation.rs"]
 mod frontend_continuation;
 #[path = "agent/tool_continuation.rs"]
@@ -384,6 +387,9 @@ impl AgentBuilder {
             .plan_provider(plan_provider)
             .execution_mode(self.execution_mode)
             .compaction(self.compaction);
+        if let Some(provider) = &contextual {
+            runtime = runtime.contextual_plan_provider(provider.clone());
+        }
         if configured_observer {
             runtime = runtime.observer(observer);
         }
@@ -409,6 +415,7 @@ impl AgentBuilder {
             contextual,
             extension_close_timeout: self.extension_close_timeout,
             closed: AtomicBool::new(false),
+            close_observer: close::CloseCoordinator::default(),
         })
     }
 }
@@ -518,6 +525,7 @@ pub struct Agent {
     pub(crate) contextual: Option<Arc<ContextualPlanProvider>>,
     extension_close_timeout: Duration,
     closed: AtomicBool,
+    close_observer: close::CloseCoordinator,
 }
 
 impl Agent {
@@ -531,16 +539,15 @@ impl Agent {
         if self.closed.load(Ordering::SeqCst) {
             return Err(RuntimeError::HostClosed);
         }
-        if let Some(provider) = &self.contextual {
-            provider.ready().await.map_err(|error| {
-                if error == ExtensionError::RegistryClosed {
+        self.runtime
+            .initialize_extensions()
+            .await
+            .map_err(|error| match error {
+                RuntimeError::ExtensionPlan(ExtensionError::RegistryClosed) => {
                     RuntimeError::HostClosed
-                } else {
-                    RuntimeError::ExtensionPlan(error)
                 }
-            })?;
-        }
-        Ok(())
+                error => error,
+            })
     }
 
     /// Await retained initial, keyed-recovery and resume worker joins within a deadline.
@@ -588,15 +595,23 @@ impl Agent {
     /// for agents with no extensions. This does not join active executions.
     ///
     /// # Errors
-    /// Returns the first mount close error after attempting every mount.
+    /// Rejects contextual self-close before stopping intake, or reports retained
+    /// cleanup and the first observed mount error under the configured bound.
     pub async fn close_extensions(&self) -> Result<(), ExtensionError> {
-        if let Some(provider) = &self.contextual {
-            provider
-                .close_all(self.extension_close_timeout.saturating_mul(2))
-                .await
-        } else {
-            self.closed.store(true, Ordering::SeqCst);
-            Ok(())
+        let bound = self.extension_close_timeout.saturating_mul(2);
+        let deadline = tokio::time::Instant::now().checked_add(bound);
+        // Preserve a rejected contextual self-close before changing intake.
+        let observation = self
+            .contextual
+            .as_ref()
+            .map(|provider| provider.begin_close_all(bound))
+            .transpose()?;
+        self.closed.store(true, Ordering::SeqCst);
+        self.runtime.seal_ingress();
+        match (observation, deadline) {
+            (None, _) => Ok(()),
+            (Some(observation), Some(deadline)) => observation.observe_until(deadline).await,
+            (Some(_), None) => Err(ExtensionError::ContextCleanupIncomplete),
         }
     }
 
@@ -685,8 +700,6 @@ impl Agent {
         request: Request,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        let request = self.runtime.resolve_session_defaults(request).await?;
-        self.prepare_request(&request).await?;
         let inner = self.runtime.start_with_context(request, context).await?;
         Ok(RunHandle {
             run_id: inner.run_id().clone(),
@@ -732,28 +745,11 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        if let Some(receipt) = self.runtime.replay_admission(&request, &options).await? {
-            return Ok(Admission::Replayed(receipt));
-        }
-        let session = request
-            .session_id
-            .as_ref()
-            .ok_or(crabber_session::StoreError::NotFound)?;
-        self.runtime
-            .reject_pending_preparation(
-                session,
-                &crabber_session::session_owner::preparation::PreparationKey::Admission(
-                    options.key.clone(),
-                ),
-            )
-            .await?;
-        let request = self.runtime.resolve_session_defaults(request).await?;
-        self.prepare_request(&request).await?;
-        let admission = self
-            .runtime
-            .start_keyed_with_context(request, options, context)
-            .await?;
-        Ok(Admission::from_runtime(admission))
+        Ok(Admission::from_runtime(
+            self.runtime
+                .start_keyed_with_context(request, options, context)
+                .await?,
+        ))
     }
 
     /// Complete a retained Unstarted admission after its owner expires. Restore
@@ -793,51 +789,11 @@ impl Agent {
         options: AdmissionOptions,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        if let Some(receipt) = self
-            .runtime
-            .replay_started_admission(&request, &options)
-            .await?
-        {
-            return Ok(Admission::Replayed(receipt));
-        }
-        self.prepare_request(&request).await?;
-        let admission = self
-            .runtime
-            .recover_admission_with_context(request, options, context)
-            .await?;
-        Ok(Admission::from_runtime(admission))
-    }
-
-    fn check_ingress(&self) -> Result<(), RuntimeError> {
-        if self.closed.load(Ordering::SeqCst)
-            || self
-                .contextual
-                .as_ref()
-                .is_some_and(|provider| provider.is_closed())
-        {
-            return Err(RuntimeError::HostClosed);
-        }
-        Ok(())
-    }
-    async fn prepare_request(&self, request: &Request) -> Result<(), RuntimeError> {
-        if self.closed.load(Ordering::SeqCst)
-            || self
-                .contextual
-                .as_ref()
-                .is_some_and(|provider| provider.is_closed())
-        {
-            return Err(RuntimeError::HostClosed);
-        }
-        if let Some(session_id) = &request.session_id {
+        Ok(Admission::from_runtime(
             self.runtime
-                .validate_context(&crabber_core::SessionContext::new(
-                    session_id.clone(),
-                    request.workspace_id.clone(),
-                    request.directory.clone(),
-                ))
-                .await?;
-        }
-        Ok(())
+                .recover_admission_with_context(request, options, context)
+                .await?,
+        ))
     }
 
     pub(crate) fn context_request(&self, context: &ExecutionContext, text: String) -> Request {
@@ -952,7 +908,6 @@ impl Agent {
         run_id: &RunId,
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
-        self.initialize_extensions().await?;
         let inner = self
             .runtime
             .resume_execution_with_context(run_id, context)
@@ -984,7 +939,6 @@ impl Agent {
     where
         F: FnMut(&crabber_core::Run) -> Option<TraceContext> + Send,
     {
-        self.initialize_extensions().await?;
         self.runtime.recover_with_context(context_for).await
     }
 }

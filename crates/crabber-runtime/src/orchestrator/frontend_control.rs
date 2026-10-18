@@ -55,8 +55,10 @@ impl Orchestrator {
             .get_run(&scope.run_id)
             .await?
             .ok_or(Error::NotFound)?;
-        let claim = request.claim(&run)?;
-        claim.fingerprint()?;
+        let claim = scope.claim(&run)?;
+        // Validate the entire borrowed result set before materializing any
+        // external output. Closed-host validation remains metadata only.
+        FrontendContinuationClaim::fingerprint_parts(&claim, &request.resolver, &request.results)?;
         let view = self
             .store
             .tool_continuation_snapshot(&scope.session_id, &scope.run_id)
@@ -80,14 +82,14 @@ impl Orchestrator {
         {
             return Err(Error::Pending.into());
         }
-        if view.frontend_calls.is_empty() || view.frontend_calls.len() != claim.results.len() {
+        if view.frontend_calls.is_empty() || view.frontend_calls.len() != request.results.len() {
             return Err(Error::SemanticConflict.into());
         }
         for frozen in &view.frontend_calls {
             if frozen.consumed {
                 return Err(Error::InvalidTransition.into());
             }
-            let result = claim
+            let result = request
                 .results
                 .iter()
                 .find(|result| result.call_id() == &frozen.call_id)
@@ -151,26 +153,35 @@ impl Orchestrator {
         request: ContinueFrontend,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_frontend_continuation(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
-        }
-        let runtime = self.with_context(context);
-        self.own_preparation(request.continuation.session_id.clone(), async move {
-            if let Some(receipt) = runtime.lookup_frontend_continuation(&request).await? {
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_frontend_continuation(&request).await? {
                 return Ok(ToolContinuation::Replayed(receipt));
             }
-            runtime.check_frontend_continuation(&request).await?;
-            let run = runtime
-                .store
-                .get_run(&request.continuation.run_id)
-                .await?
-                .ok_or(Error::NotFound)?;
-            let claim = request.claim(&run)?;
-            let validated = runtime.validated_session(&run).await?;
-            runtime
-                .spawn_tool_resume(run, validated, ToolResumeControl::FrontendClaim(claim))
-                .await
-        })
+            if matches!(refusal, RuntimeError::HostClosed) {
+                self.check_frontend_continuation(&request).await?;
+            }
+            return Err(refusal);
+        }
+        self.own_preparation(
+            request.continuation.session_id.clone(),
+            move |runtime| async move {
+                let runtime = runtime.with_context(context);
+                if let Some(receipt) = runtime.lookup_frontend_continuation(&request).await? {
+                    return Ok(ToolContinuation::Replayed(receipt));
+                }
+                runtime.check_frontend_continuation(&request).await?;
+                let run = runtime
+                    .store
+                    .get_run(&request.continuation.run_id)
+                    .await?
+                    .ok_or(Error::NotFound)?;
+                let claim = request.claim(&run)?;
+                let validated = runtime.validated_session(&run).await?;
+                runtime
+                    .spawn_tool_resume(run, validated, ToolResumeControl::FrontendClaim(claim))
+                    .await
+            },
+        )
         .await
     }
     async fn frontend_recovery_request(
@@ -241,13 +252,15 @@ impl Orchestrator {
         &self,
         request: RecoverFrontend,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_frontend_recovery(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_frontend_recovery(&request).await? {
+                return Ok(ToolContinuation::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.clone();
         self.own_preparation(
             request.original.continuation.session_id.clone(),
-            async move {
+            move |runtime| async move {
                 if let Some(receipt) = runtime.lookup_frontend_recovery(&request).await? {
                     return Ok(ToolContinuation::Replayed(receipt));
                 }

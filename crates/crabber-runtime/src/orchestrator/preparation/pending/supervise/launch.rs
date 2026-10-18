@@ -39,11 +39,9 @@ pub(super) async fn prepare(
         business,
         resources,
         complete,
-    } = runtime.worker_launch_with_cancellation(
-        session.clone(),
-        run.clone(),
-        pending.cancellation.clone(),
-    );
+    } = runtime
+        .worker_launch_with_cancellation(session.clone(), run.clone(), pending.cancellation.clone())
+        .ok()?;
     // This locks only reporting metadata, never the async join mutex: a drain
     // can already be awaiting this exact supervisor while admission chooses RunId.
     if runtime

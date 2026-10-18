@@ -35,8 +35,31 @@ impl Orchestrator {
     pub async fn control_run(
         &self,
         request: RunControlRequest,
-    ) -> Result<RunControlOutcome, RunControlError> {
-        self.store.control_run(request).await
+    ) -> Result<RunControlOutcome, RuntimeError> {
+        if matches!(
+            request.action,
+            crabber_session::RunControlAction::Cancel { .. }
+        ) {
+            return Ok(self.store.control_run(request).await?);
+        }
+        if self.is_closed() {
+            let receipt = self
+                .lookup_run_control(&request.target.session_id, &request.id)
+                .await?
+                .ok_or(RuntimeError::HostClosed)?;
+            if receipt.semantic_digest != request.fingerprint()? {
+                return Err(RunControlError::SemanticConflict.into());
+            }
+            return Ok(RunControlOutcome::Replayed(receipt));
+        }
+        self.own_preparation(
+            request.target.session_id.clone(),
+            move |runtime| async move {
+                runtime.check_original_stop()?;
+                Ok(runtime.store.control_run(request).await?)
+            },
+        )
+        .await
     }
     /// Read immutable original acceptance evidence without execution authority.
     /// # Errors

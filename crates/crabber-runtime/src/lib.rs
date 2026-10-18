@@ -5,7 +5,8 @@ mod execution_events;
 pub use execution_events::RunEvents;
 mod execution_tasks;
 pub use execution_tasks::{
-    ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, PreparationTaskId,
+    ExecutionTaskDrain, ExecutionTaskFailure, JoinedExecutionTask, JoinedPreparationTask,
+    JoinedUnscopedPreparationTask, PreparationTaskId, RunCloseIssue, RunCloseIssueKind,
     TaskTermination, ToolResourceDrain, WorkerResourceDrain, WorkerResourceKind,
 };
 mod observation;
@@ -19,12 +20,13 @@ pub use observation::{
 mod policy;
 
 pub use orchestrator::{
-    Admission, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval, ContinueFrontend,
-    ContinueTool, DirectModelStream, ExecutionMode, INTERRUPT_SETTLEMENT_BOUND,
+    Admission, CloseObservation, CompactionPolicy, ConfigSnapshot, Continuation, ContinueApproval,
+    ContinueFrontend, ContinueTool, DirectModelStream, ExecutionMode, INTERRUPT_SETTLEMENT_BOUND,
     INTERRUPTED_RESULT_TEXT, ModelStream, NoopObserver, Observer, Orchestrator,
     OrchestratorBuilder, PreparationRetryProgress, QueueControl, RecoverApproval, RecoverFrontend,
     RecoverReport, RecoverTool, RecoverySkipReason, Request, RetainedPreparationProgress,
-    RetainedPreparationStatus, RunControl, RunHandle, RunResult, RuntimeError, SkippedRun,
+    RetainedPreparationStatus, RunControl, RunHandle, RunResult, RuntimeCloseObservation,
+    RuntimeCloseReport, RuntimeDependentCloseReport, RuntimeError, SkippedRun,
     TOOL_PIPELINE_HANDLER_ID, ToolContinuation, TurnSnapshot,
 };
 pub use policy::{
@@ -56,3 +58,5 @@ pub use crabber_session::AdmissionSelectionPolicy;
 mod session_invocations;
 mod session_services;
 pub use session_invocations::{SessionInvocationReport, SessionInvocationStatus};
+
+pub use session_services::{SessionServiceReport, SessionServiceStatus};

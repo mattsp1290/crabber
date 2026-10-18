@@ -3,13 +3,14 @@
 mod contextual;
 mod dispatch;
 pub use contextual::{
-    ContextualGenerationAdmission, ContextualGenerationHost, ContextualGenerationMember,
-    ContextualGenerationMemberDisposition, ContextualGenerationObservation,
-    ContextualGenerationWork, ContextualPlanProvider, ContextualProductFactory,
-    ContextualProductRoot, ContextualProductRootObservation, ContextualServiceBorrowLease,
-    ContextualServiceBorrowSource, DisposedContextualProductRoot, ExtensionFactory, FactoryContext,
-    FactoryScope, JoinedContextualGenerationGraph, ServiceGenerationCleanupPolicy,
-    ServiceGenerationDescriptor, ServiceGenerationId, ServiceGenerationScope,
+    ContextualCloseObservation, ContextualGenerationAdmission, ContextualGenerationHost,
+    ContextualGenerationMember, ContextualGenerationMemberDisposition,
+    ContextualGenerationObservation, ContextualGenerationWork, ContextualPlanProvider,
+    ContextualProductFactory, ContextualProductRoot, ContextualProductRootObservation,
+    ContextualServiceBorrowLease, ContextualServiceBorrowSource, DisposedContextualProductRoot,
+    ExtensionFactory, FactoryContext, FactoryScope, JoinedContextualGenerationGraph,
+    ServiceGenerationCleanupPolicy, ServiceGenerationDescriptor, ServiceGenerationId,
+    ServiceGenerationScope,
 };
 mod model_middleware;
 pub use model_middleware::*;

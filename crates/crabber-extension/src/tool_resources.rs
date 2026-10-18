@@ -64,6 +64,9 @@ impl std::fmt::Debug for ToolResources {
     }
 }
 impl ToolResources {
+    pub(crate) fn same_scope(&self, other: &Self) -> bool {
+        matches!((&self.0, &other.0), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
+    }
     /// Register all task-owned cleanup in the supplied future. The owner retains
     /// its join handle even if the tool drops this capability. No abort handle
     /// is returned, and failures remain visible to the owner.
@@ -162,6 +165,15 @@ impl Default for ToolResourceOwner {
     }
 }
 impl ToolResourceOwner {
+    /// Diagnose whether the current owned callback belongs to this exact scope.
+    /// This remains meaningful during sealing and disposal. It grants no work
+    /// registration, native authority or cleanup success.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_current_callback_parent(&self) -> bool {
+        crate::registry::current_callback_invocations()
+            .is_some_and(|current| current.parent_matches(&self.resources()))
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -420,3 +432,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tool_resources/dual_tests.rs"]
 mod dual_tests;
+
+#[cfg(test)]
+#[path = "tool_resources/callback_parent_tests.rs"]
+mod callback_parent_tests;

@@ -128,11 +128,14 @@ impl Orchestrator {
         request: ContinueTool,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_tool_continuation(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_tool_continuation(&request).await? {
+                return Ok(ToolContinuation::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.with_context(context);
-        self.own_preparation(request.session_id.clone(), async move {
+        self.own_preparation(request.session_id.clone(), move |runtime| async move {
+            let runtime = runtime.with_context(context);
             runtime.prepare_tool_continuation(request).await
         })
         .await
@@ -187,7 +190,7 @@ impl Orchestrator {
             move |runtime, cancellation| async move {
                 Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
             },
-        );
+        )?;
         match receiver.await {
             Ok(ToolClaimed::Fresh(receipt)) => Ok(ToolContinuation::Started { receipt, handle }),
             Ok(ToolClaimed::Replay(receipt)) => {

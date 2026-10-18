@@ -33,8 +33,23 @@ impl Orchestrator {
     /// Apply a host queue control without running factories or providers.
     /// # Errors
     /// Returns native scope, revision, FIFO and storage failures.
-    pub async fn mutate_queue(&self, request: QueueMutation) -> Result<QueueOutcome, StoreError> {
-        self.store.mutate_queue(request).await
+    pub async fn mutate_queue(&self, request: QueueMutation) -> Result<QueueOutcome, RuntimeError> {
+        if matches!(request.action, QueueAction::Cancel { .. }) {
+            return Ok(self.store.mutate_queue(request).await?);
+        }
+        if self.is_closed() {
+            let receipt = self
+                .lookup_queue(&request.session_id, &request.id)
+                .await?
+                .ok_or(RuntimeError::HostClosed)?;
+            verify_receipt(&request, &receipt)?;
+            return Ok(QueueOutcome::Replayed(receipt));
+        }
+        self.own_preparation(request.session_id.clone(), move |runtime| async move {
+            runtime.check_original_stop()?;
+            Ok(runtime.store.mutate_queue(request).await?)
+        })
+        .await
     }
     /// Read original safe queue-control metadata.
     /// # Errors
@@ -115,6 +130,27 @@ impl Orchestrator {
         id: ControlId,
         options: crabber_core::AdmissionOptions,
     ) -> Result<QueueReceipt, RuntimeError> {
+        if self.is_closed() {
+            return self
+                .replay_queue_enqueue(&request, &queue_id, &id, &options)
+                .await?
+                .ok_or(RuntimeError::HostClosed);
+        }
+        let session = request.session_id.clone().ok_or(StoreError::NotFound)?;
+        self.own_preparation(session, move |runtime| async move {
+            runtime
+                .enqueue_queue_owned(request, queue_id, id, options)
+                .await
+        })
+        .await
+    }
+    async fn enqueue_queue_owned(
+        &self,
+        request: Request,
+        queue_id: QueueId,
+        id: ControlId,
+        options: crabber_core::AdmissionOptions,
+    ) -> Result<QueueReceipt, RuntimeError> {
         if !self.store.supports_future_queue() {
             return Err(StoreError::HostUnsupported.into());
         }
@@ -139,6 +175,7 @@ impl Orchestrator {
                 }),
             },
         };
+        self.check_original_stop()?;
         Ok(self.store.mutate_queue(mutation).await?.receipt().clone())
     }
     /// Explicit private intent read; caller must supply its admitted workspace context.
@@ -298,16 +335,19 @@ impl Orchestrator {
         request: Request,
         control: QueueControl,
     ) -> Result<QueueReceipt, RuntimeError> {
-        if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
-            return Ok(saved);
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(saved) = self.replay_queue_prepare(&request, &control).await? {
+                return Ok(saved);
+            }
+            return Err(refusal);
         }
-        let runtime = self.clone();
-        self.own_preparation(control.authority.session_id.clone(), async move {
-            runtime.prepare_queue_owned(request, control).await
-        })
+        self.own_preparation(
+            control.authority.session_id.clone(),
+            move |runtime| async move { runtime.prepare_queue_owned(request, control).await },
+        )
         .await
     }
-    async fn prepare_queue_owned(
+    pub(super) async fn prepare_queue_owned(
         &self,
         request: Request,
         control: QueueControl,
@@ -436,16 +476,22 @@ impl Orchestrator {
         control: QueueControl,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        if let Some(receipt) = self.replay_queue_admit(&request, &control).await? {
-            return Ok(Admission::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.replay_queue_admit(&request, &control).await? {
+                return Ok(Admission::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.with_context(context);
-        self.own_preparation(control.authority.session_id.clone(), async move {
-            Box::pin(runtime.admit_queue_owned(request, control)).await
-        })
+        self.own_preparation(
+            control.authority.session_id.clone(),
+            move |runtime| async move {
+                let runtime = runtime.with_context(context);
+                Box::pin(runtime.admit_queue_owned(request, control)).await
+            },
+        )
         .await
     }
-    async fn admit_queue_owned(
+    pub(super) async fn admit_queue_owned(
         &self,
         request: Request,
         control: QueueControl,
@@ -528,7 +574,8 @@ impl Orchestrator {
             let outcome = Box::pin(self.finish_initial_preparation(grant, captured, work)).await?;
             return pending_admission(outcome);
         }
-        let ((plan, bound), completed) = self.finish_durable_preparation(grant, work).await?;
+        let ((plan, bound), completed) =
+            Box::pin(self.finish_durable_preparation(grant, work)).await?;
         self.queue_completed_admission(captured, (plan, bound), completed)
     }
     fn queue_completed_admission(
@@ -569,7 +616,7 @@ impl Orchestrator {
                     &admitted.session,
                     InitialEntry::Keyed,
                     bound,
-                ),
+                )?,
             }),
             QueueOutcome::Applied { .. } => Err(StoreError::AdmissionConflict.into()),
         }
@@ -584,10 +631,25 @@ impl Orchestrator {
         id: &QueueId,
         context: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        let retained = self.store.retained_queue(session, id).await?;
-        self.verify_queued_request(&request, &retained)?;
-        self.recover_admission_with_context(request, retained.input.admission, context)
-            .await
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            let retained = self.store.retained_queue(session, id).await?;
+            self.verify_queued_request(&request, &retained)?;
+            return self
+                .replay_started_admission(&request, &retained.input.admission)
+                .await?
+                .map(Admission::Replayed)
+                .ok_or(refusal);
+        }
+        let session = session.clone();
+        let id = id.clone();
+        self.own_preparation(session.clone(), move |runtime| async move {
+            let retained = runtime.store.retained_queue(&session, &id).await?;
+            runtime.verify_queued_request(&request, &retained)?;
+            runtime
+                .recover_retained_admission(request, retained.input.admission, context)
+                .await
+        })
+        .await
     }
 }
 fn verify_restored(

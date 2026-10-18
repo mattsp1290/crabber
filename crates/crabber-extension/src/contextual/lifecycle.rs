@@ -1,5 +1,8 @@
+mod close_all;
 use super::{ContextualPlanProvider, INITIALIZING, Owner, Slot};
 use crate::{ExtensionError, MountHandle};
+pub(super) use close_all::CloseCoordinator;
+pub use close_all::ContextualCloseObservation;
 use crabber_core::SessionContext;
 use futures::future::join_all;
 use std::{sync::atomic::Ordering, time::Duration};
@@ -107,9 +110,19 @@ impl ContextualPlanProvider {
     /// Rejects self-close or reports incomplete initialization/cleanup.
     /// # Panics
     /// Panics if a previous internal panic poisoned an ownership lock.
-    pub async fn close_all(&self, bound: Duration) -> Result<(), ExtensionError> {
+    pub fn begin_close_all(
+        &self,
+        bound: Duration,
+    ) -> Result<ContextualCloseObservation, ExtensionError> {
+        let deadline = tokio::time::Instant::now().checked_add(bound);
+        let bound = if deadline.is_some() {
+            bound
+        } else {
+            Duration::ZERO
+        };
+        let deadline = deadline.unwrap_or_else(tokio::time::Instant::now);
         let provider = self.clone();
-        let task = {
+        let observation = {
             let owners = self.inner.owners.lock().unwrap();
             if INITIALIZING
                 .try_with(|owner| !matches!(owner, Owner::LibraryScripted(_)))
@@ -120,12 +133,15 @@ impl ContextualPlanProvider {
             let mut mounts = self.inner.registry.begin_close_all()?;
             self.inner.closed.store(true, Ordering::SeqCst);
             self.inner.initializers.close();
+            if let Some(observation) = self.inner.close_all.current(self) {
+                return Ok(observation);
+            }
             let slots: Vec<_> = owners.slots.values().cloned().collect();
             for slot in &slots {
                 Self::signal_slot(slot);
             }
             let dependencies = self.inner.dependencies.seal_all();
-            self.inner.reapers.tracker().spawn(async move {
+            let task = self.inner.reapers.tracker().spawn(async move {
                 provider.inner.initializers.wait_drained().await;
                 for slot in &slots {
                     super::initialization::join_slot(slot).await?;
@@ -163,9 +179,23 @@ impl ContextualPlanProvider {
                 results.into_iter().collect::<Result<Vec<_>, _>>()?;
                 records.into_iter().collect::<Result<Vec<_>, _>>()?;
                 Ok(())
-            })
+            });
+            self.inner.close_all.retain(task, self, deadline)
         };
-        Self::wait_cleanup(task, bound).await
+        Ok(observation)
+    }
+
+    /// Close the profile and observe its retained cleanup under a caller bound.
+    /// A timeout leaves the same cleanup task and original owners retained.
+    /// # Errors
+    /// Rejects self-close or reports incomplete initialization or cleanup.
+    pub async fn close_all(&self, bound: Duration) -> Result<(), ExtensionError> {
+        let deadline = tokio::time::Instant::now().checked_add(bound);
+        let observation = self.begin_close_all(bound)?;
+        match deadline {
+            Some(deadline) => observation.observe_until(deadline).await,
+            None => Err(ExtensionError::ContextCleanupIncomplete),
+        }
     }
 
     fn check_self_close(slot: &Slot) -> Result<(), ExtensionError> {

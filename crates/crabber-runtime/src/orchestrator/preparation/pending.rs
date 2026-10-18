@@ -32,6 +32,7 @@ pub(super) struct PendingPreparation {
     enrollment: std::sync::Mutex<()>,
     control: OnceLock<main::Control>,
     cancellation: CancellationToken,
+    root_scope: Option<crate::execution_tasks::RootScope>,
     failed: AtomicBool,
     cleanup_active: AtomicBool,
     cleanup_failed: AtomicBool,
@@ -50,6 +51,52 @@ impl PendingPreparation {
             super::PreparationPurpose::OrdinaryAdmission
             | super::PreparationPurpose::Queue { .. } => None,
         }
+    }
+    fn register_main<F, W>(
+        &self,
+        runtime: &Orchestrator,
+        context: SessionContext,
+        original: super::JoinedPreparation,
+        body: F,
+    ) -> Result<Arc<Mutex<main::Main>>, RuntimeError>
+    where
+        F: FnOnce(
+                crabber_session::session_owner::owned_scope::DriverMainContext,
+                PreparationCompletion,
+            ) -> W
+            + Send
+            + 'static,
+        W: Future<Output = ()> + Send + 'static,
+    {
+        // This original gate covers synchronous registration, never native IO.
+        let _enrollment = self.enrollment.lock().unwrap();
+        if self.cancellation.is_cancelled() {
+            return Err(super::incomplete(
+                self.grant.reconciliation()?,
+                RuntimeError::PreparationRecoveryRequired,
+            ));
+        }
+        let main = main::Main::register(
+            &runtime.pending_drivers,
+            runtime.store.clone(),
+            context,
+            original,
+            body,
+        )?;
+        self.control
+            .set(main.control())
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
+        let shared = Arc::new(Mutex::new(main));
+        self.main
+            .set(shared.clone())
+            .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
+        if self.cancellation.is_cancelled() {
+            self.control
+                .get()
+                .expect("control installed")
+                .request_stop();
+        }
+        Ok(shared)
     }
     pub(super) fn committed(&self) -> bool {
         self.committed.load(Ordering::Acquire)
@@ -189,59 +236,38 @@ impl Orchestrator {
             }
             drop(context);
         };
-        let shared = {
-            // Close the local no-main/start race with explicit cleanup. This
-            // gate only covers synchronous registration; never native IO/waits.
-            let _enrollment = pending.enrollment.lock().unwrap();
-            if pending.cancellation.is_cancelled() {
-                return Err(super::incomplete(
-                    descriptor,
-                    RuntimeError::PreparationRecoveryRequired,
-                ));
-            }
-            let main = main::Main::register(
-                &self.pending_drivers,
-                self.store.clone(),
-                context,
-                original,
-                body,
-            )?;
-            pending
-                .control
-                .set(main.control())
-                .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
-            let shared = Arc::new(Mutex::new(main));
-            pending
-                .main
-                .set(shared.clone())
-                .map_err(|_| RuntimeError::PreparationRecoveryRequired)?;
-            if pending.cancellation.is_cancelled() {
-                pending
-                    .control
-                    .get()
-                    .expect("control installed")
-                    .request_stop();
-            }
-            shared
-        };
+        let shared = pending.register_main(self, context, original, body)?;
         let mut caller = CancelOnDrop {
             pending: pending.clone(),
             armed: true,
         };
         let (start, started) = oneshot::channel();
-        let supervisor = self.execution_tasks.spawn_reporting(
+        let parent = pending
+            .root_scope
+            .as_ref()
+            .ok_or(RuntimeError::HostClosed)?;
+        let runtime = self.clone();
+        let supervised = pending.clone();
+        let supervised_main = shared.clone();
+        let supervisor = self.execution_tasks.spawn_reporting_in(
+            parent,
             descriptor.session_id.clone(),
             run,
-            supervise::run(
-                self.clone(),
-                entry,
-                pending.clone(),
-                shared.clone(),
-                notice,
-                started,
-                wrapper,
-            ),
-        );
+            move |scope| async move {
+                let mut runtime = runtime;
+                runtime.root_scope = Some(scope);
+                supervise::run(
+                    runtime,
+                    entry,
+                    supervised,
+                    supervised_main,
+                    notice,
+                    started,
+                    wrapper,
+                )
+                .await
+            },
+        )?;
         // Retain the actual reporting supervisor and its exact local identity
         // before the original pending main can begin native completion IO.
         let _ = start.send(supervisor.clone());
@@ -302,45 +328,68 @@ pub(super) fn start_cleanup(
     let prior = slot.take();
     let retained = pending.clone();
     let tasks = runtime.execution_tasks.clone();
-    *slot = Some(tasks.spawn_preparation(
+    let Some(parent) = pending.root_scope.as_ref() else {
+        pending.cleanup_failed.store(true, Ordering::Release);
+        pending.cleanup_active.store(false, Ordering::Release);
+        return;
+    };
+    let registered = tasks.spawn_reporting_in(
+        parent,
         pending.grant.owner_authority().session_id().clone(),
-        async move {
-            let mut attempt = CleanupAttempt {
-                pending: retained.clone(),
-                succeeded: false,
-            };
-            // Retain and ACTUALLY observe the preceding supervisor before retry.
-            // Its completion flag is only a wake-up, never a physical Join proof.
-            if let Some(prior) = prior {
-                runtime.execution_tasks.join(&prior).await;
-            }
-            if factory::finish(&retained, runtime.store.as_ref())
-                .await
-                .is_err()
-            {
-                return;
-            }
-            retained.native_done.cancelled().await;
-            let cancelled_factory = if retained.main.get().is_none() {
-                if factory::cancel_unstarted_root(&retained, runtime.store.as_ref())
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                true
-            } else {
-                false
-            };
-            attempt.succeeded = true;
-            if !retained.failed.load(Ordering::Acquire)
-                && (retained.committed.load(Ordering::Acquire) || cancelled_factory)
-            {
-                let descriptor = { entry.lock().await.descriptor.clone() };
-                runtime.retained_preparations.remove(&descriptor, &entry);
-            }
+        None,
+        move |_scope| async move {
+            cleanup_body(runtime, retained, prior, entry).await;
+            crate::TaskTermination::Returned
         },
-    ));
+    );
+    if let Ok(task) = registered {
+        *slot = Some(task);
+    } else {
+        pending.cleanup_failed.store(true, Ordering::Release);
+        pending.cleanup_active.store(false, Ordering::Release);
+    }
+}
+
+async fn cleanup_body(
+    runtime: Orchestrator,
+    retained: Arc<PendingPreparation>,
+    prior: Option<Arc<crate::execution_tasks::ExecutionTask>>,
+    entry: retained::SharedEntry,
+) {
+    let mut attempt = CleanupAttempt {
+        pending: retained.clone(),
+        succeeded: false,
+    };
+    // Retain and ACTUALLY observe the preceding supervisor before retry.
+    // Its completion flag is only a wake-up, never a physical Join proof.
+    if let Some(prior) = prior {
+        runtime.execution_tasks.join(&prior).await;
+    }
+    if factory::finish(&retained, runtime.store.as_ref())
+        .await
+        .is_err()
+    {
+        return;
+    }
+    retained.native_done.cancelled().await;
+    let cancelled_factory = if retained.main.get().is_none() {
+        if factory::cancel_unstarted_root(&retained, runtime.store.as_ref())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        true
+    } else {
+        false
+    };
+    attempt.succeeded = true;
+    if !retained.failed.load(Ordering::Acquire)
+        && (retained.committed.load(Ordering::Acquire) || cancelled_factory)
+    {
+        let descriptor = { entry.lock().await.descriptor.clone() };
+        runtime.retained_preparations.remove(&descriptor, &entry);
+    }
 }
 
 pub(super) fn cleanup_request(

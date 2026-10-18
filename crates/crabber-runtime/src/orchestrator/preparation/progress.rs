@@ -98,7 +98,11 @@ impl Orchestrator {
         drop(held.value.take());
         let legacy = held.owned.is_none();
         if legacy {
-            stop_legacy(&mut held).await?;
+            if let Err((error, payload)) = stop_legacy(&mut held).await {
+                drop(held);
+                retained::heartbeat::discard_join_error(payload);
+                return Err(error);
+            }
             self.retained_preparations.remove(descriptor, &entry);
         }
         drop(held);
@@ -130,15 +134,43 @@ impl Orchestrator {
             .retained_preparations
             .lookup(descriptor)
             .ok_or(RuntimeError::PreparationRecoveryRequired)?;
-        let mut held = entry.try_lock().map_err(|_| RuntimeError::SessionBusy)?;
+        let held = entry.try_lock().map_err(|_| RuntimeError::SessionBusy)?;
+        self.cleanup_entry(descriptor, &entry, held).await
+    }
+    pub(in crate::orchestrator) async fn close_retained_preparation(
+        &self,
+        descriptor: &PreparationReconciliation,
+    ) -> Result<(), RuntimeError> {
+        let entry = self
+            .retained_preparations
+            .lookup(descriptor)
+            .ok_or(RuntimeError::PreparationRecoveryRequired)?;
+        let held = entry.lock().await;
+        self.cleanup_entry(descriptor, &entry, held).await
+    }
+    async fn cleanup_entry(
+        &self,
+        descriptor: &PreparationReconciliation,
+        entry: &retained::SharedEntry,
+        mut held: tokio::sync::MutexGuard<'_, retained::Entry>,
+    ) -> Result<(), RuntimeError> {
         if held.descriptor != *descriptor {
             return Err(RuntimeError::PreparationRecoveryRequired);
+        }
+        if held.legacy_failure.is_some() {
+            drop(held);
+            return retained::cleanup::cancel_failed_legacy(
+                self.retained_preparations.clone(),
+                entry.clone(),
+                self.store.clone(),
+            )
+            .await;
         }
         if let Some(pending) = held.pending.clone() {
             held.disposing = true;
             drop(held.value.take());
             drop(held);
-            super::pending::cleanup_request(self.clone(), &pending, entry);
+            super::pending::cleanup_request(self.clone(), &pending, entry.clone());
             return Ok(());
         }
         if held.descriptor != *descriptor || held.owned.is_none() {
@@ -154,17 +186,22 @@ impl Orchestrator {
         drop(held);
         retained::cleanup::start(
             self.retained_preparations.clone(),
-            entry,
+            entry.clone(),
             self.store.clone(),
         )
         .await;
         Ok(())
     }
 }
-pub(super) async fn stop_legacy(held: &mut retained::Entry) -> Result<(), RuntimeError> {
-    retained::heartbeat::stop(held)
-        .await
-        .map_err(|()| super::incomplete(held.descriptor.clone(), RuntimeError::TaskStopped))
+pub(super) async fn stop_legacy(
+    held: &mut retained::Entry,
+) -> Result<(), (RuntimeError, Option<tokio::task::JoinError>)> {
+    retained::heartbeat::stop(held).await.map_err(|payload| {
+        (
+            super::incomplete(held.descriptor.clone(), RuntimeError::TaskStopped),
+            payload,
+        )
+    })
 }
 
 #[cfg(test)]

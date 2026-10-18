@@ -36,10 +36,39 @@ fingerprint. This changes fingerprints for plans containing handlers or legacy
 prompt contributors. Finish or settle old paused work with its matching old
 binary before upgrading; it must not execute under an incompatible plan.
 
-`close_extensions` now stops ingress even for an agent with no extensions.
-Readiness and new prompts return `RuntimeError::HostClosed` once closing starts.
-Matching committed keyed requests can still return their original metadata receipt.
-It closes extension resources and leases; it does not join active executions.
+`Agent::close(bound)` terminally closes fresh local intake, requests cancellation,
+and observes the retained execution, preparation, resource, detached invocation,
+service and contextual cleanup owners under one caller deadline. Keep the Agent
+available after a deadline or dropped waiter: another close observes the same
+original owners. Concurrent callers share an in-progress observation. A later
+caller can extend observation after an earlier bounded pass has actually joined;
+close never restarts business work or recreates a native completion operation.
+
+Inspect `HostCloseReport::local_drained()` and the report's runtime and extension
+fields. `CloseObservation::Complete` requires every covered local owner to have
+joined successfully. `DeadlineExpired`, `Pending`, `SelfClose` and
+`UnrepresentableDeadline` preserve ownership and do not establish clean shutdown.
+Zero duration still closes intake and signals work. An unrepresentable duration
+also closes intake and returns a finite observation. Closing from the actual
+owned execution or extension callback returns `SelfClose` without awaiting its
+own join; an external caller can observe it after the callback returns. A naked
+unregistered task that waits on close can still create an unobservable cycle and
+will remain pending under the caller deadline.
+
+Fresh readiness and execution requests return `RuntimeError::HostClosed` once
+closing starts. An exact committed keyed retry can still return its original
+metadata receipt. This exception grants no new factory, binding or executor.
+Pre-effect reads and contextual initialization on an admitted execution stay in
+the retained root even when its original caller disconnects.
+
+`close_extensions` stops fresh intake after its contextual self-close preflight
+succeeds, including for an Agent with no extensions, and closes extension
+resources and leases. A rejected `SelfClose` preserves intake. It preserves its existing
+non-cancelling behavior for active executions. Use `close` to signal and observe
+all the covered local Runtime registries. Neither operation certifies a durable
+terminal outcome, ownership on another controller, native policy retirement,
+Session deletion readiness, or shutdown of unregistered external resources.
+Exporter `shutdown` remains specific to the configured telemetry exporter.
 
 Runtime initial preparation/admission, retained-Unstarted recovery preparation/
 claim, execution workers and polled `resume` calls retain their actual task join
@@ -53,9 +82,11 @@ drain. Inspect both `pending` (admitted run IDs) and `pending_preparations`
 (local `PreparationTaskId`s). A preparation can create a worker after the drain's
 initial snapshot; drain again while either list has entries. The pending owner
 snapshot observes both categories under one lock. `joined_preparations` reports
-actual preparation task joins separately from execution joins. Each retained
-preparation, worker and tool resource has its exact session identity, including
-ordinary admission before a run exists. `drain_session_execution_tasks(session_id,
+actual preparation task joins separately from execution joins. Session-scoped retained preparations, workers and tool resources have exact
+session identity, including ordinary admission before a run exists. Readiness
+and pre-routing roots retain an unscoped local task ID until routing is known;
+`joined_unscoped_preparations` reports their actual joins without inventing a
+session identity. `drain_session_execution_tasks(session_id,
 bound)` joins only that session's local owners and reports its remaining work;
 it does not join or cancel another session. Stop the selected session's ingress
 first and repeat the drain for preparation-to-worker handoffs. This does not
@@ -105,15 +136,15 @@ These joins do not prove durable terminal outcome, callback/child-process cleanu
 or notification-task completion. Terminal-write errors, including lost acknowledgements
 after commit, return `RuntimeError::AttemptBoundaryUnknown` without a second terminal
 write. Reconcile the durable run and events; live terminal events require an
-acknowledged commit. Facade readiness/context checks before entering the runtime
-are outside this ownership scope. Initial workers, expired Unstarted recovery and
+acknowledged commit. Value validation and exact post-close metadata replay
+remain available without admitting execution work. Initial workers, expired Unstarted recovery and
 eligible suspended continuation now reserve/reclaim and one-shot Begin a native
 attempt before business work. Native tool calls claim and begin their own phases
 before dispatch and atomically settle protected output after their resources join.
 Durable run cancellation records acceptance separately from worker observation
-and actual resource joins. Full orderly close and positive coverage for every
-resource class remain unfinished. Result/completion signals
-and event EOF never replace these checks.
+and actual resource joins. Orderly close reports the covered local joins;
+positive native coverage for every resource class remains unfinished.
+Result/completion signals and event EOF never replace these checks.
 
 The live `ApprovalFacade::request` and `UserPrompter::ask` APIs have been removed.
 Ordinary `ToolContext::request_interaction` returns the finite

@@ -50,13 +50,13 @@ impl Orchestrator {
         {
             return Box::pin(self.spawn_pending_expired(run, validated, binding, context)).await;
         }
-        let (prepared, claim) = self.prepare_expired_resources(&run, binding).await?;
+        let (prepared, claim) = Box::pin(self.prepare_expired_resources(&run, binding)).await?;
         let request = RegisterSuccessorExecutionDriver {
             context,
             fence: prepared.authority.fence.clone(),
             claim,
         };
-        Ok(self.spawn_worker_inner(
+        self.spawn_worker_inner(
             run.session_id.clone(),
             run.id.clone(),
             Some(driver::Request::Successor(request)),
@@ -70,7 +70,7 @@ impl Orchestrator {
                 ))
                 .await
             },
-        ))
+        )
     }
     async fn spawn_pending_expired(
         &self,

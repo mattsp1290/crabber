@@ -1,8 +1,8 @@
 use super::{Agent, RuntimeError};
 use crabber_core::{ControlId, SessionId};
 use crabber_session::{
-    RunControlAction, RunControlError, RunControlOutcome, RunControlPage, RunControlReceipt,
-    RunControlRequest, RunControlTarget,
+    RunControlError, RunControlOutcome, RunControlPage, RunControlReceipt, RunControlRequest,
+    RunControlTarget,
 };
 impl Agent {
     /// Complete an original accepted cancellation after an authentic joined pause.
@@ -37,26 +37,7 @@ impl Agent {
         &self,
         request: RunControlRequest,
     ) -> Result<RunControlOutcome, RuntimeError> {
-        if let Some(saved) = self
-            .runtime
-            .lookup_run_control(&request.target.session_id, &request.id)
-            .await?
-        {
-            if saved.semantic_digest != request.fingerprint()? {
-                return Err(RunControlError::SemanticConflict.into());
-            }
-            return Ok(RunControlOutcome::Replayed(saved));
-        }
-        if matches!(request.action, RunControlAction::Steer { .. })
-            && (self.closed.load(std::sync::atomic::Ordering::SeqCst)
-                || self
-                    .contextual
-                    .as_ref()
-                    .is_some_and(|provider| provider.is_closed()))
-        {
-            return Err(RuntimeError::HostClosed);
-        }
-        Ok(self.runtime.control_run(request).await?)
+        self.runtime.control_run(request).await
     }
     /// Immutable metadata reconciliation, available after close.
     /// # Errors

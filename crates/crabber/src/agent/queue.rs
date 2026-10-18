@@ -3,23 +3,12 @@ use super::{Admission, Agent, ExecutionContext, RuntimeError};
 use crabber_core::{
     AdmissionOptions, ControlId, InputEnvelope, QueueId, SessionContext, SessionId, TraceContext,
 };
-use crabber_runtime::{QueueControl, Request};
+use crabber_runtime::QueueControl;
 use crabber_session::{
     QueueMutation, QueueOutcome, QueuePage, QueuePageRequest, QueueReceipt, QueueSummary,
     RetainedQueue,
 };
 impl Agent {
-    fn queue_ingress(&self) -> Result<(), RuntimeError> {
-        if self.closed.load(std::sync::atomic::Ordering::SeqCst)
-            || self
-                .contextual
-                .as_ref()
-                .is_some_and(|provider| provider.is_closed())
-        {
-            return Err(RuntimeError::HostClosed);
-        }
-        Ok(())
-    }
     /// Enqueue typed future input; stored defaults resolve when this head is prepared.
     /// Configured fallback and reflected profile resolve at the first preparation.
     /// # Errors
@@ -34,14 +23,6 @@ impl Agent {
     ) -> Result<QueueReceipt, RuntimeError> {
         let mut request = self.default_request_in(context, String::new());
         request.input_envelope = Some(input);
-        if let Some(saved) = self
-            .runtime
-            .replay_queue_enqueue(&request, &queue_id, &id, &options)
-            .await?
-        {
-            return Ok(saved);
-        }
-        self.queue_ingress()?;
         self.runtime
             .enqueue_queue(request, queue_id, id, options)
             .await
@@ -59,14 +40,6 @@ impl Agent {
     ) -> Result<QueueReceipt, RuntimeError> {
         let mut request = self.context_request(context, String::new());
         request.input_envelope = Some(input);
-        if let Some(saved) = self
-            .runtime
-            .replay_queue_enqueue(&request, &queue_id, &id, &options)
-            .await?
-        {
-            return Ok(saved);
-        }
-        self.queue_ingress()?;
         self.runtime
             .enqueue_queue(request, queue_id, id, options)
             .await
@@ -75,20 +48,7 @@ impl Agent {
     /// # Errors
     /// Returns native queue scope, state, revision and storage failures.
     pub async fn mutate_queue(&self, request: QueueMutation) -> Result<QueueOutcome, RuntimeError> {
-        if let Some(saved) = self
-            .runtime
-            .lookup_queue(&request.session_id, &request.id)
-            .await?
-        {
-            if request.fingerprint()? != saved.semantic_digest {
-                return Err(crabber_session::StoreError::AdmissionConflict.into());
-            }
-            return Ok(QueueOutcome::Replayed(saved));
-        }
-        if !matches!(request.action, crabber_session::QueueAction::Cancel { .. }) {
-            self.queue_ingress()?;
-        }
-        Ok(self.runtime.mutate_queue(request).await?)
+        self.runtime.mutate_queue(request).await
     }
     /// Safe original control metadata; callable after close.
     /// # Errors
@@ -129,30 +89,6 @@ impl Agent {
     ) -> Result<RetainedQueue, RuntimeError> {
         self.runtime.queued_intent(context, id).await
     }
-    async fn queue_request(
-        &self,
-        context: &SessionContext,
-        id: &QueueId,
-    ) -> Result<Request, RuntimeError> {
-        let retained = self.runtime.queued_intent(context, id).await?;
-        let data = &retained.input.request;
-        let mut request = if data.selection_policy.is_explicit() {
-            self.request_at(
-                Some(context.session_id().clone()),
-                data.text.clone(),
-                context.workspace_id(),
-                context.directory(),
-                &crabber_providers::Selection {
-                    provider_id: data.provider_id.clone(),
-                    model_id: data.model_id.clone(),
-                },
-            )
-        } else {
-            self.default_request_in(context, data.text.clone())
-        };
-        request.input_envelope = Some(retained.input.input);
-        Ok(request)
-    }
     /// Freeze the head's prepared binding under its exact live claim and latest CAS.
     /// # Errors
     /// Reconciles the original key before readiness/default reads or factories.
@@ -161,26 +97,13 @@ impl Agent {
         context: &SessionContext,
         control: QueueControl,
     ) -> Result<QueueReceipt, RuntimeError> {
-        let request = self
-            .queue_request(context, &control.authority.queue_id)
-            .await?;
-        if let Some(saved) = self
-            .runtime
-            .replay_queue_prepare(&request, &control)
-            .await?
-        {
-            return Ok(saved);
-        }
         self.runtime
-            .reject_pending_preparation(
-                &control.authority.session_id,
-                &crabber_session::session_owner::preparation::PreparationKey::Queue(
-                    control.id.clone(),
-                ),
+            .prepare_queue_from_context(
+                self.default_request_in(context, String::new()),
+                context.clone(),
+                control,
             )
-            .await?;
-        self.prepare_request(&request).await?;
-        self.runtime.prepare_queue(request, control).await
+            .await
     }
     /// Admit a prepared FIFO head and return its one freshly owned execution handle.
     /// # Errors
@@ -191,23 +114,15 @@ impl Agent {
         control: QueueControl,
         trace: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        let request = self
-            .queue_request(context, &control.authority.queue_id)
-            .await?;
-        if let Some(saved) = self.runtime.replay_queue_admit(&request, &control).await? {
-            return Ok(Admission::Replayed(saved));
-        }
-        self.runtime
-            .reject_pending_preparation(
-                &control.authority.session_id,
-                &crabber_session::session_owner::preparation::PreparationKey::Queue(
-                    control.id.clone(),
-                ),
-            )
-            .await?;
-        self.prepare_request(&request).await?;
         Ok(Admission::from_runtime(
-            self.runtime.admit_queue(request, control, trace).await?,
+            self.runtime
+                .admit_queue_from_context(
+                    self.default_request_in(context, String::new()),
+                    context.clone(),
+                    control,
+                    trace,
+                )
+                .await?,
         ))
     }
     /// Convenience for a freshly claimed, unprepared head. Keep both operation IDs
@@ -242,10 +157,15 @@ impl Agent {
         id: &QueueId,
         trace: Option<TraceContext>,
     ) -> Result<Admission, RuntimeError> {
-        let request = self.queue_request(context, id).await?;
-        // Native admission recovery performs original-receipt reconciliation first.
-        let retained = self.runtime.queued_intent(context, id).await?;
-        self.recover_request(request, retained.input.admission, trace)
-            .await
+        Ok(Admission::from_runtime(
+            self.runtime
+                .recover_queue_from_context(
+                    self.default_request_in(context, String::new()),
+                    context.clone(),
+                    id.clone(),
+                    trace,
+                )
+                .await?,
+        ))
     }
 }

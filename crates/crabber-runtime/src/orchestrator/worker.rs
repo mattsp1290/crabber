@@ -59,6 +59,11 @@ impl WorkerBusiness {
             complete,
             cancellation,
         } = self;
+        let original = runtime.root_scope.clone();
+        let run = runtime
+            .worker_resources
+            .as_ref()
+            .map(|resources| resources.run_id().clone());
         let guard = observer.guard();
         let callbacks = runtime
             .worker_resources
@@ -72,12 +77,19 @@ impl WorkerBusiness {
                 let capability = owner.capability();
                 runtime.worker_callbacks = Some(capability.clone());
                 crabber_extension::with_callback_invocations(capability, async move {
-                    Box::pin(work(runtime, cancellation)).await
+                    let scope = runtime.root_scope.clone();
+                    match scope {
+                        Some(scope) => scope.scope(Box::pin(work(runtime, cancellation))).await,
+                        None => Err(RuntimeError::HostClosed),
+                    }
                 })
                 .await
             }
             Err(_) => Err(RuntimeError::PreparationRecoveryRequired),
         };
+        if let (Some(original), Some(run), Err(error)) = (original, run, &result) {
+            original.record_business_failure(&run, error);
+        }
         drop(callback_guard);
         drop(guard);
         complete.publish(result);
@@ -85,22 +97,35 @@ impl WorkerBusiness {
     }
 }
 impl Orchestrator {
-    pub(super) fn worker_launch(&self, session: SessionId, run: RunId) -> WorkerLaunch {
-        self.worker_launch_with_cancellation(session, run, CancellationToken::new())
+    pub(super) fn worker_launch(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<WorkerLaunch, RuntimeError> {
+        self.worker_launch_with_cancellation(
+            session,
+            run,
+            self.root_scope.as_ref().map_or_else(
+                CancellationToken::new,
+                crate::execution_tasks::RootScope::cancellation,
+            ),
+        )
     }
     pub(super) fn worker_launch_with_cancellation(
         &self,
         session: SessionId,
         run: RunId,
         cancellation: CancellationToken,
-    ) -> WorkerLaunch {
+    ) -> Result<WorkerLaunch, RuntimeError> {
         let (sender, done) = oneshot::channel();
         let (complete, completion) = watch::channel(false);
-        let resources = self
-            .execution_tasks
-            .worker_resources(session.clone(), run.clone());
+        let parent = self.root_scope.as_ref().ok_or(RuntimeError::HostClosed)?;
+        let resources =
+            self.execution_tasks
+                .worker_resources_in(parent, session.clone(), run.clone())?;
         let mut runtime = self.clone();
         runtime.worker_resources = Some(resources.clone());
+        runtime.root_scope = resources.root_scope().cloned();
         let (observer, events) = ExecutionEventObserver::channel(
             runtime.observer.clone(),
             session.clone(),
@@ -109,7 +134,7 @@ impl Orchestrator {
         );
         runtime.observer = observer.clone();
         let complete = driver::WorkerCompletion::new(sender, complete);
-        WorkerLaunch {
+        Ok(WorkerLaunch {
             handle: HandleParts {
                 runtime: self.clone(),
                 session,
@@ -128,6 +153,6 @@ impl Orchestrator {
             },
             resources,
             complete,
-        }
+        })
     }
 }

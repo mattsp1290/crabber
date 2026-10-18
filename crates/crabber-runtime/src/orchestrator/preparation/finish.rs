@@ -18,6 +18,14 @@ use crabber_session::{
 };
 use std::future::Future;
 
+pub(super) struct LegacyFailure {
+    _private: (),
+}
+enum ObservationFailure {
+    Retained(RuntimeError),
+    Cancelled(RuntimeError),
+}
+
 impl Orchestrator {
     pub(in crate::orchestrator) async fn finish_durable_preparation<T, F, W>(
         &self,
@@ -32,15 +40,22 @@ impl Orchestrator {
         let DurablePreparation { grant, capacity } = prepared;
         let descriptor = grant.reconciliation()?;
         let entry = self
-            .retained_preparations
-            .reserve(grant.clone(), capacity)
+            .retain_preparation_entry(grant.clone(), capacity)
             .map_err(|error| incomplete(descriptor.clone(), error))?;
         let observed = if grant.original_reservation().resource_contract.is_some() {
-            self.observe_owned_preparation(&entry, grant, work).await
+            self.observe_owned_preparation(&entry, grant, work)
+                .await
+                .map_err(ObservationFailure::Retained)
         } else {
             self.observe_legacy_preparation(&entry, grant, work).await
         };
-        observed.map_err(|error| incomplete(descriptor.clone(), error))?;
+        match observed {
+            Ok(()) => (),
+            Err(ObservationFailure::Retained(error)) => {
+                return Err(incomplete(descriptor, error));
+            }
+            Err(ObservationFailure::Cancelled(error)) => return Err(error),
+        }
         let mut held = entry.lock().await;
         let proof = held
             .joined
@@ -68,7 +83,11 @@ impl Orchestrator {
         };
         let legacy = held.owned.is_none();
         if legacy {
-            stop_legacy(&mut held).await?;
+            if let Err((error, payload)) = stop_legacy(&mut held).await {
+                drop(held);
+                retained::heartbeat::discard_join_error(payload);
+                return Err(error);
+            }
             self.retained_preparations.remove(&descriptor, &entry);
         }
         drop(held);
@@ -88,7 +107,7 @@ impl Orchestrator {
         entry: &SharedEntry,
         grant: PreparationGrant,
         work: F,
-    ) -> Result<(), RuntimeError>
+    ) -> Result<(), ObservationFailure>
     where
         T: PreparationValue,
         F: FnOnce(Option<PlanScope>) -> W + Send + 'static,
@@ -100,11 +119,32 @@ impl Orchestrator {
             vec![grant.owner_authority().clone()],
             held.heartbeat_stop.clone(),
             None,
+            held.root_scope.clone(),
         ));
         let task = tokio::spawn(async move { work(None).await });
-        let (value, proof) = JoinedPreparation::observe(grant, task)
-            .await
-            .map_err(|_| RuntimeError::TaskStopped)??;
+        let observed = JoinedPreparation::observe(grant, task).await;
+        let (value, proof) = match observed {
+            Ok(Ok(joined)) => joined,
+            Ok(Err(error)) => {
+                held.legacy_failure = Some(LegacyFailure { _private: () });
+                drop(held);
+                return match retained::cleanup::cancel_failed_legacy(
+                    self.retained_preparations.clone(),
+                    entry.clone(),
+                    self.store.clone(),
+                )
+                .await
+                {
+                    Ok(()) => Err(ObservationFailure::Cancelled(error)),
+                    Err(error) => Err(ObservationFailure::Retained(error)),
+                };
+            }
+            Err(error) => {
+                drop(held);
+                retained::heartbeat::discard_join_error(Some(error));
+                return Err(ObservationFailure::Retained(RuntimeError::TaskStopped));
+            }
+        };
         held.value = Some(value.retain());
         held.joined = Some(proof);
         Ok(())
@@ -132,6 +172,7 @@ impl Orchestrator {
         let scope = self
             .register_owned_preparation(entry, &grant, &receipt, work)
             .await?;
+        self.check_original_stop()?;
         let authority = grant
             .retained_resources_authority()
             .ok_or(RuntimeError::PreparationRecoveryRequired)?
@@ -173,6 +214,8 @@ impl Orchestrator {
         W: Future<Output = Result<(T, PreparedOperation), RuntimeError>> + Send + 'static,
     {
         let resources = crabber_extension::ToolResourceOwner::new();
+        self.retained_preparations
+            .publish_resources(&grant.reconciliation()?, &resources);
         let disposed = tokio_util::sync::CancellationToken::new();
         let reservation = grant.original_reservation();
         let context = crabber_core::SessionContext::new(
@@ -204,14 +247,21 @@ impl Orchestrator {
             lease: crabber_extension::PreparationResourceLease::from_host(disposed.clone()),
         };
         let source = OwnedScopeSource::from_receipts(&receipt.reserved, &receipt.began)?;
+        let original_scope = entry.lock().await.root_scope.clone();
         let task = OwnedTaskRegistration::register(source, move || async move {
             // Closing this ingress is not a main/resource Join acknowledgement.
             // Escaped preparation capabilities cannot start another factory
             // after this actual initializer future has returned or been dropped.
             let _ingress = parent_done.drop_guard();
-            work(Some(scope))
-                .await
-                .map(|(value, operation)| (value.retain(), operation))
+            let body = async move {
+                work(Some(scope))
+                    .await
+                    .map(|(value, operation)| (value.retain(), operation))
+            };
+            match original_scope {
+                Some(original) => original.scope(body).await,
+                None => body.await,
+            }
         })?;
         let activation = task.activation().clone();
         let mut held = entry.lock().await;
@@ -227,6 +277,7 @@ impl Orchestrator {
             ],
             held.heartbeat_stop.clone(),
             Some(resources.clone()),
+            held.root_scope.clone(),
         ));
         held.owned = Some(retained::OwnedEntry {
             task,

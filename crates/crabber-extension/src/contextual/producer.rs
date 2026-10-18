@@ -166,17 +166,23 @@ impl Registration {
         let (gate, ready) = oneshot::channel();
         let original = source.clone();
         let owner = slot.owner.clone();
-        let main = tokio::spawn(super::INITIALIZING.scope(owner.clone(), async move {
-            ready.await.ok()?;
-            // Recheck in the actual gated body, after the scheduling handoff.
-            if let Err(error) = provider.check_slot(&slot) {
-                return Some(Err(error));
-            }
-            if slot.state.lock().unwrap().generation.as_ref() != Some(&original.generation) {
-                return Some(Err(ExtensionError::ContextIdentityMismatch));
-            }
-            Some(provider.construct_slot(&slot).await)
-        }));
+        let provider_identity = provider.inner.initializer_identity.clone();
+        let main_identity = provider_identity.clone();
+        let main = tokio::spawn(super::scoped_initializer(
+            main_identity,
+            owner.clone(),
+            async move {
+                ready.await.ok()?;
+                // Recheck in the actual gated body, after the scheduling handoff.
+                if let Err(error) = provider.check_slot(&slot) {
+                    return Some(Err(error));
+                }
+                if slot.state.lock().unwrap().generation.as_ref() != Some(&original.generation) {
+                    return Some(Err(ExtensionError::ContextIdentityMismatch));
+                }
+                Some(provider.construct_slot(&slot).await)
+            },
+        ));
         let registration = Arc::new(Self {
             source: source.clone(),
             graph,
@@ -192,15 +198,19 @@ impl Registration {
         // A separate release gate prevents even future construction before both
         // actual handles are retained in their original registration.
         let (release, retained) = oneshot::channel();
-        let call = tokio::spawn(super::INITIALIZING.scope(owner, async move {
-            if retained.await.is_err() {
-                return ContextualGenerationAdmission::Refused;
-            }
-            let mut future = host.register(ContextualGenerationWork { source });
-            let outcome = future.as_mut().await;
-            drop(future);
-            outcome
-        }));
+        let call = tokio::spawn(super::scoped_initializer(
+            provider_identity,
+            owner,
+            async move {
+                if retained.await.is_err() {
+                    return ContextualGenerationAdmission::Refused;
+                }
+                let mut future = host.register(ContextualGenerationWork { source });
+                let outcome = future.as_mut().await;
+                drop(future);
+                outcome
+            },
+        ));
         *registration.host.try_lock().expect("unpublished host call") = Some(call);
         // The caller publishes Registration under the slot lock before release.
         Ok((registration, release))

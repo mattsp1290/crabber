@@ -154,11 +154,14 @@ impl Orchestrator {
         request: ContinueApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_approval_continuation(&request).await? {
-            return Ok(Continuation::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_approval_continuation(&request).await? {
+                return Ok(Continuation::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.with_context(context);
-        self.own_preparation(request.session_id.clone(), async move {
+        self.own_preparation(request.session_id.clone(), move |runtime| async move {
+            let runtime = runtime.with_context(context);
             runtime.prepare_continuation(request).await
         })
         .await
@@ -203,7 +206,7 @@ impl Orchestrator {
             move |runtime, cancellation| async move {
                 Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
             },
-        );
+        )?;
         claim_result(handle, receiver).await
     }
     pub(super) async fn acquire_resume(

@@ -50,10 +50,6 @@ impl Agent {
         request: ContinueApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_approval_continuation(&request).await? {
-            return Ok(Continuation::Replayed(receipt));
-        }
-        self.check_ingress()?;
         Ok(
             match self
                 .runtime
@@ -92,10 +88,6 @@ impl Agent {
         request: super::RecoverApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_approval_recovery(&request).await? {
-            return Ok(Continuation::Replayed(receipt));
-        }
-        self.check_ingress()?;
         Ok(
             match self
                 .runtime

@@ -37,9 +37,7 @@ impl Orchestrator {
     {
         let DurablePreparation { grant, capacity } = prepared;
         let descriptor = grant.reconciliation()?;
-        let entry = self
-            .retained_preparations
-            .reserve(grant.clone(), capacity)?;
+        let entry = self.retain_preparation_entry(grant.clone(), capacity)?;
         let result = async {
             let PreparationResourceOutcome::Applied { receipt, grant } = self.store.retain_preparation_resources(grant).await? else {
                 return Err(RuntimeError::PreparationRecoveryRequired);
@@ -49,6 +47,7 @@ impl Orchestrator {
                 let mut held = entry.lock().await;
                 install_pending(&mut held, &grant)?
             };
+            if pending.cancellation.is_cancelled() { return Err(RuntimeError::Interrupted); }
             let authority = grant.retained_resources_authority().ok_or(RuntimeError::PreparationRecoveryRequired)?.clone();
             let OwnedScopeActivationOutcome::Applied { permit, .. } = self.store.activate_owned_scope(
                 activation, authority, Some(crabber_session::session_owner::owned_scope::OwnedScopeParentAuthority::preparation((*grant).clone())),
@@ -97,7 +96,11 @@ fn install_pending(
         main: OnceLock::new(),
         enrollment: std::sync::Mutex::new(()),
         control: OnceLock::new(),
-        cancellation: CancellationToken::new(),
+        cancellation: held.root_scope.as_ref().map_or_else(
+            CancellationToken::new,
+            crate::execution_tasks::RootScope::cancellation,
+        ),
+        root_scope: held.root_scope.clone(),
         failed: AtomicBool::new(false),
         cleanup_active: AtomicBool::new(false),
         cleanup_failed: AtomicBool::new(false),
@@ -140,7 +143,18 @@ pub(super) async fn finish(pending: &PendingPreparation, store: &dyn Store) -> R
             Err(None) => Err(()),
         }
     };
-    let heartbeat = async { pending.heartbeat.lock().await.join().await };
+    let heartbeat = async {
+        let mut retained = pending.heartbeat.lock().await;
+        let observed = retained.observe_join().await;
+        drop(retained);
+        match observed {
+            Ok(()) => Ok(()),
+            Err(payload) => {
+                retained::heartbeat::discard_join_error(payload);
+                Err(())
+            }
+        }
+    };
     // Observe both original tasks even if either observation fails. A failed
     // heartbeat can never be replaced by an empty RetainedTask on retry.
     let (proof, heartbeat) = futures::join!(main, heartbeat);

@@ -48,10 +48,6 @@ impl Agent {
         request: ContinueTool,
         context: Option<TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_tool_continuation(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
-        }
-        self.check_ingress()?;
         Ok(
             match self
                 .runtime
@@ -84,10 +80,6 @@ impl Agent {
         &self,
         request: crabber_runtime::RecoverTool,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_tool_recovery(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
-        }
-        self.check_ingress()?;
         Ok(
             match self.runtime.recover_tool_continuation(request).await? {
                 crabber_runtime::ToolContinuation::Started {

@@ -94,13 +94,19 @@ impl Orchestrator {
         request: RecoverApproval,
         context: Option<TraceContext>,
     ) -> Result<Continuation, RuntimeError> {
-        if let Some(receipt) = self.lookup_approval_recovery(&request).await? {
-            return Ok(Continuation::Replayed(receipt));
+        if let Some(refusal) = self.preparation_entry_refusal() {
+            if let Some(receipt) = self.lookup_approval_recovery(&request).await? {
+                return Ok(Continuation::Replayed(receipt));
+            }
+            return Err(refusal);
         }
-        let runtime = self.with_context(context);
-        self.own_preparation(request.original.session_id.clone(), async move {
-            runtime.prepare_approval_recovery(request).await
-        })
+        self.own_preparation(
+            request.original.session_id.clone(),
+            move |runtime| async move {
+                let runtime = runtime.with_context(context);
+                runtime.prepare_approval_recovery(request).await
+            },
+        )
         .await
     }
     async fn prepare_approval_recovery(
@@ -143,7 +149,7 @@ impl Orchestrator {
             move |runtime, cancellation| async move {
                 Box::pin(runtime.resume_loaded(run, validated, cancellation, Some(control))).await
             },
-        );
+        )?;
         super::continuation::claim_result(handle, receiver).await
     }
 }

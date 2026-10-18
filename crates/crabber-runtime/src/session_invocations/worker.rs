@@ -72,13 +72,14 @@ async fn run_legacy(
     };
     // Calling the factory may itself panic. It runs inside the actual joined
     // task, only after both acknowledged fresh commits above.
-    let mut work = tokio::spawn(async move {
+    let original_owner = invocation.clone();
+    let mut work = tokio::spawn(super::close::scope(original_owner, async move {
         if context.cancel.is_cancelled() {
             Ok(())
         } else {
             task(context).await
         }
-    });
+    }));
     let _ = sender.send(Ok(Admission::Started));
     let mut ticker = tokio::time::interval_at(
         tokio::time::Instant::now() + Duration::from_secs(5),

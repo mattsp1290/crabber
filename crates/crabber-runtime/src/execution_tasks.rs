@@ -1,15 +1,19 @@
 //! Local task ownership. These joins say nothing about durable outcome or
 //! extension-owned resources; those must be reconciled independently.
+mod admission;
 mod background;
 mod correlation;
+mod enrollment;
+mod issues;
 use background::OwnedBackgroundResources;
 pub use background::{WorkerResourceDrain, WorkerResourceKind};
 use correlation::TaskCorrelation;
 use crabber_core::{RunId, SessionId, ToolCallId};
+pub(crate) use enrollment::RootScope;
 use futures::{StreamExt, stream::FuturesUnordered};
+pub use issues::{RunCloseIssue, RunCloseIssueKind};
 use std::{
     collections::BTreeMap,
-    future::Future,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -47,6 +51,19 @@ pub struct JoinedPreparationTask {
     pub termination: TaskTermination,
 }
 
+/// A joined prelude whose native Session has not been selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinedUnscopedPreparationTask {
+    pub task_id: PreparationTaskId,
+    pub termination: TaskTermination,
+}
+/// Sticky local termination retained even after its task was reaped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionTaskFailure {
+    pub session_id: Option<SessionId>,
+    pub task_id: PreparationTaskId,
+    pub termination: TaskTermination,
+}
 /// A snapshot drain, not an ingress barrier or proof of durable settlement.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExecutionTaskDrain {
@@ -60,6 +77,7 @@ pub struct ExecutionTaskDrain {
     /// Preparation can own an admission whose response has not arrived yet.
     pub joined_preparations: Vec<JoinedPreparationTask>,
     pub pending_preparations: Vec<PreparationTaskId>,
+    pub joined_unscoped_preparations: Vec<JoinedUnscopedPreparationTask>,
 }
 
 /// Local resource ownership for a tool call; never durable phase authority.
@@ -88,6 +106,12 @@ struct ExecutionOwners {
     tasks: BTreeMap<RunId, Arc<ExecutionTask>>,
     resources: Vec<Arc<OwnedToolResources>>,
     background_tasks: Vec<Arc<OwnedBackgroundResources>>,
+    closed: bool,
+    enrollments: BTreeMap<usize, enrollment::Enrollment>,
+    failures: Vec<ExecutionTaskFailure>,
+    run_issues: Vec<RunCloseIssue>,
+    uncertain_preparations:
+        Vec<crabber_session::session_owner::preparation::PreparationReconciliation>,
 }
 
 /// Local ownership of one actual worker's resources; never native authority.
@@ -95,6 +119,7 @@ struct ExecutionOwners {
 pub(crate) struct WorkerResources {
     tasks: ExecutionTasks,
     id: WorkerResourceId,
+    scope: Option<RootScope>,
     session_id: SessionId,
     run_id: RunId,
 }
@@ -112,6 +137,7 @@ impl WorkerResources {
             call_id,
             phase,
             Some(self.id.clone()),
+            self.scope.as_ref(),
         )
     }
     pub(crate) fn run_matches(&self, run: &RunId) -> bool {
@@ -136,7 +162,8 @@ impl WorkerResources {
 }
 
 pub(crate) struct ExecutionTask {
-    session_id: SessionId,
+    session_id: Option<SessionId>,
+    scope: Option<RootScope>,
     local_id: RunId,
     correlation: Mutex<TaskCorrelation>,
     join: tokio::sync::Mutex<JoinState>,
@@ -176,6 +203,7 @@ impl ExecutionTasks {
         WorkerResources {
             tasks: self.clone(),
             id: WorkerResourceId(Arc::new(())),
+            scope: None,
             session_id,
             run_id,
         }
@@ -188,7 +216,7 @@ impl ExecutionTasks {
         call_id: ToolCallId,
         phase: Option<crabber_session::PhaseTarget>,
     ) -> crabber_extension::ToolResourceOwner {
-        self.tool_resources_for_worker(session_id, run_id, call_id, phase, None)
+        self.tool_resources_for_worker(session_id, run_id, call_id, phase, None, None)
     }
     fn tool_resources_for_worker(
         &self,
@@ -197,20 +225,23 @@ impl ExecutionTasks {
         call_id: ToolCallId,
         phase: Option<crabber_session::PhaseTarget>,
         worker: Option<WorkerResourceId>,
+        scope: Option<&RootScope>,
     ) -> crabber_extension::ToolResourceOwner {
         let owner = crabber_extension::ToolResourceOwner::new();
-        self.owners
-            .lock()
-            .unwrap()
-            .resources
-            .push(Arc::new(OwnedToolResources {
-                session_id,
-                run_id,
-                call_id,
-                phase,
-                owner: owner.clone(),
-                worker,
-            }));
+        self.refresh_resources();
+        let mut retained = self.owners.lock().unwrap();
+        if scope.is_some_and(|scope| !scope.belongs_to(self) || scope.verify(&retained).is_err()) {
+            owner.close();
+            return owner;
+        }
+        retained.resources.push(Arc::new(OwnedToolResources {
+            session_id,
+            run_id,
+            call_id,
+            phase,
+            owner: owner.clone(),
+            worker,
+        }));
         owner
     }
     async fn drain_resources(&self, session: Option<&SessionId>, deadline: tokio::time::Instant) {
@@ -244,7 +275,9 @@ impl ExecutionTasks {
         worker: Option<&WorkerResourceId>,
         bound: Duration,
     ) -> bool {
-        let deadline = tokio::time::Instant::now() + bound;
+        let Some(deadline) = tokio::time::Instant::now().checked_add(bound) else {
+            return false;
+        };
         let scopes = self
             .owners
             .lock()
@@ -352,6 +385,7 @@ impl ExecutionTasks {
     ) -> Arc<ExecutionTask> {
         self.spawn_scoped(session_id, Some(run_id), work)
     }
+    #[cfg(test)]
     pub(crate) fn spawn_preparation(
         &self,
         session_id: SessionId,
@@ -360,6 +394,7 @@ impl ExecutionTasks {
         self.spawn_scoped(session_id, None, work)
     }
     /// Retain the supervisor join and the actual inner worker's observation.
+    #[cfg(test)]
     pub(crate) fn spawn_reporting(
         &self,
         session_id: SessionId,
@@ -368,7 +403,8 @@ impl ExecutionTasks {
     ) -> Arc<ExecutionTask> {
         let mut owners = self.owners.lock().unwrap();
         let task = Arc::new(ExecutionTask {
-            session_id,
+            session_id: Some(session_id),
+            scope: None,
             local_id: RunId::new(),
             correlation: Mutex::new(TaskCorrelation {
                 run_id,
@@ -379,6 +415,7 @@ impl ExecutionTasks {
         owners.tasks.insert(task.local_id.clone(), task.clone());
         task
     }
+    #[cfg(test)]
     fn spawn_scoped(
         &self,
         session_id: SessionId,
@@ -392,6 +429,10 @@ impl ExecutionTasks {
     }
     pub(crate) async fn join(&self, task: &Arc<ExecutionTask>) -> TaskTermination {
         let termination = task.join().await;
+        self.record_termination(task, termination);
+        if let Some(scope) = &task.scope {
+            scope.complete();
+        }
         let mut owners = self.owners.lock().unwrap();
         if owners
             .tasks
@@ -416,11 +457,9 @@ impl ExecutionTasks {
         let mut owners = self.owners.lock().unwrap();
         let mut runs = Vec::new();
         let mut preparations = Vec::new();
-        for task in owners
-            .tasks
-            .values()
-            .filter(|task| session.is_none_or(|id| task.session_id == *id))
-        {
+        for task in owners.tasks.values().filter(|task| {
+            session.is_none_or(|id| task.session_id.as_ref().is_none_or(|actual| actual == id))
+        }) {
             if let Some(run) = &task.correlation.lock().unwrap().run_id {
                 runs.push(run.clone());
             } else {
@@ -461,14 +500,18 @@ impl ExecutionTasks {
         session: Option<&SessionId>,
         bound: Duration,
     ) -> ExecutionTaskDrain {
-        let deadline = tokio::time::Instant::now() + bound;
+        let Some(deadline) = tokio::time::Instant::now().checked_add(bound) else {
+            return self.snapshot_close();
+        };
         let tasks = self
             .owners
             .lock()
             .unwrap()
             .tasks
             .values()
-            .filter(|task| session.is_none_or(|id| task.session_id == *id))
+            .filter(|task| {
+                session.is_none_or(|id| task.session_id.as_ref().is_none_or(|actual| actual == id))
+            })
             .cloned()
             .collect::<Vec<_>>();
         let mut joins = tasks
@@ -487,18 +530,27 @@ impl ExecutionTasks {
         let mut report = ExecutionTaskDrain::default();
         let _ = tokio::time::timeout(bound, async {
             while let Some((session_id, run_id, task_id, termination)) = joins.next().await {
-                if let Some(run_id) = run_id {
-                    report.joined.push(JoinedExecutionTask {
-                        session_id,
-                        run_id,
-                        termination,
-                    });
+                if let Some(session_id) = session_id {
+                    if let Some(run_id) = run_id {
+                        report.joined.push(JoinedExecutionTask {
+                            session_id,
+                            run_id,
+                            termination,
+                        });
+                    } else {
+                        report.joined_preparations.push(JoinedPreparationTask {
+                            session_id,
+                            task_id,
+                            termination,
+                        });
+                    }
                 } else {
-                    report.joined_preparations.push(JoinedPreparationTask {
-                        session_id,
-                        task_id,
-                        termination,
-                    });
+                    report
+                        .joined_unscoped_preparations
+                        .push(JoinedUnscopedPreparationTask {
+                            task_id,
+                            termination,
+                        });
                 }
             }
         })
@@ -520,4 +572,33 @@ impl ExecutionTasks {
 }
 
 #[cfg(test)]
+mod enrollment_tests;
+#[cfg(test)]
 mod tests;
+
+impl ExecutionTasks {
+    pub(crate) fn snapshot_close(&self) -> ExecutionTaskDrain {
+        let (pending, pending_preparations, resources, background_tasks) = self.pending(None);
+        ExecutionTaskDrain {
+            resources,
+            background_tasks,
+            pending,
+            pending_preparations,
+            ..Default::default()
+        }
+    }
+    pub(crate) fn is_current_callback_parent(&self) -> bool {
+        let owners = {
+            let state = self.owners.lock().unwrap();
+            state
+                .resources
+                .iter()
+                .map(|scope| scope.owner.clone())
+                .chain(background::callback_owners(&state))
+                .collect::<Vec<_>>()
+        };
+        owners
+            .iter()
+            .any(crabber_extension::ToolResourceOwner::is_current_callback_parent)
+    }
+}

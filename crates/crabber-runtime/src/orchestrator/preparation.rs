@@ -12,6 +12,27 @@ use crabber_session::session_owner::{
 };
 
 impl Orchestrator {
+    fn retain_preparation_entry(
+        &self,
+        grant: PreparationGrant,
+        capacity: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<retained::SharedEntry, RuntimeError> {
+        let member = self
+            .root_scope
+            .as_ref()
+            .map(crate::execution_tasks::RootScope::retain_preparation)
+            .transpose()?;
+        let result = self
+            .retained_preparations
+            .reserve(grant, capacity, member.clone());
+        if result.is_err()
+            && let Some(member) = member
+        {
+            member.complete();
+        }
+        result
+    }
+
     /// Original bounded correlation only; no factories, current owner or grant.
     /// # Errors
     /// Rejects unsupported adapters and corrupt immutable preparation evidence.
@@ -132,22 +153,7 @@ impl Orchestrator {
         session: &SessionId,
         spec: PreparationSpec,
     ) -> Result<DurablePreparation, RuntimeError> {
-        if !self.store.supports_preparation_protocol() {
-            return Err(StoreError::HostUnsupported.into());
-        }
-        if request.max_output_tokens == Some(0) {
-            return Err(RuntimeError::InvalidConfiguration(
-                "max output tokens must be positive",
-            ));
-        }
-        let input = self.capture_input(request, session).await?;
-        if request
-            .captured_revision
-            .is_some_and(|value| value != input.expected_revision())
-        {
-            return Err(StoreError::AdmissionRevisionConflict.into());
-        }
-        request.captured_revision = Some(input.expected_revision());
+        let input = self.preparation_input(request, session).await?;
         let context = crabber_core::SessionContext::new(
             session.clone(),
             request.workspace_id.clone(),
@@ -196,6 +202,7 @@ impl Orchestrator {
             .map_err(RuntimeError::ExtensionPlan)?;
         let descriptor = reservation.reconciliation()?;
         let capacity = self.retained_preparations.reserve_capacity()?;
+        self.check_original_stop()?;
         let reserved = self.store.reserve_preparation(reservation.clone()).await;
         let authority = match reserved {
             Ok(SessionOwnerOutcome::Applied {
@@ -226,6 +233,38 @@ impl Orchestrator {
             grant: PreparationGrant::from_fresh_begin(reservation, authority)?,
             capacity,
         })
+    }
+    async fn preparation_input(
+        &self,
+        request: &mut Request,
+        session: &SessionId,
+    ) -> Result<crabber_core::InputEnvelope, RuntimeError> {
+        if !self.store.supports_preparation_protocol() {
+            return Err(StoreError::HostUnsupported.into());
+        }
+        if request.max_output_tokens == Some(0) {
+            return Err(RuntimeError::InvalidConfiguration(
+                "max output tokens must be positive",
+            ));
+        }
+        self.check_original_stop()?;
+        if request.session_id.is_some() {
+            self.validate_context(&crabber_core::SessionContext::new(
+                session.clone(),
+                request.workspace_id.clone(),
+                request.directory.clone(),
+            ))
+            .await?;
+        }
+        let input = self.capture_input(request, session).await?;
+        if request
+            .captured_revision
+            .is_some_and(|value| value != input.expected_revision())
+        {
+            return Err(StoreError::AdmissionRevisionConflict.into());
+        }
+        request.captured_revision = Some(input.expected_revision());
+        Ok(input)
     }
     async fn begin_preparation_owner(
         &self,

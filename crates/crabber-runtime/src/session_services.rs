@@ -1,5 +1,8 @@
 //! Native session dependencies retain their original task and source across waiters.
+mod close;
 mod entry;
+pub(crate) use close::ServiceCloseSelection;
+pub use close::{SessionServiceReport, SessionServiceStatus};
 mod generation;
 pub(crate) mod provider;
 mod worker;
@@ -15,13 +18,17 @@ use crabber_session::{
     },
 };
 use entry::{Entries, Entry, Status};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::{mpsc, oneshot};
 
 const CAPACITY: usize = 1024;
 #[derive(Default, Clone)]
 pub(crate) struct SessionServices {
     entries: Arc<Mutex<Entries>>,
+    closed: Arc<AtomicBool>,
 }
 struct Registrar {
     manager: SessionServices,
@@ -114,6 +121,10 @@ impl SessionServiceRegistrar for Registrar {
         let mut task = Some(task);
         let entry = {
             let mut entries = self.manager.entries.lock().unwrap();
+            if self.manager.closed.load(Ordering::Acquire) {
+                drop(entries);
+                return Err(Error::Rejected);
+            }
             if let Some(entry) = entries.get(&key) {
                 if entry.source.generation != source.generation {
                     return Err(Error::Rejected);
@@ -137,11 +148,12 @@ impl SessionServiceRegistrar for Registrar {
                 let worker_entry = entry.clone();
                 let task = task.take().expect("fresh dependency task");
                 let store = self.store.clone();
-                let supervisor = tokio::spawn(async move {
+                let original_entry = entry.clone();
+                let supervisor = tokio::spawn(close::scope(original_entry, async move {
                     if retained.await.is_ok() {
                         worker::run(store, worker_entry, task, receiver).await;
                     }
-                });
+                }));
                 // The worker cannot begin native I/O until its actual handle is
                 // retained and the entry belongs to the manager's exact roster.
                 *entry.supervisor.try_lock().expect("unexposed supervisor") = Some(supervisor);

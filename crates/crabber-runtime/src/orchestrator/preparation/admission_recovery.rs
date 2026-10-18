@@ -111,7 +111,7 @@ impl Orchestrator {
                     &retained.session,
                     InitialEntry::RecoveredKeyed(Some(locator)),
                     Some(bound),
-                ),
+                )?,
             },
         })
     }

@@ -28,12 +28,15 @@ pub(super) async fn run(
         cancel: invocation.cancel.clone(),
         cleanup: invocation.resources.cleanup_tracker(),
     };
-    let registration = OwnedTaskRegistration::register(started.source, move || async move {
-        if context.cancel.is_cancelled() {
-            Ok(())
-        } else {
-            task(context).await
-        }
+    let original_owner = invocation.clone();
+    let registration = OwnedTaskRegistration::register(started.source, move || {
+        super::close::scope(original_owner, async move {
+            if context.cancel.is_cancelled() {
+                Ok(())
+            } else {
+                task(context).await
+            }
+        })
     });
     let Ok(mut registration) = registration else {
         invocation.resources.close();

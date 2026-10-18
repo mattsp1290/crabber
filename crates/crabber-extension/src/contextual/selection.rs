@@ -1,7 +1,5 @@
 //! Publish exactly one retained initializer while holding the owner gate.
-use super::{
-    ContextualPlanProvider, ExtensionError, INITIALIZING, Initialization, Owner, Slot, SlotState,
-};
+use super::{ContextualPlanProvider, ExtensionError, Initialization, Owner, Slot, SlotState};
 use crabber_core::SessionContext;
 use futures::FutureExt;
 use std::{
@@ -49,23 +47,23 @@ impl ContextualPlanProvider {
             let initialization = Arc::new(Initialization::default());
             state.initialization = Some(initialization.clone());
             let provider = self.clone();
+            let identity = provider.inner.initializer_identity.clone();
             let task_slot = slot.clone();
             let ticket = initialization.clone();
             // Retained before publication: close cannot miss the actual task.
             let task = self.inner.initializers.tracker().spawn(async move {
-                let result = INITIALIZING
-                    .scope(owner, async {
-                        AssertUnwindSafe(provider.initialize_slot(task_slot, binding))
-                            .catch_unwind()
-                            .await
-                            .unwrap_or_else(|payload| {
-                                crate::dispatch::discard_panic_payload(payload);
-                                Err(ExtensionError::ContextInitializationFailed {
-                                    component: "contextual-profile".into(),
-                                })
+                let result = super::scoped_initializer(identity, owner, async {
+                    AssertUnwindSafe(provider.initialize_slot(task_slot, binding))
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|payload| {
+                            crate::dispatch::discard_panic_payload(payload);
+                            Err(ExtensionError::ContextInitializationFailed {
+                                component: "contextual-profile".into(),
                             })
-                    })
-                    .await;
+                        })
+                })
+                .await;
                 *ticket.result.lock().unwrap() = Some(result);
                 #[cfg(test)]
                 {

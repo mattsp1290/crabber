@@ -9,8 +9,8 @@ pub use host::ExecutionContext;
 
 pub use agent::{
     Admission, Agent, AgentBuilder, AgentConfig, BuildError, Continuation, ContinueApproval,
-    ContinueFrontend, ContinueTool, RecoverApproval, RecoverFrontend, RunEvents, RunHandle,
-    ToolContinuation,
+    ContinueFrontend, ContinueTool, HostCloseReport, HostExtensionClose, RecoverApproval,
+    RecoverFrontend, RunEvents, RunHandle, ToolContinuation,
 };
 pub use crabber_core::{
     AdmissionKey, AdmissionOptions, AdmissionReceipt, EventKind, EventRecord, InputFingerprint,
@@ -23,12 +23,13 @@ pub use crabber_extension::{
 };
 pub use crabber_providers::{FakeProvider, Selection, StreamDelta};
 pub use crabber_runtime::{
-    ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose, MonotonicClock,
-    Observer, OperationKind, OperationalObservation, PermissionDecision, PreparationRetryProgress,
-    PreparationTaskId, RecoverReport, RecoverTool, RecoverySkipReason, RetainedPreparationProgress,
-    RetainedPreparationStatus, RunControl, RunResult, RuntimeError, SessionInvocationReport,
-    SessionInvocationStatus, SkippedRun, StaticPolicy, SystemMonotonicClock, TaskTermination,
-    TerminalReason, ToolResourceDrain, WorkerResourceDrain, WorkerResourceKind,
+    CloseObservation, ExecutionTaskDrain, JoinedExecutionTask, JoinedPreparationTask, ModelPurpose,
+    MonotonicClock, Observer, OperationKind, OperationalObservation, PermissionDecision,
+    PreparationRetryProgress, PreparationTaskId, RecoverReport, RecoverTool, RecoverySkipReason,
+    RetainedPreparationProgress, RetainedPreparationStatus, RunControl, RunResult,
+    RuntimeCloseReport, RuntimeError, SessionInvocationReport, SessionInvocationStatus, SkippedRun,
+    StaticPolicy, SystemMonotonicClock, TaskTermination, TerminalReason, ToolResourceDrain,
+    WorkerResourceDrain, WorkerResourceKind,
 };
 
 #[cfg(feature = "codex")]

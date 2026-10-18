@@ -6,6 +6,7 @@ mod generation;
 mod initialization;
 mod instances;
 mod lifecycle;
+pub use lifecycle::ContextualCloseObservation;
 mod native_dependency;
 mod producer;
 pub(crate) mod product;
@@ -138,19 +139,41 @@ enum Owner {
     LibraryScripted(u64),
 }
 tokio::task_local! { static INITIALIZING: Owner; }
+// Diagnostic identity of the actual provider whose initializer is running.
+// It supplies no initialization, registration or native permission.
+tokio::task_local! { static INITIALIZING_PROVIDER: Arc<()>; }
 /// Propagate only an actual existing initializer identity into retained owned
 /// callback tasks. This is a local reentry guard, never native authority.
-pub(crate) struct InitializationContext(Option<Owner>);
+pub(crate) struct InitializationContext(Option<Owner>, Option<Arc<()>>);
 impl InitializationContext {
     pub(crate) fn capture() -> Self {
-        Self(INITIALIZING.try_with(Clone::clone).ok())
+        Self(
+            INITIALIZING.try_with(Clone::clone).ok(),
+            INITIALIZING_PROVIDER.try_with(Clone::clone).ok(),
+        )
     }
     pub(crate) async fn scope<T>(self, future: impl std::future::Future<Output = T>) -> T {
-        match self.0 {
-            Some(owner) => INITIALIZING.scope(owner, future).await,
-            None => future.await,
+        let Self(owner, provider) = self;
+        let work = async move {
+            match owner {
+                Some(owner) => INITIALIZING.scope(owner, future).await,
+                None => future.await,
+            }
+        };
+        match provider {
+            Some(provider) => INITIALIZING_PROVIDER.scope(provider, work).await,
+            None => work.await,
         }
     }
+}
+async fn scoped_initializer<T>(
+    provider: Arc<()>,
+    owner: Owner,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    INITIALIZING_PROVIDER
+        .scope(provider, INITIALIZING.scope(owner, future))
+        .await
 }
 
 struct Record {
@@ -188,6 +211,7 @@ struct Owners {
     closed_workspaces: BTreeSet<String>,
 }
 struct Inner {
+    initializer_identity: Arc<()>,
     registry: Registry,
     shared: Vec<SharedRegistration>,
     base_profile: Result<crate::registry::RegistrationSnapshot, ExtensionError>,
@@ -196,6 +220,7 @@ struct Inner {
     closed: AtomicBool,
     initializers: CleanupOwner,
     reapers: CleanupOwner,
+    close_all: lifecycle::CloseCoordinator,
     initialization_timeout: Duration,
     dependencies: dependencies::Dependencies,
     generation_host: Option<Arc<dyn ContextualGenerationHost>>,
@@ -259,6 +284,7 @@ impl ContextualPlanProvider {
         }
         Ok(Self {
             inner: Arc::new(Inner {
+                initializer_identity: Arc::new(()),
                 base_profile: registry.registration_snapshot(),
                 registry,
                 shared: shared
@@ -270,6 +296,7 @@ impl ContextualPlanProvider {
                 closed: AtomicBool::new(false),
                 initializers: CleanupOwner::new(),
                 reapers: CleanupOwner::new(),
+                close_all: lifecycle::CloseCoordinator::default(),
                 initialization_timeout,
                 dependencies: dependencies::Dependencies::default(),
                 generation_host: None,
@@ -307,14 +334,26 @@ impl ContextualPlanProvider {
     /// # Panics
     /// Panics if a previous internal panic poisoned an ownership lock.
     pub async fn ready(&self) -> Result<(), ExtensionError> {
+        self.check_ready_allowed()?;
+        self.wait_initialization(self.ensure_owner(Owner::Shared, None))
+            .await
+    }
+
+    /// Check readiness reentry in the actual caller before moving an owned
+    /// initialization into another task. This grants no initialization or plan.
+    /// # Errors
+    /// Rejects the current shared initializer or an already closed profile.
+    pub fn check_ready_allowed(&self) -> Result<(), ExtensionError> {
         if INITIALIZING
             .try_with(|owner| owner == &Owner::Shared)
             .unwrap_or(false)
+            && INITIALIZING_PROVIDER
+                .try_with(|provider| Arc::ptr_eq(provider, &self.inner.initializer_identity))
+                .unwrap_or(true)
         {
             return Err(ExtensionError::SelfClose);
         }
-        self.wait_initialization(self.ensure_owner(Owner::Shared, None))
-            .await
+        self.check_open()
     }
 
     fn check_open(&self) -> Result<(), ExtensionError> {

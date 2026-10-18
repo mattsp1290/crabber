@@ -203,13 +203,15 @@ async fn cap_survives_pause_checkpoint_resume() {
         saved.checkpoint.unwrap()["request"]["max_output_tokens"],
         4096
     );
-    // A fresh host with a different config must restore the checkpoint's cap.
+    // Preserve the original policy registration so only the configured cap changes.
+    // A fresh host must restore the checkpoint's cap.
     let resumed = Agent::builder()
         .behavior_fingerprint(crabber::core::InputFingerprint::new("b".repeat(64)).unwrap())
         .store(store)
         .provider(provider.clone())
         .config(config().max_output_tokens(64))
         .shared_tool(tool())
+        .policy(Arc::new(Pause))
         .build()
         .unwrap();
     assert_eq!(

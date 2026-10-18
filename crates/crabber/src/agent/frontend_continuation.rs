@@ -20,11 +20,6 @@ impl Agent {
         request: ContinueFrontend,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_frontend_continuation(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
-        }
-        self.runtime.check_frontend_continuation(&request).await?;
-        self.initialize_extensions().await?;
         Ok(convert(
             self.runtime
                 .continue_frontend_with_context(request, context)
@@ -38,10 +33,6 @@ impl Agent {
         &self,
         request: RecoverFrontend,
     ) -> Result<ToolContinuation, RuntimeError> {
-        if let Some(receipt) = self.runtime.lookup_frontend_recovery(&request).await? {
-            return Ok(ToolContinuation::Replayed(receipt));
-        }
-        self.initialize_extensions().await?;
         Ok(convert(
             self.runtime.recover_frontend_continuation(request).await?,
         ))
