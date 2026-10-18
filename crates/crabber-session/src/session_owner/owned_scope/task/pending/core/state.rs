@@ -1,5 +1,5 @@
 use super::super::{Error, OwnedMainDisposition};
-use super::{Binding, Family, Notice};
+use super::{Binding, Family, Notice, OwnedScopeActivation};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -15,6 +15,7 @@ struct State {
     phase: Phase,
     bound: Option<Binding>,
     completion: Option<Notice>,
+    resources: Option<crabber_extension::ToolResourceOwner>,
 }
 /// Signals/observes this original task. It cannot create a task, context or permit.
 #[derive(Clone)]
@@ -38,6 +39,7 @@ impl Control {
                 phase: Phase::Ready,
                 bound: None,
                 completion: None,
+                resources: None,
             })),
             changed: watch::channel(()).0,
         }
@@ -46,10 +48,19 @@ impl Control {
     /// future stays owned; already-dispatched business work is not aborted.
     /// Its Runtime owner must signal its independent cancellation/cleanup scope.
     pub(in crate::session_owner::owned_scope::task::pending) fn request_stop(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stopped = true;
+        let resources = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stopped = true;
+            state.resources.clone()
+        };
+        // Closing can notify actual resource observers; never do that under the
+        // administrative mutex or substitute a signal for their actual joins.
+        if let Some(resources) = resources {
+            resources.close();
+        }
         self.changed.send_replace(());
     }
     /// Metadata from the same original task's validated completion ACK.
@@ -146,7 +157,75 @@ impl Control {
             return Err(Error::InvalidTransition);
         }
         state.phase = Phase::Calling;
-        Ok(Some(CallAdmission(self.clone())))
+        Ok(Some(CallAdmission {
+            control: self.clone(),
+            resume: Phase::Ready,
+        }))
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) fn install_resources(
+        &self,
+        resources: &crabber_extension::ToolResourceOwner,
+    ) -> Result<(), Error> {
+        let stopped = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.family != Family::EnrolledInitial
+                || state.phase != Phase::Ready
+                || state.resources.is_some()
+            {
+                return Err(Error::InvalidTransition);
+            }
+            state.resources = Some(resources.clone());
+            state.stopped
+        };
+        if stopped {
+            resources.close();
+        }
+        Ok(())
+    }
+    // Private enrolled calls preserve the once-dispatched phase. A call loan
+    // cannot reopen dispatch or be duplicated/reentered while its literal lives.
+    pub(in crate::session_owner::owned_scope::task::pending) fn enter_consumer_call(
+        &self,
+    ) -> Result<Option<CallAdmission>, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.stopped {
+            return Ok(None);
+        }
+        if !matches!(state.phase, Phase::Ready | Phase::Dispatched) {
+            return Err(Error::InvalidTransition);
+        }
+        let resume = state.phase;
+        state.phase = Phase::Calling;
+        Ok(Some(CallAdmission {
+            control: self.clone(),
+            resume,
+        }))
+    }
+    // A freshly observed Begin is required even for this narrowly stopped
+    // terminal loan. Its operation/authority/drained witness is checked again
+    // by the private consumer ingress and the actual native publisher.
+    pub(in crate::session_owner::owned_scope::task::pending) fn enter_enrolled_cleanup(
+        &self,
+        _begun: &super::super::enrolled_initial::FreshBegun,
+    ) -> Result<CallAdmission, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.phase != Phase::Dispatched {
+            return Err(Error::InvalidTransition);
+        }
+        state.phase = Phase::Calling;
+        Ok(CallAdmission {
+            control: self.clone(),
+            resume: Phase::Dispatched,
+        })
     }
     pub(in crate::session_owner::owned_scope::task::pending) fn stopped(&self) -> bool {
         self.state
@@ -196,6 +275,17 @@ impl Control {
         state.phase = Phase::Dispatched;
         Ok(true)
     }
+    pub(in crate::session_owner::owned_scope::task::pending) fn dispatch_consumer(
+        &self,
+        permit: crate::session_owner::owned_scope::OwnedDispatchPermit,
+        expected: &OwnedScopeActivation,
+    ) -> Result<bool, Error> {
+        let crate::session_owner::owned_scope::OwnedDispatchPermit { activation } = permit;
+        if activation != *expected || self.family() != Family::EnrolledInitial {
+            return Err(Error::IdentityMismatch);
+        }
+        self.dispatch()
+    }
     pub(in crate::session_owner::owned_scope::task::pending) fn finish(
         &self,
         disposition: OwnedMainDisposition,
@@ -209,13 +299,20 @@ impl Control {
 }
 
 // Local admission only: it retains no native authority or physical join proof.
-pub(in crate::session_owner::owned_scope::task::pending) struct CallAdmission(Control);
+pub(in crate::session_owner::owned_scope::task::pending) struct CallAdmission {
+    control: Control,
+    resume: Phase,
+}
 impl Drop for CallAdmission {
     fn drop(&mut self) {
-        self.0
+        let mut state = self
+            .control
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .phase = Phase::Ready;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Actual completion is absorbing even if a local guard is disposed late.
+        if state.phase == Phase::Calling {
+            state.phase = self.resume;
+        }
     }
 }

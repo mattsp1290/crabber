@@ -7,7 +7,7 @@ use crate::postgres::transaction::Transaction;
 use crate::public_session::v2::proof::{Failure, Proof, unknown};
 use sqlx::Postgres;
 
-pub(super) async fn persist(
+pub(in crate::postgres) async fn persist(
     tx: &mut Transaction<'_, Postgres>,
     delta: &RecordDelta,
     proof: &mut Proof,

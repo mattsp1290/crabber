@@ -15,9 +15,13 @@ pub use pending::{
     PendingSuccessorError, PendingSuccessorObservation, PendingSuccessorReplay,
     PendingSuccessorTask, PendingSuccessorTasks, QueueAdmissionMetadata,
 };
+pub(crate) use pending::{
+    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+};
 #[cfg(test)]
 pub(crate) use pending::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
 pub(crate) use pending::{NativeInitialOperation, NativeInitialParts};
+pub use pending::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use std::{future::Future, sync::Arc};
 use tokio::{sync::oneshot, task::JoinHandle};
 
@@ -210,3 +214,9 @@ mod driver_tests;
 #[cfg(test)]
 #[path = "task/ingress_tests.rs"]
 mod ingress_tests;
+
+#[cfg(test)]
+pub(crate) use pending::initial_consumer_fixture;
+
+#[cfg(test)]
+pub(crate) use pending::{ConsumerProofCaps, ConsumerProofUsage};

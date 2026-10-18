@@ -82,6 +82,9 @@ impl PendingDriverTasks {
                 Ok(Ok(TaskOutput::Business(value))) => {
                     (OwnedMainDisposition::Returned, Some(value), None, None)
                 }
+                Ok(Ok(TaskOutput::BusinessFailed(error))) => {
+                    (OwnedMainDisposition::Returned, None, Some(error), None)
+                }
                 Ok(Ok(TaskOutput::Stopped)) => (OwnedMainDisposition::NoDispatch, None, None, None),
                 Ok(Ok(TaskOutput::Replayed(replay))) => {
                     (OwnedMainDisposition::NoDispatch, None, None, Some(replay))
@@ -100,15 +103,25 @@ impl PendingDriverTasks {
                 disposition,
                 value,
             });
+            // The same supervisor retains original outputs/resources even if
+            // the bounded observation or its caller-owned retry is dropped.
+            let physical = protected.clone();
             let protected = match protected {
                 Some(retained) => Some(retained.after_join(disposition).await),
                 None => None,
             };
-            let capacity = if protected.is_some() {
-                drop(capacity);
-                None
+            let pending = physical
+                .as_ref()
+                .is_some_and(|retained| retained.resources_pending());
+            let (capacity, physical_capacity) = if protected.is_some() {
+                if pending {
+                    (None, Some(capacity))
+                } else {
+                    drop(capacity);
+                    (None, None)
+                }
             } else {
-                Some(capacity)
+                (Some(capacity), None)
             };
             let observation = Observation {
                 family: control.family(),
@@ -123,6 +136,12 @@ impl PendingDriverTasks {
             // Failed send owns/disposes the actual result here, not a detached main.
             if let Err(observation) = send.send(observation) {
                 drop(observation);
+            }
+            if let Some(capacity) = physical_capacity {
+                if let Some(retained) = &physical {
+                    retained.join_original_resources().await;
+                }
+                drop(capacity);
             }
             registry
                 .tasks

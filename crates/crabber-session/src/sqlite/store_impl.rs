@@ -16,6 +16,15 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 impl Store for SqliteStore {
+    async fn pending_initial_consumer_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialConsumerNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.pending_initial_consumer_native_impl(call).await
+    }
     async fn pending_initial_native(
         &self,
         call: crate::session_owner::owned_scope::PendingInitialNativeCall<'_>,

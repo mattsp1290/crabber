@@ -45,7 +45,7 @@ pub(super) async fn audit(
         .await
         .map_err(|error| error.into_domain_or(Error::UnknownStoreOutcome))
 }
-pub(super) async fn read_audit(
+pub(in crate::sqlite) async fn read_audit(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
     id: &SessionOwnerOperationId,

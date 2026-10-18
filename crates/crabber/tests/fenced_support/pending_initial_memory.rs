@@ -12,4 +12,15 @@ impl crate::memory::MemoryStore {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported.into())
     }
+
+    #[allow(clippy::unused_self)]
+    pub(crate) fn apply_pending_initial_consumer(
+        &self,
+        _call: crate::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialConsumerNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported.into())
+    }
 }

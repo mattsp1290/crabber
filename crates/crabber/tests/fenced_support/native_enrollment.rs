@@ -11,3 +11,7 @@ pub(crate) mod access;
 #[path = "../../../crabber-session/src/native_enrollment/pending_initial.rs"]
 #[allow(dead_code)]
 pub(crate) mod pending_initial;
+
+#[path = "../../../crabber-session/src/native_enrollment/initial_consumer.rs"]
+#[allow(dead_code)]
+pub(crate) mod initial_consumer;

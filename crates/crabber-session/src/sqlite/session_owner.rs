@@ -1,6 +1,6 @@
 //! SQL ownership transactions. The session gate includes pre-session reservations.
 mod cancellation;
-mod drivers;
+pub(in crate::sqlite) mod drivers;
 mod owned_scope;
 mod parent;
 mod preflight;

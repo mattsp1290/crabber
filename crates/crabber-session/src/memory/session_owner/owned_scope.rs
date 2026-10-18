@@ -72,6 +72,7 @@ impl MemoryStore {
         let mut proof = crate::public_session::v2::proof::Proof::bounded(
             crate::deletion::coverage::MAX_PROOF_BYTES,
         );
+        super::super::initial_consumer::refuse_raw_activation(&guard, request, &mut proof)?;
         if let Some(receipt) = guard
             .session_owners
             .driver_activation_receipt_bounded(request, &mut proof)?

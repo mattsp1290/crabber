@@ -267,6 +267,16 @@ pub(super) async fn publish_with_proof(
     fresh: bool,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), Error> {
+    Box::pin(publish_captured_with_proof(tx, audit, fresh, proof))
+        .await
+        .map(drop)
+}
+pub(super) async fn publish_captured_with_proof(
+    tx: &mut Transaction<'_, Sqlite>,
+    audit: &Audit,
+    fresh: bool,
+    proof: &mut crate::public_session::v2::proof::Proof,
+) -> Result<Audit, Error> {
     audit.validate()?;
     let protocol = Box::pin(super::protocol::prepare(tx, audit, fresh, proof)).await?;
     let mut prepared = audit.clone();
@@ -310,7 +320,7 @@ pub(super) async fn publish_with_proof(
     if let Some(birth) = &birth {
         super::scope_origin::record_absent(tx, audit, birth).await?;
     }
-    Ok(())
+    Ok(prepared)
 }
 
 /// Only the exact owner's public publications are selected, bounded before transfer.

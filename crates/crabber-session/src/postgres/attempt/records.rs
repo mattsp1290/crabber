@@ -119,7 +119,7 @@ pub(in super::super) async fn receipt(
         })
         .transpose()
 }
-pub(super) async fn revision(
+pub(in crate::postgres) async fn revision(
     tx: &mut Transaction<'_, Postgres>,
     session: &SessionId,
 ) -> Result<SessionRevision, Error> {

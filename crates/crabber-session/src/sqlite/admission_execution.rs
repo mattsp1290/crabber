@@ -1,3 +1,5 @@
+mod initial_begin;
+pub(in crate::sqlite) use initial_begin::begin_initial_in;
 #[path = "admission_execution/recovery.rs"]
 mod recovery;
 pub(super) use recovery::claim;
@@ -119,49 +121,38 @@ pub(super) async fn begin_with_proof(
         if run.lease_until <= store.clock.now() {
             return Err(Error::StaleOwner);
         }
-        let enrollment = super::native_enrollment::original(&mut tx, &run.session_id, &run.id, proof)
-            .await.map_err(|_| Error::UnknownStoreFailure)?;
+        let enrollment =
+            super::native_enrollment::original(&mut tx, &run.session_id, &run.id, proof)
+                .await
+                .map_err(|_| Error::UnknownStoreFailure)?;
         crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
-        let mut record = load_record_with_proof(&mut tx, &run.id, proof)
-            .await
-            .map_err(|_| Error::UnknownStoreFailure)?
-            .ok_or(Error::MissingEvidence)?;
-        validate_binding_with_proof(&mut tx, &record, &run, proof).await?;
-        super::read_proof::charge(&mut tx,
-            sqlx::query_scalar("SELECT CAST(length(CAST(data AS BLOB)) AS BIGINT) FROM admission_receipts WHERE session_id=$1 AND admission_key=$2")
-                .bind(&run.session_id.0).bind(record.key.as_str()), proof).await.map_err(|_| Error::UnknownStoreFailure)?;
-        if lookup_receipt(&mut tx, &run.session_id, &record.key)
-            .await
-            .map_err(|_| Error::UnknownStoreFailure)?
-            .as_ref()
-            != Some(&record.receipt)
-        {
-            return Err(Error::SemanticConflict);
-        }
-        if record.receipt.run_id != run.id || record.receipt.session_id != run.session_id {
-            return Err(Error::SemanticConflict);
-        }
-        if record.state != AdmissionExecutionState::Unstarted {
-            return Err(Error::AlreadyStarted);
-        }
-        let sources = super::admission_journal::begin_captured_with_proof(&mut tx, &record, &run, proof)
-            .await
-            .map_err(|_| Error::UnknownStoreFailure)?;
-        record.state = AdmissionExecutionState::Started;
-        sqlx::query(
-            "UPDATE admission_executions SET start_state='Started',data=$2 WHERE run_id=$1",
+        let captured = Box::pin(begin_initial_in(
+            &mut tx,
+            &run,
+            &execution.fence,
+            store.clock.now(),
+            proof,
+        ))
+        .await?;
+        let record = captured.record;
+        let sources = captured.sources;
+        super::native_enrollment::record_raw_native(
+            &mut tx,
+            crate::native_enrollment::caller::Caller::Raw,
+            &crate::native_enrollment::caller::Fresh::AdmissionBegin(
+                crate::native_enrollment::caller::AdmissionBegin {
+                    fence: &execution.fence,
+                    run: &run,
+                    record: &record,
+                    sources: sources.as_ref().map(|(init, begin)| (init, begin)),
+                },
+            ),
+            proof,
+            #[cfg(test)]
+            &store.native_raw_probe,
         )
-        .bind(&run.id.0)
-        .bind(record.encode().map_err(|_| Error::UnknownStoreFailure)?)
-        .execute(&mut *tx)
         .await
         .map_err(|_| Error::UnknownStoreFailure)?;
-        super::native_enrollment::record_raw_native(&mut tx,
-            crate::native_enrollment::caller::Caller::Raw,
-            &crate::native_enrollment::caller::Fresh::AdmissionBegin(crate::native_enrollment::caller::AdmissionBegin {
-                fence: &execution.fence, run: &run, record: &record,
-                sources: sources.as_ref().map(|(init, begin)| (init, begin)),
-            }), proof, #[cfg(test)] &store.native_raw_probe).await.map_err(|_| Error::UnknownStoreFailure)?;
         Ok(())
     }
     .await;

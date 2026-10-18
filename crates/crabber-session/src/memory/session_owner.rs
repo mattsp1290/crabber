@@ -2,7 +2,7 @@
 #[path = "session_owner/cancellation.rs"]
 mod cancellation;
 #[path = "session_owner/drivers.rs"]
-mod drivers;
+pub(in crate::memory) mod drivers;
 pub(in crate::memory) use drivers::classified as classify_driver_join;
 #[path = "session_owner/owned_scope.rs"]
 mod owned_scope;

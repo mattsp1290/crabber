@@ -34,6 +34,8 @@ mod attempt;
 mod execution_binding;
 #[path = "memory/expired.rs"]
 mod expired;
+#[path = "memory/initial_consumer.rs"]
+mod initial_consumer;
 #[path = "memory/legacy_execution.rs"]
 mod legacy_execution;
 #[path = "memory/management.rs"]
@@ -131,6 +133,11 @@ struct State {
     native_run_source_heads:
         BTreeMap<(SessionId, RunId), crate::native_parent::source_protocol::JournalHead>,
     pending_initial: crate::native_enrollment::pending_initial::Ledger,
+    initial_consumer: crate::native_enrollment::initial_consumer::Ledger,
+    initial_consumer_cohorts: BTreeMap<
+        crate::native_enrollment::initial_consumer::SourceKey,
+        Arc<crate::native_enrollment::initial_consumer::Origin>,
+    >,
     #[cfg(test)]
     pending_initial_carrier_observations: Arc<Mutex<Vec<(SessionId, usize)>>>,
     pending_initial_protocols: BTreeMap<
@@ -583,6 +590,16 @@ impl Store for MemoryStore {
         crate::session_owner::preparation::PreparationCommitError,
     > {
         self.apply_pending_initial(call)
+    }
+
+    async fn pending_initial_consumer_native(
+        &self,
+        call: crate::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialConsumerNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        self.apply_pending_initial_consumer(call)
     }
 
     async fn frontend_call_origin(

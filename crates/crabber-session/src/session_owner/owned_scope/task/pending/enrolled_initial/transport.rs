@@ -26,6 +26,7 @@ pub struct PendingInitialNativeCall<'call> {
     pub(super) selected: &'call SelectedOriginal<'call>,
     pub(super) proof: &'call mut Proof,
     pub(super) lease: &'call LocalLease,
+    pub(super) consumer: Option<&'call super::InitialResourceAssociation<'call>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,7 @@ pub(crate) struct NativeInitialParts<'a> {
     pub(crate) opened: Option<&'a OpenRecord>,
     pub(crate) selected: &'a SelectedOriginal<'a>,
     pub(crate) proof: &'a mut Proof,
+    pub(crate) consumer: Option<&'a super::InitialResourceAssociation<'a>>,
     _lease: &'a LocalLease,
 }
 impl<'a> PendingInitialNativeCall<'a> {
@@ -61,6 +63,7 @@ impl<'a> PendingInitialNativeCall<'a> {
             opened: self.opened,
             selected: self.selected,
             proof: self.proof,
+            consumer: self.consumer,
             _lease: self.lease,
         })
     }

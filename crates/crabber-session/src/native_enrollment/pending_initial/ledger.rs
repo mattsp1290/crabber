@@ -250,6 +250,9 @@ impl Ledger {
     pub(crate) fn slot(&self, key: &SourceKey) -> Option<&SourceSlot> {
         self.slots.get(key)
     }
+    pub(crate) fn epoch_for_slot(&self, slot: &SourceSlot) -> Option<&Epoch> {
+        self.epochs.get(&slot.epoch)
+    }
     #[cfg(test)]
     pub(crate) fn test_epoch(&self, key: &SourceKey) -> Option<&Epoch> {
         self.slots

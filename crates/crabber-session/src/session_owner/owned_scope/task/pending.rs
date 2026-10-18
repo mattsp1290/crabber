@@ -10,6 +10,9 @@ mod core;
 mod enrolled_initial;
 mod execute;
 mod initial;
+pub(crate) use enrolled_initial::{
+    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+};
 #[cfg(test)]
 pub(crate) use enrolled_initial::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
 pub use enrolled_initial::{
@@ -18,6 +21,7 @@ pub use enrolled_initial::{
     PendingInitialProducerStatus,
 };
 pub(crate) use enrolled_initial::{NativeInitialOperation, NativeInitialParts};
+pub use enrolled_initial::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 mod queue;
 pub use queue::{
     PendingQueueCompletion, PendingQueueControl, PendingQueueObservation, PendingQueueTask,
@@ -194,3 +198,9 @@ mod approval_tests;
 
 #[cfg(test)]
 mod tool_tests;
+
+#[cfg(test)]
+pub(crate) use enrolled_initial::initial_consumer_fixture;
+
+#[cfg(test)]
+pub(crate) use enrolled_initial::{ConsumerProofCaps, ConsumerProofUsage};

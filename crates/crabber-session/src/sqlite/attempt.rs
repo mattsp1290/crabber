@@ -1,7 +1,9 @@
 //! Atomic attempt transitions; no provider or tool work occurs inside a transaction.
 use crate::native_enrollment::caller::{self, Caller, Fresh};
 pub(super) mod accounting;
+mod initial;
 mod prepare;
+pub(super) use initial::{Input as InitialInput, apply as apply_initial};
 pub(super) use records::{load as load_host_attempt, save as save_host_attempt};
 pub(super) use records::{
     load_with_proof as load_host_attempt_with_proof, receipt_with_proof as host_receipt_with_proof,
@@ -221,12 +223,40 @@ impl SqliteExecution {
         caller: Caller,
         read_proof: &mut crate::public_session::v2::proof::Proof,
     ) -> Result<Outcome, Error> {
-        let (authority, conclusion, claiming) = context;
-        let (digest, replayed) =
-            accounting::request(tx, run, request, authority, conclusion, read_proof).await?;
-        if let Some(replayed) = replayed {
-            return Ok(replayed);
-        }
+        Box::pin(self.apply_attempt_selected(tx, run, request, context, (caller, None), read_proof))
+            .await
+    }
+    async fn record_raw_attempt(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        caller: Caller,
+        actual: caller::Attempt<'_>,
+        proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        super::native_enrollment::record_raw_native(
+            tx,
+            caller,
+            &Fresh::Attempt(actual),
+            proof,
+            #[cfg(test)]
+            &self.store.native_raw_probe,
+        )
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)
+    }
+    async fn validate_attempt_selected(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        run: &Run,
+        request: &AttemptMutation,
+        context: (
+            Option<&AttemptAuthority>,
+            Option<&crate::AttemptConclusion>,
+            bool,
+        ),
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<time::OffsetDateTime, Error> {
+        let (_, conclusion, claiming) = context;
         let now = self.store.clock.now();
         attempt::verify_run(run, &self.fence, now)?;
         if admission_execution::load_record_with_proof(tx, &run.id, read_proof)
@@ -248,10 +278,114 @@ impl SqliteExecution {
         if matches!(request.command, AttemptCommand::ReserveBound { .. }) {
             pristine::check_with_proof(tx, run, read_proof).await?;
         }
+        Ok(now)
+    }
+    async fn finish_attempt_selected(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        selected: (Caller, Option<initial::Capture<'_, '_, '_, '_>>),
+        value: initial::Finalized<'_>,
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<(), Error> {
+        let (caller, mut initial) = selected;
+        let initial::Finalized {
+            actual,
+            before,
+            settlement,
+            conclusion,
+        } = value;
+        let caller::Attempt {
+            run,
+            request,
+            record,
+            receipt,
+            event: source_event,
+            issued,
+        } = actual;
+        if caller::relevant(&request.command) && initial.is_none() {
+            self.record_raw_attempt(
+                tx,
+                caller,
+                caller::Attempt {
+                    run,
+                    request,
+                    record,
+                    receipt,
+                    event: source_event,
+                    issued,
+                },
+                read_proof,
+            )
+            .await?;
+        }
+        if let Some(capture) = initial.as_mut() {
+            *capture.output = Some(
+                initial::capture(
+                    tx,
+                    initial::Captured {
+                        run,
+                        request,
+                        record,
+                        receipt,
+                        source_event,
+                        issued,
+                        before,
+                        settlement,
+                    },
+                    read_proof,
+                )
+                .await?,
+            );
+        }
+        super::native_parent::record_attempt(tx, run, request, record, receipt, read_proof).await?;
+        super::run_control::suspension::save(tx, run, conclusion, receipt)
+            .await
+            .map_err(|_| Error::UnknownStoreOutcome)?;
+        Ok(())
+    }
+    async fn apply_attempt_selected(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        run: &Run,
+        request: &AttemptMutation,
+        context: (
+            Option<&AttemptAuthority>,
+            Option<&crate::AttemptConclusion>,
+            bool,
+        ),
+        selected: (Caller, Option<initial::Capture<'_, '_, '_, '_>>),
+        read_proof: &mut crate::public_session::v2::proof::Proof,
+    ) -> Result<Outcome, Error> {
+        let (authority, conclusion, _) = context;
+        let (caller, initial) = selected;
+        let (digest, replayed) = accounting::request(
+            tx,
+            run,
+            request,
+            authority,
+            conclusion,
+            initial.as_ref().map(|capture| capture.call),
+            read_proof,
+        )
+        .await?;
+        if let Some(replayed) = replayed {
+            return Ok(replayed);
+        }
+        let now = self
+            .validate_attempt_selected(tx, run, request, context, read_proof)
+            .await?;
         let insert = matches!(
             request.command,
             AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
         );
+        let before = if initial.is_some() {
+            records::load_with_proof(tx, &run.id, Some(&request.command.target().id), read_proof)
+                .await
+                .map_err(|_| Error::UnknownStoreOutcome)?
+                .map(|(record, _)| initial::stored(record))
+        } else {
+            None
+        };
         let (record, grant) = prepare::record(
             tx,
             run,
@@ -267,52 +401,56 @@ impl SqliteExecution {
         read_proof
             .measure(&(&request.command, &record.snapshot))
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        let settlement =
-            apply_run_transition(tx, run, request, conclusion, now, read_proof).await?;
+        let mut settlement = apply_run_transition(
+            tx,
+            run,
+            request,
+            conclusion,
+            now,
+            initial.is_some(),
+            read_proof,
+        )
+        .await?;
         let revision = records::revision(tx, &run.session_id)
             .await?
             .next()
             .map_err(|_| Error::RevisionExhausted)?;
-        let event = crate::attempt_conclusion::publication(
-            run,
-            request,
-            conclusion,
-            &record.snapshot,
-            digest.clone(),
-            settlement,
-            now,
+        let event = initial::publication(
+            &initial::EventInput {
+                run,
+                request,
+                conclusion,
+                snapshot: &record.snapshot,
+                digest: &digest,
+                now,
+                retain: initial.is_some(),
+            },
+            &mut settlement,
+            read_proof,
         )?;
-        read_proof
-            .measure(&event)
-            .map_err(|_| Error::UnknownStoreOutcome)?;
         let source_event = event.clone();
         records::save(tx, &record, insert).await?;
         let receipt =
             records::publish(tx, run, request, &record.snapshot, digest, revision, event).await?;
-        if caller::relevant(&request.command) {
-            super::native_enrollment::record_raw_native(
-                tx,
-                caller,
-                &Fresh::Attempt(caller::Attempt {
+        self.finish_attempt_selected(
+            tx,
+            (caller, initial),
+            initial::Finalized {
+                actual: caller::Attempt {
                     run,
                     request,
                     record: &record,
                     receipt: &receipt,
                     event: &source_event,
                     issued: authority.as_ref(),
-                }),
-                read_proof,
-                #[cfg(test)]
-                &self.store.native_raw_probe,
-            )
-            .await
-            .map_err(|_| Error::UnknownStoreOutcome)?;
-        }
-        super::native_parent::record_attempt(tx, run, request, &record, &receipt, read_proof)
-            .await?;
-        super::run_control::suspension::save(tx, run, conclusion, &receipt)
-            .await
-            .map_err(|_| Error::UnknownStoreOutcome)?;
+                },
+                before,
+                settlement,
+                conclusion,
+            },
+            read_proof,
+        )
+        .await?;
         Ok(Outcome::Applied { receipt, authority })
     }
 }
@@ -372,9 +510,10 @@ async fn apply_run_transition(
     request: &AttemptMutation,
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
+    capture: bool,
     read_proof: &mut crate::public_session::v2::proof::Proof,
-) -> Result<Option<crabber_core::EventRecord>, Error> {
-    let mut settlement = None;
+) -> Result<initial::Transition, Error> {
+    let mut settlement = initial::Transition::default();
     if let Some(conclusion) = conclusion {
         let mut source = conclusion.materialize(run)?;
         super::records::insert_event(tx, run, &source)
@@ -392,15 +531,40 @@ async fn apply_run_transition(
         source.cursor = Some(crabber_core::EventCursor(
             u64::try_from(seq).map_err(|_| Error::UnknownStoreOutcome)?,
         ));
-        settlement = Some(source);
+        settlement.event = Some(source);
+        if capture {
+            read_proof
+                .measure(run)
+                .map_err(|_| Error::UnknownStoreOutcome)?;
+        }
         let mut updated = run.clone();
         conclusion.apply_run(&mut updated, now)?;
         super::run_control::finalize(tx, &updated, now)
             .await
             .map_err(|_| Error::UnknownStoreOutcome)?;
-        super::records::save_run_with_proof(tx, &updated, None, read_proof)
+        if capture {
+            let original = super::records::save_run_publication_with_proof(
+                tx,
+                &updated,
+                None,
+                read_proof,
+                crate::native_enrollment::caller::initial::Capture::Original,
+            )
             .await
             .map_err(sql::unknown)?;
+            let publication = original.updated.ok_or(Error::UnknownStoreOutcome)?;
+            settlement.publication = Some(
+                crate::native_enrollment::initial_consumer::NativePublication {
+                    issuer: publication.issuer,
+                    source: publication.source.ok_or(Error::UnknownStoreOutcome)?,
+                },
+            );
+            settlement.after_run = Some(updated);
+        } else {
+            super::records::save_run_with_proof(tx, &updated, None, read_proof)
+                .await
+                .map_err(sql::unknown)?;
+        }
         if matches!(conclusion.boundary, crate::RunBoundary::Terminal { .. }) {
             super::approval::release_terminal(tx, run, request).await?;
             super::tool_continuation::release_terminal(tx, run)

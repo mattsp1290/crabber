@@ -7,7 +7,7 @@ use crate::public_session::v2::proof::{Failure, Proof, unknown};
 use crate::transaction::Transaction;
 use sqlx::Sqlite;
 
-pub(super) async fn persist(
+pub(in crate::sqlite) async fn persist(
     tx: &mut Transaction<'_, Sqlite>,
     delta: &RecordDelta,
     proof: &mut Proof,

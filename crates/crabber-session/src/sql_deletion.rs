@@ -57,11 +57,31 @@ pub(crate) const CROSS_SCOPE: &str = "SELECT EXISTS(
  UNION ALL SELECT 1 FROM pending_initial_heads p LEFT JOIN pending_initial_source_slots s ON s.epoch_id=p.epoch_id WHERE (p.session_id=$1 OR s.session_id=$1) AND (s.epoch_id IS NULL OR s.session_id<>p.session_id OR s.source_key<>p.source_key OR s.epoch_digest<>p.epoch_digest)
  UNION ALL SELECT 1 FROM pending_initial_source_slots s WHERE s.session_id=$1 AND (NOT EXISTS(SELECT 1 FROM pending_initial_cohorts c WHERE c.session_id=s.session_id AND c.source_key=s.source_key AND c.epoch_id=s.epoch_id AND c.epoch_digest=s.epoch_digest) OR NOT EXISTS(SELECT 1 FROM pending_initial_epochs e WHERE e.session_id=s.session_id AND e.source_key=s.source_key AND e.epoch_id=s.epoch_id AND e.epoch_digest=s.epoch_digest) OR NOT EXISTS(SELECT 1 FROM pending_initial_heads h WHERE h.session_id=s.session_id AND h.source_key=s.source_key AND h.epoch_id=s.epoch_id AND h.epoch_digest=s.epoch_digest))
  UNION ALL SELECT 1 FROM pending_initial_assignments a LEFT JOIN native_execution_origins o ON o.run_id=a.run_id WHERE (a.session_id=$1 OR o.session_id=$1) AND (o.run_id IS NULL OR o.session_id<>a.session_id OR o.birth_kind<>'pending' OR o.pending_epoch<>a.epoch_id)
+ UNION ALL SELECT 1 FROM initial_consumer_origins o LEFT JOIN initial_consumer_cohorts c ON c.epoch_id=o.epoch_id WHERE (o.session_id=$1 OR c.session_id=$1) AND (c.epoch_id IS NULL OR c.session_id<>o.session_id OR c.source_key<>o.source_key OR c.record_digest<>o.record_digest OR c.origin_kind<>o.origin_kind)
+ UNION ALL SELECT 1 FROM initial_consumer_cohorts c LEFT JOIN initial_consumer_origins o ON o.epoch_id=c.epoch_id WHERE (c.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR c.session_id<>o.session_id OR c.source_key<>o.source_key OR c.record_digest<>o.record_digest OR c.origin_kind<>o.origin_kind)
+ UNION ALL SELECT 1 FROM initial_consumer_assignments m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_calls m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_results m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_roster m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_reverse m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_publications m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_heads m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
+ UNION ALL SELECT 1 FROM initial_consumer_closes m LEFT JOIN initial_consumer_origins o ON o.epoch_id=m.epoch_id WHERE (m.session_id=$1 OR o.session_id=$1) AND (o.epoch_id IS NULL OR m.session_id<>o.session_id OR m.source_key<>o.source_key)
  UNION ALL SELECT 1 FROM inbox i JOIN runs r ON r.id=i.consumed_by_run WHERE i.session_id<>r.session_id AND (i.session_id=$1 OR r.session_id=$1)
 )";
 
 /// Dependents first. Neither global signing state nor allocator sequences appear.
 pub(crate) const PURGE: &[&str] = &[
+    "DELETE FROM initial_consumer_closes WHERE session_id=$1",
+    "DELETE FROM initial_consumer_reverse WHERE session_id=$1",
+    "DELETE FROM initial_consumer_roster WHERE session_id=$1",
+    "DELETE FROM initial_consumer_results WHERE session_id=$1",
+    "DELETE FROM initial_consumer_calls WHERE session_id=$1",
+    "DELETE FROM initial_consumer_assignments WHERE session_id=$1",
+    "DELETE FROM initial_consumer_heads WHERE session_id=$1",
+    "DELETE FROM initial_consumer_publications WHERE session_id=$1",
+    "DELETE FROM initial_consumer_cohorts WHERE session_id=$1",
+    "DELETE FROM initial_consumer_origins WHERE session_id=$1",
     "DELETE FROM pending_initial_closes WHERE session_id=$1",
     "DELETE FROM pending_initial_assignments WHERE session_id=$1",
     "DELETE FROM pending_initial_registered_completes WHERE session_id=$1",

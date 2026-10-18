@@ -2,7 +2,11 @@
 mod accounting;
 #[path = "attempt/publication.rs"]
 mod publication;
-use crate::native_enrollment::caller::Caller;
+#[derive(Clone, Copy)]
+pub(super) enum Dispatch<'a> {
+    Raw,
+    Consumer(&'a crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'a, 'a>),
+}
 use crate::public_session::v2::proof::Proof;
 #[path = "attempt/control.rs"]
 mod control;
@@ -205,7 +209,7 @@ impl MemoryExecution {
             &mut next,
             request.clone(),
             (authority, conclusion, false),
-            Caller::Raw,
+            Dispatch::Raw,
             proof,
         )?;
         *guard = next;
@@ -222,7 +226,7 @@ impl MemoryExecution {
             state,
             request,
             (authority, conclusion, false),
-            Caller::Raw,
+            Dispatch::Raw,
             &mut Proof::bounded(32 << 20),
         )
     }
@@ -233,7 +237,13 @@ impl MemoryExecution {
         authority: Option<&AttemptAuthority>,
         proof: &mut Proof,
     ) -> Result<AttemptMutationOutcome, Error> {
-        self.apply_attempt_inner(state, request, (authority, None, false), Caller::Raw, proof)
+        self.apply_attempt_inner(
+            state,
+            request,
+            (authority, None, false),
+            Dispatch::Raw,
+            proof,
+        )
     }
     pub(super) fn apply_claim_attempt_with_proof(
         &self,
@@ -241,7 +251,7 @@ impl MemoryExecution {
         request: AttemptMutation,
         proof: &mut Proof,
     ) -> Result<AttemptMutationOutcome, Error> {
-        self.apply_attempt_inner(state, request, (None, None, true), Caller::Raw, proof)
+        self.apply_attempt_inner(state, request, (None, None, true), Dispatch::Raw, proof)
     }
     fn apply_attempt_inner(
         &self,
@@ -252,19 +262,51 @@ impl MemoryExecution {
             Option<&crate::AttemptConclusion>,
             bool,
         ),
-        caller: Caller,
+        dispatch: Dispatch<'_>,
         read_proof: &mut Proof,
     ) -> Result<AttemptMutationOutcome, Error> {
+        self.apply_attempt_output(state, request, context, dispatch, read_proof)
+            .map(|(outcome, _)| outcome)
+    }
+    pub(in crate::memory) fn apply_attempt_output(
+        &self,
+        state: &mut State,
+        request: AttemptMutation,
+        context: (
+            Option<&AttemptAuthority>,
+            Option<&crate::AttemptConclusion>,
+            bool,
+        ),
+        dispatch: Dispatch<'_>,
+        read_proof: &mut Proof,
+    ) -> Result<
+        (
+            AttemptMutationOutcome,
+            Option<crate::native_enrollment::caller::initial::RunPublication>,
+        ),
+        Error,
+    > {
         let (authority, conclusion, claiming) = context;
-        accounting::selected(
-            state,
-            &self.fence,
-            &request,
-            authority,
-            conclusion,
-            claiming,
-            read_proof,
-        )?;
+        match dispatch {
+            Dispatch::Raw => accounting::selected(
+                state,
+                &self.fence,
+                &request,
+                authority,
+                conclusion,
+                claiming,
+                read_proof,
+            )?,
+            Dispatch::Consumer(call) => accounting::selected_consumer(
+                state,
+                &self.fence,
+                &request,
+                authority,
+                conclusion,
+                call,
+                read_proof,
+            )?,
+        }
         attempt::validate_request(&request)?;
 
         let run = state
@@ -281,11 +323,12 @@ impl MemoryExecution {
             request.fingerprint(&run.session_id, &run.id)?
         };
         if let Some(replayed) = replay(state, &run, &request, &digest, conclusion)? {
-            return Ok(replayed);
+            return Ok((replayed, None));
         }
         let now = self.store.clock.now();
         attempt::verify_run(&run, &self.fence, now)?;
-        super::admission_journal::verify(state, &run.id).map_err(|_| Error::UnknownStoreOutcome)?;
+        super::admission_journal::verify_with_proof(state, &run.id, read_proof)
+            .map_err(|_| Error::UnknownStoreOutcome)?;
         if state
             .admission_executions
             .get(&run.id)
@@ -307,13 +350,14 @@ impl MemoryExecution {
         }
         let (record, grant) =
             prepare_record(state, &run, &request, authority, now, conclusion.is_some())?;
-        let settlement = apply_run_transition(state, &run, &request, conclusion, now, read_proof)?;
+        let (settlement, run_publication) =
+            apply_run_transition(state, &run, &request, conclusion, now, read_proof, dispatch)?;
         if conclusion.is_some_and(|c| matches!(c.boundary, crate::RunBoundary::Terminal { .. })) {
             super::approval::release_terminal(state, &run, &request)?;
             super::tool_continuation::release_terminal(state, &run)?;
         }
 
-        publication::publish(
+        let outcome = publication::publish(
             state,
             publication::Prepared {
                 run: &run,
@@ -325,11 +369,12 @@ impl MemoryExecution {
                 digest,
                 now,
             },
-            caller,
+            dispatch,
             read_proof,
             #[cfg(test)]
             &self.store,
-        )
+        )?;
+        Ok((outcome, run_publication))
     }
 }
 
@@ -367,9 +412,16 @@ fn apply_run_transition(
     conclusion: Option<&crate::AttemptConclusion>,
     now: time::OffsetDateTime,
     proof: &mut Proof,
-) -> Result<Option<crabber_core::EventRecord>, Error> {
+    dispatch: Dispatch<'_>,
+) -> Result<
+    (
+        Option<crabber_core::EventRecord>,
+        Option<crate::native_enrollment::caller::initial::RunPublication>,
+    ),
+    Error,
+> {
     if let Some(conclusion) = conclusion {
-        return apply_boundary(state, run, conclusion, now);
+        return apply_boundary(state, run, conclusion, now, proof, dispatch);
     } else if matches!(
         request.command,
         AttemptCommand::Reserve { .. } | AttemptCommand::ReserveBound { .. }
@@ -382,7 +434,7 @@ fn apply_run_transition(
             .map_err(|_| Error::UnknownStoreOutcome)?;
         state.runs.insert(run.id.clone(), activated);
     }
-    Ok(None)
+    Ok((None, None))
 }
 
 fn apply_boundary(
@@ -390,7 +442,18 @@ fn apply_boundary(
     run: &crabber_core::Run,
     conclusion: &crate::AttemptConclusion,
     now: time::OffsetDateTime,
-) -> Result<Option<crabber_core::EventRecord>, Error> {
+    proof: &mut Proof,
+    dispatch: Dispatch<'_>,
+) -> Result<
+    (
+        Option<crabber_core::EventRecord>,
+        Option<crate::native_enrollment::caller::initial::RunPublication>,
+    ),
+    Error,
+> {
+    proof
+        .measure(&(run, conclusion))
+        .map_err(|_| Error::UnknownStoreOutcome)?;
     super::insert_event(state, run, conclusion.materialize(run)?)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     let settlement = state
@@ -400,11 +463,17 @@ fn apply_boundary(
         .ok_or(Error::UnknownStoreOutcome)?;
     let mut updated = run.clone();
     conclusion.apply_run(&mut updated, now)?;
-    super::native_parent::record_run(state, Some(run), &updated)
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+    let capture = match dispatch {
+        Dispatch::Raw => crate::native_enrollment::caller::initial::Capture::None,
+        Dispatch::Consumer(_) => crate::native_enrollment::caller::initial::Capture::Original,
+    };
+    let publication = super::native_parent::record_run_completed_publication_with_proof(
+        state, run, &updated, None, proof, capture,
+    )
+    .map_err(|_| Error::UnknownStoreOutcome)?;
     super::run_control::finalize(state, &updated, now).map_err(|_| Error::UnknownStoreOutcome)?;
     state.runs.insert(run.id.clone(), updated);
-    Ok(Some(settlement))
+    Ok((Some(settlement), Some(publication)))
 }
 
 fn check_boundary(
@@ -530,4 +599,18 @@ pub(super) fn pristine_for_driver(
     binding: &crate::RetainedExecutionBinding,
 ) -> Result<(), crate::AttemptError> {
     pristine::check_with_binding(state, run, binding)
+}
+
+native_pending_initial_items! {
+    pub(in crate::memory) fn preflight_consumer(
+        state:&State,fence:&crabber_core::RunFence,input:&crate::native_enrollment::initial_consumer::ConsumerInput<'_>,
+        call:&crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_,'_>,proof:&mut Proof,
+    )->Result<(),Error>{
+        match input {
+            crate::native_enrollment::initial_consumer::ConsumerInput::ReserveInitial(request)=>accounting::selected_consumer(state,fence,request,None,None,call,proof),
+            crate::native_enrollment::initial_consumer::ConsumerInput::BeginInitial{request,authority}=>accounting::selected_consumer(state,fence,request,Some(authority),None,call,proof),
+            crate::native_enrollment::initial_consumer::ConsumerInput::Conclude{request,authority,..}=>accounting::selected_consumer(state,fence,&request.finish,Some(authority),Some(request),call,proof),
+            _=>Err(Error::Unsupported),
+        }
+    }
 }

@@ -29,7 +29,29 @@ fn selected<'a>(
     }
     Ok(view)
 }
-fn historical<'a>(
+fn verify_consumer_context(
+    original:&JoinedPreparation, expected:&Correlation, context:&SessionContext,
+    consumer:Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+    proof:&mut Proof,
+)->Result<(),PreparationCommitError>{
+    verify_context(original,expected,context)?;
+    if let Some(consumer)=consumer {consumer.verify(original,context,expected,proof)?;}
+    Ok(())
+}
+fn selected_consumer<'a>(
+    state:&'a State,expected:&Correlation,birth:Bundle<'_>,
+    consumer:Option<&crate::session_owner::owned_scope::InitialResourceAssociation<'_>>,
+    proof:&mut Proof,
+)->Result<crate::native_enrollment::initial_consumer::Selection<'a>,PreparationCommitError>{
+    let selected=crate::memory::initial_consumer::selected(state,expected,proof).map_err(|error|failure(&error))?;
+    if !selected.empty(){
+        selected.verify_birth(birth,proof).map_err(|error|failure(&error))?;
+        crate::memory::initial_consumer::native::verify_members(state,&selected,proof)?;
+        if consumer.is_none(){return Err(Error::Unsupported.into());}
+    }
+    Ok(selected)
+}
+pub(in crate::memory) fn historical<'a>(
     state: &'a State,
     original: &'a JoinedPreparation,
     selected: &crate::native_enrollment::caller::initial::SelectedOriginal<'_>,
@@ -71,6 +93,14 @@ fn historical<'a>(
         proof,
     )
 }
+fn published_initial_reply(
+    view:Bundle<'_>, expected:&Correlation, proof:&mut Proof,
+)->Result<Option<PendingInitialNativeReply>,PreparationCommitError>{
+    let Some(assignment)=view.assignment else{return Ok(None);};
+    if assignment.correlation!=*expected{return Err(Error::SemanticConflict.into());}
+    proof.measure(assignment).map_err(|error|failure(&error))?;
+    PendingInitialNativeReply::already_published(assignment.clone(),proof).map(Some)
+}
 fn raw_completed_reply(
     raw: ActualRawMetadata,
     view: Bundle<'_>,
@@ -85,7 +115,7 @@ fn raw_completed_reply(
     }
     PendingInitialNativeReply::raw_completed(raw, proof)
 }
-fn verify_context(
+pub(in crate::memory) fn verify_context(
     original: &JoinedPreparation,
     expected: &Correlation,
     context: &SessionContext,
@@ -103,7 +133,7 @@ fn verify_context(
     }
     Ok(())
 }
-fn publish(
+pub(in crate::memory) fn publish(
     state: &mut State,
     expected: &Correlation,
     delta: RecordDelta,
@@ -152,6 +182,36 @@ impl MemoryStore {
         let reply = PendingInitialNativeReply::opened(plan.0, proof)?;
         Ok((next, reply))
     }
+    fn pending_seal_publication(
+        state:&State,
+        source:(&Correlation,&protocol::prefix::HistoricalInitialPrefix<'_>),
+        selected:(Bundle<'_>,&crate::native_enrollment::initial_consumer::Selection<'_>),
+        local_calls:Option<&[crabber_core::ControlId]>, proof:&mut Proof,
+    )->Result<(Option<State>,PendingInitialNativeReply),PreparationCommitError>{
+        let (expected,prefix)=source;let (view,consumer_view)=selected;
+        if let Some(local_calls)=local_calls {
+            return match crate::native_enrollment::initial_consumer::prepare_paired_close(
+                consumer_view,view,prefix,expected,local_calls,proof)? {
+                crate::native_enrollment::initial_consumer::PairedCloseDecision::Publish(plan)=>{
+                    let mut next=state.clone();
+                    publish(&mut next,expected,*plan.birth,proof)?;
+                    crate::memory::initial_consumer::publish(&mut next,plan.consumer,proof).map_err(|error|failure(&error))?;
+                    let reply=PendingInitialNativeReply::closed(plan.record,proof)?;
+                    Ok((Some(next),reply))
+                }
+                crate::native_enrollment::initial_consumer::PairedCloseDecision::Replayed(record)=>
+                    Ok((None,PendingInitialNativeReply::closed(*record,proof)?)),
+            };
+        }
+        match protocol::prepare_close(prefix,expected,view,proof)? {
+            CloseDecision::Publish{record,delta}=>{
+                let mut next=state.clone();publish(&mut next,expected,*delta,proof)?;
+                Ok((Some(next),PendingInitialNativeReply::closed(record,proof)?))
+            }
+            CloseDecision::Replayed(record)=>Ok((None,PendingInitialNativeReply::closed(record,proof)?)),
+            CloseDecision::Conflict=>Err(Error::SemanticConflict.into()),
+        }
+    }
     pub(in crate::memory) fn apply_pending_initial(
         &self,
         call: PendingInitialNativeCall<'_>,
@@ -168,7 +228,7 @@ impl MemoryStore {
         let mut state = self.state.lock().map_err(|_| Error::UnknownStoreOutcome)?;
         crate::memory::deletion::ensure_live(&state, parts.context.session_id())
             .map_err(crate::deletion::owner_error)?;
-        verify_context(original, expected, parts.context)?;
+        verify_consumer_context(original,expected,parts.context,parts.consumer,proof)?;
         let prefix = historical(&state, original, parts.selected, proof)?;
         if prefix.correlation(&expected.identity, proof)? != *expected {
             return Err(Error::SemanticConflict.into());
@@ -176,22 +236,29 @@ impl MemoryStore {
         // Authenticate every retained source member before any Raw historical
         // metadata return; a Raw result cannot hide a retained Pending slot.
         let view = selected(&state, expected, proof)?;
+        let consumer_view=selected_consumer(&state,expected,view,parts.consumer,proof)?;
         if let Some(raw) =
             Self::pending_initial_raw_completed(&state, original, expected, parts.selected, proof)?
         {
+            if !consumer_view.empty(){return Err(Error::UnknownStoreOutcome.into());}
             return raw_completed_reply(raw, view, parts.operation, proof);
         }
         match parts.operation {
             NativeInitialOperation::Open => {
                 match protocol::prepare_open(&prefix, expected, view, proof)? {
                     OpenDecision::Publish { record, delta } => {
-                        let (next, reply) = self.pending_open_publication(
+                        let consumer_delta=parts.consumer.map(|_|crate::native_enrollment::initial_consumer::prepare_anchor(
+                            &prefix,&record,&consumer_view,proof)).transpose()?;
+                        let (mut next, reply) = self.pending_open_publication(
                             &state,
                             original,
                             expected,
                             (record, delta),
                             proof,
                         )?;
+                        if let Some(delta)=consumer_delta {
+                            crate::memory::initial_consumer::publish(&mut next,delta,proof).map_err(|error|failure(&error))?;
+                        }
                         #[cfg(test)]
                         before(self, parts.operation, proof)?;
                         *state = next;
@@ -201,6 +268,7 @@ impl MemoryStore {
                         Ok(reply)
                     }
                     OpenDecision::Replayed(record) => {
+                        if parts.consumer.is_some() && consumer_view.empty(){return Err(Error::Unsupported.into());}
                         PendingInitialNativeReply::already_opened(record.epoch.correlation, proof)
                     }
                     OpenDecision::Closed(record) => {
@@ -210,33 +278,20 @@ impl MemoryStore {
                 }
             }
             NativeInitialOperation::Seal => {
-                match protocol::prepare_close(&prefix, expected, view, proof)? {
-                    CloseDecision::Publish { record, delta } => {
-                        let mut next = state.clone();
-                        publish(&mut next, expected, *delta, proof)?;
-                        let reply = PendingInitialNativeReply::closed(record, proof)?;
-                        #[cfg(test)]
-                        before(self, parts.operation, proof)?;
-                        *state = next;
-                        drop(state);
-                        #[cfg(test)]
-                        after(self)?;
-                        Ok(reply)
-                    }
-                    CloseDecision::Replayed(record) => {
-                        PendingInitialNativeReply::closed(record, proof)
-                    }
-                    CloseDecision::Conflict => Err(Error::SemanticConflict.into()),
+                let local_calls=parts.consumer.map(|consumer|consumer.verify_close(original,parts.context,expected,proof)).transpose()?;
+                let (next,reply)=Self::pending_seal_publication(&state,(expected,&prefix),(view,&consumer_view),local_calls,proof)?;
+                if let Some(next)=next {
+                    #[cfg(test)] before(self,parts.operation,proof)?;
+                    *state=next;drop(state);
+                    #[cfg(test)] after(self)?;
                 }
+                Ok(reply)
             }
             NativeInitialOperation::Complete => {
-                if let Some(assignment) = view.assignment {
-                    if assignment.correlation != *expected {
-                        return Err(Error::SemanticConflict.into());
-                    }
-                    proof.measure(assignment).map_err(|error| failure(&error))?;
-                    return PendingInitialNativeReply::already_published(assignment.clone(), proof);
+                if let Some(reply)=published_initial_reply(view,expected,proof)? {
+                    return Ok(reply);
                 }
+                if parts.consumer.is_some() && consumer_view.empty(){return Err(Error::Unsupported.into());}
                 let opened = parts.opened.ok_or(Error::Unsupported)?;
                 if opened.correlation() != expected {
                     return Err(Error::SemanticConflict.into());
@@ -246,6 +301,10 @@ impl MemoryStore {
                 self.pending_initial_preflight(&state, original, proof)?;
                 let mut next = state.clone();
                 let data = self.complete_pending_initial(&mut next, original, &verified, proof)?;
+                if parts.consumer.is_some(){
+                    let delta=crate::native_enrollment::initial_consumer::link_initial(&consumer_view,view,&data,proof)?;
+                    crate::memory::initial_consumer::publish(&mut next,delta,proof).map_err(|error|failure(&error))?;
+                }
                 #[cfg(test)]
                 before(self, parts.operation, proof)?;
                 let reply = PendingInitialNativeReply::completed(data);

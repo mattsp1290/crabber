@@ -634,11 +634,16 @@ async fn v3_and_v4_upgrade_retains_records_without_manufacturing_unstarted_evide
 }
 
 /// A downgraded version roster must not retain the newer immutable birth DDL.
-/// Removing it models a predecessor, rather than replaying migrations22/23 over
+/// Removing it models a predecessor, rather than replaying migrations22/23/24 over
 /// their already-created columns and protected raw/Pending sources.
 async fn strip_enrollment_fixture(pool: &sqlx::PgPool) {
     sqlx::raw_sql(
-        "DROP TABLE pending_initial_cohorts,pending_initial_epochs,
+        "DROP TABLE initial_consumer_origins,initial_consumer_cohorts,
+        initial_consumer_assignments,initial_consumer_calls,initial_consumer_results,
+        initial_consumer_roster,initial_consumer_reverse,initial_consumer_publications,
+        initial_consumer_heads,initial_consumer_closes CASCADE;
+        DROP FUNCTION crabber_initial_consumer_guard();
+        DROP TABLE pending_initial_cohorts,pending_initial_epochs,
         pending_initial_source_slots,pending_initial_registered_completes,
         pending_initial_assignments,pending_initial_closes,
         pending_initial_publications,pending_initial_heads CASCADE;

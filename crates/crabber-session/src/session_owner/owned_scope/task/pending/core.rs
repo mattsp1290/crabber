@@ -121,6 +121,7 @@ impl Replay {
 }
 pub(super) enum TaskOutput<T> {
     Business(T),
+    BusinessFailed(PendingSuccessorError),
     Replayed(Replay),
     Stopped,
 }
@@ -197,10 +198,14 @@ impl<T: Send + 'static> Task<T> {
             }
             produce(current, ingress).await
         });
-        if let Some(retained) = &protected {
-            retained.attach(task.id(), registered_ingress, control.clone());
-        }
+        let attached = protected
+            .as_ref()
+            .map(|retained| retained.attach(task.id(), registered_ingress, control.clone()))
+            .transpose();
+        // Even failed private attachment keeps the actual parked original under
+        // its existing supervisor before the start sender is dropped.
         owner.retain(task, control.clone(), send, capacity, protected);
+        attached?;
         Ok(Self {
             start: Some(start),
             result,

@@ -559,6 +559,17 @@ pub trait Store: Send + Sync {
     > {
         Err(crate::session_owner::SessionOwnerError::Unsupported.into())
     }
+    /// Closed same-original Initial consumer calls. Generic adapters refuse;
+    /// there is no fallback to a public fence or Raw execution handle.
+    async fn pending_initial_consumer_native(
+        &self,
+        _call: crate::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>,
+    ) -> Result<
+        crate::session_owner::owned_scope::PendingInitialConsumerNativeReply,
+        crate::session_owner::preparation::PreparationCommitError,
+    > {
+        Err(crate::session_owner::SessionOwnerError::Unsupported.into())
+    }
     /// Complete an owned Approval, Tool or Frontend claim/recovery preparation,
     /// returning its actual committed v3 issuer locator. Metadata/replay never reconstructs fresh authority.
     async fn complete_preparation_with_driver_source(

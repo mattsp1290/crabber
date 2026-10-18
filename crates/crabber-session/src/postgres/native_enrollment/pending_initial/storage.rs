@@ -11,7 +11,7 @@ use sqlx::{Postgres, Row};
 use std::fmt::Write as _;
 
 #[derive(Default)]
-pub(super) struct Selected {
+pub(in crate::postgres) struct Selected {
     pub slot: Option<SourceSlot>,
     pub epoch: Option<Epoch>,
     pub registered: Option<RegisteredComplete>,
@@ -30,7 +30,7 @@ const TABLES: [&str; 7] = [
     "pending_initial_heads",
 ];
 
-pub(super) async fn load(
+pub(in crate::postgres) async fn load(
     tx: &mut Transaction<'_, Postgres>,
     key: &SourceKey,
     expected_epoch: &ControlId,
@@ -297,7 +297,7 @@ fn extras(table: &str) -> (String, &'static str) {
 }
 
 impl Selected {
-    pub(super) fn view(&self) -> Bundle<'_> {
+    pub(in crate::postgres) fn view(&self) -> Bundle<'_> {
         Bundle {
             slot: self.slot.as_ref(),
             epoch: self.epoch.as_ref(),

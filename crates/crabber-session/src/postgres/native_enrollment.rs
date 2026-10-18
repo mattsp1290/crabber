@@ -1,4 +1,5 @@
 //! Original Raw birth and first-grant poison, never positive main membership.
+pub(super) mod initial_consumer;
 pub(super) mod pending_initial;
 use crate::native_enrollment::{Origin, SOURCE_BYTES, Status, Unclassified};
 use crate::native_parent::{RunIssuance, source_protocol::JournalSource};

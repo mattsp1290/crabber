@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 crabber-core = { path = "../crabber-core" }
+crabber-extension = { path = "../crabber-extension" }
 async-trait = "0.1"
 futures = "0.3"
 thiserror = "2"

@@ -116,7 +116,7 @@ pub(in super::super) async fn receipt(
         })
         .transpose()
 }
-pub(super) async fn revision(
+pub(in crate::sqlite) async fn revision(
     tx: &mut Transaction<'_, Sqlite>,
     session: &SessionId,
 ) -> Result<SessionRevision, Error> {

@@ -227,9 +227,13 @@ impl ToolResourceOwner {
         self.snapshot()
     }
 
-    // Reapers already own their bounded caller-facing wait. Retain the same
-    // actual joins until completion rather than inventing a second deadline.
-    pub(crate) async fn join(&self) -> ResourceDrain {
+    /// Seal registration and await the owner's same retained task joins without
+    /// a deadline. Supervisors can retain this owner after a bounded caller wait.
+    /// Cancelling this wait leaves unfinished handles retained in the owner;
+    /// failures stay visible in the returned report and subsequent snapshots.
+    /// This observes this scope only, without native execution or policy proof.
+    #[doc(hidden)]
+    pub async fn join(&self) -> ResourceDrain {
         self.close();
         let tasks = self
             .0

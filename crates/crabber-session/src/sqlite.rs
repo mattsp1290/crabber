@@ -100,6 +100,8 @@ const SCHEMA: &str = concat!(
     include_str!("../migrations/sqlite/0018_native_execution_enrollment.sql"),
     "\nINSERT INTO schema_version(version) VALUES(18);\n",
     include_str!("../migrations/sqlite/0019_pending_initial.sql"),
+    "\nINSERT INTO schema_version(version) VALUES(19);\n",
+    include_str!("../migrations/sqlite/0020_pending_initial_consumer.sql"),
 );
 
 /// A dedicated, file-backed SQLite session database.

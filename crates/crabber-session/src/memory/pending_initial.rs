@@ -48,7 +48,8 @@ pub(super) fn routes(
             ));
         }
     }
-    Ok(present)
+    let consumer = super::initial_consumer::routes(state, session, proof)?;
+    Ok(present || consumer)
 }
 pub(super) fn raw_preparation(
     state: &State,
@@ -77,7 +78,8 @@ pub(super) fn raw_preparation(
     Ok(())
 }
 pub(super) fn contains_scope(state: &State, session: &SessionId) -> bool {
-    state.pending_initial.contains_scope(session)
+    super::initial_consumer::contains_scope(state, session)
+        || state.pending_initial.contains_scope(session)
         || state
             .pending_initial_protocols
             .iter()
@@ -102,6 +104,7 @@ pub(super) fn purge(
         .verify(session)
         .map_err(crate::public_session::v2::proof::unknown)?;
     routes(state, session, proof)?;
+    super::initial_consumer::purge(state, session, proof)?;
     state.pending_initial.purge(session, proof)?;
     state
         .pending_initial_protocols
@@ -113,7 +116,7 @@ native_pending_initial_items! {
     #[cfg(test)]
     use super::MemoryStore;
     #[path = "pending_initial/native.rs"]
-    mod native;
+    pub(in crate::memory) mod native;
     #[cfg(test)]
     use crate::session_owner::owned_scope::NativeInitialOperation;
 #[cfg(test)]

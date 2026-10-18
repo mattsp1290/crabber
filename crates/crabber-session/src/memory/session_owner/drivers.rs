@@ -29,6 +29,12 @@ impl MemoryStore {
         super::super::deletion::ensure_live(&guard, request.context.session_id())
             .map_err(crate::deletion::owner_error)?;
         let mut proof = Proof::bounded(crate::deletion::coverage::MAX_PROOF_BYTES);
+        super::super::initial_consumer::refuse_raw_driver(
+            &guard,
+            request.context.session_id(),
+            &request.fence.run_id,
+            &mut proof,
+        )?;
         if let Some(receipt) = guard.session_owners.driver_receipt(request, &mut proof)? {
             let audit = guard
                 .session_owners
@@ -76,6 +82,26 @@ pub(super) fn fresh(
     proof: &mut Proof,
     activation_revision: Option<crate::session_owner::audit::RevisionState>,
 ) -> Result<DriverLink, Error> {
+    fresh_inner(state, request, now, proof, activation_revision, None)
+}
+pub(in crate::memory) fn fresh_consumer(
+    state: &State,
+    request: &RegisterExecutionDriver,
+    now: time::OffsetDateTime,
+    proof: &mut Proof,
+    activation_revision: Option<crate::session_owner::audit::RevisionState>,
+    call: &crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>,
+) -> Result<DriverLink, Error> {
+    fresh_inner(state, request, now, proof, activation_revision, Some(call))
+}
+fn fresh_inner(
+    state: &State,
+    request: &RegisterExecutionDriver,
+    now: time::OffsetDateTime,
+    proof: &mut Proof,
+    activation_revision: Option<crate::session_owner::audit::RevisionState>,
+    consumer: Option<&crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>>,
+) -> Result<DriverLink, Error> {
     request.fingerprint()?;
     state
         .session_owners
@@ -91,12 +117,30 @@ pub(super) fn fresh(
     if run.lease_until <= now {
         return Err(Error::StaleOwner);
     }
-    let latest = super::super::native_parent::source_protocol::raw_current(
-        state,
-        &run.session_id,
-        &run.id,
-        proof,
-    )
+    let latest = if let Some(call) = consumer {
+        if call.correlation().key.session_id != run.session_id
+            || !matches!(
+                call.kind(),
+                crate::native_enrollment::initial_consumer::CallKind::Register
+                    | crate::native_enrollment::initial_consumer::CallKind::Activate
+            )
+        {
+            return Err(Error::Unsupported);
+        }
+        super::super::native_parent::source_protocol::current(
+            state,
+            &run.session_id,
+            &run.id,
+            proof,
+        )
+    } else {
+        super::super::native_parent::source_protocol::raw_current(
+            state,
+            &run.session_id,
+            &run.id,
+            proof,
+        )
+    }
     .map_err(|_| Error::UnknownStoreOutcome)?
     .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(run).map_err(|_| Error::UnknownStoreOutcome)?;
@@ -292,7 +336,7 @@ fn journal(
     {
         return Err(Error::UnknownStoreOutcome);
     }
-    super::super::admission_journal::verify(state, &run.id)
+    super::super::admission_journal::verify_with_proof(state, &run.id, proof)
         .map_err(|_| Error::UnknownStoreOutcome)?;
     if record.state != crate::AdmissionExecutionState::Unstarted
         || state

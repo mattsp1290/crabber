@@ -1,8 +1,10 @@
 //! Fixed initial birth producer. No Driver registration, activation or business.
 #[cfg(test)]
 mod budget;
+mod consumer;
 mod lifecycle;
 mod observe;
+mod scripted_binding;
 mod source;
 mod transport;
 use super::super::driver::MainIngress;
@@ -21,6 +23,11 @@ use crate::{
 };
 #[cfg(test)]
 pub(crate) use budget::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
+pub(in crate::session_owner::owned_scope::task::pending) use consumer::FreshBegun;
+pub(crate) use consumer::{
+    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+};
+pub use consumer::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 use crabber_core::{ControlId, RunId, SessionContext};
 use source::{PreparedSource, RetainedInitialSource};
 use std::{
@@ -47,6 +54,7 @@ pub enum PendingInitialProducerStatus {
     SealDisposalPending,
     OpenDisposalPending,
     CompleteDisposalPending,
+    ConsumerDisposalPending,
     ClosedNoPublication,
     ClosedAssignment,
     Unresolved,
@@ -59,7 +67,7 @@ struct State {
     identity: Option<Arc<Identity>>,
     status: PendingInitialProducerStatus,
     staged: Option<Result<PendingInitialNativeReply, PreparationCommitError>>,
-    enrolled: Option<Box<protocol::EnrolledInitialData>>,
+    enrolled: Option<Arc<protocol::EnrolledInitialData>>,
     joined: bool,
     observation_failed: bool,
 }
@@ -67,6 +75,8 @@ pub(in crate::session_owner::owned_scope::task::pending) struct RetainedInitial 
     source: Arc<RetainedInitialSource>,
     store: Arc<dyn Store>,
     state: Mutex<State>,
+    consumer: Option<Arc<consumer::InitialResources>>,
+    calls: consumer::Calls,
     #[cfg(test)]
     budget: budget::Harness,
 }
@@ -81,11 +91,16 @@ impl RetainedInitial {
         task: Id,
         ingress: Arc<MainIngress>,
         control: Control,
-    ) {
+    ) -> Result<(), Error> {
+        if let Some(resources) = &self.consumer {
+            resources.registered(task)?;
+            control.install_resources(&resources.owner)?;
+        }
         let mut state = self.lock();
         state.task = Some(task);
         state.ingress = Some(ingress);
         state.control = Some(control);
+        Ok(())
     }
     fn status(&self, value: PendingInitialProducerStatus) {
         self.lock().status = value;
@@ -177,6 +192,11 @@ impl RetainedInitial {
         let result =
             with_initial_original_async(&self.source.original, proof, |selected, proof| {
                 Box::pin(async move {
+                    let consumer = self
+                        .consumer
+                        .as_ref()
+                        .map(|resources| resources.association())
+                        .transpose()?;
                     let call = PendingInitialNativeCall {
                         source: &self.source,
                         expected,
@@ -185,6 +205,7 @@ impl RetainedInitial {
                         selected,
                         proof: &mut *proof,
                         lease: &lease,
+                        consumer: consumer.as_ref(),
                     };
                     let observed = observe::original(
                         || self.store.pending_initial_native(call),
@@ -268,6 +289,35 @@ impl LocalLease {
 
 async fn run(
     retained: Arc<RetainedInitial>,
+    prepared: PreparedSource,
+) -> Result<core::TaskOutput<()>, super::PendingSuccessorError> {
+    let _resources = retained
+        .consumer
+        .as_ref()
+        .map(|resources| resources.owner.guard());
+    if let Some(resources) = &retained.consumer {
+        if retained.stopped() {
+            return Ok(core::TaskOutput::Stopped);
+        }
+        resources.attach()?;
+        if retained.stopped() {
+            return Ok(core::TaskOutput::Stopped);
+        }
+    }
+    if let Some(resources) = &retained.consumer {
+        let capability = resources.capability()?;
+        crabber_extension::with_callback_invocations(
+            capability,
+            run_attached(retained.clone(), prepared),
+        )
+        .await
+    } else {
+        run_attached(retained.clone(), prepared).await
+    }
+}
+
+async fn run_attached(
+    retained: Arc<RetainedInitial>,
     mut prepared: PreparedSource,
 ) -> Result<core::TaskOutput<()>, super::PendingSuccessorError> {
     let expected = retained.arm(&prepared.expected, &mut prepared.proof)?;
@@ -330,7 +380,7 @@ async fn run(
                 retained.status(PendingInitialProducerStatus::Published {
                     run_id: data.assignment.run_id.clone(),
                 });
-                retained.lock().enrolled = Some(data);
+                retained.lock().enrolled = Some(Arc::from(data));
             }
             Reply::RawCompleted(raw) => {
                 retained.status(PendingInitialProducerStatus::SourceAlreadyCompletedRaw {
@@ -349,6 +399,9 @@ async fn run(
         .budget
         .record(Operation::Complete, proof.used(), accepted.is_ok());
     accepted?;
+    if retained.consumer.is_some() {
+        return consumer::run(&retained).await;
+    }
     Ok(core::TaskOutput::Stopped)
 }
 
@@ -371,6 +424,11 @@ impl PendingInitialProducerControl {
     #[cfg(test)]
     pub(crate) fn original_join_observed(&self) -> bool {
         self.retained.lock().joined
+    }
+    /// Test diagnostic for the SAME unaccepted opaque reply; exposes no payload.
+    #[cfg(test)]
+    pub(crate) fn consumer_reply_staged(&self) -> bool {
+        self.retained.calls.has_staged_reply()
     }
 }
 
@@ -432,15 +490,60 @@ impl PendingInitialProducer {
             Self::register_prepared(owner, store, prepared)
         }
     }
+    /// Register the fixed model-only consumer with the same original parked
+    /// task. The pristine concrete source is consumed before start; no generic
+    /// business closure, public fence bridge or replacement producer is used.
+    /// # Errors
+    /// Refuses unsupported source/profile, changed preparation or shared capacity.
+    pub fn register_scripted(
+        owner: &PendingDriverTasks,
+        store: Arc<dyn Store>,
+        context: SessionContext,
+        original: JoinedPreparation,
+        source: crabber_extension::LibraryScriptedSource,
+    ) -> Result<Self, PreparationCommitError> {
+        let mut prepared = PreparedSource::new(context, original)?;
+        scripted_binding::verify(&source, &prepared.source.original, &mut prepared.proof)?;
+        let resources =
+            consumer::InitialResources::new(source, prepared.source.clone(), &mut prepared.proof)?;
+        #[cfg(test)]
+        {
+            let budget = budget::Harness::default();
+            budget.constructor(prepared.proof.used());
+            Self::register_with_resources(owner, store, prepared, Some(resources), budget)
+        }
+        #[cfg(not(test))]
+        {
+            Self::register_with_resources(owner, store, prepared, Some(resources))
+        }
+    }
     fn register_prepared(
         owner: &PendingDriverTasks,
         store: Arc<dyn Store>,
         prepared: PreparedSource,
         #[cfg(test)] budget: budget::Harness,
     ) -> Result<Self, PreparationCommitError> {
+        Self::register_with_resources(
+            owner,
+            store,
+            prepared,
+            None,
+            #[cfg(test)]
+            budget,
+        )
+    }
+    fn register_with_resources(
+        owner: &PendingDriverTasks,
+        store: Arc<dyn Store>,
+        prepared: PreparedSource,
+        consumer: Option<Arc<consumer::InitialResources>>,
+        #[cfg(test)] budget: budget::Harness,
+    ) -> Result<Self, PreparationCommitError> {
         let retained = Arc::new(RetainedInitial {
             source: prepared.source.clone(),
             store,
+            consumer,
+            calls: consumer::Calls::default(),
             state: Mutex::new(State {
                 task: None,
                 ingress: None,
@@ -502,3 +605,9 @@ pub use lifecycle::LocallyJoinedInitialSeal;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use scripted_binding::fixture as initial_consumer_fixture;
+
+#[cfg(test)]
+pub(crate) use consumer::{ConsumerProofCaps, ConsumerProofUsage};

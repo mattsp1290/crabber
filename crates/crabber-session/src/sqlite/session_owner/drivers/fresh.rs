@@ -17,6 +17,35 @@ pub(super) async fn fresh(
     now: time::OffsetDateTime,
     budget: &mut Proof,
 ) -> Result<DriverLink, Error> {
+    Box::pin(selected(tx, request, expected, now, None, budget)).await
+}
+pub(in crate::sqlite) async fn enrolled(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &RegisterExecutionDriver,
+    expected: Option<SessionRevision>,
+    now: time::OffsetDateTime,
+    consumer: &crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>,
+    budget: &mut Proof,
+) -> Result<DriverLink, Error> {
+    if consumer.correlation().key.session_id != *request.context.session_id()
+        || !matches!(
+            consumer.kind(),
+            crate::native_enrollment::initial_consumer::CallKind::Register
+                | crate::native_enrollment::initial_consumer::CallKind::Activate
+        )
+    {
+        return Err(Error::Unsupported);
+    }
+    Box::pin(selected(tx, request, expected, now, Some(consumer), budget)).await
+}
+async fn selected(
+    tx: &mut Transaction<'_, Sqlite>,
+    request: &RegisterExecutionDriver,
+    expected: Option<SessionRevision>,
+    now: time::OffsetDateTime,
+    consumer: Option<&crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>>,
+    budget: &mut Proof,
+) -> Result<DriverLink, Error> {
     request.fingerprint()?;
     let session = request.context.session_id();
     let id = &request.fence.run_id;
@@ -57,11 +86,20 @@ pub(super) async fn fresh(
     if run.lease_until <= now {
         return Err(Error::StaleOwner);
     }
-    let latest =
-        super::super::super::native_parent::source_protocol::raw_current(tx, session, id, budget)
+    let latest = match consumer {
+        Some(_) => {
+            super::super::super::native_parent::source_protocol::current(tx, session, id, budget)
+                .await
+        }
+        None => {
+            super::super::super::native_parent::source_protocol::raw_current(
+                tx, session, id, budget,
+            )
             .await
-            .map_err(unknown)?
-            .ok_or(Error::UnknownStoreOutcome)?;
+        }
+    }
+    .map_err(unknown)?
+    .ok_or(Error::UnknownStoreOutcome)?;
     latest.verify(&run).map_err(unknown)?;
     if latest.sequence != 1 || latest.version != 2 || latest.ownership_handoff.is_none() {
         return Err(Error::Unsupported);

@@ -11,3 +11,6 @@ pub(crate) mod caller;
 pub(crate) mod access;
 
 pub(crate) mod pending_initial;
+
+/// Closed native Initial effect consumer; separate from the birth protocol.
+pub(crate) mod initial_consumer;

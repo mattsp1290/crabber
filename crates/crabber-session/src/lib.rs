@@ -1,10 +1,10 @@
 //! Session persistence boundary and in-memory implementation.
 
 /// Required version of the bundled PostgreSQL schema. Connect never migrates.
-pub const POSTGRES_SCHEMA_VERSION: i32 = 23;
+pub const POSTGRES_SCHEMA_VERSION: i32 = 24;
 /// Required version of the bundled SQLite schema. Older files must be recreated
 /// explicitly using the matching binary/backup; connect/migrate never upgrade them.
-pub const SQLITE_SCHEMA_VERSION: i64 = 19;
+pub const SQLITE_SCHEMA_VERSION: i64 = 20;
 
 pub use crabber_core::{AbandonAuthority, AbandonError, AbandonOutcome, AbandonRequest};
 
@@ -280,6 +280,9 @@ async fn memory_frontend_near_limit_recovery() {
 
 #[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
 mod sql_fork_contract;
+
+#[cfg(all(test, any(feature = "postgres", feature = "sqlite")))]
+mod sql_initial_consumer_fixture;
 
 #[cfg(test)]
 mod fork_pending_contract;

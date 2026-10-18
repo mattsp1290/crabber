@@ -1,6 +1,6 @@
 //! Actual native publication and Raw hook share the original transaction.
 use super::super::{OperationReceipt, State, bump_public_revision};
-use crate::native_enrollment::caller::{self, Caller, Fresh};
+use crate::native_enrollment::caller::{self, Fresh};
 use crate::public_session::v2::proof::Proof;
 use crate::{AttemptError as Error, AttemptMutation, AttemptMutationOutcome, AttemptReceipt};
 use crabber_core::{EventRecord, InputFingerprint, Run};
@@ -17,7 +17,7 @@ pub(super) struct Prepared<'a> {
 pub(super) fn publish(
     state: &mut State,
     prepared: Prepared<'_>,
-    caller: Caller,
+    dispatch: super::Dispatch<'_>,
     read_proof: &mut Proof,
     #[cfg(test)] store: &super::super::MemoryStore,
 ) -> Result<AttemptMutationOutcome, Error> {
@@ -64,22 +64,30 @@ pub(super) fn publish(
         attempt: record.snapshot.clone(),
     };
     if caller::relevant(&request.command) {
-        super::super::native_enrollment::record_raw_native(
-            state,
-            caller,
-            &Fresh::Attempt(caller::Attempt {
-                run,
-                request: &request,
-                record: &record,
-                receipt: &receipt,
-                event: &event,
-                issued: authority.as_ref(),
-            }),
-            read_proof,
-            #[cfg(test)]
-            &store.native_raw_probe,
-        )
-        .map_err(|_| Error::UnknownStoreOutcome)?;
+        let fresh = Fresh::Attempt(caller::Attempt {
+            run,
+            request: &request,
+            record: &record,
+            receipt: &receipt,
+            event: &event,
+            issued: authority.as_ref(),
+        });
+        match dispatch {
+            super::Dispatch::Raw => super::super::native_enrollment::record_raw_native(
+                state,
+                caller::Caller::Raw,
+                &fresh,
+                read_proof,
+                #[cfg(test)]
+                &store.native_raw_probe,
+            )
+            .map_err(|_| Error::UnknownStoreOutcome)?,
+            super::Dispatch::Consumer(_) => {
+                fresh
+                    .measure_and_verify(read_proof)
+                    .map_err(|_| Error::UnknownStoreOutcome)?;
+            }
+        }
     }
     super::super::native_parent::record_attempt(
         state,

@@ -75,6 +75,7 @@ pub(super) async fn request(
     request: &crate::AttemptMutation,
     authority: Option<&crate::AttemptAuthority>,
     conclusion: Option<&crate::AttemptConclusion>,
+    initial: Option<&crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>>,
     read_proof: &mut Proof,
 ) -> Result<
     (
@@ -94,7 +95,24 @@ pub(super) async fn request(
         super::super::native_enrollment::original(tx, &run.session_id, &run.id, read_proof)
             .await
             .map_err(|_| Error::UnknownStoreOutcome)?;
-    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
+    match initial {
+        None => {
+            crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
+        }
+        Some(actual) => {
+            if enrollment != crate::native_enrollment::Status::Pending
+                || actual.correlation().key.session_id != run.session_id
+                || !matches!(
+                    actual.kind(),
+                    crate::native_enrollment::initial_consumer::CallKind::ReserveInitial
+                        | crate::native_enrollment::initial_consumer::CallKind::BeginInitial
+                        | crate::native_enrollment::initial_consumer::CallKind::Conclude
+                )
+            {
+                return Err(Error::Unsupported);
+            }
+        }
+    }
     let digest = if let Some(conclusion) = conclusion {
         conclusion.fingerprint(&run.session_id, &run.id)?
     } else {

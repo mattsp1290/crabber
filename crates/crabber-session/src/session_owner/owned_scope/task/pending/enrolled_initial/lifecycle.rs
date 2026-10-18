@@ -19,10 +19,22 @@ pub struct LocallyJoinedInitialSeal {
 }
 impl LocallyJoinedInitialSeal {
     async fn attempt(&mut self) -> Result<PendingInitialProducerStatus, PreparationCommitError> {
+        let retained = &self.original.retained;
+        if let Some(resources) = &retained.consumer {
+            let drained = resources.drain().await;
+            drained?;
+        }
         if let Some(terminal) = &self.terminal {
             return Ok(terminal.clone());
         }
-        let retained = &self.original.retained;
+        if retained.lock().identity.is_none() {
+            let status = retained.lock().status.clone();
+            self.terminal = Some(status.clone());
+            if let Some(resources) = &retained.consumer {
+                retained.calls.dispose_staged(resources).await;
+            }
+            return Ok(status);
+        }
         let identity = retained.identity()?;
         let mut proof = RetainedInitial::new_proof(
             Operation::Seal,
@@ -84,6 +96,11 @@ impl LocallyJoinedInitialSeal {
                 acknowledged: accepted.is_ok(),
             };
         }
+        if accepted.is_ok()
+            && let Some(resources) = &retained.consumer
+        {
+            retained.calls.dispose_staged(resources).await;
+        }
         accepted
     }
     /// One bounded same-identity native attempt; no implicit retry loop.
@@ -100,6 +117,19 @@ impl LocallyJoinedInitialSeal {
 }
 
 impl RetainedInitial {
+    pub(in crate::session_owner::owned_scope::task::pending) fn resources_pending(&self) -> bool {
+        self.consumer
+            .as_ref()
+            .is_some_and(|resources| resources.owner.snapshot().pending != 0)
+    }
+    pub(in crate::session_owner::owned_scope::task::pending) async fn join_original_resources(
+        &self,
+    ) {
+        if let Some(resources) = &self.consumer {
+            let _report = resources.owner.join().await;
+        }
+    }
+
     pub(in crate::session_owner::owned_scope::task::pending) async fn after_join(
         self: Arc<Self>,
         disposition: OwnedMainDisposition,
@@ -109,9 +139,15 @@ impl RetainedInitial {
             state.joined = true;
             state.status = PendingInitialProducerStatus::OriginalJoined { disposition };
         }
+        if let Some(resources) = &self.consumer
+            && resources.original_joined().is_err()
+        {
+            self.lock().observation_failed = true;
+            self.fail();
+        }
         // No arming means no enrolled future could have been constructed.
         let armed = self.lock().identity.is_some();
-        if !armed {
+        if !armed && self.consumer.is_none() {
             let (status, observation_failed) = {
                 let state = self.lock();
                 (state.status.clone(), state.observation_failed)
@@ -136,11 +172,13 @@ impl RetainedInitial {
         };
         // Actual private result stays retained through join/native close attempt.
         // No caller receives a public completion or execution capability.
-        let (staged, enrolled) = {
-            let mut state = self.lock();
-            (state.staged.take(), state.enrolled.take())
-        };
-        super::super::retain::discard((staged, enrolled));
+        if self.consumer.is_none() || retry.terminal.is_some() {
+            let (staged, enrolled) = {
+                let mut state = self.lock();
+                (state.staged.take(), state.enrolled.take())
+            };
+            super::super::retain::discard((staged, enrolled));
+        }
         PendingInitialProducerObservation {
             status,
             disposition,

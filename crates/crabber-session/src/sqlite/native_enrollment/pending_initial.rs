@@ -1,7 +1,7 @@
 //! Closed first-Pending operations under the original native Session gate.
 mod operations;
-mod storage;
-mod write;
+pub(in crate::sqlite) mod storage;
+pub(in crate::sqlite) mod write;
 use crate::native_enrollment::pending_initial::{Assignment, SourceKey};
 use crate::public_session::v2::proof::{Failure, Proof, ReadError};
 use crate::session_owner::{

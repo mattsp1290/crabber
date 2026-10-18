@@ -16,6 +16,49 @@ pub(super) async fn record(
     now: time::OffsetDateTime,
     budget: &mut Proof,
 ) -> Result<Record, Error> {
+    Box::pin(selected(tx, request, authority, parent, now, None, budget)).await
+}
+pub(in crate::postgres) async fn enrolled(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &OwnedScopeActivation,
+    grant: &crate::session_owner::driver::ExecutionDriverGrant,
+    now: time::OffsetDateTime,
+    consumer: &crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>,
+    budget: &mut Proof,
+) -> Result<Record, Error> {
+    budget
+        .measure(&(
+            grant.receipt(),
+            grant.source_identity(),
+            grant.original_request().context.session_id(),
+            grant.original_request().context.workspace_id(),
+            grant.original_request().context.directory(),
+            &grant.original_request().fence,
+        ))
+        .map_err(super::super::unknown)?;
+    crate::native_enrollment::caller::measure_owner_authority(grant.authority(), budget)
+        .map_err(super::super::unknown)?;
+    let parent = OwnedScopeParentAuthority::ExecutionDriver(Box::new(grant.clone()));
+    Box::pin(selected(
+        tx,
+        request,
+        grant.authority(),
+        Some(&parent),
+        now,
+        Some(consumer),
+        budget,
+    ))
+    .await
+}
+async fn selected(
+    tx: &mut Transaction<'_, Postgres>,
+    request: &OwnedScopeActivation,
+    authority: &SessionOwnerAuthority,
+    parent: Option<&OwnedScopeParentAuthority>,
+    now: time::OffsetDateTime,
+    consumer: Option<&crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>>,
+    budget: &mut Proof,
+) -> Result<Record, Error> {
     proof::membership(tx, request.session_id(), budget).await?;
     super::super::protocol::require(tx, request.session_id(), &request.target().id, budget)
         .await
@@ -44,19 +87,37 @@ pub(super) async fn record(
             {
                 return Err(Error::SemanticConflict);
             }
-            let fresh = Box::pin(fresh::fresh(
-                tx,
-                grant.original_request(),
-                Some(expected),
-                now,
-                budget,
-            ))
-            .await?;
+            let fresh = match consumer {
+                Some(consumer) => {
+                    Box::pin(fresh::enrolled(
+                        tx,
+                        grant.original_request(),
+                        Some(expected),
+                        now,
+                        consumer,
+                        budget,
+                    ))
+                    .await?
+                }
+                None => {
+                    Box::pin(fresh::fresh(
+                        tx,
+                        grant.original_request(),
+                        Some(expected),
+                        now,
+                        budget,
+                    ))
+                    .await?
+                }
+            };
             if &fresh != actual {
                 return Err(Error::StaleOwner);
             }
         }
         Some(OwnedScopeParentAuthority::SuccessorExecutionDriver(grant)) => {
+            if consumer.is_some() {
+                return Err(Error::Unsupported);
+            }
             let actual = record
                 .successor_driver
                 .as_deref()

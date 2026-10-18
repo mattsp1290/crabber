@@ -14,6 +14,46 @@ pub(super) fn selected(
     claiming: bool,
     proof: &mut Proof,
 ) -> Result<(), Error> {
+    selected_inner(
+        state,
+        fence,
+        request,
+        (authority, conclusion, claiming),
+        super::Dispatch::Raw,
+        proof,
+    )
+}
+pub(super) fn selected_consumer(
+    state: &State,
+    fence: &RunFence,
+    request: &AttemptMutation,
+    authority: Option<&AttemptAuthority>,
+    conclusion: Option<&crate::AttemptConclusion>,
+    call: &crate::native_enrollment::initial_consumer::VerifiedConsumerCall<'_, '_>,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    selected_inner(
+        state,
+        fence,
+        request,
+        (authority, conclusion, false),
+        super::Dispatch::Consumer(call),
+        proof,
+    )
+}
+fn selected_inner(
+    state: &State,
+    fence: &RunFence,
+    request: &AttemptMutation,
+    context: (
+        Option<&AttemptAuthority>,
+        Option<&crate::AttemptConclusion>,
+        bool,
+    ),
+    dispatch: super::Dispatch<'_>,
+    proof: &mut Proof,
+) -> Result<(), Error> {
+    let (authority, conclusion, claiming) = context;
     let run = state.runs.get(&fence.run_id).ok_or(Error::NotFound)?;
     proof
         .measure(&(fence, request, conclusion, run))
@@ -22,7 +62,18 @@ pub(super) fn selected(
     let enrollment =
         super::super::native_enrollment::original(state, &run.session_id, &run.id, proof)
             .map_err(|_| Error::UnknownStoreOutcome)?;
-    crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
+    match dispatch {
+        super::Dispatch::Raw => {
+            crate::native_enrollment::access::allow(enrollment).map_err(|_| Error::Unsupported)?;
+        }
+        super::Dispatch::Consumer(call) => {
+            if enrollment != crate::native_enrollment::Status::Pending
+                || call.correlation().key.session_id != run.session_id
+            {
+                return Err(Error::Unsupported);
+            }
+        }
+    }
     if let Some(saved) = state
         .operation_receipts
         .get(&(run.session_id.clone(), request.id.clone()))

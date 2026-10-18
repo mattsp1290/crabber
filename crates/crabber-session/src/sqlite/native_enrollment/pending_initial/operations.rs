@@ -56,6 +56,7 @@ pub(super) async fn apply(
         .view()
         .verify(&parts.expected.key, parts.proof)
         .map_err(budget)?;
+    let consumer = super::super::initial_consumer::check_birth(tx, parts, state.view()).await?;
     if let Some(raw) = Box::pin(crate::sqlite::session_owner::pending_raw::read(
         tx,
         parts.original,
@@ -71,7 +72,7 @@ pub(super) async fn apply(
         return PendingInitialNativeReply::raw_completed(raw, parts.proof);
     }
 
-    let reply = change(store, tx, parts, &prefix, &state).await?;
+    let reply = change(store, tx, parts, &prefix, &state, &consumer).await?;
     #[cfg(test)]
     if store
         .session_owner_fault
@@ -88,6 +89,7 @@ async fn change(
     parts: &mut NativeInitialParts<'_>,
     prefix: &prefix::HistoricalInitialPrefix<'_>,
     state: &storage::Selected,
+    consumer: &super::super::initial_consumer::storage::Selected,
 ) -> Result<PendingInitialNativeReply, PreparationCommitError> {
     let reply = match parts.operation {
         NativeInitialOperation::Open => {
@@ -97,6 +99,8 @@ async fn change(
                     write::persist(tx, &delta, parts.proof)
                         .await
                         .map_err(budget)?;
+                    super::super::initial_consumer::open(tx, parts, prefix, &record, consumer)
+                        .await?;
                     PendingInitialNativeReply::opened(record, parts.proof)?
                 }
                 OpenDecision::Replayed(_) => {
@@ -109,6 +113,12 @@ async fn change(
             }
         }
         NativeInitialOperation::Seal => {
+            if let Some(record) =
+                super::super::initial_consumer::close(tx, parts, prefix, state.view(), consumer)
+                    .await?
+            {
+                return PendingInitialNativeReply::closed(record, parts.proof);
+            }
             match prepare_close(prefix, parts.expected, state.view(), parts.proof)? {
                 CloseDecision::Publish { record, delta } => {
                     write::persist(tx, &delta, parts.proof)
@@ -122,7 +132,9 @@ async fn change(
                 CloseDecision::Conflict => return Err(Error::SemanticConflict.into()),
             }
         }
-        NativeInitialOperation::Complete => complete(store, tx, parts, prefix, state).await?,
+        NativeInitialOperation::Complete => {
+            complete(store, tx, parts, prefix, state, consumer).await?
+        }
     };
     Ok(reply)
 }
@@ -132,6 +144,7 @@ async fn complete(
     parts: &mut NativeInitialParts<'_>,
     prefix: &prefix::HistoricalInitialPrefix<'_>,
     state: &storage::Selected,
+    consumer: &super::super::initial_consumer::storage::Selected,
 ) -> Result<PendingInitialNativeReply, PreparationCommitError> {
     state
         .view()
@@ -177,10 +190,13 @@ async fn complete(
             .await
             .map_err(budget)?;
         publish_origin(tx, &assignment, &first, parts.proof).await?;
-        PendingInitialNativeReply::completed(EnrolledInitialData {
+        let actual = EnrolledInitialData {
             completion,
             first,
             assignment,
-        })
+        };
+        super::super::initial_consumer::complete(tx, parts, state.view(), &actual, consumer)
+            .await?;
+        PendingInitialNativeReply::completed(actual)
     })
 }

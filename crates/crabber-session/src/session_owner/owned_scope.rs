@@ -15,9 +15,13 @@ pub use task::{
     PendingSuccessorObservation, PendingSuccessorReplay, PendingSuccessorTask,
     PendingSuccessorTasks, QueueAdmissionMetadata,
 };
+pub(crate) use task::{
+    DrainedInitialResources, InitialResourceAssociation, NativeConsumerParts,
+    NativeInitialOperation, NativeInitialParts,
+};
 #[cfg(test)]
 pub(crate) use task::{InitialOperationUsage, InitialProofCaps, InitialProofUsage};
-pub(crate) use task::{NativeInitialOperation, NativeInitialParts};
+pub use task::{PendingInitialConsumerNativeCall, PendingInitialConsumerNativeReply};
 pub(crate) mod source;
 use crate::session_owner::{SessionOwnerError as Error, SessionOwnerTarget};
 use crabber_core::{InputFingerprint, SessionId, SessionOwnerOperationId};
@@ -133,3 +137,9 @@ pub enum OwnedScopeActivationOutcome {
     },
     Replayed(super::SessionOwnerReceipt),
 }
+
+#[cfg(test)]
+pub(crate) use task::initial_consumer_fixture;
+
+#[cfg(test)]
+pub(crate) use task::{ConsumerProofCaps, ConsumerProofUsage};

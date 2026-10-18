@@ -36,6 +36,12 @@ async fn migration_preserves_legacy_bytes_and_refuses_rebirth_without_promoting_
         .execute(&mut *tx)
         .await
         .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0024_pending_initial_consumer.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     let session = SessionId("legacy-session".into());
     let run = RunId("legacy-run".into());
     assert_eq!(
