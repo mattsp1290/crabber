@@ -2,14 +2,15 @@
 
 Add `crabber-agui` alongside `crabber`. The adapter pins `ag-ui-core` 0.2.0 at
 [revision 705303b26b6b900cdf9bdfa456fbd92a7003ca6b](https://github.com/mattsp1290/ag-ui/tree/705303b26b6b900cdf9bdfa456fbd92a7003ca6b).
-The example pins `ag-ui-client` at that same revision. Root Cargo's git/revision
-patch unifies the client's registry dependency with the adapter's core types;
+The example pins `ag-ui-client` and the adapter pins `ag-ui-encoder` at that same revision. Root Cargo's git/revision
+patch unifies the client and encoder registry dependencies with the adapter's core types;
 there are no external checkout paths. See [adapter API usage](../crates/crabber-agui/README.md).
 
 Subscribe with `run.events()` before consuming `run.done()`. Create a `Projector`
 using the actual runtime session/run IDs and separately selected wire aliases.
 Feed each received `EventRecord` into `push`; encode returned typed SDK events
-with `encode_sse`. Drain the receiver and await `done`, then call `finish` using
+with `encode_sse` (SDK live encoding); use `encode_sse_recorded` when replaying
+recorded events. Drain the receiver and await `done`, then call `finish` using
 `Completion::{Completed, Cancelled, Paused, Failed, LeaseLost}`. The host retains
 the handle while draining so it can interrupt on receiver/transport faults.
 A task error outranks an earlier durable success hint. Call `fail` on lag;
@@ -55,14 +56,16 @@ integer range. Raw events, source cursors, backend errors, provider state,
 claims and private configuration are never forwarded. Wire aliases carry no
 runtime recovery or admission authority.
 
-Defaults cap event JSON, message text and each call's arguments at 1 MiB, open
+Defaults cap whole SSE frames, message text and each call's arguments at 1 MiB, open
 unsettled calls at 64, message attempts at 1024 and batches at 256. Configuration
 can reduce these limits; zero or values above the defaults are invalid. Aliases
 must be nonempty, at most 256 bytes, and contain no controls. Construction checks
 that configured startup and finite terminals fit the event limit. Metadata and
 counters are bounded; text/arguments and complete transcripts are not retained.
 Closed identities remain for bounded duplicate detection. Oversized JSON is
-rejected before allocating its output frame; fields are checked before copying.
+rejected by the non-allocating `frame_budget` check before SDK normalization or
+frame allocation. This conservative check includes delimiters; optional-null
+normalization can make the final frame smaller. Account queues using `frame.len()`.
 No truncation is used.
 
 Completed -> RUN_FINISHED success; cancellation -> cancelled; pause -> interrupt

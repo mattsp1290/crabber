@@ -15,7 +15,7 @@ use crabber_core::{ContentBlock, EventKind, EventRecord, MessageId, RunId, Sessi
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::sse::json_bytes;
+use crate::sse::{frame_budget, json_bytes};
 
 /// All limits are independently reducible from these defaults. No transcript is retained.
 #[derive(Debug, Clone)]
@@ -221,17 +221,17 @@ impl Projector {
             settled: None,
         };
         // Guarantee the configured start and every finite terminal fit, even on startup failure.
-        json_bytes(
+        frame_budget(
             &projector.start_event(base(None)),
             projector.config.max_event_bytes,
         )
         .map_err(|_| ProjectionError::Configuration)?;
-        json_bytes(
+        frame_budget(
             &projector.finished_event(Completion::Paused),
             projector.config.max_event_bytes,
         )
         .map_err(|_| ProjectionError::Configuration)?;
-        json_bytes(
+        frame_budget(
             &Self::error_event(ProjectionError::SourceAttemptFailed.code()),
             projector.config.max_event_bytes,
         )
@@ -360,7 +360,7 @@ impl Projector {
             return Err(ProjectionError::Limit);
         }
         for event in events {
-            json_bytes(event, self.config.max_event_bytes)?;
+            frame_budget(event, self.config.max_event_bytes)?;
         }
         Ok(())
     }

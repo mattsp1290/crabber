@@ -63,6 +63,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ag-ui-encoder"
+version = "0.2.0"
+source = "git+https://github.com/mattsp1290/ag-ui.git?rev=705303b26b6b900cdf9bdfa456fbd92a7003ca6b#705303b26b6b900cdf9bdfa456fbd92a7003ca6b"
+dependencies = [
+ "ag-ui-core",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "agents-md-middleware"
 version = "0.1.0"
 dependencies = [
@@ -486,6 +496,7 @@ name = "crabber-agui"
 version = "0.1.0"
 dependencies = [
  "ag-ui-core",
+ "ag-ui-encoder",
  "crabber",
  "crabber-core",
  "crabber-session",
