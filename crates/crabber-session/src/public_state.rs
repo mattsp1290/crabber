@@ -91,3 +91,40 @@ pub struct PublicSourcePublication {
     /// Actual pre-state snapshot (for deltas), followed by the actual final fact.
     pub events: Vec<crabber_core::EventRecord>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crabber_core::PublicActivity;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_activity_decode_and_fingerprint_do_not_apply_fresh_write_rules() {
+        let session = SessionId::new();
+        let run = RunId::new();
+        for content in [
+            serde_json::Value::Null,
+            json!("legacy scalar"),
+            json!([null, 1]),
+        ] {
+            let mutation = PublicStateMutation {
+                id: ControlId::new(),
+                expected_revision: SessionRevision::INITIAL,
+                contents: PublicStateContents::new(
+                    serde_json::Value::Null,
+                    vec![PublicActivity::new("activity", "legacy", content).unwrap()],
+                )
+                .unwrap(),
+            };
+            let fingerprint = mutation.fingerprint(&session, &run).unwrap();
+            let restored: PublicStateMutation =
+                serde_json::from_value(serde_json::to_value(&mutation).unwrap()).unwrap();
+            assert_eq!(restored.contents, mutation.contents);
+            assert_eq!(restored.fingerprint(&session, &run).unwrap(), fingerprint);
+            assert_eq!(
+                validate_fresh_activities(&restored.contents),
+                Err(PublicStateError::InvalidRequest)
+            );
+        }
+    }
+}

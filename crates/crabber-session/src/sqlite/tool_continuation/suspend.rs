@@ -44,7 +44,6 @@ impl SqliteExecution {
             if let Some(saved) = write::replay(&mut tx, &run, &batch.id, &digest).await? {
                 return Ok((saved, false));
             }
-            batch.require_frontend_support(crate::SQLITE_SCHEMA_VERSION >= 10)?;
 
             if revision(&mut tx, &run.session_id).await? != batch.expected_revision {
                 return Err(Error::RevisionConflict);

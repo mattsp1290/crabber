@@ -200,6 +200,8 @@ settings without including credentials, credential values or headers. These
 wrappers cannot verify falsely unchanged native configuration. `FakeProvider`
 declares its built-in deterministic fixture contract.
 
-These primitives are unstable. Runtime admission/checkpoint persistence and
-restoration are still being implemented; the existing execution path does not
-yet provide the complete durable binding guarantee.
+These primitives are unstable. Runtime bound admission and checkpoint restoration
+retain and verify the original descriptor, configuration and input before fresh
+execution; missing or changed evidence fails closed. This binding does not prove
+resource ownership or arbitrary provider effects. See the current
+[server-host binding contract](../../docs/server-host.md).

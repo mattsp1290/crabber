@@ -92,3 +92,6 @@ impl Node {
         self.original.disposed().await
     }
 }
+
+#[cfg(test)]
+mod tests;

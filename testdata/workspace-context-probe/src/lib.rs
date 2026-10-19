@@ -7,8 +7,8 @@
 
 use async_trait::async_trait;
 use crabber::{
-    AgentBuilder, AgentConfig, ExtensionError, FakeProvider, PermissionDecision, Selection,
-    StaticPolicy, StreamDelta, ToolDefinition, JsonToolExecutor,
+    AgentBuilder, AgentConfig, ExtensionError, FakeProvider, JsonToolExecutor, PermissionDecision,
+    Selection, StaticPolicy, StreamDelta, ToolDefinition,
     core::{ToolCallId, ToolInfo},
     extension::{
         ContextAssemble, Extension, Point, Registrar, Scope, ToolContext, WorkspaceContext,
@@ -268,7 +268,7 @@ pub fn host_with_policy(
         .provider(Arc::new(FakeProvider::scripted(scripts)))
         .config(config)
         .policy(policy)
-        .extension(
+        .shared_extension(
             Arc::new(ProbeExtension(Arc::clone(observations))),
             Scope::Global,
         )

@@ -2,8 +2,9 @@
 
 `Store::supports_future_queue` declares native atomic queue support. A custom
 adapter defaults to `HostUnsupported` and must implement the whole transaction
-contract before accepting queued input. PostgreSQL requires schema 10; SQLite
-requires a fresh schema-6 file. Connect never migrates.
+contract before accepting queued input. Current bundled storage requires PostgreSQL 24 and a fresh SQLite 20 file
+(`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION` in `crabber-session`).
+The Queue tables were introduced in PostgreSQL 10 / SQLite 6. Connect never migrates.
 
 The future-run queue is separate from the inbox. Enqueue creates no Run, message,
 provider request or execution handle. It requires an existing session, immutable

@@ -4,7 +4,8 @@
 //! Legacy calls migrated from v1/v2 use pending-event order when recorded, then
 //! deterministic ID order for calls whose creation order was never persisted.
 //! Migration backfills canonical records one at a time under exclusive locks;
-//! connect remains read-only and requires explicit migration to schema v10.
+//! connect remains read-only and requires explicit migration through
+//! `crate::POSTGRES_SCHEMA_VERSION`.
 #[path = "postgres/admission_reads.rs"]
 mod admission_reads;
 #[path = "postgres/continuation_handoff.rs"]
@@ -361,45 +362,7 @@ async fn insert_event_captured(
     run: &Run,
     event: &EventRecord,
 ) -> Result<crabber_core::EventCursor, StoreError> {
-    if event.kind == crabber_core::EventKind::ToolCallPending
-        && event.payload.get("frontend_origin").is_some()
-    {
-        return Err(StoreError::Validation(
-            "frontend origin requires atomic staging".into(),
-        ));
-    }
-    if matches!(
-        event.kind,
-        crabber_core::EventKind::RunControlChanged
-            | crabber_core::EventKind::PublicStateSnapshot
-            | crabber_core::EventKind::PublicStateDelta
-            | crabber_core::EventKind::ActivitySnapshot
-            | crabber_core::EventKind::ActivityDelta
-            | crabber_core::EventKind::PublicPresentation
-            | crabber_core::EventKind::InvocationStarted
-            | crabber_core::EventKind::InvocationFinished
-            | crabber_core::EventKind::InvocationError
-            | crabber_core::EventKind::ToolProgress
-            | crabber_core::EventKind::ExecutionAttemptChanged
-            | crabber_core::EventKind::InteractionChanged
-            | crabber_core::EventKind::ContinuationChanged
-            | crabber_core::EventKind::ContinuationWaiting
-            | crabber_core::EventKind::ToolPhaseChanged
-    ) {
-        return Err(StoreError::Validation(
-            "public state events require atomic state mutation".into(),
-        ));
-    }
-    if event.live_only || event.kind.is_live_only() {
-        return Err(StoreError::Validation(
-            "live-only events cannot be persisted".into(),
-        ));
-    }
-    if event.session_id != run.session_id || event.run_id != run.id {
-        return Err(StoreError::Validation(
-            "event belongs to another run".into(),
-        ));
-    }
+    crate::event_persistence::validate(run, event)?;
     // Lock before identity allocation: cursor order follows session commit order.
     sqlx::query("SELECT 1 FROM sessions WHERE id=$1 FOR UPDATE")
         .bind(&run.session_id.0)
@@ -1399,7 +1362,7 @@ impl Store for PostgresStore {
         true
     }
     fn supports_frontend_tools(&self) -> bool {
-        crate::POSTGRES_SCHEMA_VERSION >= 14
+        true
     }
     async fn frontend_call_origin(
         &self,
@@ -2241,12 +2204,9 @@ impl ExecutionStore for PostgresExecution {
         pending_event: EventRecord,
     ) -> Result<(), StoreError> {
         let (mut tx, run) = self.store.fenced(&self.fence).await?;
-        if crate::POSTGRES_SCHEMA_VERSION >= 14
-            && frontend::declared(&mut tx, &run, &call.name)
-                .await
-                .map_err(|_| {
-                    StoreError::Validation("frontend declaration integrity failure".into())
-                })?
+        if frontend::declared(&mut tx, &run, &call.name)
+            .await
+            .map_err(|_| StoreError::Validation("frontend declaration integrity failure".into()))?
         {
             return Err(StoreError::Validation(
                 "frontend calls require atomic staging".into(),

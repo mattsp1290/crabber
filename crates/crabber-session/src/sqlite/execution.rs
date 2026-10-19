@@ -204,12 +204,11 @@ impl ExecutionStore for SqliteExecution {
         let mut tx = self.store.begin_write().await?;
         let result = async {
             let run = self.store.fenced(&mut tx, &self.fence).await?;
-            if crate::SQLITE_SCHEMA_VERSION >= 10
-                && super::frontend::declared(&mut tx, &run, &call.name)
-                    .await
-                    .map_err(|_| {
-                        StoreError::Validation("frontend declaration integrity failure".into())
-                    })?
+            if super::frontend::declared(&mut tx, &run, &call.name)
+                .await
+                .map_err(|_| {
+                    StoreError::Validation("frontend declaration integrity failure".into())
+                })?
             {
                 return Err(StoreError::Validation(
                     "frontend calls require atomic staging".into(),

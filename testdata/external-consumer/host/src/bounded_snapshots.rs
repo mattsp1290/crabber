@@ -3,7 +3,8 @@ use crabber::{SnapshotLimits, SnapshotOutcome, SnapshotRequest, core::*, session
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 struct LegacyStore(MemoryStore);
-struct BoundedStore(MemoryStore);
+mod native_store;
+use native_store::BoundedStore;
 
 macro_rules! forward_store {
     ($store:ty, $($extra:item)*) => {
@@ -79,12 +80,6 @@ macro_rules! forward_store {
     };
 }
 forward_store!(LegacyStore,);
-forward_store!(
-    BoundedStore,
-    async fn snapshot(&self, request: SnapshotRequest) -> Result<SnapshotOutcome, StoreError> {
-        self.0.snapshot(request).await
-    }
-);
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let session = SessionId::from("external-bounded-session");
@@ -160,7 +155,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1]);
     assert_eq!(pages, 2);
-    assert!(store.list_events(&query.session_id, Some(h), 1).await?.is_empty());
+    assert!(
+        store
+            .list_events(&query.session_id, Some(h), 1)
+            .await?
+            .is_empty()
+    );
     println!(
         "External bounded snapshots: default unsupported; delegated custom Store H={} pages={pages} messages={} caps and continuation passed",
         h.0,

@@ -1,5 +1,5 @@
 //! Frontend calls extend the same exact compound barrier and native ownership.
-use super::{Error, FrontendOriginRecord, read, supported, unknown};
+use super::{Error, FrontendOriginRecord, read, unknown};
 use crate::public_session::v2::proof::{Proof, ToolReadError};
 use crate::transaction::Transaction;
 use crate::{
@@ -37,10 +37,6 @@ pub(in super::super) async fn pending_call_with_proof(
     waiting: bool,
     proof: &mut Proof,
 ) -> Result<bool, Error> {
-    if crate::SQLITE_SCHEMA_VERSION < 10 {
-        batch.require_frontend_support(false)?;
-        return Ok(false);
-    }
     let scope = read::scope_with_proof(tx, &run.session_id, &run.id, proof)
         .await
         .map_err(|e| e.into_domain_or(Error::UnknownStoreOutcome))?;
@@ -84,10 +80,6 @@ pub(in super::super) async fn verify_batch_with_proof(
     record: &ToolContinuationRecord,
     proof: &mut Proof,
 ) -> Result<(), ToolReadError> {
-    if crate::SQLITE_SCHEMA_VERSION < 10 {
-        record.batch.require_frontend_support(false)?;
-        return Ok(());
-    }
     if !record.batch.frontend.is_empty() {
         let run = read::scope_with_proof(tx, &record.session_id, &record.run_id, proof).await?;
         for frozen in &record.batch.frontend {
@@ -139,7 +131,6 @@ pub(in super::super) async fn save_links(
     if record.batch.frontend.is_empty() {
         return Ok(());
     }
-    supported()?;
     for frozen in &record.batch.frontend {
         sqlx::query("INSERT INTO tool_continuation_frontend_calls(continuation_id,run_id,call_id,phase_id) VALUES($1,$2,$3,$4)")
             .bind(&record.batch.continuation.id.0).bind(&record.run_id.0).bind(&frozen.target.call_id.0).bind(&frozen.target.id.0)

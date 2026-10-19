@@ -16,12 +16,6 @@ use sqlx::Sqlite;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
-fn supported() -> Result<(), Error> {
-    if crate::SQLITE_SCHEMA_VERSION < 10 {
-        return Err(Error::Unsupported);
-    }
-    Ok(())
-}
 async fn finish<T>(tx: Transaction<'_, Sqlite>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
         Ok(value) => {
@@ -40,7 +34,6 @@ impl SqliteStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<(Transaction<'_, Sqlite>, Run), Error> {
-        supported()?;
         let mut tx = self.begin_write().await.map_err(unknown)?;
         let run = read::run(&mut tx, session, run).await?;
         Ok((tx, run))
@@ -51,7 +44,6 @@ impl SqliteStore {
         run: &RunId,
         call: &ToolCallId,
     ) -> Result<Option<FrontendCallOrigin>, Error> {
-        supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&run.0, 128)?;
         crate::tool_continuation::canonical::identity(&call.0, 512)?;
@@ -82,7 +74,6 @@ impl SqliteStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<FrontendStagingReceipt>, Error> {
-        supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&id.0, 128)?;
         let mut tx = crate::transaction::begin(&self.readers)

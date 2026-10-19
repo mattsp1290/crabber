@@ -61,10 +61,7 @@ impl Agent {
                     handle: inner,
                 } => Continuation::Started {
                     receipt,
-                    handle: RunHandle {
-                        run_id: inner.run_id().clone(),
-                        inner,
-                    },
+                    handle: RunHandle::from_runtime(inner),
                 },
                 crabber_runtime::Continuation::Replayed(receipt) => Continuation::Replayed(receipt),
             },
@@ -99,10 +96,7 @@ impl Agent {
                     handle: inner,
                 } => Continuation::Started {
                     receipt,
-                    handle: RunHandle {
-                        run_id: inner.run_id().clone(),
-                        inner,
-                    },
+                    handle: RunHandle::from_runtime(inner),
                 },
                 crabber_runtime::Continuation::Replayed(receipt) => Continuation::Replayed(receipt),
             },

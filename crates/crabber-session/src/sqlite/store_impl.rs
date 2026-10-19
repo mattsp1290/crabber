@@ -357,7 +357,7 @@ impl Store for SqliteStore {
         true
     }
     fn supports_frontend_tools(&self) -> bool {
-        crate::SQLITE_SCHEMA_VERSION >= 10
+        true
     }
     async fn frontend_call_origin(
         &self,

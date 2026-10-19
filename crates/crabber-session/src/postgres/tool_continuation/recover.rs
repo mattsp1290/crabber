@@ -39,9 +39,6 @@ impl PostgresStore {
         if let Some(saved) = super::native_caller::outer_replay(self, input, proof).await? {
             return Ok(ToolContinuationClaimOutcome::Replayed(saved));
         }
-        if input.frontend().is_some() && crate::POSTGRES_SCHEMA_VERSION < 14 {
-            return Err(Error::Unsupported);
-        }
         let fault = fault(self);
         let original = input.original();
         let (mut tx, run) = self

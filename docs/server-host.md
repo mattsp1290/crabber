@@ -226,9 +226,10 @@ files or cancel active executions. Closure rejects new plans for that owner.
 Cleanup that exceeds its bound returns a typed incomplete/timeout error and stays
 owned; a later close can establish completion. Other owners remain available.
 
-The common owned initial/resumed execution lifecycle, typed admission, authoritative controls
-and session management remain part of this implementation. Their completion is
-required before claiming the durable server-host contract delivered.
+The common owned initial/resumed execution lifecycle, typed admission,
+authoritative controls and session management are implemented parts of this
+contract. Public-consumer and dependency-tuple qualification remains separate
+from these local implementation facts.
 
 Experimental `Store::admit_bound_run` and `admit_bound_keyed_run` atomically retain
 an `ExecutionBindingCapsule` with admission in all bundled stores. They require
@@ -242,8 +243,9 @@ original input. Its Debug output is redacted; it is not a public snapshot or an
 execution capability. New runtime admissions retain binding capsule version 3,
 keyed execution capsule version 2 and canonical input digest version 2. The
 binding codec is bounded to 16 MiB encoded JSON and 64 levels of configuration
-nesting. PostgreSQL schema 7 and fresh SQLite schema 3 expand the private codec
-carriers; retained older payloads are not rewritten or made executable. Custom
+nesting. Historically, PostgreSQL schema 7 and fresh SQLite schema 3 expanded
+the private codec carriers. Current storage requires PostgreSQL 24 / SQLite 20;
+retained older payloads are not rewritten or made executable. Custom
 adapters default to `HostUnsupported` and must implement the atomic capability.
 The runtime uses these atomic APIs for both ordinary and keyed admission. It
 restores the retained backend/configuration before recovery claims, holds the
@@ -289,6 +291,15 @@ after identity and receipt reconciliation. A stale new admission changes no
 input, run or revision; an exact prior receipt still replays after revision
 advances. The text convenience APIs adapt to an envelope; explicit typed retries
 must retain their original envelope rather than refreshing its revision.
+
+Supplied message and part IDs are unique across the entire shared store, not
+only within a session or tenant. Hosts must authorize incoming history against
+host-owned canonical history and admit only its new suffix with globally unique
+storage IDs. Wire IDs are correlation data, not authority. A collision fails
+closed as `StoreError::Conflict`, which also represents archived-session and
+stale-owner conditions; do not infer rejection or automatically rewrite IDs from
+that variant. Persist the exact accepted envelope/key for retries. Never strip or
+regenerate IDs on an uncertain retry, or refresh its captured revision.
 
 Admission preserves every message/part and supplied identity in order, with
 new internal IDs excluded from the digest. Recovery validates the original input
@@ -348,7 +359,19 @@ the original ID. Compare its digest with `mutation.fingerprint(session, run)`;
 exact retry also returns the original receipt after ownership or revision changes.
 A missing lookup does not prove an in-flight write cannot later commit.
 A changed request under that ID conflicts. Receipt reconciliation does not grant
-permission to execute other operations. Custom stores default to `Unsupported`
+permission to execute other operations.
+
+For `ToolContext::public_source()`, `PublicSourceError::UnknownOutcome` can also
+mean the native write committed but live delivery could not reconcile every
+outstanding original operation. Retain each operation ID, expected revision and
+original change privately. Reconcile its canonical receipt or retry the identical
+publish before attempting fresh changes; a new ID does not repair uncertainty.
+A missing receipt is not rollback evidence. The shared worker delivery gate emits
+none of the pending group until every original has a canonical cursor, then emits
+in cursor order without duplicate delivery. Additional native writes can commit
+while delivery remains unresolved, so their errors must also be reconciled.
+Termination or suspension seals that delivery scope: later exact retries can
+reconcile metadata but never reopen its live observer or grant a fresh write. Custom stores default to `Unsupported`
 and can qualify against `public_state_contract::run_contract` and the injected
 rollback/unknown-response contract. This state snapshot does not include history
 and therefore cannot validate a separately captured history snapshot.
@@ -453,6 +476,14 @@ verification remain the adapter's responsibility. The shared phase conformance
 suite includes mixed media, changed choices, duplicate-message rollback and lost
 commit acknowledgements. SQLite/PostgreSQL also kill writers after all compound
 writes but before commit and reconcile committed receipts in fresh processes.
+
+Interrupting an executing native tool can return
+`RuntimeError::PhaseOutcomeUnknown { run_id, phase, operation_id, .. }` from
+`RunHandle::done()` instead of settling the run as `Interrupted`. Retain the exact
+phase target, inspect `list_tool_phases` / `Store::tool_phase`, and reconcile any
+saved operation ID with `lookup_phase_mutation`. Do not blindly resume that tool
+or infer cleanup from the interrupt. The following resolution contract applies
+to an already uncertain target and requires the host's verified outcome.
 
 A lost claimed or started phase becomes uncertain, including a retry-safe call.
 The host can resolve its exact target as success with supplied typed output,
@@ -721,3 +752,32 @@ Current bundled storage versions are PostgreSQL 24 and SQLite 20. PostgreSQL use
 its versioned migration roster; SQLite accepts fresh current files and rejects
 older schemas rather than silently upgrading. Always run explicit migration
 before read-only `connect`; see [SQLite storage](sqlite-store.md).
+
+## Proof and recovery discovery limits
+
+Bundled credential readers authenticate the actual selected Run and its original
+enrollment evidence; current-issuer checks authenticate the selected Run's native
+source/issuer prefix. They do not revalidate every message or all sessions' history
+merely because a session is old. Actual selected evidence must fit the operation's
+finite allowance (commonly 32 MiB); exceeding it refuses authentication, never
+silently drops evidence or substitutes trust in a cached head. Missing-middle
+originals and inconsistent reverse membership still refuse. There is no automatic
+compaction, source rollover or guaranteed constant per-write cost.
+
+`Store::list_unfinished_runs` deliberately authenticates the complete captured
+unfinished set under one snapshot and one 32 MiB materialization/proof allowance.
+A Pending origin that cannot be returned as a Raw credential, corrupt evidence or
+exhausted allowance refuses the entire list. `recover` / `recover_with_context`
+first await this discovery; its error returns no partial `RecoverReport`.
+`SkippedRun` and sweep continuation apply only to the supported per-run refusals
+encountered after successful discovery. Keep original run IDs and requests for
+individual inspection/reconciliation when discovery refuses; do not interpret an
+error as an empty list, reset evidence, invent new IDs or rerun uncertain work.
+
+These allowances bound selected materialization and verification, not database
+scan cost, stored history or transaction runtime. Memory mutation still clones
+the whole State and some reads scan global collections; unrelated retained data
+can affect cost. SQLite serializes writes across its whole file. SQL/client page
+limits likewise do not promise bounded server-side scans. Plan capacity using
+actual workload measurements; the finite Memory transaction-cost fixture is a
+regression check, not a production memory cap or an O(1) performance guarantee.

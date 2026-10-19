@@ -19,6 +19,8 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     round_trip_and_replay(&store, &clock).await;
     competing_replacements(&store, &clock).await;
     protected_source_event(&store, &clock).await;
+    fresh_activity_refusal(&store, &clock).await;
+    object_activity_with_arbitrary_state(&store, &clock).await;
 }
 pub(crate) async fn admit(store: &impl Store, now: OffsetDateTime) -> AdmitOutcome {
     let session = SessionId::new();
@@ -160,6 +162,90 @@ async fn round_trip_and_replay(store: &impl Store, clock: &ManualClock) {
     )
     .await;
 }
+async fn fresh_activity_refusal(store: &impl Store, clock: &ManualClock) {
+    let admitted = admit(store, clock.now()).await;
+    let session = &admitted.session.id;
+    let execution = store.execution(admitted.fence).await.unwrap();
+    let before = store.public_state(session).await.unwrap();
+    let messages = store.list_all_messages(session).await.unwrap();
+    let events = store.list_events(session, None, 100).await.unwrap();
+    assert!(events.len() < 100);
+    for content in [serde_json::Value::Null, json!("scalar"), json!([null, 1])] {
+        let mutation = PublicStateMutation {
+            id: ControlId::new(),
+            expected_revision: before.revision,
+            contents: PublicStateContents::new(
+                json!({"uncommitted":true}),
+                vec![PublicActivity::new("activity", "fixture", content).unwrap()],
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            execution
+                .mutate_public_state(mutation.clone())
+                .await
+                .unwrap_err(),
+            Error::InvalidRequest
+        );
+        assert_eq!(store.public_state(session).await.unwrap(), before);
+        assert_eq!(
+            store.session_revision(session).await.unwrap(),
+            before.revision
+        );
+        assert_eq!(store.list_events(session, None, 100).await.unwrap(), events);
+        assert_eq!(store.list_all_messages(session).await.unwrap(), messages);
+        assert_eq!(
+            store
+                .lookup_public_state_mutation(session, &mutation.id)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+}
+
+async fn object_activity_with_arbitrary_state(store: &impl Store, clock: &ManualClock) {
+    let admitted = admit(store, clock.now()).await;
+    let session = &admitted.session.id;
+    let execution = store.execution(admitted.fence).await.unwrap();
+    let messages = store.list_all_messages(session).await.unwrap();
+    // STATE remains arbitrary JSON, while object activity preserves nested null.
+    let mut expected = store.session_revision(session).await.unwrap();
+    for state in [
+        serde_json::Value::Null,
+        json!("scalar state"),
+        json!([null, 1]),
+    ] {
+        let mutation = PublicStateMutation {
+            id: ControlId::new(),
+            expected_revision: expected,
+            contents: PublicStateContents::new(
+                state,
+                vec![
+                    PublicActivity::new("activity", "fixture", json!({"nested":{"value":null}}))
+                        .unwrap(),
+                ],
+            )
+            .unwrap(),
+        };
+        let receipt = execution
+            .mutate_public_state(mutation.clone())
+            .await
+            .unwrap();
+        let stored = store.public_state(session).await.unwrap();
+        assert_eq!(stored.contents, mutation.contents);
+        assert_eq!(stored.revision, receipt.revision);
+        assert!(receipt.revision > expected);
+        assert_eq!(
+            execution.mutate_public_state(mutation).await.unwrap(),
+            receipt
+        );
+        assert_eq!(store.public_state(session).await.unwrap(), stored);
+        expected = receipt.revision;
+    }
+    assert_eq!(store.list_all_messages(session).await.unwrap(), messages);
+}
+
 async fn protected_source_event(store: &impl Store, clock: &ManualClock) {
     let admitted = admit(store, clock.now()).await;
     let before = store.public_state(&admitted.session.id).await.unwrap();

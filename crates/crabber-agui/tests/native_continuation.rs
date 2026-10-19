@@ -21,6 +21,8 @@ use crabber_session::{
 };
 use serde_json::{Value, json};
 
+#[path = "native_continuation/mixed.rs"]
+mod mixed;
 #[path = "native_continuation/projection.rs"]
 mod projection;
 mod support;

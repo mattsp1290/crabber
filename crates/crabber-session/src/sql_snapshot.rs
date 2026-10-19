@@ -127,6 +127,10 @@ pub(crate) fn parse(
         return Err(invalid());
     }
     let b: Boundary = serde_json::from_str(json).map_err(|_| invalid())?;
+    validate_boundary(&b, session)?;
+    Ok(b)
+}
+fn validate_boundary(b: &Boundary, session: &str) -> Result<(), StoreError> {
     if b.session != session
         || b.revision < 0
         || b.public_revision < 0
@@ -141,7 +145,7 @@ pub(crate) fn parse(
     {
         return Err(invalid());
     }
-    Ok(b)
+    Ok(())
 }
 #[cfg(test)]
 mod token_tests {
@@ -262,22 +266,64 @@ pub(crate) fn parse_profile(
         return Err(invalid());
     }
     let b: Boundary = profile_boundary(json, profile)?;
-    if b.session != session
-        || b.revision < 0
-        || b.public_revision < 0
-        || b.message_after < 0
-        || b.call_after < 0
-        || b.message_after > b.messages
-        || b.call_after > b.calls
-    {
-        return Err(invalid());
-    }
+    validate_boundary(&b, session)?;
     Ok(b)
 }
 
 #[cfg(test)]
 mod aggregate_token_tests {
     use super::*;
+    #[test]
+    fn signed_raw_and_aggregate_boundaries_share_all_offset_bounds() {
+        let boundary = Boundary {
+            session: digest(&["session"]),
+            revision: 1,
+            public_revision: 2,
+            messages: 3,
+            calls: 2,
+            imported: 2,
+            provenance: 2,
+            message_after: 1,
+            call_after: 1,
+            imported_after: 1,
+            provenance_after: 1,
+            high_water: EventCursor(4),
+        };
+        let original = serde_json::to_value(&boundary).unwrap();
+        for (field, value) in [
+            ("revision", -1),
+            ("public_revision", -1),
+            ("message_after", -1),
+            ("message_after", 4),
+            ("call_after", -1),
+            ("call_after", 3),
+            ("imported_after", -1),
+            ("imported_after", 3),
+            ("provenance_after", -1),
+            ("provenance_after", 3),
+        ] {
+            let mut invalid = original.clone();
+            invalid[field] = serde_json::json!(value);
+            let invalid: Boundary = serde_json::from_value(invalid).unwrap();
+            // These are genuinely signed tokens, not broken-HMAC negatives.
+            for profile in [Profile::Raw, Profile::AggregateV2] {
+                let signed = token_profile(&invalid, "key", profile).unwrap();
+                assert!(parse_profile(&signed, "key", &boundary.session, profile).is_err());
+            }
+        }
+        for offset in [0, 2] {
+            let mut valid = original.clone();
+            valid["imported_after"] = serde_json::json!(offset);
+            valid["provenance_after"] = serde_json::json!(offset);
+            let valid: Boundary = serde_json::from_value(valid).unwrap();
+            for profile in [Profile::Raw, Profile::AggregateV2] {
+                let signed = token_profile(&valid, "key", profile).unwrap();
+                assert!(parse_profile(&signed, "key", &boundary.session, profile).is_ok());
+                assert!(parse_profile(&signed, "key", "foreign-session", profile).is_err());
+            }
+        }
+    }
+
     #[test]
     fn aggregate_profile_is_authenticated_and_cross_version_closed() {
         let boundary = Boundary {

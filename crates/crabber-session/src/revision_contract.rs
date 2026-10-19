@@ -30,6 +30,7 @@ pub async fn run_contract<S: Store>(factory: impl FnOnce(Arc<ManualClock>) -> S)
     receipt_replay(&store, &clock).await;
     admission::conditional_admission(&store, &clock).await;
     admission::message_batch(&store, &clock).await;
+    admission::raw_message_part_ids(&store, &clock).await;
 }
 fn message(session: &SessionId, run: Option<&Run>, now: OffsetDateTime) -> Message {
     let id = MessageId::new();

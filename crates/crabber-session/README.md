@@ -2,6 +2,11 @@
 
 The `postgres` feature uses `sqlx` with Tokio, rustls, and a PostgreSQL pool. It targets PostgreSQL 14 or newer and requires a dedicated database. Migrations create the Crabber tables in the default schema, so do not run them in a shared application schema.
 
+Current bundled storage requires PostgreSQL 24 / SQLite 20, defined by
+`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION` in [lib.rs](src/lib.rs).
+Numbered schema introductions below are historical; they are not the versions
+accepted by current `connect`.
+
 The host calls `PostgresStore::migrate(url)` before `PostgresStore::connect(url)`. Connect verifies the schema version without changing it. The default build does not include the PostgreSQL driver.
 
 The `sqlite` feature exposes `SqliteStore`. Call `SqliteStore::migrate(path)` then
@@ -12,11 +17,11 @@ backup and restore.
 
 Set `CRABBER_TEST_POSTGRES_URL` to run the live contract tests. Set `CRABBER_REQUIRE_POSTGRES=1` to fail if that URL is missing.
 
-New Runs also retain their original raw execution birth. These records preserve
+New Raw Runs also retain their original execution birth. These records preserve
 negative enrollment facts and do not certify a main-task join or resource policy.
 See [native execution enrollment](../../docs/native-execution-enrollment.md).
 
-## Keyed admission (MemoryStore and PostgreSQL)
+## Keyed admission (MemoryStore, PostgreSQL and SQLite)
 
 `SqliteStore` provides the same keyed contract (`sqlite_admission_contract`).
 
@@ -60,6 +65,11 @@ changes lease ownership. PostgreSQL receipts survive pool and process restarts.
 
 ### Version 1 fingerprint contract
 
+This subsection describes the retained legacy v1 format. Current bound typed
+admissions use binding capsule v3, keyed execution capsule v2 and canonical input
+digest v2, described under [atomic binding admission](#experimental-atomic-binding-admission).
+Older payloads are not rewritten into the new execution format.
+
 The host supplies a lowercase 64-character SHA-256 claimed fingerprint of its
 canonical semantic input envelope. Keys accept 1–128 ASCII letters, digits, dash,
 underscore and dot. Both constructors and deserialization validate these bounds,
@@ -72,8 +82,9 @@ compaction ratio/tail count, turn limit, acquired tool schemas/metadata, ordered
 prompt sections, restrictions, component identities, guard IDs and provider IDs/names.
 The runtime admission semantics array has 15 ordered elements. Local capsules
 and pause checkpoints created before the output-cap field was introduced are
-invalid. Reset or re-migrate local PostgreSQL data when applying or reverting
-this change; the admission domain and capsule version remain version 1.
+invalid under that legacy contract. The v1 domain and capsule remain legacy
+formats; their original introduction is not the current deployment version.
+Use explicit migration and a matching backup/binary for storage changes.
 
 The runtime includes a `contract:crabber/registration-profile.v1` component that
 binds frozen declaration metadata and the plan provider's original fingerprint.
@@ -219,8 +230,9 @@ assertion that required-service tests reject a missing database URL.
 `SqliteStore` provides the same retained evidence and fenced-begin contract
 (`sqlite_admission_execution_contract`).
 
-Keyed runtime admission atomically retains a version-1, redacted-Debug execution
-capsule with the receipt, run, original user message and epoch. It includes original
+Keyed runtime admission atomically retains a redacted-Debug execution capsule
+with the receipt, run, original user message and epoch. Current bound admissions
+use version 2; version 1 is the retained legacy format. It includes original
 request/configuration/plan and opaque behavior identity, never credentials or
 transport context. Receipt JSON/Debug and public lookup remain prompt-free.
 
@@ -242,9 +254,11 @@ safety-only direct admissions; Some is validated before any write or replay. Sto
 trait source changes require updating struct literals and forwarding wrappers.
 Memory state survives host recreation only while the shared store exists.
 
-Schema 5 adds retained private execution records without backfilling legacy runs.
-Stop writers, back up, migrate explicitly and deploy the matching binary. Connect
-is read-only and rejects other schemas; mixed v4/v5 writers are unsupported.
+Historical introduction: PostgreSQL schema 5 added retained private execution
+records without backfilling legacy runs. Current storage requires PostgreSQL 24 /
+SQLite 20 (`POSTGRES_SCHEMA_VERSION` / `SQLITE_SCHEMA_VERSION`). Stop writers, back
+up, migrate explicitly and deploy the matching binary. Connect is read-only and
+rejects other schemas; mixed-version writers are unsupported.
 Rollback requires backup restore or forward repair. No receipt/capsule pruning,
 TTL or retained-key reuse is introduced. See the [full host contract](../../docs/admission-receipts.md)
 for eligibility classifications, original behavior restoration and process proofs.
@@ -274,14 +288,23 @@ identity and exact receipt lookup; stale new admissions change no input or owner
 The typed envelope includes that revision in its canonical semantics. The legacy
 raw text guard remains a precondition separately from its v1 digest.
 
-All ordered message records commit with admission. Supplied IDs are preserved,
-generated IDs never change the typed digest, and every original record is checked
-on scoped private reads. Model-input media has an explicit part kind, separate
+All ordered message records commit with admission. Supplied message and part IDs
+are preserved and must be unique across the entire shared store, including other
+sessions and tenants. A collision fails closed as `StoreError::Conflict`, which
+also represents other conditions; it is not a collision-specific error. Hosts
+that accept wire histories must compare them with host-owned canonical history,
+then admit only a new suffix with globally unique storage IDs. Do not strip IDs
+from a retry or silently regenerate its input; retain the exact original envelope
+and key after uncertainty. Generated IDs never change the typed digest. Scoped
+private reads authenticate their selected original records; this does not mean
+every read verifies all retained history. Model-input media has an explicit part
+kind, separate
 from custom display activity; it is never removed by the conversation projector.
 `typed_admission_contract::run_contract` qualifies this capability, including
 context/state JSON that requires lossless TEXT rather than PostgreSQL JSONB.
-PostgreSQL schema 7 adds that private text carrier; SQLite schema 3 is initialized
-only on fresh databases, and existing SQLite versions fail closed as before.
+Historical introduction: PostgreSQL schema 7 added that private text carrier and
+SQLite schema 3 introduced its fresh-file representation. Current SQLite 20 still
+initializes only fresh files and refuses every older version.
 
 Custom adapters can use `KeyedAdmitRequest::validated_digest` before taking locks,
 `ExecutionBindingCapsule::validate`/`validate_keyed`, and the bounded

@@ -13,7 +13,7 @@ CRABBER_REQUIRE_POSTGRES=1 cargo test -p crabber --features datadog,postgres --t
 ```
 
 Run these on a clean committed checkout. The parent and each fresh worker print
-that full source Git SHA, backend/schema (schema6 for PostgreSQL), fake provider,
+that full source Git SHA, backend/schema (current PostgreSQL schema from `POSTGRES_SCHEMA_VERSION`), fake provider,
 session/run IDs, current and predecessor trace identities and callback counts.
 They omit the DSN, payload and private paths. Workers are separate OS processes;
 PostgreSQL retains the run and receipt. Missing PostgreSQL configuration fails
@@ -82,7 +82,7 @@ The Datadog exporter maps the approved attempt UUID and unchanged session/run to
 internal LLM identity and links to that specifically observed prior root.
 
 Trace correlation lives in host durable queue/journal records; it adds no
-Store persistence requirement. Current PostgreSQL schema6 also contains the
+Store persistence requirement. Current PostgreSQL storage also contains the
 separate experimental durable-host foundation.
 The example fsyncs its completed/paused attempt journal after execution supplies
 the winning observation UUID. Its controlled loss tool flushes telemetry and fsyncs
@@ -140,7 +140,7 @@ internal graphs and native lineage.
 The facade broadcaster forwards each callback once to host observers and the
 optional exporter. `crabber::obs` exposes direct exporter construction for hosts
 that initialize their own subscriber. No global subscriber is installed. No `Store` trait or storage migration is required for trace context; context-free
-records remain supported. Current PostgreSQL schema is6. The host envelope and
+records remain supported. Current PostgreSQL storage requires `POSTGRES_SCHEMA_VERSION` (24). The host envelope and
 attempt journal carry correlation metadata separately from execution storage.
 
 An attempt's closed `crabber.attempt.admission` agent and
@@ -228,7 +228,8 @@ cargo test -p crabber --features datadog,sqlite --test trace_context
 The SQLite command migrates a temporary file and fresh workers reconnect without
 migration. It checks paused resume, duplicate receipt delivery and real captured
 export links; `sqlite_fresh_workers_preserve_receipts_sessions_and_cursors` adds
-session/receipt/cursor assertions. Schema is SQLite version 2, with PostgreSQL schema-6 foundation tables. The demo ignores `CRABBER_SQLITE_PATH` and removes its temporary
+session/receipt/cursor assertions. Current storage is SQLite 20 / PostgreSQL 24; the foundation tables were
+introduced in SQLite 2 / PostgreSQL 6. The demo ignores `CRABBER_SQLITE_PATH` and removes its temporary
 queue/database directory on success. No Datadog or provider credentials are needed.
 These are offline assertions; live Datadog correlation remains a separate gate.
 See [SQLite operations](../../docs/sqlite-store.md).

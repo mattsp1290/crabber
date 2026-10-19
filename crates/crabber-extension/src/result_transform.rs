@@ -198,6 +198,7 @@ impl CleanupTracker {
     /// [`Self::spawn_checked`] to report a declared cleanup failure.
     ///
     /// # Panics
+    /// Panics if called without a current Tokio runtime.
     /// An owned mount or native phase tracker rejects registration after its scope is sealed
     /// or its task capacity is reached, before spawning or polling the task.
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>

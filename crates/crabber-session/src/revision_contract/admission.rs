@@ -5,7 +5,7 @@ use super::{
 };
 use crabber_core::{
     AdmissionKind, InputContent, InputEnvelope, InputMessage, InputPart, InputState, MediaKind,
-    MediaSource, MessageContent,
+    MediaSource, MessageContent, PartId,
 };
 
 /// A stale host comparison cannot admit, even while a previous run is busy.
@@ -158,6 +158,63 @@ pub(super) async fn message_batch(store: &impl Store, clock: &ManualClock) {
     assert!(store.admit_run(invalid).await.is_err());
     assert_eq!(store.session_revision(&session).await.unwrap(), revision);
     assert_eq!(store.list_all_messages(&session).await.unwrap(), persisted);
+}
+
+/// Raw execution writes must enforce the same part-ID keys as SQL storage,
+/// independently of typed admission validation and with complete rollback.
+pub(super) async fn raw_message_part_ids(store: &impl Store, clock: &ManualClock) {
+    let admitted = store.admit_run(request(clock.now())).await.unwrap();
+    let session = &admitted.session.id;
+    let execution = store.execution(admitted.fence.clone()).await.unwrap();
+    let mut appended = message(session, Some(&admitted.run), clock.now());
+    let mut second = appended.parts[0].clone();
+    second.ordinal = 1;
+    appended.parts.push(second);
+    // The duplicated ID is fresh relative to storage, and the distinct ordinals
+    // exclude SQL's separate (message_id, ordinal) constraint as a cause.
+    let before = store.list_all_messages(session).await.unwrap();
+    let revision = store.session_revision(session).await.unwrap();
+    let events = store.list_events(session, None, 1000).await.unwrap();
+    assert!(events.len() < 1000);
+    assert_eq!(
+        execution
+            .append_message(appended.clone())
+            .await
+            .unwrap_err(),
+        StoreError::Conflict
+    );
+    assert_eq!(store.list_all_messages(session).await.unwrap(), before);
+    assert_eq!(store.session_revision(session).await.unwrap(), revision);
+    assert_eq!(
+        store.list_events(session, None, 1000).await.unwrap(),
+        events
+    );
+
+    appended.parts[1].id = PartId::new();
+    execution.append_message(appended.clone()).await.unwrap();
+    let mut persisted = before;
+    persisted.push(appended.clone());
+    assert_eq!(store.list_all_messages(session).await.unwrap(), persisted);
+    let advanced = store.session_revision(session).await.unwrap();
+    assert!(advanced > revision);
+    assert_eq!(
+        store.list_events(session, None, 1000).await.unwrap(),
+        events
+    );
+
+    // An ID in a different, actually persisted message must still conflict.
+    let mut collision = message(session, Some(&admitted.run), clock.now());
+    collision.parts[0].id.clone_from(&appended.parts[0].id);
+    assert_eq!(
+        execution.append_message(collision).await.unwrap_err(),
+        StoreError::Conflict
+    );
+    assert_eq!(store.list_all_messages(session).await.unwrap(), persisted);
+    assert_eq!(store.session_revision(session).await.unwrap(), advanced);
+    assert_eq!(
+        store.list_events(session, None, 1000).await.unwrap(),
+        events
+    );
 }
 
 async fn concurrent_admission(store: &impl Store, clock: &ManualClock, session: &SessionId) {

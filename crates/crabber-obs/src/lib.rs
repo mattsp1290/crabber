@@ -275,16 +275,20 @@ struct SafeEvent {
 impl SafeEvent {
     #[allow(clippy::too_many_lines)] // Construct the bounded allow-listed queue record together.
     fn from_event(e: &EventRecord, policy: &RedactionPolicy) -> Option<Self> {
-        if e.kind.is_live_only()
-            || matches!(
-                e.kind,
-                EventKind::TextDelta
-                    | EventKind::ReasoningDelta
-                    | EventKind::MessageCommitted
-                    | EventKind::TurnStarted
-                    | EventKind::TurnCompleted
-            )
-        {
+        // Keep the union of spans(), series() and log() before retaining any
+        // event fields. Other kinds produce no exported signal.
+        let exported = match &e.kind {
+            EventKind::RunAdmitted
+            | EventKind::RunStarted
+            | EventKind::RunResumed
+            | EventKind::RunSettled
+            | EventKind::ToolCallSettled
+            | EventKind::PermissionDecided
+            | EventKind::ContextEpochFinished => true,
+            EventKind::Custom { name } => matches!(name.as_str(), "model_call" | "wasm_call"),
+            _ => false,
+        };
+        if !exported {
             return None;
         }
         let safe = |name: &str| {
@@ -1261,6 +1265,7 @@ pub mod tracing_bridge {
 
 #[cfg(test)]
 mod tests {
+    mod event_filter;
     use super::*;
     use crabber_core::{RunId, SessionId};
     use flate2::read::GzDecoder;

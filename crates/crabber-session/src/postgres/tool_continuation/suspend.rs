@@ -46,7 +46,6 @@ impl PostgresExecution {
                 return Ok((saved, false));
             }
 
-            batch.require_frontend_support(crate::POSTGRES_SCHEMA_VERSION >= 14)?;
             if revision(&mut tx, &run.session_id).await? != batch.expected_revision {
                 return Err(Error::RevisionConflict);
             }

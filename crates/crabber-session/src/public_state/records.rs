@@ -10,6 +10,22 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+/// New display writes must match the SDK's object-valued activity content.
+/// Keep this separate from fingerprint/decode validation: an actual retained
+/// legacy receipt must remain reconcilable before applying new-write rules.
+pub(crate) fn validate_fresh_activities(
+    contents: &PublicStateContents,
+) -> Result<(), PublicStateError> {
+    if contents
+        .activities()
+        .iter()
+        .any(|activity| !activity.content().is_object())
+    {
+        return Err(PublicStateError::InvalidRequest);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_id(id: &ControlId) -> Result<(), PublicStateError> {
     if id.0.is_empty()
         || id.0.len() > 128

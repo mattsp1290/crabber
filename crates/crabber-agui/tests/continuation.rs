@@ -334,3 +334,18 @@ fn expanded_interrupt_terminal_obeys_frame_limit_with_one_finite_error() {
     );
     assert_eq!(p.finish(Completion::Paused).unwrap(), [] as [Event; 0]);
 }
+
+#[test]
+fn backend_pending_without_a_human_question_cannot_invent_an_interrupt_or_settlement() {
+    let mut source = waiting(false);
+    source.backend_pending = std::mem::take(&mut source.frontend_pending);
+    source.validate().unwrap();
+    let events = suspended_source(source);
+    assert!(matches!(events.last(), Some(Event::RunError(error))
+        if error.code.as_deref() == Some("crabber_source_order")));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::ToolCallResult(_) | Event::RunFinished(_)))
+    );
+}

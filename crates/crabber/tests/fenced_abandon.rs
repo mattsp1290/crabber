@@ -1,3 +1,5 @@
+#[path = "../../crabber-session/src/event_persistence.rs"]
+mod event_persistence;
 // The source-embedding adapter retains the canonical read and negative domains.
 // Genuine opaque Pending transport remains native-crate-only.
 macro_rules! native_pending_initial_items {

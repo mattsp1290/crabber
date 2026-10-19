@@ -26,24 +26,27 @@ wiring in the [session manifest](../crates/crabber-session/Cargo.toml).
 ## Lifecycle
 
 The host creates the parent directory, then calls `SqliteStore::migrate(path)`
-before `SqliteStore::connect(path)`. The current PostgreSQL counterpart is schema 18.
+before `SqliteStore::connect(path)`. Current storage versions are PostgreSQL 24
+and SQLite 20; the authoritative
+constants are `POSTGRES_SCHEMA_VERSION` and `SQLITE_SCHEMA_VERSION` in
+[crabber-session](../crates/crabber-session/src/lib.rs).
 SQLite initialization is fresh-only: archive or export needed history with the
 matching old binary, then create a new current database. There is no in-place
 upgrade from earlier SQLite schemas. Keep an untouched backup and its matching
 binary when rolling back; opening a current file with an older binary is not an
 upgrade or rollback mechanism. Migration owns file creation, schema changes
-and enabling WAL. Connect verifies the application identity, schema version 13
+and enabling WAL. Connect verifies the application identity, schema version 20
 with its complete numbered history and WAL mode; it never creates a file or changes schema or journal mode.
 
 | Input | `migrate(path)` | `connect(path)` | Executable proof in `sqlite::lifecycle_tests` |
 | --- | --- | --- | --- |
-| Missing file, existing parent | Creates version-13 WAL database | Refuses; creates nothing | `migrate_creates_current_version_wal_database`, `connect_never_creates_a_file` |
-| Fresh empty SQLite file | Initializes version 13, WAL and signing secret | Refuses until migrated | `interrupted_migration_leaves_a_fresh_database` |
-| Crabber version 13, WAL | Idempotent; preserves data and secret | Opens without schema writes | `migrate_is_idempotent_and_keeps_the_snapshot_secret`, `connect_is_read_only` |
-| Prior version 1–12 | Refuses without upgrading or changing journal mode | Refuses | `version_one_files_are_refused_without_migration_or_journal_changes`, `version_two_files_are_refused_without_migration_or_journal_changes` |
+| Missing file, existing parent | Creates version-20 WAL database | Refuses; creates nothing | `migrate_creates_current_version_wal_database`, `connect_never_creates_a_file` |
+| Fresh empty SQLite file | Initializes version 20, WAL and signing secret | Refuses until migrated | `interrupted_migration_leaves_a_fresh_database` |
+| Crabber version 20, WAL | Idempotent; preserves data and secret | Opens without schema writes | `migrate_is_idempotent_and_keeps_the_snapshot_secret`, `connect_is_read_only` |
+| Prior version 1–19 | Refuses without upgrading or changing journal mode | Refuses | `version_one_files_are_refused_without_migration_or_journal_changes`, `version_two_files_are_refused_without_migration_or_journal_changes` |
 | Unknown version or malformed version metadata | Refuses without changing logical content or journal mode | Refuses without changing logical content | `unknown_schema_version_is_refused_without_changes`, `malformed_version_metadata_is_refused_without_changes`, `unknown_schema_in_a_backup_is_refused_before_enabling_wal` |
 | Foreign tables/application ID, or non-SQLite input | Refuses without rewriting content | Refuses without rewriting content | `foreign_database_is_refused_without_changes`, `foreign_application_id_is_refused_without_changes`, `non_sqlite_inputs_are_refused_without_changes` |
-| Version-13 restore in non-WAL mode | Re-enables WAL without regenerating the secret | Refuses; asks host to migrate | `restored_backup_requires_migrate_then_connects` |
+| Version-20 restore in non-WAL mode | Re-enables WAL without regenerating the secret | Refuses; asks host to migrate | `restored_backup_requires_migrate_then_connects` |
 
 A WAL checkpoint can move committed frames into the main file without changing
 logical records. Refusal tests compare logical database content rather than
@@ -153,14 +156,16 @@ stale target side files and verifies retained history.
 
 ## Schema versions and rollback
 
-SQLite schema version 2 and PostgreSQL schema 6 add the durable-host foundation:
+Historical introduction: SQLite schema 2 and PostgreSQL schema 6 added the
+durable-host foundation:
 public revisions/state, immutable execution-binding storage, attempt/phase owners,
 operation receipts and independently owned session invocations. These tables do
 not by themselves deliver the still-experimental host/control APIs.
 
-Fresh SQLite databases apply `0001_initial.sql` then `0002_host_foundation.sql`.
-Connect requires both numbered version markers. Existing version-1 files are
-refused before schema or journal changes; there is no in-place upgrade. Finish or
+Current fresh SQLite databases apply the complete migration assembly through
+`SQLITE_SCHEMA_VERSION` (20), including those foundation tables. Connect requires
+the complete numbered version history. Every older file is refused before schema
+or journal changes; there is no in-place upgrade. Finish or
 settle paused work with its matching binary, back up/export it, and explicitly
 create a fresh dedicated database. No operation automatically deletes data.
 Rollback requires the matching binary and database backup; no down migration is
@@ -220,9 +225,11 @@ that host path; other SQLite demos own isolated temporary directories. T6.1 also
 checks the missing-variable invocation fails before creating any file. For source
 identity evidence, rebuild after committing and run demos from that clean checkout.
 
-Typed admission uses SQLite schema3 / PostgreSQL schema7. It expands private
-binding/keyed capsule carriers without making older execution payloads runnable.
-SQLite initializes only fresh databases; version1/2 files remain unchanged and
+Historical introduction: typed admission added private carriers in SQLite schema 3
+and PostgreSQL schema 7; current databases require versions 20 and 24 respectively.
+That change expanded private binding/keyed capsule carriers without making older
+execution payloads runnable.
+SQLite initializes only fresh databases; all older files remain unchanged and
 must be settled/exported with their matching binary or retained while the host
 creates a separate fresh database. Connect never migrates a file. PostgreSQL's
 explicit migration preserves legacy payloads and adds a lossless TEXT carrier

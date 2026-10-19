@@ -311,7 +311,7 @@ async fn admitted_response(
             "projection_configuration",
         );
     };
-    let (sender, receiver) = mpsc::channel(32);
+    let (sender, receiver) = mpsc::channel(host.config.max_batch);
     let (terminal_sender, terminal) = oneshot::channel();
     let disconnect = CancellationToken::new();
     let output = Output {
@@ -437,12 +437,15 @@ fn enqueue(
             .map_err(|_| ProjectionError::Transport)?;
         let mut reserved = Vec::with_capacity(events.len());
         for event in events {
-            let bytes = encode_sse(event, limit)?;
-            let count = u32::try_from(bytes.len()).map_err(|_| ProjectionError::Limit)?;
+            // Reserve the conservative encoded size before allocating a frame.
+            // Optional fields omitted by SDK normalization may use fewer bytes.
+            let count =
+                u32::try_from(frame_budget(event, limit)?).map_err(|_| ProjectionError::Limit)?;
             let permit = budget
                 .clone()
                 .try_acquire_many_owned(count)
                 .map_err(|_| ProjectionError::Transport)?;
+            let bytes = encode_sse(event, limit)?;
             reserved.push(Frame { bytes, permit });
         }
         for (slot, frame) in slots.zip(reserved) {

@@ -59,6 +59,17 @@ macro_rules! delegate {
 }
 delegate! {
     async {
+        fn complete_preparation_with_driver_source( _joined: s::session_owner::preparation::JoinedPreparation, ) -> Result< s::session_owner::preparation::PreparedDriverCompletion, s::session_owner::preparation::PreparationCommitError, >;
+        fn inspect_initial_preparation_admission( _original: &s::session_owner::preparation::JoinedPreparation, ) -> Result< Option<s::session_owner::preparation::PreparationAdmissionReceipt>, s::session_owner::preparation::PreparationCommitError, >;
+        fn inspect_owned_queue_preparation( _context: &c::SessionContext, _authority: &s::QueueAuthority, _expected_revision: c::SessionRevision, ) -> Result<s::RetainedQueue, StoreError>;
+        fn inspect_pending_approval_preparation( _request: s::session_owner::preparation::InspectPendingApprovalPreparation, ) -> Result< s::session_owner::preparation::PendingApprovalPreparationMetadata, s::session_owner::SessionOwnerError, >;
+        fn inspect_pending_tool_preparation( _request: s::session_owner::preparation::InspectPendingToolPreparation, ) -> Result< s::session_owner::preparation::PendingToolPreparationMetadata, s::session_owner::SessionOwnerError, >;
+        fn inspect_prepared_approval_driver( _request: s::session_owner::preparation::InspectPreparedApprovalDriver, ) -> Result< s::session_owner::preparation::PreparedApprovalDriverMetadata, s::session_owner::SessionOwnerError, >;
+        fn inspect_prepared_tool_driver( _request: s::session_owner::preparation::InspectPreparedToolDriver, ) -> Result< s::session_owner::preparation::PreparedToolDriverMetadata, s::session_owner::SessionOwnerError, >;
+        fn inspect_queue_preparation_admission( _original: &s::session_owner::preparation::JoinedPreparation, ) -> Result< Option<s::QueueReceipt>, s::session_owner::preparation::PreparationCommitError, >;
+        fn pending_initial_consumer_native( _call: s::session_owner::owned_scope::PendingInitialConsumerNativeCall<'_>, ) -> Result< s::session_owner::owned_scope::PendingInitialConsumerNativeReply, s::session_owner::preparation::PreparationCommitError, >;
+        fn pending_initial_native( _call: s::session_owner::owned_scope::PendingInitialNativeCall<'_>, ) -> Result< s::session_owner::owned_scope::PendingInitialNativeReply, s::session_owner::preparation::PreparationCommitError, >;
+        fn register_execution_driver( _request: s::session_owner::driver::RegisterExecutionDriver, ) -> Result< s::session_owner::driver::ExecutionDriverOutcome, s::session_owner::SessionOwnerError, >;
         fn public_history_v2(_request: s::SnapshotRequest, ) -> Result<s::PublicHistoryOutcome, StoreError>;
         fn public_session_snapshot_v2(request: s::PublicSessionRequestV2, ) -> Result<s::PublicSessionOutcomeV2, s::PublicSessionError>;
         fn public_control_header_v2(_request: s::PublicHeaderRequestV2, ) -> Result<s::PublicHeaderOutcomeV2, s::PublicSessionError>;
@@ -165,6 +176,11 @@ delegate! {
         fn enqueue_inbox(session: &SessionId, kind: InboxKind, message: Message, ) -> Result<(), StoreError>;
     }
     sync {
+        fn supports_execution_drivers() -> bool;
+        fn supports_initial_preparation_admission_inspection() -> bool;
+        fn supports_owned_queue_preparation_inspection() -> bool;
+        fn supports_pending_execution_driver_origin( origin: s::session_owner::driver::SuccessorExecutionDriverOrigin, ) -> bool;
+        fn supports_queue_preparation_admission_inspection() -> bool;
         fn supports_run_controls() -> bool;
         fn supports_future_queue() -> bool;
         fn supports_session_owners() -> bool;

@@ -293,16 +293,11 @@ impl Projector {
     pub(super) fn waiting_outcome(&self) -> Result<RunFinishedOutcome, ProjectionError> {
         let source = self.resume.waiting.as_ref().ok_or(ProjectionError::Order)?;
         if !source.interrupts.is_empty() {
-            let interrupts = source.interrupts.iter().map(|interrupt| {
-                let response_schema = response_schema(&interrupt.response_schema)?;
-                Ok(Interrupt {
-                    id: interrupt.interaction_id.0.clone(),
-                    reason: match interrupt.kind { crabber_core::InteractionKind::Approval => "approval", crabber_core::InteractionKind::UserInput => "user_input" }.into(),
-                    message: Some(interrupt.prompt.clone()), tool_call_id: Some(interrupt.call_id.0.clone().into()),
-                    response_schema: Some(response_schema), expires_at: None,
-                    metadata: Some(serde_json::Map::from_iter([("crabber".into(), serde_json::json!({"name":interrupt.name,"continuation":source.continuation}))])), subagent_run_id: None,
-                })
-            }).collect::<Result<Vec<_>, ProjectionError>>()?;
+            let interrupts = source
+                .interrupts
+                .iter()
+                .map(|interrupt| waiting_interrupt(source, interrupt))
+                .collect::<Result<Vec<_>, ProjectionError>>()?;
             return Ok(RunFinishedOutcome::Interrupt { interrupts });
         }
         if !source.backend_pending.is_empty() || source.frontend_pending.is_empty() {
@@ -343,4 +338,34 @@ fn response_schema(
         )])),
         _ => Err(ProjectionError::Malformed),
     }
+}
+
+// The SDK interrupt outcome has no pending-call field. Keep the native frontend
+// set in bounded metadata on every question so mixed waits retain both controls.
+fn waiting_interrupt(
+    source: &WaitingSource,
+    interrupt: &crabber_core::continuation_source::HumanInterrupt,
+) -> Result<Interrupt, ProjectionError> {
+    let mut metadata = serde_json::json!({
+        "name": interrupt.name,
+        "continuation": source.continuation,
+    });
+    if !source.frontend_pending.is_empty() {
+        metadata["pendingToolCallIds"] = serde_json::to_value(&source.frontend_pending)
+            .map_err(|_| ProjectionError::Malformed)?;
+    }
+    Ok(Interrupt {
+        id: interrupt.interaction_id.0.clone(),
+        reason: match interrupt.kind {
+            crabber_core::InteractionKind::Approval => "approval",
+            crabber_core::InteractionKind::UserInput => "user_input",
+        }
+        .into(),
+        message: Some(interrupt.prompt.clone()),
+        tool_call_id: Some(interrupt.call_id.0.clone().into()),
+        response_schema: Some(response_schema(&interrupt.response_schema)?),
+        expires_at: None,
+        metadata: Some(serde_json::Map::from_iter([("crabber".into(), metadata)])),
+        subagent_run_id: None,
+    })
 }

@@ -135,6 +135,7 @@ impl MemoryExecution {
             if current != mutation.expected_revision {
                 return Err(Error::RevisionConflict);
             }
+            public_state::validate_fresh_activities(&mutation.contents)?;
             let next = current.next().map_err(|_| Error::RevisionExhausted)?;
             let mut event = public_state::event(&run, &mutation, next, self.store.clock.now());
             let cursor = state

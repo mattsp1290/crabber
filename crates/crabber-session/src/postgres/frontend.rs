@@ -16,12 +16,6 @@ use sqlx::Postgres;
 fn unknown(_: impl std::fmt::Debug) -> Error {
     Error::UnknownStoreOutcome
 }
-fn supported() -> Result<(), Error> {
-    if crate::POSTGRES_SCHEMA_VERSION < 14 {
-        return Err(Error::Unsupported);
-    }
-    Ok(())
-}
 async fn finish<T>(tx: Transaction<'_, Postgres>, result: Result<T, Error>) -> Result<T, Error> {
     match result {
         Ok(value) => {
@@ -40,7 +34,6 @@ impl PostgresStore {
         session: &SessionId,
         run: &RunId,
     ) -> Result<(Transaction<'_, Postgres>, Run), Error> {
-        supported()?;
         let mut tx = crate::postgres::transaction::begin(&self.pool)
             .await
             .map_err(unknown)?;
@@ -56,7 +49,6 @@ impl PostgresStore {
         run: &RunId,
         call: &ToolCallId,
     ) -> Result<Option<FrontendCallOrigin>, Error> {
-        supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&run.0, 128)?;
         crate::tool_continuation::canonical::identity(&call.0, 512)?;
@@ -91,7 +83,6 @@ impl PostgresStore {
         session: &SessionId,
         id: &ControlId,
     ) -> Result<Option<FrontendStagingReceipt>, Error> {
-        supported()?;
         crate::tool_continuation::canonical::identity(&session.0, 512)?;
         crate::tool_continuation::canonical::identity(&id.0, 128)?;
         let mut tx = crate::postgres::transaction::begin(&self.pool)

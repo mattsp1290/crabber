@@ -5,6 +5,7 @@ use std::{env, fmt::Write, fs, path::Path, process::Command};
 
 mod agui;
 mod datadog;
+mod probes;
 
 const GLUE_START: &str = "crabber:glue-start";
 const GLUE_END: &str = "crabber:glue-end";
@@ -16,11 +17,16 @@ fn main() {
         (Some("check"), None) => check(),
         (Some("build-fixtures"), None) => build_fixtures(),
         (Some("verify-datadog"), None) => datadog::verify(),
+        (Some("check-probes"), None) => probes::check(workspace()),
         _ => {
-            eprintln!("usage: cargo xtask <check|build-fixtures|verify-datadog>");
+            eprintln!("usage: cargo xtask <check|build-fixtures|verify-datadog|check-probes>");
             std::process::exit(2);
         }
     }
+}
+
+fn workspace() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
 fn check() {
@@ -29,6 +35,7 @@ fn check() {
         .expect("xtask belongs directly under the workspace root");
 
     agui::check(workspace);
+    probes::check(workspace);
     check_wit(workspace);
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);

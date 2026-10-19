@@ -14,6 +14,7 @@ mod admission_journal;
 #[cfg(test)]
 mod binding_fault;
 mod continuation_input;
+mod event_persistence;
 mod execution_binding;
 mod typed_admission;
 pub mod typed_admission_contract;

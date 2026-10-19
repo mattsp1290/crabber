@@ -723,6 +723,32 @@ impl Registry {
             }
         }
     }
+    fn bind_original_products(mount: &Arc<Mount>) -> Result<(), ExtensionError> {
+        for node in mount.registrar.lock().unwrap().product_prompts.values() {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        for node in mount.registrar.lock().unwrap().product_guards.values() {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        for node in mount.registrar.lock().unwrap().product_tools.values() {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        if let Some(node) = &mount.registrar.lock().unwrap().product_workspace_fs {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        if let Some(node) = &mount.registrar.lock().unwrap().product_subprocess {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        if let Some(node) = &mount
+            .registrar
+            .lock()
+            .unwrap()
+            .product_workspace_reader_resolver
+        {
+            node.bind(InvocationSource::new(mount).original_roster()?)?;
+        }
+        Ok(())
+    }
     fn publish_mount(
         &self,
         extension: Arc<dyn Extension>,
@@ -804,28 +830,14 @@ impl Registry {
             #[cfg(test)]
             drain_hook: Mutex::new(None),
         });
-        for node in mount.registrar.lock().unwrap().product_prompts.values() {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
-        }
-        for node in mount.registrar.lock().unwrap().product_guards.values() {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
-        }
-        for node in mount.registrar.lock().unwrap().product_tools.values() {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
-        }
-        if let Some(node) = &mount.registrar.lock().unwrap().product_workspace_fs {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
-        }
-        if let Some(node) = &mount.registrar.lock().unwrap().product_subprocess {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
-        }
-        if let Some(node) = &mount
-            .registrar
-            .lock()
-            .unwrap()
-            .product_workspace_reader_resolver
-        {
-            node.bind(InvocationSource::new(&mount).original_roster()?)?;
+        let bound = Self::bind_original_products(&mount);
+        if let Err(error) = bound {
+            // The original caller must observe rollback of the actual installed
+            // registrar, including cleanup failures. Never run user cleanup
+            // while holding the registry lock of this unpublished mount.
+            *registrar = std::mem::replace(&mut *mount.registrar.lock().unwrap(), Registrar::new());
+            drop(inner);
+            return Err(error);
         }
         inner.mounts.push(Arc::clone(&mount));
         Ok(MountHandle { mount })

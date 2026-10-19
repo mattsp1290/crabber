@@ -20,9 +20,7 @@ pub(super) async fn record_attempt(
     receipt: &crate::AttemptReceipt,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::AttemptError> {
-    if crate::SQLITE_SCHEMA_VERSION >= 9
-        && matches!(request.command, crate::AttemptCommand::Begin { .. })
-    {
+    if matches!(request.command, crate::AttemptCommand::Begin { .. }) {
         let Some(issuance) = source_protocol::current(tx, &run.session_id, &run.id, proof)
             .await
             .map_err(|_| crate::AttemptError::UnknownStoreOutcome)?
@@ -44,7 +42,7 @@ pub(super) async fn record_phase(
     receipt: &crate::PhaseReceipt,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::PhaseError> {
-    if crate::SQLITE_SCHEMA_VERSION >= 9 && receipt.operation == crate::PhaseOperation::Begin {
+    if receipt.operation == crate::PhaseOperation::Begin {
         let attempt = super::attempt::load_host_attempt_with_proof(
             tx,
             &run.id,
@@ -120,9 +118,6 @@ async fn source(
     kind_: Kind,
     call: Option<&str>,
 ) -> Result<sqlx::sqlite::SqliteRow, Error> {
-    if crate::SQLITE_SCHEMA_VERSION < 9 {
-        return Err(Error);
-    }
     sqlx::query(SOURCE)
         .bind(&run.session_id.0)
         .bind(&run.id.0)

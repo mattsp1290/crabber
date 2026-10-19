@@ -424,12 +424,18 @@ fn insert_message(state: &mut State, run: &Run, message: Message) -> Result<(), 
             ));
         }
     }
-    if message.parts.iter().any(|part| {
-        state
-            .messages
-            .iter()
-            .any(|stored| stored.parts.iter().any(|old| old.id == part.id))
-    }) {
+    let mut part_ids = std::collections::BTreeSet::new();
+    for part in &message.parts {
+        if !part_ids.insert(&part.id) {
+            return Err(StoreError::Conflict);
+        }
+    }
+    if state
+        .messages
+        .iter()
+        .flat_map(|stored| &stored.parts)
+        .any(|old| part_ids.contains(&old.id))
+    {
         return Err(StoreError::Conflict);
     }
     crate::ensure_storable(&message)?;
@@ -446,45 +452,7 @@ fn insert_event_captured(
     run: &Run,
     mut event: EventRecord,
 ) -> Result<EventCursor, StoreError> {
-    if event.kind == crabber_core::EventKind::ToolCallPending
-        && event.payload.get("frontend_origin").is_some()
-    {
-        return Err(StoreError::Validation(
-            "frontend origin requires atomic staging".into(),
-        ));
-    }
-    if matches!(
-        event.kind,
-        crabber_core::EventKind::RunControlChanged
-            | crabber_core::EventKind::PublicStateSnapshot
-            | crabber_core::EventKind::PublicStateDelta
-            | crabber_core::EventKind::ActivitySnapshot
-            | crabber_core::EventKind::ActivityDelta
-            | crabber_core::EventKind::PublicPresentation
-            | crabber_core::EventKind::InvocationStarted
-            | crabber_core::EventKind::InvocationFinished
-            | crabber_core::EventKind::InvocationError
-            | crabber_core::EventKind::ToolProgress
-            | crabber_core::EventKind::ExecutionAttemptChanged
-            | crabber_core::EventKind::InteractionChanged
-            | crabber_core::EventKind::ContinuationChanged
-            | crabber_core::EventKind::ContinuationWaiting
-            | crabber_core::EventKind::ToolPhaseChanged
-    ) {
-        return Err(StoreError::Validation(
-            "public state events require atomic state mutation".into(),
-        ));
-    }
-    if event.live_only || event.kind.is_live_only() {
-        return Err(StoreError::Validation(
-            "live-only events cannot be persisted".into(),
-        ));
-    }
-    if event.session_id != run.session_id || event.run_id != run.id {
-        return Err(StoreError::Validation(
-            "event belongs to another run".into(),
-        ));
-    }
+    crate::event_persistence::validate(run, &event)?;
     let cursor = state.events.next_cursor()?;
     event.cursor = Some(cursor);
     crate::ensure_storable(&event)?;

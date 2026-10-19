@@ -12,6 +12,8 @@ pub use tool_continuation::ToolContinuation;
 mod approval;
 
 mod attempt_control;
+mod observers;
+use observers::AgentObservers;
 mod management;
 #[path = "agent/phase.rs"]
 mod phase;
@@ -23,8 +25,10 @@ mod session_owner;
 use crate::ExecutionContext;
 pub use approval::Continuation;
 use async_trait::async_trait;
+#[cfg(test)]
+use crabber_core::EventRecord;
 use crabber_core::{
-    AdmissionKey, AdmissionOptions, AdmissionReceipt, EventRecord, RunId, SessionId, TraceContext,
+    AdmissionKey, AdmissionOptions, AdmissionReceipt, RunId, SessionId, TraceContext,
 };
 use crabber_extension::{
     ContextualPlanProvider, Extension, ExtensionError, ExtensionFactory, PromptSection, Registrar,
@@ -420,100 +424,6 @@ impl AgentBuilder {
     }
 }
 
-struct AgentObservers {
-    observers: Vec<Arc<dyn Observer>>,
-    #[cfg(feature = "datadog")]
-    datadog: Option<crabber_obs::DatadogObserver>,
-}
-
-impl Observer for AgentObservers {
-    fn mount_close_timed_out(&self, timeout: &crabber_extension::MountCloseTimeout) {
-        for observer in &self.observers {
-            // A faulty local observer must not suppress the remaining observers.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                observer.mount_close_timed_out(timeout);
-            }));
-        }
-    }
-    fn operational_completed(&self, observation: &crabber_runtime::OperationalObservation) {
-        for observer in &self.observers {
-            observer.operational_completed(observation);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.operational_completed(observation);
-        }
-    }
-    fn operational_completed_in_attempt(
-        &self,
-        observation: &crabber_runtime::OperationalObservation,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        for observer in &self.observers {
-            observer.operational_completed_in_attempt(observation, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.operational_completed_in_attempt(observation, context, attempt);
-        }
-    }
-    fn emit(&self, event: &EventRecord) {
-        self.emit_with_context(event, None);
-    }
-    fn model_completed(&self, event: &EventRecord) {
-        self.model_completed_with_context(event, None);
-    }
-    fn emit_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
-        for observer in &self.observers {
-            observer.emit_with_context(event, context);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.emit_with_context(event, context);
-            crabber_obs::tracing_bridge::emit_with_context(event, context);
-        }
-    }
-    fn model_completed_with_context(&self, event: &EventRecord, context: Option<&TraceContext>) {
-        for observer in &self.observers {
-            observer.model_completed_with_context(event, context);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.model_completed_with_context(event, context);
-        }
-    }
-    fn emit_in_attempt(
-        &self,
-        event: &EventRecord,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        for observer in &self.observers {
-            observer.emit_in_attempt(event, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.emit_in_attempt(event, context, attempt);
-            crabber_obs::tracing_bridge::emit_with_context(event, context);
-        }
-    }
-    fn model_completed_in_attempt(
-        &self,
-        event: &EventRecord,
-        context: Option<&TraceContext>,
-        attempt: &RunId,
-    ) {
-        for observer in &self.observers {
-            observer.model_completed_in_attempt(event, context, attempt);
-        }
-        #[cfg(feature = "datadog")]
-        if let Some(datadog) = &self.datadog {
-            datadog.model_completed_in_attempt(event, context, attempt);
-        }
-    }
-}
-
 /// A configured agent ready to prompt a new or existing session.
 pub struct Agent {
     runtime: Orchestrator,
@@ -701,10 +611,7 @@ impl Agent {
         context: Option<TraceContext>,
     ) -> Result<RunHandle, RuntimeError> {
         let inner = self.runtime.start_with_context(request, context).await?;
-        Ok(RunHandle {
-            run_id: inner.run_id().clone(),
-            inner,
-        })
+        Ok(RunHandle::from_runtime(inner))
     }
 
     /// Starts one keyed prompt; identical retries return metadata only.
@@ -912,10 +819,7 @@ impl Agent {
             .runtime
             .resume_execution_with_context(run_id, context)
             .await?;
-        Ok(RunHandle {
-            run_id: inner.run_id().clone(),
-            inner,
-        })
+        Ok(RunHandle::from_runtime(inner))
     }
 
     /// Reclaims all expired unfinished runs and reports each expired run it
@@ -959,10 +863,7 @@ impl Admission {
                 handle: inner,
             } => Admission::Started {
                 receipt,
-                handle: RunHandle {
-                    run_id: inner.run_id().clone(),
-                    inner,
-                },
+                handle: RunHandle::from_runtime(inner),
             },
             crabber_runtime::Admission::Replayed(receipt) => Admission::Replayed(receipt),
         }
@@ -993,6 +894,13 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
+    fn from_runtime(inner: crabber_runtime::RunHandle) -> Self {
+        Self {
+            run_id: inner.run_id().clone(),
+            inner,
+        }
+    }
+
     /// Clone local control; the event receiver remains exclusive to this handle.
     #[must_use]
     pub fn control(&self) -> crabber_runtime::RunControl {

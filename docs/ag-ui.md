@@ -73,7 +73,10 @@ container so the pinned client does not create duplicate assistant messages.
 Concatenated successful text equals the stored assistant text; normalize an
 absent stored text block and an empty protocol container equivalently.
 Argument stream end proves presentation completion, not execution or persistence.
-MessageStreamEnded is separate from MessageCommitted. A failed attempt with
+MessageStreamEnded is separate from MessageCommitted. Text and argument deltas
+are append-only chunks for their original message/call IDs, not replacement
+values. Feed each source event once in its original order; the projector does not
+deduplicate repeated deltas or supply reconnect replay. A failed attempt with
 public text, tools or displayed reasoning faults the wire even if runtime retry
 later succeeds. An attempt with only filtered reasoning can retry. Interrupted
 partial assistant messages retain the streamed ID. Compaction summaries remain
@@ -94,8 +97,10 @@ counters are bounded; complete transcripts and streamed text/arguments are not r
 Closed identities remain for bounded duplicate detection. Oversized JSON is
 rejected by the non-allocating `frame_budget` check before SDK normalization or
 frame allocation. This conservative check includes delimiters; optional-null
-normalization can make the final frame smaller. Account queues using `frame.len()`.
-No truncation is used.
+normalization can make the final frame smaller. The example reserves this
+conservative byte budget before encoding and holds it until the frame is dropped;
+queues that charge the encoded size must account for `frame.len()`. No truncation
+is used.
 
 Completed -> RUN_FINISHED success; cancellation -> cancelled. A pause requires
 an actual typed `ContinuationWaiting` summary; a bare RunPaused cannot invent an
@@ -104,14 +109,31 @@ declared public prompt/schema. Object schemas retain their members; boolean
 schemas use the equivalent JSON Schema object `{"allOf":[originalBoolean]}` at
 the pinned SDK's object-only boundary. Other schema shapes fail explicitly.
 A frontend-only wait returns success with the exact authoritative pending tool
-call IDs, without claiming the native run completed.
+call IDs, without claiming the native run completed. A mixed human/frontend wait
+returns interrupts and repeats the authoritative frontend set on each interrupt
+at `metadata.crabber.pendingToolCallIds`. Clients must preserve both controls;
+answering a question does not supply a frontend result. The metadata continuation
+is only the public `{id, generation}` identity, never a checkpoint or credential.
+A backend-pending set without a declared human question is not converted into a
+synthetic interrupt or a completed tool result; an unrepresentable pause ends in
+a finite projection error.
+
+Interrupt `expiresAt` is currently omitted. Native interaction snapshots carry
+the actual expiry, and the host must check that deadline when answering; wire
+absence is not a promise that the question remains valid indefinitely. The
+adapter does not derive an expiry from a run lease or presentation timestamp.
 
 A new continued exchange consumes typed RunResumed with actual frozen calls and
 committed parent identities. It does not emit duplicate TOOL_CALL_START events.
 The host must supply the canonical input history to the SDK client and commit
 native frontend/human continuation operations; browser results and IDs are never
 execution authority. Malformed/foreign summaries fail permanently, and legacy
-null RunResumed cannot make business presentation legal.
+null RunResumed cannot make business presentation legal. Supplied storage message
+and part IDs are store-global across sessions and tenants. Validate incoming
+history against host-owned canonical history, then admit only its new suffix
+with globally unique storage IDs. Retain the exact original envelope, admission
+key and captured revision across an uncertain retry; do not strip or regenerate
+IDs to reconcile it. A generic conflict does not identify a particular collision.
 
 Runtime failure/lease loss -> RUN_ERROR. Missing/invalid boundaries, lag,
 source-attempt failure and limits -> finite `crabber_*` error codes with a generic
@@ -145,8 +167,11 @@ source data. The adapter preserves its current activity messages in snapshots,
 so later activity deltas retain their real base. It does not reconstruct missing
 parent history. RAW/CUSTOM hooks require explicit bounded `raw_sources` /
 `custom_events` allowlists and typed source-bearing events; arbitrary legacy
-custom records never pass through. Tool progress requires a known current call
-and forwards only public typed content, excluding provider state recursively.
+custom records never pass through. Tool progress requires a known current call. Runtime `ToolContext::progress` is
+text-only and best-effort: it drops non-text or oversized content. Separately,
+typed native public-source progress uses the same public typed-content conversion
+as tool results, including supported media and recursive private-data filtering.
+Progress does not imply tool completion.
 
 ## Typed wire input
 
@@ -221,7 +246,8 @@ an existing session. It owns one workspace/directory and process-local history.
 POSTs are not idempotent; later repeated requests can start another turn.
 Production retries use [keyed admission](admission-receipts.md).
 
-The host caps owned requests/runs at 8, data frames at 32, total pending
+The host caps owned requests/runs at 8, queued data frames at the configured
+`max_batch` (256 by default), total pending
 SSE bytes at 2 MiB (8 KiB reserved for final control frames), and cleanup at
 5 seconds. One absolute 30-second deadline covers body reading, initialization,
 admission and execution. Shutdown closes the ingress gate and joins request

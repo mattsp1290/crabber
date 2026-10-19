@@ -246,3 +246,6 @@ impl ProviderAdapter for CustomHttpAdapter {
         self.inner.build(selection).await
     }
 }
+
+#[cfg(test)]
+mod tests;

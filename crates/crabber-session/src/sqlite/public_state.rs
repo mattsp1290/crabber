@@ -182,6 +182,7 @@ impl SqliteExecution {
             if current.revision != mutation.expected_revision {
                 return Err(Error::RevisionConflict);
             }
+            public_state::validate_fresh_activities(&mutation.contents)?;
             let revision = current
                 .revision
                 .next()

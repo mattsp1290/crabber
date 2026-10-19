@@ -23,6 +23,9 @@ use std::{
 };
 use tokio::sync::Notify;
 
+#[path = "http/deadline.rs"]
+mod deadline;
+
 fn text(s: &str) -> Vec<StreamDelta> {
     vec![StreamDelta::TextDelta(s.into()), StreamDelta::Completed]
 }
@@ -375,11 +378,27 @@ async fn deadline_closes_argument_boundaries_before_error() -> CheckResult {
     let _release = ReleaseOnDrop(provider.release.clone());
     let mut host = controlled_host(Arc::new(MemoryStore::new()), provider.clone());
     host.deadline = Duration::from_millis(50);
+    let deadline = host.deadline;
     let server = Server::start(host).await?;
-    let events = check::request(&server, "deadline").await?;
+    let events = deadline::request(&server, deadline).await?;
     assert!(events.iter().any(|e| matches!(e, Event::ToolCallEnd(_))));
     assert!(events.iter().any(|e| matches!(e, Event::TextMessageEnd(_))));
     assert!(matches!(events.last(), Some(Event::RunError(_))));
+    let terminal = events.len() - 1;
+    assert!(
+        events
+            .iter()
+            .position(|event| matches!(event, Event::ToolCallEnd(_)))
+            .unwrap()
+            < terminal
+    );
+    assert!(
+        events
+            .iter()
+            .position(|event| matches!(event, Event::TextMessageEnd(_)))
+            .unwrap()
+            < terminal
+    );
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
     server.stop().await?;
     Ok(())

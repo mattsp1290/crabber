@@ -7,15 +7,66 @@ mod interruption_support;
 
 use crabber::{
     core::{ContentBlock, EventKind, RunStatus, SessionId, ToolCallStatus, ToolResultStatus},
-    extension::FINAL_REDACTION_DEADLINE,
     runtime::{INTERRUPT_SETTLEMENT_BOUND, INTERRUPTED_RESULT_TEXT},
     session::{MemoryStore, SnapshotLimits, SnapshotOutcome, SnapshotRequest, Store},
 };
 use interruption_support::{Probes, RAW_OUTPUT, REDACTED_OUTPUT, agent_builder};
 use std::{sync::Arc, time::Duration};
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 
 const FIXTURE_BOUND: Duration = Duration::from_secs(10);
+
+// The real subprocess is already ready before this helper is entered. Freeze
+// only the accepted reducer window; deadline exactness belongs to paused-time
+// unit tests, not OS scheduling of a child-process integration fixture.
+struct ResumeClock;
+impl Drop for ResumeClock {
+    fn drop(&mut self) {
+        tokio::time::resume();
+    }
+}
+async fn frozen_redaction(operation: impl std::future::Future<Output = ()>) {
+    tokio::time::pause();
+    let _resume = ResumeClock;
+    let started = std::time::Instant::now();
+    tokio::pin!(operation);
+    loop {
+        assert!(
+            started.elapsed() < FIXTURE_BOUND,
+            "accepted redaction wall-clock watchdog"
+        );
+        tokio::select! {
+            biased;
+            () = &mut operation => {
+                assert!(started.elapsed() < FIXTURE_BOUND, "accepted redaction wall-clock watchdog");
+                return;
+            },
+            // Remaining runnable prevents Tokio's paused clock from advancing
+            // automatically while actual child cancellation/cleanup is polled.
+            () = tokio::task::yield_now() => {}
+        }
+    }
+}
+async fn interrupt_and_observe(run: &crabber::RunHandle, probes: &Probes, accepted: bool) {
+    let operation = async {
+        run.interrupt();
+        probes.callback_dropped.wait().await;
+        probes.kill_started.wait().await;
+        // Dropping the callback never proves that its child has been reaped.
+        // While the actual wait is held, no native or logical result is ready.
+        assert_eq!(probes.permit_count(), 0);
+        assert!(!probes.reaped.observed());
+        assert!(!probes.pipe_closed.observed());
+        if accepted {
+            probes.redacted.wait().await;
+        }
+    };
+    if accepted {
+        frozen_redaction(operation).await;
+    } else {
+        operation.await;
+    }
+}
 
 async fn assert_settlement(
     store: &dyn Store,
@@ -133,7 +184,7 @@ async fn assert_native_settlement(
         phase.quiescence,
         crabber::session::PhaseQuiescence::Complete
     );
- }
+}
 
 async fn assert_held_phase(store: &dyn Store, session: &SessionId, run: &crabber::core::RunId) {
     assert_eq!(
@@ -193,20 +244,7 @@ async fn interrupt_active_child(store: Arc<dyn Store>, accepted: bool) {
         let pid = probes.ready().await;
         assert_ne!(pid, 0);
         assert_eq!(probes.permit_count(), 0);
-        let interrupted = Instant::now();
-        run.interrupt();
-        probes.callback_dropped.wait().await;
-        probes.kill_started.wait().await;
-        // Dropping the callback never proves that its child has been reaped.
-        // While the actual wait is held, no native or logical result is ready.
-        assert_eq!(probes.permit_count(), 0);
-        assert!(!probes.reaped.observed());
-        assert!(!probes.pipe_closed.observed());
-        if accepted {
-            probes.redacted.wait().await;
-            // Only final redaction is timed; the Store reads below are fixture work.
-            assert!(interrupted.elapsed() <= FINAL_REDACTION_DEADLINE);
-        }
+        interrupt_and_observe(&run, &probes, accepted).await;
         assert_held_phase(store.as_ref(), &session, &run_id).await;
         probes.release_reap();
         timeout(INTERRUPT_SETTLEMENT_BOUND, async {

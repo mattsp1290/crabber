@@ -1,6 +1,5 @@
 use super::{
-    Error, FrontendOriginRecord, FrontendStagingReceipt, SqliteExecution, finish, read, supported,
-    unknown,
+    Error, FrontendOriginRecord, FrontendStagingReceipt, SqliteExecution, finish, read, unknown,
 };
 use crate::transaction::Transaction;
 use crate::{AttemptAuthority, AttemptCleanup, AttemptState, FrontendCallStaging};
@@ -16,7 +15,6 @@ impl SqliteExecution {
             return Err(Error::NotFound);
         }
         let digest = request.fingerprint()?;
-        supported()?;
         let fault = super::super::tool_continuation::fault(&self.store);
         let mut tx = self.store.begin_write().await.map_err(unknown)?;
         let result = async {

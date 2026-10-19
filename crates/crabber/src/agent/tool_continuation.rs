@@ -48,27 +48,11 @@ impl Agent {
         request: ContinueTool,
         context: Option<TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        Ok(
-            match self
-                .runtime
-                .continue_tool_with_context(request, context)
-                .await?
-            {
-                crabber_runtime::ToolContinuation::Started {
-                    receipt,
-                    handle: inner,
-                } => ToolContinuation::Started {
-                    receipt,
-                    handle: RunHandle {
-                        run_id: inner.run_id().clone(),
-                        inner,
-                    },
-                },
-                crabber_runtime::ToolContinuation::Replayed(receipt) => {
-                    ToolContinuation::Replayed(receipt)
-                }
-            },
-        )
+        Ok(self
+            .runtime
+            .continue_tool_with_context(request, context)
+            .await?
+            .into())
     }
 }
 
@@ -80,22 +64,31 @@ impl Agent {
         &self,
         request: crabber_runtime::RecoverTool,
     ) -> Result<ToolContinuation, RuntimeError> {
-        Ok(
-            match self.runtime.recover_tool_continuation(request).await? {
-                crabber_runtime::ToolContinuation::Started {
-                    receipt,
-                    handle: inner,
-                } => ToolContinuation::Started {
-                    receipt,
-                    handle: RunHandle {
-                        run_id: inner.run_id().clone(),
-                        inner,
-                    },
-                },
-                crabber_runtime::ToolContinuation::Replayed(receipt) => {
-                    ToolContinuation::Replayed(receipt)
-                }
+        Ok(self
+            .runtime
+            .recover_tool_continuation(request)
+            .await?
+            .into())
+    }
+}
+
+impl From<crabber_runtime::ToolContinuation> for ToolContinuation {
+    fn from(value: crabber_runtime::ToolContinuation) -> Self {
+        match value {
+            crabber_runtime::ToolContinuation::Started { receipt, handle } => Self::Started {
+                receipt,
+                handle: RunHandle::from_runtime(handle),
             },
-        )
+            crabber_runtime::ToolContinuation::Replayed(receipt) => Self::Replayed(receipt),
+        }
+    }
+}
+
+impl std::fmt::Debug for ToolContinuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Started { receipt, .. } => f.debug_tuple("Started").field(receipt).finish(),
+            Self::Replayed(receipt) => f.debug_tuple("Replayed").field(receipt).finish(),
+        }
     }
 }

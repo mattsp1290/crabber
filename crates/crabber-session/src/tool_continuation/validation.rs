@@ -5,13 +5,6 @@ use super::{
 };
 use std::collections::BTreeSet;
 impl ToolContinuationSuspension {
-    #[cfg(any(feature = "postgres", feature = "sqlite"))]
-    pub(crate) fn require_frontend_support(&self, supported: bool) -> Result<(), Error> {
-        if !supported && !self.frontend.is_empty() {
-            return Err(Error::Unsupported);
-        }
-        Ok(())
-    }
     pub(crate) fn validate(&self) -> Result<(), Error> {
         for text in [
             &self.id.0,

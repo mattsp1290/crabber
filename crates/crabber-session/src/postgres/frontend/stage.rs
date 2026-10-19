@@ -1,6 +1,5 @@
 use super::{
-    Error, FrontendOriginRecord, FrontendStagingReceipt, PostgresExecution, finish, read,
-    supported, unknown,
+    Error, FrontendOriginRecord, FrontendStagingReceipt, PostgresExecution, finish, read, unknown,
 };
 use crate::postgres::transaction::Transaction;
 use crate::{AttemptAuthority, AttemptCleanup, AttemptState, FrontendCallStaging};
@@ -16,7 +15,6 @@ impl PostgresExecution {
             return Err(Error::NotFound);
         }
         let digest = request.fingerprint()?;
-        supported()?;
         let fault = super::super::tool_continuation::fault(&self.store);
         let mut tx = crate::postgres::transaction::begin(&self.store.pool)
             .await

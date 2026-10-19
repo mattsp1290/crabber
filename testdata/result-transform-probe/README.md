@@ -1,14 +1,43 @@
 # Public result-transform probe
 
+## Current acceptance status
+
+The tracked Git revision and lockfile are historical and are **not current-API
+acceptance**. The updated probe source uses APIs missing at that revision,
+including the current behavior declaration / JSON executor interfaces. Merely
+fetching the existing pin or finding it on `origin/main` does not qualify this
+source. The direct probe commands below are acceptance instructions for AFTER
+an authorized re-pin to the actual published forty-character candidate SHA;
+they are not automated tests of the current historical pin.
+
+From the Crabber repository root, `cargo xtask check-probes` provides separate
+local static API coverage. It copies the actual probe source, tests and manifest
+to disposable outside-repository workspaces and changes only the disposable
+`crabber` dependency to the local checkout path. It seeds resolution from the
+workspace `Cargo.lock`; additional registry dependencies may still resolve.
+It checks all targets with default features (PostgreSQL cfg is off), without
+running the probes or fetching their tracked Crabber Git dependency. With all
+required dependencies cached, the check can run with `CARGO_NET_OFFLINE=true`;
+a cold CI may access the registry without provider credentials. Tracked manifests,
+Git pins and lockfiles remain unchanged by this helper.
+
+That type-check is not runtime, Git-source, clean-consumer or PostgreSQL
+acceptance. After publication and authorized re-pinning, run the Git-only probe
+commands from a separate clean checkout, without a path override, and record the
+actual resolved dependency SHA, commands and results. PostgreSQL runtime proof
+still requires its real service prerequisites. No historical-pin runtime success
+is claimed for the current source.
+
 This standalone Rust 2024 crate has its own workspace and lockfile. It consumes
 only the public `crabber` facade from
 `ssh://git@github.com/mattsp1290/crabber.git`. The pin is the `rev` of the
-`crabber` dependency in `Cargo.toml`; it is valid once that commit is reachable
-from `origin/main`. The crate has no path dependencies, workspace test helpers,
+`crabber` dependency in `Cargo.toml`, currently historical
+`77069652300201433fa0faa64dfd4c7a9e57197c`. It is incompatible with the updated
+source and is not current acceptance. The crate has no path dependencies, workspace test helpers,
 WASM, provider calls, or runtime credentials. Existing authorized SSH Git
 access fetches the private source; `.cargo/config.toml` uses the Git CLI.
 
-From this directory, run exactly:
+After the final published re-pin, from this directory run:
 
 ```sh
 cargo test --locked
@@ -83,20 +112,21 @@ effect once the start completes). A killed run (`SIGKILL`) can leave a
 `postgres:14` container to remove by hand. They never skip: with neither a
 database nor Docker, they fail.
 
-The interruption proofs time `interrupt()` to the run handle resolving, which
-happens after actual cleanup and durable settlement, and print the measured
-time. The fixture releases its reaping gate within `INTERRUPT_SETTLEMENT_BOUND`
-(1 second). An accepted fallback must finish redaction within
-`FINAL_REDACTION_DEADLINE` (500 milliseconds); cleanup and storage remain
-separate boundaries. The repository tests also exercise slow redactors and
-incomplete cleanup. Use a database on the same host or network; a slow link
-to a remote database can exceed the bounds. The process-gone check uses
-`/proc` and runs on Linux only.
+The interruption proofs observe the run handle only after actual cleanup and
+durable settlement. The fixture keeps `INTERRUPT_SETTLEMENT_BOUND` (1 second)
+separate from the driver's `FINAL_REDACTION_DEADLINE` (500 milliseconds). The
+accepted-only redaction case pauses Tokio time after real child readiness, with
+a wall-clock watchdog and RAII resume before Store/reaper joins; it does not
+assert a 500ms live-child wall-clock duration. Existing paused driver unit tests
+pin the shared final-redaction deadline. Repository tests separately exercise
+slow redactors and incomplete cleanup. The process-gone check uses `/proc` and
+runs on Linux only.
 
 `--locked` makes a lockfile that disagrees with the manifest an error instead
 of a silent rewrite.
 
-This probe is excluded from `cargo xtask check` and from CI. Run it at the
+Git-source/runtime execution remains separate from `cargo xtask check` and CI;
+the local `check-probes` static step does not execute it. After re-pinning, run at the
 merge commit that published the pin, not at the pinned commit itself, whose
 manifest still names the earlier `rev`. Confirm the tested revision with:
 

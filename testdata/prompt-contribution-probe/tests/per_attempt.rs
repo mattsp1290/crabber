@@ -7,8 +7,8 @@ mod refresh;
 use async_trait::async_trait;
 use crabber::core::{RunStatus, ToolCallId, ToolInfo};
 use crabber::extension::{
-    Extension, ExtensionError, ModelRequestError, Point, PromptAttemptContext, PromptContributor,
-    PromptSection, Registrar, Registry, Scope, ToolDefinition, JsonToolExecutor,
+    Extension, ExtensionError, JsonToolExecutor, ModelRequestError, Point, PromptAttemptContext,
+    PromptContributor, PromptSection, Registrar, Registry, Scope, ToolDefinition,
 };
 use crabber::providers::{FakeProvider, ProviderError, ProviderErrorKind, Selection, StreamDelta};
 use crabber::runtime::{Orchestrator, PermissionDecision, Request, StaticPolicy};
@@ -58,9 +58,9 @@ async fn mount(
 }
 fn request() -> Request {
     Request {
-        selection_policy:Default::default(),
-            captured_revision:None,
-            input_envelope: None,
+        selection_policy: Default::default(),
+        captured_revision: None,
+        input_envelope: None,
         session_id: None,
         workspace_id: "workspace".into(),
         directory: "/workspace".into(),
@@ -71,6 +71,7 @@ fn request() -> Request {
             model_id: "scripted".into(),
         },
         system_prompt: Some("base".into()),
+        max_output_tokens: None,
     }
 }
 fn text_script(text: &str) -> Vec<StreamDelta> {

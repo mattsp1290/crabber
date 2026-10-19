@@ -17,10 +17,10 @@ use serde_json::json;
 pub(super) struct Exchange {
     pub(super) output: Vec<Event>,
     pub(super) waiting: WaitingSource,
-    cursor: EventCursor,
+    pub(super) cursor: EventCursor,
 }
 
-async fn records(
+pub(super) async fn records(
     store: &MemoryStore,
     session: &SessionId,
     after: Option<EventCursor>,
@@ -69,7 +69,11 @@ pub(super) async fn exchange(
     }
 }
 
-fn project(records: &[EventRecord], messages: &[Message], completion: Completion) -> Vec<Event> {
+pub(super) fn project(
+    records: &[EventRecord],
+    messages: &[Message],
+    completion: Completion,
+) -> Vec<Event> {
     let first = &records[0];
     let mut projector = Projector::new(
         first.session_id.clone(),
@@ -152,7 +156,7 @@ fn present(
     output.extend(projector.push(&live).unwrap());
 }
 
-fn terminal(output: &[Event]) {
+pub(super) fn terminal(output: &[Event]) {
     assert_eq!(
         output
             .iter()

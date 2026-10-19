@@ -14,9 +14,7 @@ use crabber::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::{
-    time::timeout,
-};
+use tokio::time::timeout;
 use workspace_context_pinned_probe::{
     CANCEL_TOOL, Identity, Observations, ProbeExtension, ROOT_TOOL, TOOL, config, host,
     host_with_policy, identity, named_tool_call, text, tool_call,
@@ -231,9 +229,12 @@ async fn cancellation_is_available_to_a_running_tool() {
         .await
         .expect("tool started");
     run.interrupt();
-    assert!(matches!(timeout(INTERRUPT_SETTLEMENT_BOUND, run.done()).await
-        .expect("owned executor interruption returns within the bound"),
-        Err(RuntimeError::PhaseOutcomeUnknown { .. })));
+    assert!(matches!(
+        timeout(INTERRUPT_SETTLEMENT_BOUND, run.done())
+            .await
+            .expect("owned executor interruption returns within the bound"),
+        Err(RuntimeError::PhaseOutcomeUnknown { .. })
+    ));
     timeout(
         Duration::from_secs(2),
         seen.cancellation_observed.notified(),
@@ -276,8 +277,8 @@ async fn replacement_fence_never_authorizes_pending_approval() {
         .unwrap();
     let run = runtime
         .start(Request {
-            selection_policy:Default::default(),
-            captured_revision:None,
+            selection_policy: Default::default(),
+            captured_revision: None,
             input_envelope: None,
             session_id: None,
             workspace_id: "ws-fence".into(),
@@ -286,6 +287,7 @@ async fn replacement_fence_never_authorizes_pending_approval() {
             text: "wait".into(),
             selection: config("ws-fence", "/srv/fence").selection,
             system_prompt: None,
+            max_output_tokens: None,
         })
         .await
         .unwrap();
@@ -297,8 +299,10 @@ async fn replacement_fence_never_authorizes_pending_approval() {
         .claim_expired_run(&run_id, "replacement owner")
         .await
         .unwrap();
-    assert!(matches!(runtime.resume(&run_id).await,
-        Err(RuntimeError::DurableContinuationRequired { .. })));
+    assert!(matches!(
+        runtime.resume(&run_id).await,
+        Err(RuntimeError::DurableContinuationRequired { .. })
+    ));
     assert_eq!(seen.executions(), []);
     assert_eq!(
         seen.assemble(),

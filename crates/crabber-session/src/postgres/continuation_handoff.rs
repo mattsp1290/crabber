@@ -126,7 +126,7 @@ pub(super) async fn release(
             .await?;
             old.state = crate::ApprovalContinuationState::Released;
             approval::write::save(tx, &old).await?;
-            sqlx::query(
+            let deleted = sqlx::query(
                 "DELETE FROM continuation_barriers WHERE session_id=$1 AND continuation_id=$2",
             )
             .bind(&run.session_id.0)
@@ -134,6 +134,9 @@ pub(super) async fn release(
             .execute(&mut **tx)
             .await
             .map_err(unknown)?;
+            if deleted.rows_affected() != 1 {
+                return Err(Error::UnknownStoreOutcome);
+            }
         }
         Domain::Tool => {
             let mut old = tool_continuation::read::origin(
@@ -149,7 +152,7 @@ pub(super) async fn release(
             tool_continuation::write::save(tx, &old, false)
                 .await
                 .map_err(unknown)?;
-            sqlx::query(
+            let deleted = sqlx::query(
                 "DELETE FROM tool_continuation_barriers WHERE session_id=$1 AND continuation_id=$2",
             )
             .bind(&run.session_id.0)
@@ -157,6 +160,9 @@ pub(super) async fn release(
             .execute(&mut **tx)
             .await
             .map_err(unknown)?;
+            if deleted.rows_affected() != 1 {
+                return Err(Error::UnknownStoreOutcome);
+            }
         }
     }
     Ok(())

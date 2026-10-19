@@ -21,6 +21,42 @@ impl Extension for Tools {
     }
 }
 struct PreparedPlans(Arc<ContextualPlanProvider>);
+
+// This fixture tests the real preparation-to-binding refusal, not initialization
+// deadline exactness. Keep its configured two seconds while excluding OS/SQL
+// scheduling from that clock; native store clocks and checks are unchanged.
+struct ResumeClock;
+impl Drop for ResumeClock {
+    fn drop(&mut self) {
+        tokio::time::resume();
+    }
+}
+async fn acquire_with_frozen_clock(
+    operation: impl std::future::Future<Output = Result<RunPlan, ExtensionError>>,
+) -> Result<RunPlan, ExtensionError> {
+    tokio::time::pause();
+    let _resume = ResumeClock;
+    let started = std::time::Instant::now();
+    let watchdog = Duration::from_secs(10);
+    tokio::pin!(operation);
+    loop {
+        assert!(
+            started.elapsed() < watchdog,
+            "preparation acquisition wall-clock watchdog"
+        );
+        tokio::select! {
+            biased;
+            result = &mut operation => {
+                assert!(started.elapsed() < watchdog, "preparation acquisition wall-clock watchdog");
+                return result;
+            },
+            // Stay runnable so a paused runtime never advances the fixture's
+            // initialization clock while genuine retained SQL/tasks progress.
+            () = tokio::task::yield_now() => {}
+        }
+    }
+}
+
 #[async_trait]
 impl RunPlanProvider for PreparedPlans {
     fn registration_fingerprint(
@@ -49,7 +85,7 @@ impl RunPlanProvider for PreparedPlans {
         context: &PreparationResourceContext,
     ) -> Result<RunPlan, ExtensionError> {
         // Actual library acquisition/service bridge; no surrogate callback owner.
-        self.0.acquire_plan_in_preparation(context).await
+        acquire_with_frozen_clock(self.0.acquire_plan_in_preparation(context)).await
     }
 }
 async fn contract(store: Arc<dyn Store>) {
@@ -122,12 +158,12 @@ async fn contract(store: Arc<dyn Store>) {
         "{error:?}"
     );
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn memory_some_resume_refuses_before_box_binding_effect() {
     contract(Arc::new(MemoryStore::new())).await;
 }
 #[cfg(feature = "sqlite")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn sqlite_some_resume_refuses_before_box_binding_effect() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("resume.sqlite");
@@ -138,7 +174,7 @@ async fn sqlite_some_resume_refuses_before_box_binding_effect() {
     .await;
 }
 #[cfg(feature = "postgres")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn postgres_some_resume_refuses_before_box_binding_effect() {
     let Ok(url) = std::env::var("CRABBER_TEST_POSTGRES_URL") else {
         assert_ne!(

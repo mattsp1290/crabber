@@ -174,6 +174,7 @@ impl WaitingSource {
                 || !self.backend_pending.contains(&interrupt.call_id)
                 || interrupt.prompt.len() > 8192
                 || interrupt.prompt.contains('\0')
+                || !matches!(interrupt.response_schema, Value::Object(_) | Value::Bool(_))
             {
                 return Err(invalid());
             }

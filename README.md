@@ -124,8 +124,10 @@ dies before spawning execution can complete its original turn through
 `Agent::recover_admission(session, original_text, original_options)` after the
 original owner expires. Restore the original configuration and behavior version.
 The store requires durable Unstarted evidence and a one-shot fenced begin before
-execution effects; Started/legacy ambiguity remains conservative. PostgreSQL
-schema 5 requires a coordinated stop/backup/migrate/deploy, with no mixed writers.
+execution effects; Started/legacy ambiguity remains conservative. Current PostgreSQL
+storage requires a coordinated stop/backup/migrate/deploy, with no mixed-version
+writers; see the current [storage versions](docs/server-host.md#configured-server-host-contracts)
+and `POSTGRES_SCHEMA_VERSION` in `crabber-session`.
 
 The [host algorithm and verification map](docs/admission-receipts.md) explain
 unknown outcomes, retention, custom stores and process fault/restart assertions.
@@ -186,7 +188,7 @@ cargo run -p bounded-snapshot --features sqlite -- --sqlite --check
 Run from a clean, committed checkout. The fake-data modes verify bounded allocation,
 settled tool relations and concurrent continuation; PostgreSQL also resumes in a fresh
 process; SQLite does too (`sqlite_embedding_independent_stores_and_fresh_process`). See the [host algorithm, limits, custom Store and verification map](docs/bounded-snapshots.md)
-for ordering, token durability, errors and current schema-5 maintenance requirements.
+for ordering, token durability, errors and current storage maintenance requirements.
 
 The [host tracing embedding](examples/host-trace/README.md) demonstrates explicit
 validated 64/128-bit context, composed callbacks and broadcasts, real Datadog
@@ -326,8 +328,9 @@ Adoption is a clean contract break: update JSON callbacks to preserve the full
 envelope, update host `ToolPipeline` signatures and rebuild WASM guests.
 Result-transform contract version 3 carries typed `ToolOutput`; WASM extensions
 use `crabber:extensions@0.2.0`. Old frozen plans fail with `PlanChanged`. Typed
-completion adds no storage migration beyond the current PostgreSQL schema 7 and
-SQLite schema 3.
+completion itself adds no storage migration. Current bundled storage requires
+PostgreSQL 24 / SQLite 20; see the constants in
+[crabber-session](crates/crabber-session/src/lib.rs).
 Finish or settle unfinished runs before upgrading or rolling back; rollback
 pins the previous host revision and compatible guests. Await
 `Agent::close_extensions()` on a Tokio runtime after interrupting runs as

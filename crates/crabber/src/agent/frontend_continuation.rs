@@ -1,5 +1,5 @@
 //! Public external results are host assertions, not tool execution capabilities.
-use super::{Agent, RunHandle, RuntimeError, ToolContinuation};
+use super::{Agent, RuntimeError, ToolContinuation};
 use crabber_runtime::{ContinueFrontend, RecoverFrontend};
 impl Agent {
     /// Consume the complete external result set once. Exact replay stays pure,
@@ -20,11 +20,11 @@ impl Agent {
         request: ContinueFrontend,
         context: Option<crabber_core::TraceContext>,
     ) -> Result<ToolContinuation, RuntimeError> {
-        Ok(convert(
-            self.runtime
-                .continue_frontend_with_context(request, context)
-                .await?,
-        ))
+        Ok(self
+            .runtime
+            .continue_frontend_with_context(request, context)
+            .await?
+            .into())
     }
     /// Recover only an expired reservation whose result protection never began.
     /// # Errors
@@ -33,23 +33,10 @@ impl Agent {
         &self,
         request: RecoverFrontend,
     ) -> Result<ToolContinuation, RuntimeError> {
-        Ok(convert(
-            self.runtime.recover_frontend_continuation(request).await?,
-        ))
-    }
-}
-fn convert(value: crabber_runtime::ToolContinuation) -> ToolContinuation {
-    match value {
-        crabber_runtime::ToolContinuation::Started {
-            receipt,
-            handle: inner,
-        } => ToolContinuation::Started {
-            receipt,
-            handle: RunHandle {
-                run_id: inner.run_id().clone(),
-                inner,
-            },
-        },
-        crabber_runtime::ToolContinuation::Replayed(receipt) => ToolContinuation::Replayed(receipt),
+        Ok(self
+            .runtime
+            .recover_frontend_continuation(request)
+            .await?
+            .into())
     }
 }

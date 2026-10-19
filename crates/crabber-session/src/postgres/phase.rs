@@ -408,17 +408,16 @@ async fn prepare(
             .0;
     let call = calls::load_with_proof(tx, run, &target.call_id, proof).await?;
     if matches!(request.command, PhaseCommand::Claim { .. }) {
-        if crate::POSTGRES_SCHEMA_VERSION >= 14
-            && super::frontend::origin_with_proof(
-                tx,
-                &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
-                    .map_err(|_| Error::UnknownStoreOutcome)?,
-                &target.call_id,
-                proof,
-            )
-            .await
-            .map_err(|_| Error::UnknownStoreOutcome)?
-            .is_some()
+        if super::frontend::origin_with_proof(
+            tx,
+            &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
+                .map_err(|_| Error::UnknownStoreOutcome)?,
+            &target.call_id,
+            proof,
+        )
+        .await
+        .map_err(|_| Error::UnknownStoreOutcome)?
+        .is_some()
         {
             return Err(Error::InvalidTransition);
         }
@@ -479,17 +478,16 @@ pub(super) async fn legacy_guard_with_proof(
     id: &crabber_core::ToolCallId,
     proof: &mut crate::public_session::v2::proof::Proof,
 ) -> Result<(), crate::StoreError> {
-    if crate::POSTGRES_SCHEMA_VERSION >= 14
-        && super::frontend::origin_with_proof(
-            tx,
-            &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
-                .map_err(|_| crate::StoreError::Conflict)?,
-            id,
-            proof,
-        )
-        .await
-        .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
-        .is_some()
+    if super::frontend::origin_with_proof(
+        tx,
+        &crate::frontend_continuation::FrontendReadScope::new(&run.session_id, &run.id)
+            .map_err(|_| crate::StoreError::Conflict)?,
+        id,
+        proof,
+    )
+    .await
+    .map_err(|_| crate::StoreError::Validation("frontend origin integrity failure".into()))?
+    .is_some()
     {
         return Err(crate::StoreError::Conflict);
     }

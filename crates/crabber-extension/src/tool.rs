@@ -168,6 +168,9 @@ impl ToolContext {
     pub fn workspace(&self) -> &WorkspaceContext {
         &self.workspace
     }
+    /// Best-effort display progress for the current call. The Runtime forwards
+    /// bounded text only; non-text and oversized updates are dropped. Use the
+    /// typed public-source writer for supported media and durable UI updates.
     pub fn progress(&self, content: ContentBlock) {
         (self.progress)(content);
     }
