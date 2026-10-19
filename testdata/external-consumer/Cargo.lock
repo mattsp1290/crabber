@@ -20,7 +20,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "ag-ui-core"
 version = "0.2.0"
-source = "git+https://github.com/mattsp1290/ag-ui.git?rev=5cc34b11fb41c6f068c27410b5756dbebcb367dd#5cc34b11fb41c6f068c27410b5756dbebcb367dd"
+source = "git+https://github.com/mattsp1290/ag-ui.git?rev=705303b26b6b900cdf9bdfa456fbd92a7003ca6b#705303b26b6b900cdf9bdfa456fbd92a7003ca6b"
 dependencies = [
  "json-patch",
  "serde",

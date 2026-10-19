@@ -1,8 +1,8 @@
 # crabber-agui
 
 Opt-in live projection of Crabber source events into `ag-ui-core` 0.2.0 from
-[mattsp1290/ag-ui](https://github.com/mattsp1290/ag-ui/tree/5cc34b11fb41c6f068c27410b5756dbebcb367dd),
-revision `5cc34b11fb41c6f068c27410b5756dbebcb367dd`. Core/runtime and the default
+[mattsp1290/ag-ui](https://github.com/mattsp1290/ag-ui/tree/705303b26b6b900cdf9bdfa456fbd92a7003ca6b),
+revision `705303b26b6b900cdf9bdfa456fbd92a7003ca6b`. Core/runtime and the default
 Crabber facade do not depend on AG-UI or HTTP. The adapter re-exports its pinned
 `ag_ui_core` so hosts share one wire type identity.
 

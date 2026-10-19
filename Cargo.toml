@@ -15,4 +15,4 @@ all = "warn"
 pedantic = "warn"
 
 [patch.crates-io]
-ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "5cc34b11fb41c6f068c27410b5756dbebcb367dd" }
+ag-ui-core = { git = "https://github.com/mattsp1290/ag-ui.git", rev = "705303b26b6b900cdf9bdfa456fbd92a7003ca6b" }

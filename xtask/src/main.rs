@@ -3,6 +3,7 @@
 use sha2::Digest;
 use std::{env, fmt::Write, fs, path::Path, process::Command};
 
+mod agui;
 mod datadog;
 
 const GLUE_START: &str = "crabber:glue-start";
@@ -27,6 +28,7 @@ fn check() {
         .parent()
         .expect("xtask belongs directly under the workspace root");
 
+    agui::check(workspace);
     check_wit(workspace);
     build_fixtures();
     run(workspace, &["fmt", "--all", "--", "--check"]);
