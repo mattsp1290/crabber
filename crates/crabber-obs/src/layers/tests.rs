@@ -314,16 +314,24 @@ async fn logs_carry_both_trace_conventions_and_opt_in_bounded_guest_text() {
     let intake = Intake::new(100);
     let subscriber = tracing_subscriber::registry().with(intake.logs_layer(LogsPolicy {
         guest_text: true,
-        ..LogsPolicy::default()
+        min_level: tracing::Level::WARN,
     }));
     tracing::subscriber::with_default(subscriber, || {
         let span = tracing::info_span!(target: "crabber::runtime", "crabber.run", host.trace_id = "0000000000000000000000000000002a", host.span_id = "000000000000002b", session.id = "session");
         span.in_scope(|| tracing::warn!(target: "crabber::wasm::guest", { "guest.text" = %"g".repeat(1000) }, "guest log"));
         let span = tracing::info_span!(target: "crabber::runtime", "crabber.run", host.trace_id = "000000000000002c", host.span_id = "000000000000002d");
-        span.in_scope(|| tracing::warn!(target: "crabber::runtime", "lease renew failed"));
+        span.in_scope(|| {
+            tracing::info!(target: "crabber::runtime", "event receiver lagged");
+            tracing::warn!(target: "crabber::runtime", "lease renew failed");
+        });
     });
     intake.observer.flush().await.unwrap();
     let logs = intake.logs();
+    assert_eq!(
+        logs.len(),
+        2,
+        "INFO events remain filtered under WARN policy"
+    );
     assert_eq!(logs[0]["trace_id"], "0000000000000000000000000000002a");
     assert_eq!(logs[0]["span_id"], "000000000000002b");
     assert_eq!(logs[0]["dd.trace_id"], "42");

@@ -58,13 +58,15 @@ impl LogsLayer {
     /// Apply this as a per-layer filter using `Layer::with_filter`.
     #[must_use]
     pub fn filter(policy: &LogsPolicy) -> Targets {
+        // Keep INFO parent spans even when only WARN/ERROR events are exported.
+        let spans_level = policy.min_level.max(Level::INFO);
         Targets::new()
-            .with_target("crabber::runtime", policy.min_level)
+            .with_target("crabber::runtime", spans_level)
             .with_target("crabber::runtime::lifecycle", LevelFilter::OFF)
-            .with_target("crabber::session", policy.min_level)
-            .with_target("crabber::providers", policy.min_level)
-            .with_target("crabber::extension", policy.min_level)
-            .with_target("crabber::wasm", policy.min_level)
+            .with_target("crabber::session", spans_level)
+            .with_target("crabber::providers", spans_level)
+            .with_target("crabber::extension", spans_level)
+            .with_target("crabber::wasm", spans_level)
             .with_target(
                 "crabber::wasm::guest",
                 if policy.guest_text {
@@ -74,13 +76,18 @@ impl LogsLayer {
                 },
             )
     }
-    fn enabled(&self, target: &str, level: Level) -> bool {
+    fn enabled(&self, target: &str, level: Level, span: bool) -> bool {
         if target == "crabber::wasm::guest" || target.starts_with("crabber::wasm::guest::") {
             return self.policy.guest_text && level <= Level::WARN;
         }
         library_target(target)
             && !target.starts_with("crabber::runtime::lifecycle")
-            && level <= self.policy.min_level
+            && level
+                <= if span {
+                    self.policy.min_level.max(Level::INFO)
+                } else {
+                    self.policy.min_level
+                }
     }
 }
 impl<S> Layer<S> for LogsLayer
@@ -88,7 +95,7 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if !self.enabled(attrs.metadata().target(), *attrs.metadata().level()) {
+        if !self.enabled(attrs.metadata().target(), *attrs.metadata().level(), true) {
             return;
         }
         if let Some(span) = ctx.span(id) {
@@ -106,7 +113,7 @@ where
         }
     }
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        if !self.enabled(event.metadata().target(), *event.metadata().level()) {
+        if !self.enabled(event.metadata().target(), *event.metadata().level(), false) {
             return;
         }
         self.health.events_seen.fetch_add(1, Ordering::Relaxed);
