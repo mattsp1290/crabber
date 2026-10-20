@@ -13,11 +13,13 @@ use futures::future::BoxFuture;
 struct Reader {
     calls: Arc<AtomicUsize>,
     drops: Arc<AtomicUsize>,
+    dropped: Arc<Notify>,
     pending: Option<Arc<cancellation::Gate>>,
 }
 impl Drop for Reader {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::SeqCst);
+        self.dropped.notify_one();
     }
 }
 #[async_trait]
@@ -42,6 +44,7 @@ struct Body {
     resolves: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     drops: Arc<AtomicUsize>,
+    dropped: Arc<Notify>,
     pending: Option<Arc<cancellation::Gate>>,
 }
 #[async_trait]
@@ -55,6 +58,7 @@ impl ContextualWorkspaceReaderResolverBody for Body {
         Ok(ContextualWorkspaceReaderProduct::new(Box::new(Reader {
             calls: self.calls.clone(),
             drops: self.drops.clone(),
+            dropped: self.dropped.clone(),
             pending: self.pending.clone(),
         })))
     }
@@ -64,6 +68,7 @@ struct Factory {
     resolves: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     drops: Arc<AtomicUsize>,
+    dropped: Arc<Notify>,
     pending: Option<Arc<cancellation::Gate>>,
 }
 impl ContextualWorkspaceReaderResolverProductFactory for Factory {
@@ -94,6 +99,7 @@ impl ContextualWorkspaceReaderResolverProductFactory for Factory {
                     resolves: self.resolves.clone(),
                     calls: self.calls.clone(),
                     drops: self.drops.clone(),
+                    dropped: self.dropped.clone(),
                     pending: self.pending.clone(),
                 },
             )))
@@ -185,6 +191,7 @@ async fn case(store: Arc<dyn Store>, mode: usize) {
     let resolves = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let drops = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(Notify::new());
     let fallback = Arc::new(AtomicUsize::new(0));
     let host = Arc::new(Host::default());
     let registry = Registry::new();
@@ -204,6 +211,7 @@ async fn case(store: Arc<dyn Store>, mode: usize) {
                 resolves: resolves.clone(),
                 calls: calls.clone(),
                 drops: drops.clone(),
+                dropped: dropped.clone(),
                 pending: gate.clone(),
             })],
             Duration::from_secs(3),
@@ -239,6 +247,11 @@ async fn case(store: Arc<dyn Store>, mode: usize) {
         .await;
     assert_eq!(resolves.load(Ordering::SeqCst), usize::from(mode != 3));
     assert_eq!(calls.load(Ordering::SeqCst), usize::from(mode != 3));
+    if mode != 3 {
+        // An original resolver Join error does not join its independently retained
+        // reader. Observe that reader's literal Drop before checking its counter.
+        cancellation::signal(&dropped).await;
+    }
     assert_eq!(drops.load(Ordering::SeqCst), usize::from(mode != 3));
     assert_eq!(fallback.load(Ordering::SeqCst), 0);
     assert_eq!(joined.pending, [] as [RunId; 0]);
