@@ -1350,6 +1350,17 @@ mod tests {
     #[cfg(feature = "datadog")]
     #[tokio::test]
     async fn configured_export_health_stays_local_during_provider_failure() {
+        check_configured_export_health(false).await;
+    }
+
+    #[cfg(feature = "datadog")]
+    #[tokio::test]
+    async fn datadog_observer_takes_precedence_and_shares_health() {
+        check_configured_export_health(true).await;
+    }
+
+    #[cfg(feature = "datadog")]
+    async fn check_configured_export_health(shared: bool) {
         struct Capture(std::sync::atomic::AtomicU64);
         impl Observer for Capture {
             fn emit(&self, _: &crabber_core::EventRecord) {}
@@ -1373,7 +1384,7 @@ mod tests {
         config.timeout = Duration::from_millis(40);
         let observer = crabber_obs::DatadogObserver::new(&config);
         let capture = Arc::new(Capture(std::sync::atomic::AtomicU64::new(0)));
-        let agent = Agent::builder()
+        let builder = Agent::builder()
             .behavior_version("agent-unit-tests.v1")
             .memory()
             .provider(Arc::new(FakeProvider::scripted(vec![vec![
@@ -1384,7 +1395,13 @@ mod tests {
                 }),
             ]])))
             .observer(capture.clone())
-            .datadog_observer(observer.clone())
+            .datadog(config);
+        let builder = if shared {
+            builder.datadog_observer(observer.clone())
+        } else {
+            builder
+        };
+        let agent = builder
             .config(AgentConfig::new(Selection {
                 provider_id: "fake".into(),
                 model_id: "scripted".into(),
@@ -1396,7 +1413,12 @@ mod tests {
         assert!(run.done().await.is_err());
         assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert!(agent.export_health().unwrap().accepted >= 2);
-        assert_eq!(agent.export_health(), Some(observer.health()));
+        if shared {
+            assert_eq!(agent.export_health(), Some(observer.health()));
+        } else {
+            assert_eq!(observer.health().accepted, 0);
+            observer.stop_now();
+        }
         assert_eq!(
             agent.export_health().unwrap().last_success_unix_seconds,
             None

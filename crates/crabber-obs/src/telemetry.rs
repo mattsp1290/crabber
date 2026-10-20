@@ -147,7 +147,9 @@ impl TelemetryConfig {
         Ok(Self {
             datadog: DatadogConfig::from_lookup(get),
             otlp: OtlpConfig::from_lookup(get)?,
-            service: get("DD_SERVICE").unwrap_or_else(|_| "crabber".into()),
+            service: get("DD_SERVICE")
+                .or_else(|_| get("OTEL_SERVICE_NAME"))
+                .unwrap_or_else(|_| "crabber".into()),
             env: get("DD_ENV").ok(),
             version: get("DD_VERSION").ok(),
             resource_tags: Vec::new(),
@@ -251,7 +253,12 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(explicit.otlp.unwrap().traces_url, "http://trace/custom");
-        for value in ["https://h", "ftp://h", "not an endpoint"] {
+        for value in [
+            "https://h",
+            "ftp://h",
+            "not an endpoint",
+            "http://user:PRIVATE@h",
+        ] {
             assert!(matches!(
                 config(&[("OTEL_EXPORTER_OTLP_ENDPOINT", value)]),
                 Err(TelemetryError::InvalidEndpoint)
@@ -271,12 +278,16 @@ mod tests {
         assert!(dd.datadog.is_some() && dd.otlp.is_none());
         let full = config(&[
             ("DD_API_KEY", "PRIVATE_KEY"),
-            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://h"),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "http://h/ENDPOINT_SECRET?token=QUERY_SECRET",
+            ),
             ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=PRIVATE_HEADER"),
         ])
         .unwrap();
         let debug = format!("{full:?}");
         assert!(!debug.contains("PRIVATE_KEY") && !debug.contains("PRIVATE_HEADER"));
+        assert!(!debug.contains("ENDPOINT_SECRET") && !debug.contains("QUERY_SECRET"));
     }
     #[tokio::test]
     async fn empty_telemetry_is_inert() {
